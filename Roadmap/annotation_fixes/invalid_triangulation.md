@@ -1519,8 +1519,7 @@ Candidate construction and validation stay outside the transaction boundary:
 - a candidate rejected by either helper reaches no live write, emits no data
   event, and requires no recovery;
 - `DELEGATE` interactions continue through napari unchanged;
-- vertex insertion, edge-only rendering, and save conversion remain outside
-  this slice.
+- vertex insertion and save conversion remain outside this slice.
 
 Share only the exception/recovery state machine needed by guarded movement and
 deletion: attempt one accepted mutation, restore its retained baseline if the
@@ -1756,17 +1755,6 @@ These are recovery tests, not Slice 1 characterizations of napari's pre-fix
 partial state. Do not duplicate the complete field-preservation assertions for
 every injected exception; use one complete deletion-baseline assertion and
 narrow tests for the remaining transaction boundaries.
-
-#### Rendering and Future Edge-Only Compatibility
-
-Keep recovery around every live write which can currently rebuild a polygon
-mesh. Coordinate the transaction boundary with a future edge-only primary
-polygon model by keeping candidate topology in the existing geometry helpers
-and keeping save conversion unchanged. Do not implement an edge-only model,
-invent a second topology representation, or add speculative edge-only tests in
-Slice 4. If an edge-only configuration already exists when this slice is
-implemented, run the same transaction contract against it through the shared
-commit boundary rather than creating a parallel recovery path.
 
 At the end of Slice 4, direct movement and vertex deletion satisfy the polygon
 mutation safety invariant across prevalidation, live rendering, successful
