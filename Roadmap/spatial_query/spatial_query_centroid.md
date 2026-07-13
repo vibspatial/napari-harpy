@@ -309,8 +309,9 @@ centers still scans all scale0 chunks lazily.
 - asynchronous center calculation and query execution, cancellation, progress,
   and stale-result protection;
 - per-table shared clean/dirty state;
-- writing the complete current table state, including canonical centers and
-  their metadata, to the backed zarr store;
+- selective AnnData element-level persistence of all supported dirty table
+  components, including canonical centers and their metadata, without rewriting
+  the complete AnnData table;
 - reloading the current table state from zarr with dirty-state protection;
 - undo of the most recently applied spatial annotation while its source
   binding remains valid;
@@ -1049,15 +1050,24 @@ such as TableStateChangedEvent with payload including:
     change_kind       # created, updated, removed, rebuilt, reloaded
     source            # spatial_query, spatial_query_canonical, undo, ...
 
-Accepted mutation events mark the table dirty. Reload is a state replacement
-event or an explicitly non-dirty event. Producers do not invoke widgets
-directly.
+Accepted mutation events mark their exact component paths dirty. At minimum,
+Spatial Query emits obs column keys for annotation changes and the paired paths
+obsm/spatial_canonical and uns/spatial_coordinates/spatial_canonical for cache
+changes. Reload is a state replacement event or an explicitly non-dirty event.
+Producers do not invoke widgets directly.
 
-Shared app state also maintains monotonic per-table mutation and persistence
-revisions. Every accepted in-memory table mutation increments the mutation
-revision. Successful writes/reloads advance the persistence revision; reload
-also establishes a new accepted baseline. These session counters supplement the
-user-facing dirty boolean and are not stored in AnnData.
+Shared app state maintains a per-table dirty-component manifest plus monotonic
+mutation and persistence revisions. The user-facing table dirty boolean is true
+when that manifest is non-empty. Every accepted in-memory table mutation records
+its component/key paths and increments the mutation revision. Successful writes
+clear only the captured component generations that were actually persisted;
+reload establishes a new accepted baseline and clears the manifest. These
+session values are not stored in AnnData.
+
+Component generations prevent a write that started from clearing a newer edit
+to the same component. A table becomes clean only after every supported dirty
+component has been persisted and no newer accepted mutation remains. This is a
+shared cross-widget contract, not Spatial Query-local bookkeeping.
 
 Expected consumers:
 
@@ -1075,8 +1085,9 @@ Handlers guard against feedback loops using event source and object identity.
 
 ### Shared dirty state
 
-Reuse HarpyAppState's per-table dirty tracking and PersistenceController. Do not
-introduce a widget-local dirty truth.
+Extend HarpyAppState's per-table dirty tracking and PersistenceController with
+the shared component manifest described above. Do not introduce a widget-local
+dirty truth.
 
 | Action | Table mutation | Dirty-state result |
 | --- | --- | --- |
@@ -1092,33 +1103,76 @@ introduce a widget-local dirty truth.
 | Apply annotation is a no-op | No | Unchanged from current state |
 | Apply creates/changes annotation column | obs | Dirty |
 | Undo annotation | obs | Clean only if complete table equals persisted baseline |
-| Successful write | Disk updated | Clean |
-| Failed write | Possibly attempted | Remains dirty |
+| Successful write, no remaining/newer dirty components | Captured components persisted | Clean |
+| Successful write with remaining/newer dirty components | Captured components persisted | Remains dirty |
+| Failed write | No accepted persistence completion | Remains dirty |
 | Successful reload | Memory replaced from disk | Clean |
 | Failed/cancelled reload | No accepted replacement | Unchanged |
 
 Dirty status belongs to the entire table. Changes from Object Classification,
 canonical-center generation, Spatial Query annotation, and other widgets
-coexist and are written together.
+coexist and are written together. Installing or updating
+obsm["spatial_canonical"] and its required metadata is an accepted AnnData table
+mutation and therefore always records both component paths as dirty. Merely
+computing a worker result, reusing an existing cache, or rejecting a result does
+not.
 
 ### Write Table State
 
-Write Table State is enabled only for a backed dirty table. It writes the
-complete accepted current table state required by Harpy, including:
+Write Table State is enabled only for a backed dirty table. It snapshots the
+shared dirty-component manifest and uses AnnData's element-level zarr API to
+persist the union of supported dirty components. It must not call
+AnnData.write_zarr, rewrite the complete AnnData object, or rewrite unrelated X,
+layers, var, varm, obsp, or uns/obsm entries.
 
-- obs and categorical metadata;
-- obsm["spatial_canonical"];
-- uns["spatial_coordinates"]["spatial_canonical"];
-- other existing table matrices/metadata covered by the shared persistence
-  contract.
+Preflight must resolve every dirty path to a supported element writer. An
+unknown or unsupported dirty path blocks the operation with an actionable error;
+it is never silently skipped, and the table remains dirty.
 
-The spatial annotation column and canonical cache do not get independent
-writers. The action and success message identify the table and resolved store
-path and state that the shared table state is being written.
+spatial_canonical is an obsm entry, not an obs column. Its persisted pair is:
 
-A successful write makes newly generated centers reusable after reload/reopen
-when their stored structural metadata still matches the labels element and
-table. A failure shows an error and leaves the table dirty.
+    adata.obsm["spatial_canonical"]
+    adata.uns["spatial_coordinates"]["spatial_canonical"]
+
+When that pair is dirty, the persistence service writes only those two logical
+elements using AnnData encodings, conceptually:
+
+    ad.io.write_elem(table_group["obsm"], "spatial_canonical", ...)
+    ad.io.write_elem(
+        table_group["uns"]["spatial_coordinates"],
+        "spatial_canonical",
+        ...,
+    )
+
+The implementation creates a correctly encoded spatial_coordinates mapping
+when absent and preserves every unrelated sibling entry when it already exists.
+It does not rewrite all of obsm or uns.
+
+The spatial annotation target, for example
+adata.obs["spatial_annotation"], is separate. If any obs column is dirty, the
+existing AnnData element-level persistence path writes the obs dataframe element
+with its index, column-order, missing-value, and categorical encodings. Writing
+obs is still a selective table-component write; it does not serialize the full
+AnnData object. Existing supported classifier metadata and future components are
+included only when their paths are present in the same shared dirty snapshot.
+
+There is one shared Write Table State action rather than competing widget-local
+writers. A centroid-only dirty table writes only the spatial_canonical pair; an
+annotation-only dirty table writes obs; a table containing both changes writes
+both in the same operation.
+
+The matrix and its spatial-coordinate metadata are one persistence unit. The
+service stages/backs up as needed, validates both encoded elements, and must not
+leave a newly written matrix paired with old or missing metadata after a handled
+failure. The table remains dirty unless every component in the captured write
+set succeeds. Captured component generations are cleared only if they have not
+changed during the write; later mutations remain dirty.
+
+The action and success message identify the table, resolved store path, and
+components written. A successful write makes newly generated centers reusable
+after reload/reopen when their stored structural metadata still matches the
+labels element and table. A failure shows an error, preserves usable in-memory
+state, and leaves the table dirty.
 
 Unbacked SpatialData is outside scope. Run and persistence actions remain
 disabled with an explanation that the feature requires zarr-backed SpatialData,
@@ -1302,7 +1356,8 @@ Reuse rather than copy:
 - Shapes Annotation geometry validity helpers and write events;
 - Harpy RasterAggregator;
 - HarpyAppState dirty tracking and semantic events;
-- PersistenceController write/reload behavior;
+- PersistenceController write/reload behavior and the existing
+  ad.io.write_elem-based selective persistence path;
 - active-coordinate-system selection patterns;
 - styles, status cards, worker cleanup, and generation-token patterns.
 
@@ -1432,12 +1487,26 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - first Run reads scale0 but not lower-resolution levels;
 - second Run with valid cache reads no label chunks;
 - cache is not on disk until Write Table State;
-- write persists matrix, metadata, annotation columns, missing values, and
-  categorical metadata;
+- a centroid-only write uses AnnData element encoding for only
+  obsm/spatial_canonical and
+  uns/spatial_coordinates/spatial_canonical, preserving unrelated table
+  elements and sibling metadata;
+- an annotation-only write persists obs, including column order, missing values,
+  categorical values/categories, and the dataframe index, without rewriting the
+  full AnnData table;
+- a mixed dirty manifest writes obs plus the canonical pair and clears dirty
+  state only after all captured component generations succeed;
+- an unknown dirty component blocks persistence and is never silently cleared;
+- no path calls AnnData.write_zarr or rewrites X, layers, var, varm, obsp, or
+  unrelated obsm/uns entries;
 - reopen/reload reuses cache when structural metadata still matches;
 - structural labels/table mismatch triggers refresh rather than reuse;
 - reload discards an unpersisted cache after confirmation;
-- write failure retains dirty state and usable in-memory cache;
+- injected failure between canonical matrix and metadata writes restores or
+  preserves a consistent on-disk pair, retains dirty state, and keeps the
+  in-memory cache usable;
+- a mutation accepted during persistence remains dirty after the older write
+  completes;
 - reload validation failure preserves current table and dirty state;
 - canonical-center, spatial-annotation, and object-classification changes
   coexist in one write;
@@ -1574,13 +1643,21 @@ Deliverables:
 
 - shared dirty-state and semantic table-state event integration for cache
   creation/refresh/rebuild;
-- persistence/reload support for spatial_canonical and metadata;
+- component-level dirty paths for obsm/spatial_canonical and
+  uns/spatial_coordinates/spatial_canonical;
+- selective ad.io.write_elem persistence and reload support for the canonical
+  pair, including pair-consistency failure handling and preservation of
+  unrelated table elements;
 - mismatch/recalculation feedback for controller and widget consumers;
 - cache lifecycle and backed-zarr tests.
 
 Exit criteria:
 
 - successful install is dirty and round-trips through zarr;
+- a centroid-only write touches only the two canonical element paths and never
+  serializes the complete AnnData table;
+- the table is not marked clean when either half of the canonical pair fails to
+  persist;
 - reload/reopen reuses only structurally valid metadata;
 - all widgets observe the same current canonical table state.
 
@@ -1670,7 +1747,8 @@ Exit criteria:
 Deliverables:
 
 - general table-state event supporting obs, obsm, and uns;
-- per-table mutation/persistence revisions;
+- per-table dirty-component manifest and component-aware
+  mutation/persistence revisions;
 - Viewer and Object Classification targeted refresh behavior;
 - reusable Write Table State and Reload Table from zarr UI/service;
 - dirty reload write/discard/cancel behavior;
@@ -1681,6 +1759,10 @@ Exit criteria:
 
 - all widgets observe one current in-memory table state;
 - canonical centers and annotation columns persist/reload together;
+- Write Table State persists the union of supported dirty components through
+  AnnData element encodings and clears only successfully written unchanged
+  component generations;
+- no full-AnnData rewrite occurs;
 - no event loop or unrelated classifier invalidation;
 - no late task affects a reloaded/replaced table;
 - there is no competing widget-local dirty truth.
@@ -1715,7 +1797,8 @@ annotation, 2D labels element, and linked table; transparently create or reuse
 validated canonical centers; run a responsive center-containment query; review
 affected and overwritten rows; apply a string annotation to a compatible
 existing or new obs column; undo the last annotation; and safely write/reload
-the complete shared table state from zarr.
+all supported dirty table components from zarr without rewriting the complete
+AnnData object.
 
 Completion additionally requires:
 
@@ -1730,6 +1813,8 @@ Completion additionally requires:
   overlap;
 - no annotation mutation occurs before explicit Apply;
 - cache installation is atomic and visibly marks the shared table dirty;
+- installing or refreshing spatial_canonical records both its obsm path and
+  metadata path as dirty, while calculation without installation does not;
 - overwrite is never silent;
 - no stale/cancelled worker installs data, opens a dialog, or mutates a table;
 - row identity always uses region_key and instance_key;
@@ -1739,6 +1824,8 @@ Completion additionally requires:
 - shared cross-widget dirty state and general table events work for obs, obsm,
   and uns;
 - canonical cache and annotation columns round-trip through backed zarr;
+- persistence uses AnnData element-level encodings for dirty obs/obsm/uns
+  components and never rewrites unrelated AnnData elements;
 - reload and dirty-dataset replacement protect local changes;
 - accessible validation/status/error feedback is complete;
 - repository tests, lint, formatting, benchmarks, and manual smoke tests pass.
