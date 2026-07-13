@@ -30,6 +30,9 @@ from napari_harpy.widgets.shapes_annotation._layer_style import (
 
 _SPACE_KEYBINDING = coerce_keybinding("Space")
 _INVALID_POLYGON_DRAG_WARNING = "Polygon edit was rejected because it would create invalid geometry."
+_POLYGON_DRAG_RENDERING_WARNING = (
+    "The polygon edit could not be rendered, so the previous accepted position was restored."
+)
 _ALREADY_INVALID_POLYGON_DRAG_WARNING = "This polygon is already invalid, so this edit cannot be safely rolled back."
 _SPACE_PAN_RESUMABLE_DRAW_MODES = frozenset(
     {
@@ -47,7 +50,7 @@ class _PolygonVertexDragState:
     moved_vertex_index: int
     topology: NapariPolygonTopology
     last_valid_vertices: np.ndarray
-    warned_invalid_drag: bool = False
+    warning_emitted: bool = False
     has_accepted_move: bool = False
 
 
@@ -622,7 +625,7 @@ class _AnnotationLayerEditGuard:
         try:
             candidate_vertices, moved_coordinate = self._build_polygon_vertex_drag_candidate(layer, active_drag, event)
         except (AttributeError, IndexError, TypeError, ValueError):
-            self._warn_invalid_polygon_drag_once(active_drag)
+            self._warn_polygon_drag_once(active_drag, _INVALID_POLYGON_DRAG_WARNING)
             return
 
         if np.array_equal(candidate_vertices, active_drag.last_valid_vertices):
@@ -645,7 +648,7 @@ class _AnnotationLayerEditGuard:
                     "Polygon move failed and restoring the previous accepted row also failed.",
                     [application_error, restoration_error],
                 ) from application_error
-            self._warn_invalid_polygon_drag_once(active_drag)
+            self._warn_polygon_drag_once(active_drag, _POLYGON_DRAG_RENDERING_WARNING)
             return
 
         active_drag.last_valid_vertices = candidate_vertices.copy()
@@ -683,11 +686,11 @@ class _AnnotationLayerEditGuard:
         layer._data_view.edit(row_index, vertices)
         layer.refresh(thumbnail=False)
 
-    def _warn_invalid_polygon_drag_once(self, active_drag: _PolygonVertexDragState) -> None:
-        if active_drag.warned_invalid_drag:
+    def _warn_polygon_drag_once(self, active_drag: _PolygonVertexDragState, message: str) -> None:
+        if active_drag.warning_emitted:
             return
-        self._warn(_INVALID_POLYGON_DRAG_WARNING)
-        active_drag.warned_invalid_drag = True
+        self._warn(message)
+        active_drag.warning_emitted = True
 
     def _finish_polygon_vertex_drag(
         self,
