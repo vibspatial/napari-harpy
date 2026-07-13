@@ -70,6 +70,27 @@ class NapariPolygonTopology:
 
 
 @dataclass(frozen=True)
+class NapariPolygonVertexDeletion:
+    """Validated outcome of deleting one semantic polygon vertex.
+
+    ``vertices`` and ``topology`` contain a shortened polygon candidate. Both
+    are ``None`` when deleting from a semantic triangle must remove the whole
+    polygon instead of constructing an invalid two-vertex row.
+    """
+
+    vertices: np.ndarray | None
+    topology: NapariPolygonTopology | None
+
+    def __post_init__(self) -> None:
+        if (self.vertices is None) != (self.topology is None):
+            raise ValueError("Polygon deletion vertices and topology must either both be present or both be absent.")
+
+    @property
+    def removes_shape(self) -> bool:
+        return self.vertices is None
+
+
+@dataclass(frozen=True)
 class _ParsedNapariPolygonVertices:
     shell: np.ndarray
     holes: tuple[np.ndarray, ...]
@@ -218,10 +239,75 @@ def delete_napari_polygon_vertex(
     vertices: ArrayLike,
     topology: NapariPolygonTopology,
     deleted_vertex_index: int,
-) -> tuple[np.ndarray, NapariPolygonTopology]:
-    """Return vertices and topology after deleting one ordinary ring vertex."""
+) -> NapariPolygonVertexDeletion:
+    """Return the validated outcome of deleting one polygon vertex.
+
+    Simple polygons preserve their implicit or explicit closure form. The
+    first and last coordinates of an explicitly closed row are treated as
+    aliases of one semantic vertex. Deleting from a semantic triangle reports
+    whole-shape removal.
+
+    Hole-bearing rows additionally synchronize encoded shell and hole anchors,
+    shift separator indices, and remove a complete minimal hole when needed.
+    """
     vertices = _coerce_vertices(vertices)
     deleted_vertex_index = _coerce_deleted_vertex_index(deleted_vertex_index, vertex_count=len(vertices))
+    parsed_topology = napari_polygon_vertices_to_topology(vertices)
+    if parsed_topology != topology:
+        raise ValueError("Polygon topology does not match the encoded vertex row.")
+    _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+
+    if not topology.hole_anchor_groups:
+        return _delete_simple_napari_polygon_vertex(
+            vertices,
+            topology=topology,
+            deleted_vertex_index=deleted_vertex_index,
+        )
+
+    # Parsing above has already proved the hole-bearing row grammar: the shell
+    # and every hole are explicitly closed, every hole has a following shell
+    # separator, and the complete row ends on the shell anchor. The private
+    # branch can therefore operate on the validated anchor-group indices.
+    deleted_vertices, deleted_topology = _delete_hole_bearing_napari_polygon_vertex(
+        vertices,
+        topology=topology,
+        deleted_vertex_index=deleted_vertex_index,
+    )
+    return NapariPolygonVertexDeletion(vertices=deleted_vertices, topology=deleted_topology)
+
+
+def _delete_simple_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> NapariPolygonVertexDeletion:
+    explicitly_closed = bool(np.array_equal(vertices[0], vertices[-1]))
+    semantic_vertex_count = len(vertices) - int(explicitly_closed)
+    if semantic_vertex_count == 3:
+        return NapariPolygonVertexDeletion(vertices=None, topology=None)
+    if semantic_vertex_count < 3:
+        raise ValueError("Polygon deletion requires at least three semantic vertices.")
+
+    if explicitly_closed and deleted_vertex_index in {0, len(vertices) - 1}:
+        semantic_vertices = np.delete(vertices[:-1], 0, axis=0)
+        deleted_vertices = np.vstack([semantic_vertices, semantic_vertices[0]])
+    else:
+        deleted_vertices = np.delete(vertices, deleted_vertex_index, axis=0)
+
+    deleted_topology = napari_polygon_vertices_to_topology(deleted_vertices)
+    if deleted_topology != topology:
+        raise ValueError("Polygon deletion changed the encoded topology.")
+    _ = napari_polygon_vertices_to_shapely_polygon(deleted_vertices)
+    return NapariPolygonVertexDeletion(vertices=deleted_vertices, topology=deleted_topology)
+
+
+def _delete_hole_bearing_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
     shell_anchor_group, hole_anchor_groups = _validated_hole_topology(topology, vertex_count=len(vertices))
 
     if deleted_vertex_index in shell_anchor_group:

@@ -16,6 +16,18 @@ from napari_harpy.core.shapes_geometry import (
 )
 
 
+def _shortened_polygon_vertex_deletion(
+    vertices: np.ndarray,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    deletion = delete_napari_polygon_vertex(vertices, topology, deleted_vertex_index)
+    assert not deletion.removes_shape
+    assert deletion.vertices is not None
+    assert deletion.topology is not None
+    return deletion.vertices, deletion.topology
+
+
 def test_napari_polygon_vertices_to_shapely_polygon_accepts_simple_polygon() -> None:
     vertices_yx = np.asarray(
         [
@@ -279,7 +291,9 @@ def test_sync_napari_polygon_anchor_vertex_synchronizes_hole_anchor_group() -> N
     )
 
     np.testing.assert_allclose(synchronized[[5, 9]], np.asarray([moved_coordinate] * 2))
-    np.testing.assert_allclose(synchronized[[0, 1, 2, 3, 4, 6, 7, 8, 10]], original_vertices[[0, 1, 2, 3, 4, 6, 7, 8, 10]])
+    np.testing.assert_allclose(
+        synchronized[[0, 1, 2, 3, 4, 6, 7, 8, 10]], original_vertices[[0, 1, 2, 3, 4, 6, 7, 8, 10]]
+    )
     np.testing.assert_allclose(vertices, original_vertices)
 
 
@@ -592,7 +606,7 @@ def test_delete_napari_polygon_vertex_deletes_shell_vertex_and_updates_topology(
     original_vertices = vertices.copy()
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+    deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
         vertices,
         topology,
         deleted_vertex_index=3,
@@ -618,7 +632,7 @@ def test_delete_napari_polygon_vertex_deletes_hole_vertex_and_updates_topology()
     original_vertices = vertices.copy()
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+    deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
         vertices,
         topology,
         deleted_vertex_index=7,
@@ -646,7 +660,7 @@ def test_delete_napari_polygon_vertex_in_one_hole_updates_later_topology_groups(
     vertices = shapely_polygon_to_napari_polygon_vertices(source)
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+    deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
         vertices,
         topology,
         deleted_vertex_index=7,
@@ -682,7 +696,7 @@ def test_delete_napari_polygon_vertex_rebuilds_shell_anchor_deletion_for_each_sh
     )
 
     for deleted_vertex_index in topology.shell_anchor_group:
-        deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
             vertices,
             topology,
             deleted_vertex_index=deleted_vertex_index,
@@ -720,7 +734,7 @@ def test_delete_napari_polygon_vertex_rebuilds_hole_anchor_deletion_for_each_hol
     )
 
     for deleted_vertex_index in topology.hole_anchor_groups[0]:
-        deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
             vertices,
             topology,
             deleted_vertex_index=deleted_vertex_index,
@@ -765,7 +779,7 @@ def test_delete_napari_polygon_vertex_rebuilds_hole_anchor_deletion_with_multipl
     )
 
     for deleted_vertex_index in topology.hole_anchor_groups[1]:
-        deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
             vertices,
             topology,
             deleted_vertex_index=deleted_vertex_index,
@@ -789,7 +803,7 @@ def test_delete_napari_polygon_vertex_removes_minimal_hole_anchor_for_each_hole_
     topology = napari_polygon_vertices_to_topology(vertices)
 
     for deleted_vertex_index in topology.hole_anchor_groups[0]:
-        deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
             vertices,
             topology,
             deleted_vertex_index=deleted_vertex_index,
@@ -815,7 +829,7 @@ def test_delete_napari_polygon_vertex_removes_minimal_hole_anchor_and_preserves_
     expected_vertices = np.delete(vertices, np.arange(deleted_hole_start, deleted_hole_end + 2), axis=0)
 
     for deleted_vertex_index in topology.hole_anchor_groups[0]:
-        deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+        deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
             vertices,
             topology,
             deleted_vertex_index=deleted_vertex_index,
@@ -879,16 +893,108 @@ def test_delete_napari_polygon_vertex_rejects_out_of_range_deleted_index(deleted
         )
 
 
-def test_delete_napari_polygon_vertex_rejects_simple_polygon_topology() -> None:
+def test_delete_napari_polygon_vertex_deletes_explicitly_closed_simple_vertex() -> None:
     source = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
     vertices = shapely_polygon_to_napari_polygon_vertices(source)
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    with pytest.raises(ValueError, match="hole-bearing vertex row"):
+    deletion = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=2,
+    )
+
+    assert not deletion.removes_shape
+    assert deletion.vertices is not None
+    assert deletion.topology == topology
+    np.testing.assert_allclose(deletion.vertices, np.delete(vertices, 2, axis=0))
+    np.testing.assert_allclose(deletion.vertices[0], deletion.vertices[-1])
+    _ = napari_polygon_vertices_to_shapely_polygon(deletion.vertices)
+
+
+def test_delete_napari_polygon_vertex_deletes_implicitly_closed_simple_vertex() -> None:
+    vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 4.0], [2.0, 5.0], [4.0, 4.0], [4.0, 0.0]],
+        dtype=float,
+    )
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    deletion = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=2,
+    )
+
+    assert not deletion.removes_shape
+    assert deletion.vertices is not None
+    assert deletion.topology == topology
+    np.testing.assert_allclose(deletion.vertices, np.delete(vertices, 2, axis=0))
+    assert not np.array_equal(deletion.vertices[0], deletion.vertices[-1])
+    _ = napari_polygon_vertices_to_shapely_polygon(deletion.vertices)
+
+
+@pytest.mark.parametrize("deleted_vertex_index", [0, 4])
+def test_delete_napari_polygon_vertex_deletes_explicit_closure_endpoint_alias(
+    deleted_vertex_index: int,
+) -> None:
+    vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0], [0.0, 0.0]],
+        dtype=float,
+    )
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    deletion = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=deleted_vertex_index,
+    )
+
+    assert deletion.vertices is not None
+    np.testing.assert_allclose(
+        deletion.vertices,
+        np.asarray([[0.0, 4.0], [4.0, 4.0], [4.0, 0.0], [0.0, 4.0]]),
+    )
+    _ = napari_polygon_vertices_to_shapely_polygon(deletion.vertices)
+
+
+@pytest.mark.parametrize("explicitly_closed", [False, True])
+def test_delete_napari_polygon_vertex_reports_semantic_triangle_removal(explicitly_closed: bool) -> None:
+    semantic_vertices = np.asarray([[0.0, 0.0], [0.0, 4.0], [4.0, 0.0]], dtype=float)
+    vertices = np.vstack([semantic_vertices, semantic_vertices[0]]) if explicitly_closed else semantic_vertices
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    deletion = delete_napari_polygon_vertex(
+        vertices,
+        topology,
+        deleted_vertex_index=len(vertices) - 1,
+    )
+
+    assert deletion.removes_shape
+    assert deletion.vertices is None
+    assert deletion.topology is None
+
+
+def test_delete_napari_polygon_vertex_rejects_invalid_simple_candidate() -> None:
+    vertices = np.asarray(
+        [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 4.0),
+            (3.0, 4.0),
+            (3.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 4.0),
+            (0.0, 4.0),
+        ],
+        dtype=float,
+    )
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match="valid polygon"):
         delete_napari_polygon_vertex(
             vertices,
             topology,
-            deleted_vertex_index=2,
+            deleted_vertex_index=0,
         )
 
 
@@ -916,7 +1022,7 @@ def test_delete_napari_polygon_vertex_removes_minimal_hole() -> None:
     vertices = shapely_polygon_to_napari_polygon_vertices(source)
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+    deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
         vertices,
         topology,
         deleted_vertex_index=6,
@@ -939,7 +1045,7 @@ def test_delete_napari_polygon_vertex_removes_one_minimal_hole_and_preserves_oth
     vertices = shapely_polygon_to_napari_polygon_vertices(source)
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    deleted_vertices, deleted_topology = delete_napari_polygon_vertex(
+    deleted_vertices, deleted_topology = _shortened_polygon_vertex_deletion(
         vertices,
         topology,
         deleted_vertex_index=6,

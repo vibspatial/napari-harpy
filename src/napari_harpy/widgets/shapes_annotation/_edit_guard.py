@@ -56,6 +56,12 @@ class _PolygonVertexDragRoute(Enum):
     REJECT = auto()
 
 
+class _PolygonVertexDeleteRoute(Enum):
+    DELEGATE = auto()
+    GUARD = auto()
+    REJECT = auto()
+
+
 @dataclass(frozen=True)
 class _VertexDeleteState:
     row_index: int
@@ -744,12 +750,16 @@ class _AnnotationLayerEditGuard:
         kwargs: dict[str, Any],
         event: object,
     ) -> Any:
-        delete_state = self._capture_vertex_delete_state(layer, event)
-        if delete_state is None:
+        route, delete_state = self._classify_vertex_delete(layer, event)
+        if route is _PolygonVertexDeleteRoute.DELEGATE:
             return original_vertex_remove_callback(*args, **kwargs)
+        if route is _PolygonVertexDeleteRoute.REJECT:
+            return None
+        if delete_state is None:  # pragma: no cover - routing invariant
+            raise RuntimeError("Guarded polygon deletion has no captured state.")
 
         try:
-            updated_vertices, _updated_topology = delete_napari_polygon_vertex(
+            candidate = delete_napari_polygon_vertex(
                 delete_state.vertices,
                 delete_state.topology,
                 delete_state.deleted_vertex_index,
@@ -766,21 +776,25 @@ class _AnnotationLayerEditGuard:
             data_indices=(delete_state.row_index,),
             vertex_indices=((delete_state.deleted_vertex_index,),),
         )
-        # Successful vertex deletion currently shortens the row, which needs a
-        # cache rebuild. The `else` branch is kept only for a future helper
-        # path that might rewrite vertices without changing row length.
-        if len(updated_vertices) != len(delete_state.vertices):
-            self._replace_shape_row_rebuilding_vertex_cache(layer, delete_state.row_index, updated_vertices)
+
+        if candidate.removes_shape:
+            self._remove_shape_row_preserving_layer_state(layer, delete_state.row_index)
         else:
-            with layer.events.set_data.blocker():
-                layer._data_view.edit(delete_state.row_index, updated_vertices)
+            if candidate.vertices is None:  # pragma: no cover - candidate invariant
+                raise RuntimeError("Shortened polygon deletion has no candidate vertices.")
+            self._replace_shape_row_preserving_layer_state(
+                layer,
+                delete_state.row_index,
+                candidate.vertices,
+            )
+
+        layer.refresh()
         layer.events.data(
             value=layer.data,
             action=ActionType.CHANGED,
             data_indices=(delete_state.row_index,),
             vertex_indices=((delete_state.deleted_vertex_index,),),
         )
-        layer.refresh()
         if self._polygon_vertex_delete_finished_callback is not None:
             # Without this reset, a previous rejected-delete warning would
             # keep showing in the status card even after this successful
@@ -788,7 +802,7 @@ class _AnnotationLayerEditGuard:
             self._polygon_vertex_delete_finished_callback()
         return None
 
-    def _replace_shape_row_rebuilding_vertex_cache(
+    def _replace_shape_row_preserving_layer_state(
         self,
         layer: Shapes,
         row_index: int,
@@ -817,12 +831,7 @@ class _AnnotationLayerEditGuard:
 
         layer.opacity = style_snapshot.opacity
         layer.mode = current_mode
-        # Defensive guard: this helper only replaces a row today, but avoid
-        # restoring impossible selections if a future caller removes rows.
-        selected_data = {index for index in selected_data if index < len(layer.data)}
-        if row_index < len(layer.data):
-            selected_data.add(row_index)
-        layer.selected_data = selected_data
+        layer.selected_data = {index for index in selected_data if index < len(layer.data)}
 
         # Restore current draw defaults without emitting Harpy's style sync
         # callbacks, then reapply row styles last so callback side effects
@@ -830,59 +839,100 @@ class _AnnotationLayerEditGuard:
         _restore_shapes_layer_current_style(layer, style_snapshot)
         _restore_shapes_layer_row_styles(layer, style_snapshot, row_indices=range(len(layer.data)))
 
-    def _capture_vertex_delete_state(self, layer: Shapes, event: object) -> _VertexDeleteState | None:
-        """Return delete state only for hole-bearing polygon rows we own.
+    def _remove_shape_row_preserving_layer_state(self, layer: Shapes, row_index: int) -> None:
+        """Remove one polygon row while preserving all surviving layer state."""
+        row_count = len(layer.data)
+        current_mode = layer.mode
+        selected_data = set(layer.selected_data)
+        style_snapshot = _capture_shapes_layer_style(layer, row_count=row_count)
+        surviving_row_indices = [index for index in range(row_count) if index != row_index]
 
-        Every ``Mode.VERTEX_REMOVE`` click enters the edit guard, but most
-        clicks should still use napari's original deletion behavior. This method
-        is the routing gate: it returns ``None`` for no-vertex clicks,
-        non-polygon rows, malformed rows, simple polygons without encoded holes,
-        and out-of-range hit-test results. For valid polygon rows with encoded
-        holes, we intentionally return a state object so deletion is delegated
-        to Harpy's topology-preserving path instead of napari's raw vertex
-        deletion.
-        """
+        _trim_stale_private_color_rows_before_rebuild(layer, style_snapshot)
+        with layer.events.data.blocker(), layer.events.features.blocker():
+            layer.remove([row_index])
+
+        layer.opacity = style_snapshot.opacity
+        layer.mode = current_mode
+        layer.selected_data = {
+            index if index < row_index else index - 1 for index in selected_data if index != row_index
+        }
+        _restore_shapes_layer_current_style(layer, style_snapshot)
+        _restore_shapes_layer_row_styles(
+            layer,
+            style_snapshot,
+            row_indices=surviving_row_indices,
+        )
+
+    def _classify_vertex_delete(
+        self,
+        layer: Shapes,
+        event: object,
+    ) -> tuple[_PolygonVertexDeleteRoute, _VertexDeleteState | None]:
+        """Classify one vertex-removal click before allowing any mutation."""
         try:
             value = layer.get_value(getattr(event, "position", None), world=True)
         except (AttributeError, TypeError, ValueError, IndexError):
-            return None
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
+        if value is None:
+            return _PolygonVertexDeleteRoute.DELEGATE, None
         if not isinstance(value, tuple) or len(value) != 2:
-            return None
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
 
         row_index, deleted_vertex_index = value
         if deleted_vertex_index is None:
-            return None
-        if not isinstance(row_index, (int, np.integer)) or not isinstance(deleted_vertex_index, (int, np.integer)):
-            return None
+            return _PolygonVertexDeleteRoute.DELEGATE, None
+        if (
+            isinstance(row_index, (bool, np.bool_))
+            or isinstance(deleted_vertex_index, (bool, np.bool_))
+            or not isinstance(row_index, (int, np.integer))
+            or not isinstance(deleted_vertex_index, (int, np.integer))
+        ):
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
 
         row_index = int(row_index)
         deleted_vertex_index = int(deleted_vertex_index)
         if row_index < 0 or deleted_vertex_index < 0 or row_index >= len(layer.data):
-            return None
-        if _shape_type_at(layer, row_index) != "polygon":
-            return None
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
+        shape_type = _shape_type_at(layer, row_index)
+        if shape_type is None:
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
+        if shape_type != "polygon":
+            return _PolygonVertexDeleteRoute.DELEGATE, None
 
         try:
             vertices = np.asarray(layer.data[row_index], dtype=float).copy()
         except (TypeError, ValueError):
-            return None
-        if deleted_vertex_index >= len(vertices):
-            return None
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
+        if vertices.ndim != 2 or not np.isfinite(vertices).all() or deleted_vertex_index >= len(vertices):
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
 
         try:
             topology = napari_polygon_vertices_to_topology(vertices)
         except ValueError:
-            return None
-        # Important routing guard: only hole-bearing polygon rows use Harpy's
-        # custom deletion path. Simple polygons and other shapes stay napari-owned.
-        if not topology.hole_anchor_groups:
-            return None
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
 
-        return _VertexDeleteState(
-            row_index=row_index,
-            deleted_vertex_index=deleted_vertex_index,
-            vertices=vertices,
-            topology=topology,
+        try:
+            _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+        except ValueError:
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexDeleteRoute.REJECT, None
+
+        return (
+            _PolygonVertexDeleteRoute.GUARD,
+            _VertexDeleteState(
+                row_index=row_index,
+                deleted_vertex_index=deleted_vertex_index,
+                vertices=vertices,
+                topology=topology,
+            ),
         )
 
     def _warn(self, message: str) -> None:
