@@ -1081,47 +1081,187 @@ already covered. Widget-level fixed-behavior assertions belong to Slices 2–4:
 
 ### Slice 2: Prevalidated Transactional Polygon Moves
 
+Status: specified; not yet implemented.
+
 Implement the chosen native-press/Harpy-move hybrid without copying napari's
-complete `select(...)` generator:
+complete `select(...)` generator. Slice 2 owns guarded polygon movement from
+the native press yield through normal release. Native behavior remains
+authoritative for interactions which are explicitly delegated.
 
-- call the native generator exactly once and let it yield after press setup;
-- classify the resulting press state as `DELEGATE`, `GUARD`, or `REJECT`;
-- continue forwarding the suspended generator normally only for `DELEGATE`;
-- never advance the native generator into its move section for `GUARD` or
-  `REJECT`;
-- consume `REJECT` moves without mutation and perform Harpy-owned cleanup;
-- for `GUARD`, move polygon candidate construction ahead of every live write;
-- derive the candidate coordinate from the mouse event;
-- construct it from `last_valid_vertices`;
-- synchronize all anchor aliases in memory;
-- validate the complete intended candidate;
-- leave the live row unchanged for rejected candidates;
-- attempt one write only for accepted candidates;
-- advance `last_valid_vertices` only after editing and triangulation succeed;
-- on release, emit `ActionType.CHANGED` only when an accepted state survives;
-- emit a completed event for earlier accepted moves when a later candidate
-  fails but restoration to the last accepted row succeeds;
-- emit no successful completed event when restoration fails and the session is
-  unsafe;
-- close the suspended native generator in `finally`, then normalize Harpy-owned
-  interaction state;
-- preserve napari's selection, highlight, thumbnail, and data-event contract
-  for the guarded polygon-vertex gesture.
+#### Press Boundary and Three-Way Routing
 
-Use the Slice 1 movement fixture to verify the completed widget path:
+Call the real native `Mode.DIRECT` generator and advance it exactly once. Slice
+1 establishes that this performs hit testing and press setup, populates
+`_moving_value`, initializes selection, highlight, and `_drag_start`, and then
+yields before mutation or triangulation.
 
-- moving raw vertex 39 constructs a candidate in which indices 34 and 39 are
-  synchronized before validation;
-- the invalid synchronized candidate is rejected without calling
-  `_data_view.edit(...)`, triangulating, mutating the live row, or emitting a
-  completed change;
-- Harpy resets its interaction state, closes the suspended native generator,
-  and permits a subsequent valid drag.
+Classify the state immediately after that yield. The routing result must be an
+explicit three-way value rather than the current ambiguous `state | None`:
 
-This removes the original transient-open-ring window. It applies to ordinary
-and anchor vertices in both simple and hole-bearing polygons. It deliberately
-does not introduce a copied native generator, a generic gesture framework, or
-insertion/edge-only behavior ahead of their later slices.
+- `DELEGATE`: `_moving_value` describes no raw vertex, no shape, a valid
+  non-polygon row, or another clearly native non-polygon/non-vertex
+  interaction. Resume the suspended native generator for every later move and
+  release exactly as before.
+- `GUARD`: `_moving_value` contains in-bounds integer row and raw-vertex
+  indices, the row is a polygon, its vertices can be copied as a floating
+  array, its encoded topology can be parsed, and the complete starting row can
+  be decoded as valid Shapely geometry. Capture the topology and the copied row
+  as the initial `last_valid_vertices`.
+- `REJECT`: the press claims a raw polygon vertex, but Harpy cannot establish a
+  safe starting state because an index is invalid, the row cannot be copied,
+  its topology is malformed, or its geometry is already invalid. Warn once,
+  consume the remaining gesture without mutation, and perform Harpy-owned
+  release cleanup.
+
+Only a clearly non-polygon or non-vertex interaction may use `DELEGATE`.
+Failure to capture a polygon vertex safely must not silently fall through to
+napari's unvalidated move path. `GUARD` and `REJECT` must never advance the
+native generator a second time; keep it suspended until it is closed.
+
+Do not add a generic gesture router. A small enum plus a movement-state object
+is sufficient. Extend the existing `_PolygonVertexDragState`; do not introduce
+a second accepted-row cache alongside `last_valid_vertices`.
+
+#### Candidate Construction and Encoding Integrity
+
+For every `mouse_move` in `GUARD`:
+
+1. Derive the data-space coordinate exactly once with
+   `layer.world_to_data(event.position)`, matching napari's direct-move path,
+   and reject an incompatible coordinate rather than guessing dimensions.
+2. Start from a copy of `last_valid_vertices`, never from a partially written
+   live row.
+3. Determine the complete raw-index alias set before writing the candidate:
+   - for a shell or hole anchor in a hole-bearing encoding, use the cached
+     topology's complete synchronized anchor group;
+   - for an explicitly closed simple polygon, moving raw index `0` or the last
+     raw index must update the pair `(0, last)`, matching napari's native
+     closed-endpoint behavior even though simple topology has no hole-anchor
+     groups;
+   - for an ordinary vertex, update only the selected raw index.
+4. Write the new coordinate to every member of that alias set in memory.
+5. Reparse the candidate and require its encoded topology to equal the cached
+   topology. This rejects coordinate collisions which would accidentally
+   reinterpret an ordinary vertex as an anchor or separator.
+6. Decode the complete candidate through
+   `napari_polygon_vertices_to_shapely_polygon(...)`; reject malformed,
+   empty, zero-area, self-intersecting, or otherwise Shapely-invalid geometry.
+
+The live row, mesh, `last_valid_vertices`, and accepted-move flag must remain
+unchanged when candidate construction or validation fails. Do not call
+`_data_view.edit(...)`, `refresh()`, or a triangulation path for a rejected
+candidate. Show `_INVALID_POLYGON_DRAG_WARNING` at most once per gesture and
+continue consuming later move events so a later valid cursor position can
+still be accepted.
+
+A candidate which is byte-for-byte equal to `last_valid_vertices` is a no-op:
+do not write it, mark it committed, update the thumbnail, or emit a completed
+change solely because a mouse-move event occurred.
+
+#### Accepted Move Transaction
+
+For a valid candidate different from `last_valid_vertices`:
+
+1. Retain `last_valid_vertices` as the restoration baseline.
+2. Set the private moving coordinate needed for a direct gesture, but do not
+   mark the layer as having an accepted move yet.
+3. Apply the complete synchronized candidate with one
+   `_data_view.edit(row_index, candidate)` call and refresh the layer. The
+   triangulator must therefore see only the already-synchronized, validated
+   row.
+4. Only after edit, triangulation, and refresh succeed, copy the candidate into
+   `last_valid_vertices`, mark that this gesture has committed a move, and set
+   `_is_moving` consistently with napari's successful direct-drag behavior.
+
+The transaction boundary includes the edit and refresh. If either raises,
+immediately restore the retained `last_valid_vertices` and refresh before
+continuing or finishing the gesture. A successful restoration rejects only
+that candidate: it does not erase an earlier accepted move, advance
+`last_valid_vertices`, or prevent a later valid move in the same gesture.
+
+Slice 2 may implement this as a small movement-specific transaction; it must
+not introduce a speculative general transaction framework. If restoration
+itself raises, retain both the candidate-application and restoration errors,
+terminate the gesture, and emit no successful completion for the failed
+candidate. Slice 4 owns the shared movement/deletion recovery abstraction,
+complete unsafe-session blocking, and exhaustive forced-renderer and
+restoration-failure integration coverage.
+
+#### Guarded Release and Event Contract
+
+For `GUARD` and `REJECT`, consume each `mouse_move` with one wrapper yield, then
+complete `mouse_release` without another yield. Perform release locally; do not
+resume the suspended native generator to obtain native release behavior.
+
+On normal release:
+
+- emit no `ActionType.CHANGING`; native direct vertex movement does not use a
+  `CHANGING` event;
+- emit exactly one `ActionType.CHANGED` only if at least one move was committed
+  and its accepted row still survives;
+- mirror napari's `CHANGED` payload: `value=layer.data`, selected-row
+  `data_indices`, and all raw vertex indices for each reported selected row;
+- emit no `CHANGED` when every candidate was invalid, the gesture contained
+  only no-ops, the starting row was rejected, or no accepted state survives;
+- keep an earlier accepted row and emit one `CHANGED` when a later geometric
+  candidate is rejected or a later write fails and restoration succeeds;
+- update the thumbnail exactly once, and only when a committed mutation
+  survives release;
+- preserve the selection established by native press setup, reset
+  `_is_moving`, `_drag_start`, `_drag_box`, `_fixed_vertex`, and
+  `_moving_value`, and refresh the highlight;
+- call the annotation drag-finished callback exactly once after cleanup for a
+  Harpy-owned gesture, including a rejected gesture, so transient widget
+  status can be normalized.
+
+Close the suspended native generator in `finally` before Harpy performs its
+final state normalization. Cleanup must also run when candidate validation or
+application raises. `DELEGATE` continues to use the native generator's own
+move, event, thumbnail, and release behavior unchanged.
+
+#### Slice 2 Test Matrix
+
+Adapt existing movement tests where they already cover the contract instead of
+duplicating them. Use the actual native direct callback for the press boundary
+and the completed wrapper path; use narrow spies or failure sentinels only to
+prove that a forbidden edit or triangulation call did not occur.
+
+Required passing coverage is:
+
+- one representative `DELEGATE` interaction continues through native move and
+  release behavior;
+- malformed or already-invalid polygon-vertex rows take `REJECT`, never resume
+  the native move path, remain unchanged, warn once, emit no data event, and
+  receive complete Harpy-owned cleanup;
+- the Slice 1 near-coincident regression moves raw vertex 39 toward `Q'`,
+  constructs a candidate with indices 34 and 39 synchronized before
+  validation, rejects that synchronized invalid candidate before
+  `_data_view.edit(...)` or triangulation, preserves the original live row,
+  emits no `CHANGED`, and closes with normalized interaction state;
+- a valid later drag on the same layer succeeds, proving that rejection did
+  not poison interaction state;
+- a valid ordinary-vertex move performs one candidate write and emits one
+  correct `CHANGED` on release;
+- a valid hole-anchor or shell-anchor move presents a fully synchronized row to
+  the single edit call and advances `last_valid_vertices` only after success;
+- moving an endpoint of an explicitly closed simple polygon keeps raw indices
+  `(0, last)` synchronized;
+- moving an ordinary vertex onto a coordinate that changes the encoded anchor
+  topology is rejected before a live write;
+- an accepted move followed by an invalid move leaves the accepted row live
+  and emits one `CHANGED` for that surviving row;
+- an identical/no-op candidate performs no write, thumbnail update, or
+  completed event;
+- a narrow movement-transaction test makes candidate application fail after a
+  possible partial write and verifies restoration to `last_valid_vertices`, no
+  advancement of accepted state for the failed candidate, and no successful
+  event unless an earlier accepted move survives.
+
+This slice removes the original transient-open-ring window for direct polygon
+movement. It applies to ordinary and duplicated anchor vertices in simple and
+hole-bearing polygons. It deliberately excludes deletion, insertion,
+edge-only rendering, a copied native generator, and a generic gesture
+framework.
 
 ### Slice 3: Guard Every Polygon Vertex Deletion
 
@@ -1154,8 +1294,9 @@ recovery is completed in Slice 4.
 
 ### Slice 4: Shared Transaction Recovery and Rendering Integration
 
-Complete exception-safe transaction handling for accepted movement and
-deletion candidates.
+Generalize and harden the movement-local rollback introduced in Slice 2 into
+shared exception-safe transaction handling for accepted movement and deletion
+candidates.
 
 - retain the movement row baseline or deletion layer snapshot until editing,
   rebuilding, and triangulation all succeed;
