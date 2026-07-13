@@ -12,11 +12,16 @@ SpatialData shapes element `annotation_1_hole_triangulation_regression` from:
 
 `/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_3_6_26.zarr`
 
-The user was dragging vertex 39, which is one copy of an encoded hole anchor,
-very close to a shell-anchor/separator vertex. Napari raised during face
-triangulation and the Shapes annotation widget subsequently considered the
-polygon invalid. The widget could not recover through normal interaction, so
-the annotation session had to be discarded.
+The user was dragging raw vertex index 39, which is one copy of an encoded hole
+anchor, very close to a shell-anchor/separator vertex. In the four-hole row
+visible during the original interaction, the user identified shell-anchor copy
+54. The same shell anchor is repeated at indices 0, 16, 25, 33, 40, and 54.
+The minimized three-hole reproducer ends at shell-anchor copy 40, so it uses 40
+where the original UI observation referred to the equivalent copy at 54.
+
+Napari raised during face triangulation and the Shapes annotation widget
+subsequently considered the polygon invalid. The widget could not recover
+through normal interaction, so the annotation session had to be discarded.
 
 The reported traceback entered Harpy at:
 
@@ -84,6 +89,20 @@ hole_anchor_groups = ((17, 24), (26, 32), (34, 39))
 Vertices 34 and 39 are two copies of the same third-hole anchor. They must stay
 coordinate-identical for the row to describe a closed hole ring.
 
+Raw index 40 is the terminal shell-anchor/separator copy immediately after the
+third hole. It is coordinate-identical to every other member of
+`shell_anchor_group`. Thus the relevant tail of the minimized encoded row is:
+
+```text
+index 34 = start copy of the third-hole anchor
+...
+index 39 = end copy of the third-hole anchor
+index 40 = repeated shell anchor after the third hole
+```
+
+These are zero-based raw array indices. A UI that presents one-based vertex
+numbers would label them differently.
+
 Harpy already tracks these groups through `NapariPolygonTopology` and
 `sync_napari_polygon_anchor_vertex(...)`. The problem is not missing topology
 information. It is that synchronization currently occurs after napari's native
@@ -91,9 +110,23 @@ move and retriangulation.
 
 ## Exact Reproduction
 
-The saved failed triangulation input was reproduced exactly from the existing
-`annotation_1` regression fixture in
-`tests/test_shapes_triangulation_backend.py`.
+The saved failed triangulation input was reproduced from
+`POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1` in
+`tests/test_shapes_triangulation_backend.py`, but that polygon constant alone is
+only the source geometry. It is not already the failing pre-drag row.
+
+The valid pre-drag row is derived deterministically from its encoded 41-vertex
+napari row:
+
+1. encode the three-hole source polygon;
+2. assign `P` to every shell-anchor copy in `(0, 16, 25, 33, 40)`;
+3. assign `Q` to both copies of the third-hole anchor at `(34, 39)`;
+4. validate that complete reconstructed row before using it as the drag
+   baseline.
+
+The failing native move then changes only raw index 39 from `Q` to `Q'`. It
+does not move raw index 40; index 40 remains at the nearby shell coordinate
+`P`.
 
 Immediately before the failing mouse event, the relevant coordinates in napari
 `(y, x)` order were:
@@ -559,6 +592,14 @@ corruption. The failed `.npz` artifact represents the transient in-memory row
 that napari attempted to triangulate. The overwrite warning in the original log
 does not by itself establish that this malformed candidate was persisted.
 
+The persisted four-hole topology and the minimized three-hole reproduction do
+not identify different geometric anchors. In the four-hole row, indices 40 and
+54 are both copies of the same shell anchor, with 54 occurring after the fourth
+hole. Removing that unrelated fourth-hole suffix leaves index 40 as the final
+shell separator. The minimized fixture therefore preserves the failing
+third-hole-anchor relationship while avoiding dependence on the mutable Zarr
+annotation.
+
 ## Related Vertex Mutation Findings
 
 The annotation widget exposes three relevant polygon vertex mutations:
@@ -724,6 +765,41 @@ The shared target invariant for all widget-owned polygon mutations is:
 > candidate before mutating the live layer. Applying an accepted candidate is
 > transactional. The mutation either commits a valid, successfully rendered
 > polygon state or leaves the previous accepted state unchanged.
+
+This contract has three cumulative parts. They address different failure modes
+and are not alternatives:
+
+1. **Encoding integrity is mandatory.** Harpy must update every coordinate
+   alias in the candidate before any live layer write or triangulation. No
+   `_data_view.edit(...)` call may receive an open ring or an unsynchronized
+   shell or hole anchor. This requirement applies even when the complete
+   synchronized candidate will subsequently fail geometry validation.
+2. **Geometry acceptance during editing is the chosen product policy.** A
+   gesture that starts from a valid polygon may commit only another valid
+   polygon. Harpy validates the complete synchronized candidate during the edit
+   and rejects invalid candidates without writing them to the live layer.
+   Save-time validation remains a final defense; it is not the first or only
+   geometry-acceptance point.
+3. **Rendering transaction safety is mandatory.** Passing Harpy/Shapely
+   validation does not guarantee that a rendering backend will triangulate the
+   candidate successfully. Harpy retains the previous accepted row or layer
+   baseline throughout the attempted write. If editing or rendering raises, it
+   restores that baseline and the interaction state instead of accepting the
+   candidate.
+
+The required order is therefore:
+
+```text
+synchronize the complete in-memory candidate
+    -> validate its encoded topology and geometry
+        -> invalid: reject without a live write
+        -> valid: attempt the live write transactionally
+            -> rendering succeeds: accept the candidate
+            -> rendering fails: restore the previous accepted state
+```
+
+In particular, synchronization alone is necessary but not sufficient, and
+geometric validation is not treated as proof that triangulation cannot fail.
 
 For a failure to restore the previous accepted state, the existing fail-loud
 policy applies: preserve both failures, mark the session unsafe, block saving
@@ -932,11 +1008,16 @@ slice.
 Build the smallest useful set of reusable, hardcoded fixtures:
 
 - retain `POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1` as the source for the
-  movement regression, or extract a clearly named shared fixture from it;
-- store the valid pre-drag encoded row, the duplicated-anchor indices 34 and
-  39, their accepted coordinate, and the failing target coordinate `Q'`
-  explicitly enough that later tests do not reconstruct them from the
-  temporary failure file or the full Zarr store;
+  movement regression, or extract a clearly named shared source fixture from
+  it; do not treat the unmodified polygon constant as the pre-drag row;
+- derive and expose one reusable hardcoded 41-vertex pre-drag row by assigning
+  `P` to shell-anchor group `(0, 16, 25, 33, 40)` and `Q` to third-hole-anchor
+  group `(34, 39)`;
+- name the regression roles explicitly: moved raw index 39, synchronized hole
+  alias 34, nearby terminal shell separator 40, accepted coordinate `Q`, and
+  failing target coordinate `Q'`;
+- validate the reconstructed pre-drag row in the fixture setup, and keep it
+  independent of the temporary failure files and full Zarr store;
 - add one clearly named valid concave simple-polygon row for which native
   deletion of a specified vertex produces a Shapely-invalid shortened row;
 - use a controlled vertex hit in the deletion characterization so the result
@@ -967,9 +1048,14 @@ Add passing characterizations of the two broken native behaviors which justify
 the later guards:
 
 - exercise the original napari direct callback with the hardcoded
-  near-coincident anchor regression, move only raw vertex 39 to `Q'`, and
-  assert the currently observed native Numba/VisPy triangulation exception and
-  its transient unsynchronized row state;
+  near-coincident anchor regression, use a controlled press hit of `(row 0,
+  raw vertex 39)`, move only raw vertex 39 to `Q'`, and assert the currently
+  observed native Numba/VisPy triangulation exception;
+- assert that the failed native move leaves index 34 at `Q`, index 39 at `Q'`,
+  index 40 at `P`, and the live row malformed according to Harpy's hole grammar;
+- assert that closing the failed native generator does not perform normal
+  release cleanup: `_moving_value` still identifies `(0, 39)` and `_is_moving`
+  remains true;
 - exercise native simple-polygon deletion with the hardcoded concave fixture,
   assert that napari reports no error, and assert that Harpy/Shapely rejects
   the shortened row which napari accepted;
@@ -1173,6 +1259,10 @@ The first delivery phase is complete when:
   `_data_view.edit(...)`, triangulation, or data-change emission;
 - `DELEGATE`, `GUARD`, and `REJECT` take the specified native or Harpy-owned
   gesture paths without a copied full `select(...)` implementation;
+- no live write or triangulation receives an unsynchronized shell or hole
+  anchor candidate;
+- starting from a valid polygon, an invalid synchronized candidate is rejected
+  during editing rather than retained until save time;
 - reproducing the exact vertex-39 movement does not leave an invalid row;
 - duplicated shell and hole anchors remain synchronized after every accepted
   move;
