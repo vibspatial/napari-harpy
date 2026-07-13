@@ -1637,6 +1637,14 @@ custom no-selection feature default with values from an existing row. Restoring
 features alone therefore does not guarantee the same state for subsequently
 drawn shapes.
 
+In particular, existing polygons retain their assigned source identities in
+`features`, while the source-identity value in `feature_defaults` must remain
+missing. Napari uses that default for the next newly drawn polygon; if recovery
+instead copied an existing identity into it, the new unsaved polygon could
+inherit another polygon's identity. `_AnnotationIdentityFeatureDefaultGuard`
+maintains the missing default during annotation, and Harpy assigns the new
+polygon a fresh stable identity when it is saved.
+
 Do not repurpose the hash-based `_ShapesAnnotationLayerSnapshot`, which is a
 dirty-state fingerprint rather than restorable layer data.
 
@@ -1765,6 +1773,10 @@ Required passing coverage is:
 - the complete restoration test uses a no-selection layer with custom feature
   defaults, proving that data/features rebuilding does not silently replace the
   defaults used for subsequently drawn shapes;
+- a focused assertion after recovery verifies that existing source-identity
+  feature rows are unchanged, the source-identity feature default remains
+  missing as required by `_AnnotationIdentityFeatureDefaultGuard`, and an
+  ordinary default such as `label` is restored to its pre-deletion value;
 - restored shortened-row data reconstructs the original private vertex-cache
   boundaries and supports correct hit testing;
 - a semantic-triangle whole-shape removal failure restores the removed row and
