@@ -1528,7 +1528,7 @@ Required passing coverage is:
   warning rather than the invalid-geometry warning.
 
 Combine cases when that keeps the setup and assertions clearer. Do not build a
-full deletion snapshot merely to make a failure test restore the layer, and do
+full deletion baseline merely to make a failure test restore the layer, and do
 not add an exhaustive matrix for every possible napari private failure site.
 
 #### Explicitly Deferred from Slice 4
@@ -1536,14 +1536,14 @@ not add an exhaustive matrix for every possible napari private failure site.
 Slice 4 did not add:
 
 - a shared movement/deletion transaction helper;
-- a complete deletion-layer recovery snapshot;
+- a complete deletion-layer recovery baseline;
 - field-by-field recovery of deletion geometry, features, styles, selection,
   mode, or private caches after an injected partial failure;
 - a persistent widget-level unsafe-session state or edit/save blocking callback;
 - automatic second-attempt rebuilding after movement restoration fails;
 - save or **Create holes** integration for a theoretical unsafe-session state.
 
-Slice 5 now owns the complete deletion-layer recovery snapshot and exact
+Slice 5 now owns the complete deletion-layer recovery baseline and exact
 deletion-state restoration. The other deferred items remain out of scope.
 
 At the end of Slice 4, the existing movement rollback and deletion
@@ -1593,24 +1593,77 @@ framework.
 
 #### Complete Pre-Deletion Baseline
 
-Capture one complete baseline before emitting `CHANGING`. It must contain deep
-copies of all state that the current replacement and removal helpers can change:
+Capture one complete baseline before emitting `CHANGING`. Use this exact focused
+type adjacent to the edit guard:
 
-- every geometry row and its shape type;
-- the complete features table, including source identity columns;
-- per-row edge colors, face colors, edge widths, and z-indices;
-- layer opacity and current edge, face, and width drawing defaults;
-- selected row indices and active mode.
+```python
+@dataclass(frozen=True)
+class _PolygonVertexDeletionBaseline:
+    """Restorable Shapes state captured before guarded vertex deletion."""
 
-Introduce one focused deletion-baseline type adjacent to the edit guard and
-reuse the existing Shapes-layer style capture machinery. Do not repurpose the
-hash-based `_ShapesAnnotationLayerSnapshot`, which is a dirty-state fingerprint
-rather than restorable layer data.
+    data: tuple[np.ndarray, ...]
+    shape_types: tuple[str, ...]
+    features: pd.DataFrame
+    feature_defaults: pd.DataFrame
+    style: _ShapesLayerStyleSnapshot
+    selected_data: frozenset[int]
+    mode: str
+```
 
-Private arrays such as `_data_view._vertices_index` are derived state. Do not
-copy them into the baseline. Rebuild them by restoring the public geometry rows
-and shape types through napari's full layer-data path. Tests must verify the
-resulting cache boundaries and hit testing.
+Capture the fields as follows:
+
+- `data`: a deep copy of every geometry row, preserving each row's dtype and
+  coordinate values;
+- `shape_types`: the exact type of every row, required to restore mixed-type
+  Shapes layers after whole-shape removal;
+- `features`: a deep copy of the complete row-aligned features table, including
+  source identity columns;
+- `feature_defaults`: a deep copy of napari's feature defaults used for newly
+  drawn shapes;
+- `style`: the existing `_ShapesLayerStyleSnapshot`, containing per-row edge
+  and face colors, edge widths, z-indices, opacity, and current edge, face, and
+  width drawing defaults;
+- `selected_data`: the exact selected-row set as a `frozenset`;
+- `mode`: the exact string returned by `layer.mode`.
+
+The frozen dataclass protects the baseline container, not the mutability of its
+NumPy arrays or DataFrames. Capture deep copies and write fresh copies during
+restoration so neither commit nor recovery can consume or mutate the retained
+baseline.
+
+`feature_defaults` is required even though the deletion helpers do not assign it
+directly. Rebuilding `layer.data` and then restoring `features` can replace a
+custom no-selection feature default with values from an existing row. Restoring
+features alone therefore does not guarantee the same state for subsequently
+drawn shapes.
+
+Do not repurpose the hash-based `_ShapesAnnotationLayerSnapshot`, which is a
+dirty-state fingerprint rather than restorable layer data.
+
+Use matching deletion-specific helpers:
+
+```python
+_capture_polygon_vertex_deletion_baseline(...)
+_restore_polygon_vertex_deletion_baseline(...)
+```
+
+Use `baseline` for the captured local value. This matches the movement path's
+terminology for the previously accepted state to which a failed edit returns.
+
+Deliberately exclude:
+
+- `_data_view._vertices_index`, because it is derived from public geometry and
+  shape types;
+- topology, highlight, and thumbnail state, because they are reparsed or
+  regenerated from restored public state;
+- the affected row and raw vertex indices, because `_VertexDeleteState` already
+  owns the event identity;
+- layer name, transform, visibility, blending, and editability, because guarded
+  deletion does not modify them.
+
+Rebuild private vertex caches by restoring the public geometry rows and shape
+types through napari's full layer-data path. Tests must verify the resulting
+cache boundaries and hit testing.
 
 If the complete baseline cannot be captured, propagate that unexpected capture
 error without emitting `CHANGING` or attempting the deletion. Do not misreport
@@ -1628,8 +1681,11 @@ For an accepted deletion:
    and invoke the delete-finished callback once.
 5. If any commit step raises, retain that application exception and restore the
    complete baseline under blocked intermediate `data` and `features` events.
-6. Refresh the restored layer so geometry, mesh, highlight, and derived vertex
-   caches correspond to the baseline.
+6. Restore geometry and shape types first, then features, mode, and selection.
+   Restore `feature_defaults` and current drawing styles after selection so
+   selection side effects cannot overwrite them. Restore row styles last.
+7. Refresh the restored layer so geometry, mesh, highlight, thumbnail, and
+   derived vertex caches correspond to the baseline.
 
 After successful restoration:
 
@@ -1646,7 +1702,7 @@ After successful restoration:
 The already-emitted `CHANGING` event cannot be retracted. A recovered failure
 therefore has `CHANGING` but no `CHANGED`. Intermediate restoration events must
 remain blocked so listeners do not observe the temporary candidate or the
-mechanical baseline rebuild as successful user edits.
+mechanical baseline restoration as successful user edits.
 
 #### Restoration Failure
 
@@ -1704,8 +1760,11 @@ restoration raise.
 Required passing coverage is:
 
 - a shortened-row failure injected after the real layer rebuild restores every
-  geometry row, shape type, feature and identity value, row style, opacity,
-  current draw default, selection, and mode;
+  geometry row, shape type, feature and identity value, feature default, row
+  style, opacity, current draw default, selection, and mode;
+- the complete restoration test uses a no-selection layer with custom feature
+  defaults, proving that data/features rebuilding does not silently replace the
+  defaults used for subsequently drawn shapes;
 - restored shortened-row data reconstructs the original private vertex-cache
   boundaries and supports correct hit testing;
 - a semantic-triangle whole-shape removal failure restores the removed row and
@@ -1783,8 +1842,8 @@ For both forms:
 Apply accepted insertion candidates with the same row-length-changing commit
 and rollback boundary as deletion.
 
-- capture the complete pre-insertion geometry, shape-type, feature, style,
-  selection, mode, opacity, and current-draw baseline;
+- capture the complete pre-insertion geometry, shape-type, feature,
+  feature-default, style, selection, mode, opacity, and current-draw baseline;
 - rebuild the affected row while preserving features, identity, styles,
   opacity, selection, mode, and current draw defaults;
 - verify topology, private vertex-cache boundaries, and hit testing;
@@ -1845,8 +1904,9 @@ The first delivery phase is complete when:
 - `_moving_value`, `_is_moving`, drag coordinates, selection, and highlight
   state are usable after movement rejection or successful restoration;
 - a shortened-row or whole-shape deletion commit failure restores the complete
-  pre-deletion geometry, shape types, features, styles, selection, mode,
-  opacity, current draw defaults, and derived vertex-cache consistency;
+  pre-deletion geometry, shape types, features, feature defaults, styles,
+  selection, mode, opacity, current draw defaults, and derived vertex-cache
+  consistency;
 - a successfully restored deletion failure emits `CHANGING` only, reports the
   renderer-specific deletion warning, and invokes no delete-finished callback;
 - a later valid deletion and movement can succeed after deletion recovery;
