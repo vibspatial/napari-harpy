@@ -115,3 +115,15 @@ def restore_triangulation_backend() -> Iterator[None]:
         settings.experimental.triangulation_backend = previous_settings_backend
         if get_backend() != previous_runtime_backend:
             set_backend(previous_runtime_backend)
+
+
+@pytest.fixture
+def numba_triangulation_backend(restore_triangulation_backend: None) -> None:
+    """Run a test with napari's settings and runtime backend set to Numba."""
+    from napari.settings import get_settings
+    from napari.utils.triangulation_backend import TriangulationBackend, get_backend, set_backend
+
+    settings = get_settings()
+    settings.experimental.triangulation_backend = TriangulationBackend.numba
+    if get_backend() != TriangulationBackend.numba:
+        set_backend(TriangulationBackend.numba)

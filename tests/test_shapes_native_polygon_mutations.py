@@ -19,18 +19,8 @@ from napari.layers import Shapes
 from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes import _shapes_utils
 from napari.layers.shapes._shapes_constants import Mode
-from napari.settings import get_settings
-from napari.utils.triangulation_backend import TriangulationBackend, get_backend, set_backend
 
 from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
-
-
-@pytest.fixture
-def numba_triangulation_backend(restore_triangulation_backend: None) -> None:
-    settings = get_settings()
-    settings.experimental.triangulation_backend = TriangulationBackend.numba
-    if get_backend() != TriangulationBackend.numba:
-        set_backend(TriangulationBackend.numba)
 
 
 def _make_direct_regression_layer() -> Shapes:

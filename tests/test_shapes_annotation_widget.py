@@ -10,6 +10,12 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import pytest
+from _shapes_regression_fixtures import (
+    TRIANGULATION_REGRESSION_FAILED_MOVE_COORDINATE,
+    TRIANGULATION_REGRESSION_HOLE_ANCHOR_INDICES,
+    TRIANGULATION_REGRESSION_MOVED_VERTEX_INDEX,
+    make_triangulation_regression_pre_drag_vertices,
+)
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Points, Shapes
 from napari.layers.base._base_constants import ActionType
@@ -308,38 +314,16 @@ def _polygon_hole_roundtrip_fixture() -> tuple[Polygon, Polygon]:
     return polygon_1, polygon_2
 
 
-def _direct_drag_callback_moving_vertex(
-    *,
-    moved_vertex_index: int,
-    moved_coordinate: np.ndarray,
-) -> Callable[[Shapes, object], object]:
-    """Return a deterministic fake for napari's direct vertex-drag callback."""
-    return _direct_drag_callback_moving_vertex_sequence(
-        moved_vertex_index=moved_vertex_index,
-        moved_coordinates=[moved_coordinate],
-    )
+def _direct_drag_callback_selecting_vertex(*, moved_vertex_index: int) -> Callable[[Shapes, object], object]:
+    """Return a native-press stand-in that must remain suspended on moves."""
 
-
-def _direct_drag_callback_moving_vertex_sequence(
-    *,
-    moved_vertex_index: int,
-    moved_coordinates: list[np.ndarray],
-) -> Callable[[Shapes, object], object]:
     def direct_drag_callback(layer: Shapes, event: object) -> object:
         layer._moving_value = (0, moved_vertex_index)
+        layer._drag_start = np.zeros(layer.ndim, dtype=float)
+        layer.selected_data = {0}
         yield "press"
-
-        move_index = 0
-        while getattr(event, "type", None) == "mouse_move":
-            moved_coordinate = moved_coordinates[min(move_index, len(moved_coordinates) - 1)]
-            vertices = np.asarray(layer.data[0], dtype=float).copy()
-            vertices[moved_vertex_index] = moved_coordinate
-            layer._data_view.edit(0, vertices)
-            layer.refresh()
-            move_index += 1
-            yield "move"
-
-        layer._moving_value = (None, None)
+        if getattr(event, "type", None) == "mouse_move":
+            raise AssertionError("Harpy resumed the native generator for a guarded polygon move.")
 
     return direct_drag_callback
 
@@ -358,14 +342,10 @@ def _install_direct_drag_callback_for_annotation_guard(
     layer: Shapes,
     *,
     moved_vertex_index: int,
-    moved_coordinate: np.ndarray,
 ) -> None:
     widget._annotation_edit_guard.disconnect()
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=moved_vertex_index,
-        moved_coordinate=moved_coordinate,
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=moved_vertex_index)
     widget._annotation_edit_guard.attach(layer)
     assert layer._drag_modes[Mode.DIRECT] is widget._annotation_edit_guard._wrapped_direct_callback
 
@@ -376,11 +356,15 @@ def _drag_annotation_vertex(
     vertex_index: int,
     moved_coordinate: np.ndarray,
 ) -> np.ndarray:
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(layer.data[0][vertex_index]))
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
     event.type = "mouse_release"
     try:
         next(drag)
@@ -1405,7 +1389,9 @@ def test_annotation_layer_edit_guard_space_key_uses_custom_branch_for_active_sup
     layer.mode = Mode.ADD_POLYGON
     event = SimpleNamespace(position=(0.0, 0.0), pos=np.asarray([0.0, 0.0]))
     layer._drag_modes[Mode.ADD_POLYGON](layer, event)
-    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(can_space_pan_draw=lambda candidate: candidate is layer)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        can_space_pan_draw=lambda candidate: candidate is layer
+    )
     guard.attach(layer)
 
     original_mouse_pan = layer.mouse_pan
@@ -1664,16 +1650,23 @@ def test_annotation_layer_edit_guard_disconnect_restores_active_space_pan_mouse_
     assert layer.mouse_pan is original_mouse_pan
 
 
-def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> None:
-    polygon, _ = _polygon_hole_roundtrip_fixture()
-    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
-    moved_coordinate = original_vertices[0] + np.asarray([1.0, 1.0])
-    layer = Shapes([original_vertices], shape_type="polygon")
+def test_annotation_layer_edit_guard_direct_drag_delegates_non_polygon_vertex() -> None:
+    layer = Shapes([np.asarray([[0.0, 0.0], [1.0, 1.0]])], shape_type="line")
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=0,
-        moved_coordinate=moved_coordinate,
-    )
+    native_moves = 0
+    native_released = False
+
+    def native_direct_drag(bound_layer: Shapes, event: object) -> Iterator[str]:
+        nonlocal native_moves, native_released
+        bound_layer._moving_value = (0, 0)
+        yield "press"
+        while event.type == "mouse_move":
+            native_moves += 1
+            yield "move"
+        native_released = True
+        bound_layer._moving_value = (None, None)
+
+    layer._drag_modes[Mode.DIRECT] = native_direct_drag
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press")
@@ -1682,6 +1675,34 @@ def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> N
     assert next(drag) == "press"
     event.type = "mouse_move"
     assert next(drag) == "move"
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    assert native_moves == 1
+    assert native_released is True
+    assert layer._moving_value == (None, None)
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_shell_anchor_group() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    moved_coordinate = original_vertices[0] + np.asarray([1.0, 1.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=0)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[0]))
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
     np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
@@ -1693,91 +1714,128 @@ def test_annotation_layer_edit_guard_direct_drag_syncs_shell_separator_group() -
     moved_coordinate = original_vertices[12] + np.asarray([1.0, 1.0])
     layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=12,
-        moved_coordinate=moved_coordinate,
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=12)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[12]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
     np.testing.assert_allclose(edited_vertices[[0, 5, 12]], np.repeat(moved_coordinate[None, :], 3, axis=0))
 
 
-def test_annotation_layer_edit_guard_direct_drag_syncs_hole_anchor_group() -> None:
+def test_annotation_layer_edit_guard_direct_drag_syncs_hole_anchor_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     moved_coordinate = original_vertices[6] + np.asarray([1.0, 1.0])
     layer = Shapes([original_vertices], shape_type="polygon")
+    written_rows: list[np.ndarray] = []
+    original_edit = layer._data_view.edit
+
+    def record_edit(row_index: int, vertices: np.ndarray, *args: object, **kwargs: object) -> None:
+        written_rows.append(np.asarray(vertices, dtype=float).copy())
+        original_edit(row_index, vertices, *args, **kwargs)
+
+    monkeypatch.setattr(layer._data_view, "edit", record_edit)
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=6,
-        moved_coordinate=moved_coordinate,
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=6)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[6]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
     np.testing.assert_allclose(edited_vertices[[6, 11]], np.repeat(moved_coordinate[None, :], 2, axis=0))
+    assert len(written_rows) == 1
+    np.testing.assert_allclose(written_rows[0][[6, 11]], np.repeat(moved_coordinate[None, :], 2, axis=0))
 
 
-def test_annotation_layer_edit_guard_direct_drag_leaves_non_anchor_vertex_local() -> None:
+def test_annotation_layer_edit_guard_direct_drag_leaves_non_anchor_vertex_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     moved_coordinate = original_vertices[8] + np.asarray([1.0, 0.0])
     layer = Shapes([original_vertices], shape_type="polygon")
+    data_events: list[object] = []
+    written_rows: list[np.ndarray] = []
+    thumbnail_updates = 0
+    layer.events.data.connect(data_events.append)
+    original_edit = layer._data_view.edit
+    original_update_thumbnail = layer._update_thumbnail
+
+    def record_edit(row_index: int, vertices: np.ndarray, *args: object, **kwargs: object) -> None:
+        written_rows.append(np.asarray(vertices, dtype=float).copy())
+        original_edit(row_index, vertices, *args, **kwargs)
+
+    def record_thumbnail_update(*args: object, **kwargs: object) -> None:
+        nonlocal thumbnail_updates
+        thumbnail_updates += 1
+        original_update_thumbnail(*args, **kwargs)
+
+    monkeypatch.setattr(layer._data_view, "edit", record_edit)
+    monkeypatch.setattr(layer, "_update_thumbnail", record_thumbnail_update)
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=8,
-        moved_coordinate=moved_coordinate,
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=8)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[8]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
     np.testing.assert_allclose(edited_vertices[8], moved_coordinate)
     np.testing.assert_allclose(edited_vertices[[0, 5, 12]], original_vertices[[0, 5, 12]])
     np.testing.assert_allclose(edited_vertices[[6, 11]], original_vertices[[6, 11]])
+    assert len(written_rows) == 1
+    assert len(data_events) == 1
+    assert data_events[0].action is ActionType.CHANGED
+    assert data_events[0].data_indices == (0,)
+    assert data_events[0].vertex_indices == (tuple(range(len(edited_vertices))),)
+    assert thumbnail_updates == 1
 
 
-def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_hole_vertex_once_per_drag() -> None:
+def test_annotation_layer_edit_guard_direct_drag_rejects_invalid_hole_vertex_once_per_drag() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     invalid_coordinates = [np.asarray([10_000.0, 10_000.0]), np.asarray([20_000.0, 20_000.0])]
     layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex_sequence(
-        moved_vertex_index=8,
-        moved_coordinates=invalid_coordinates,
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=8)
     warnings: list[str] = []
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[8]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
-    assert next(drag) == "move"
+    event.position = tuple(invalid_coordinates[0])
+    assert next(drag) is None
+    event.position = tuple(invalid_coordinates[1])
+    assert next(drag) is None
     event.type = "mouse_release"
     with pytest.raises(StopIteration):
         next(drag)
@@ -1787,25 +1845,26 @@ def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_hole_vertex_
     assert layer._moving_value == (None, None)
 
 
-def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_hole_anchor() -> None:
+def test_annotation_layer_edit_guard_direct_drag_rejects_invalid_hole_anchor() -> None:
     polygon, _ = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     invalid_coordinate = np.asarray([10_000.0, 10_000.0])
     layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex_sequence(
-        moved_vertex_index=6,
-        moved_coordinates=[invalid_coordinate],
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=6)
     warnings: list[str] = []
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[6]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(invalid_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
     np.testing.assert_allclose(edited_vertices, original_vertices)
@@ -1813,7 +1872,112 @@ def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_hole_anchor(
     assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
 
 
-def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_simple_polygon_to_latest_valid() -> None:
+def test_annotation_layer_edit_guard_prevalidates_exact_vertex_39_regression_and_allows_next_drag(
+    monkeypatch: pytest.MonkeyPatch,
+    numba_triangulation_backend: None,
+) -> None:
+    original_vertices = make_triangulation_regression_pre_drag_vertices()
+    layer = Shapes([original_vertices], shape_type="polygon")
+    # Napari may normalize coordinate precision while constructing the shape;
+    # the transaction baseline is the actual accepted live row after that step.
+    original_vertices = np.asarray(layer.data[0], dtype=float).copy()
+    layer.mode = Mode.DIRECT
+    layer.selected_data = {0}
+    warnings: list[str] = []
+    data_actions: list[ActionType] = []
+    decoded_rows: list[np.ndarray] = []
+    hit_vertex_index = TRIANGULATION_REGRESSION_MOVED_VERTEX_INDEX
+    layer.events.data.connect(lambda event: data_actions.append(event.action))
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, hit_vertex_index))
+
+    original_decode = shapes_annotation_edit_guard_module.napari_polygon_vertices_to_shapely_polygon
+
+    def record_decoded_row(vertices: np.ndarray) -> Polygon:
+        decoded_rows.append(np.asarray(vertices, dtype=float).copy())
+        return original_decode(vertices)
+
+    monkeypatch.setattr(
+        shapes_annotation_edit_guard_module,
+        "napari_polygon_vertices_to_shapely_polygon",
+        record_decoded_row,
+    )
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+
+    original_edit = layer._data_view.edit
+    original_set_meshes = layer._data_view.shapes[0]._set_meshes
+
+    def fail_edit(*args: object, **kwargs: object) -> None:
+        raise AssertionError("The invalid synchronized candidate reached `_data_view.edit(...)`.")
+
+    def fail_triangulation(*args: object, **kwargs: object) -> None:
+        raise AssertionError("The invalid synchronized candidate reached triangulation.")
+
+    monkeypatch.setattr(layer._data_view, "edit", fail_edit)
+    monkeypatch.setattr(layer._data_view.shapes[0], "_set_meshes", fail_triangulation)
+
+    event = SimpleNamespace(
+        type="mouse_press",
+        position=tuple(original_vertices[TRIANGULATION_REGRESSION_MOVED_VERTEX_INDEX]),
+        modifiers=(),
+    )
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) is None
+    event.type = "mouse_move"
+    event.position = TRIANGULATION_REGRESSION_FAILED_MOVE_COORDINATE
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    synchronized_candidate = decoded_rows[-1]
+    np.testing.assert_array_equal(
+        synchronized_candidate[list(TRIANGULATION_REGRESSION_HOLE_ANCHOR_INDICES)],
+        np.repeat(
+            np.asarray(TRIANGULATION_REGRESSION_FAILED_MOVE_COORDINATE)[None, :],
+            len(TRIANGULATION_REGRESSION_HOLE_ANCHOR_INDICES),
+            axis=0,
+        ),
+    )
+    np.testing.assert_array_equal(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+    assert data_actions == []
+    assert layer._moving_value == (None, None)
+    assert layer._is_moving is False
+
+    # The rejected regression gesture must not poison the next direct drag.
+    monkeypatch.setattr(layer._data_view, "edit", original_edit)
+    monkeypatch.setattr(layer._data_view.shapes[0], "_set_meshes", original_set_meshes)
+    hit_vertex_index = 1
+    valid_coordinate = original_vertices[1] + np.asarray([1.0, 0.0])
+    event = SimpleNamespace(
+        type="mouse_press",
+        position=tuple(original_vertices[1]),
+        modifiers=(),
+    )
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) is None
+    event.type = "mouse_move"
+    event.position = tuple(valid_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    np.testing.assert_array_equal(np.asarray(layer.data[0], dtype=float)[1], valid_coordinate)
+    assert data_actions == [ActionType.CHANGED]
+    assert layer._moving_value == (None, None)
+
+
+def test_annotation_layer_edit_guard_direct_drag_rejects_invalid_simple_polygon_after_valid_move() -> None:
+    """Keep an earlier accepted move when a later move is invalid.
+
+    Move one vertex first to a valid coordinate, then propose an invalid
+    coordinate during the same drag. The invalid candidate must not replace or
+    discard the last accepted row. On release, retain that earlier valid edit,
+    warn once, emit one ``CHANGED`` event for the surviving mutation, and clear
+    napari's temporary moving state.
+    """
     original_vertices = np.asarray(
         [
             [0.0, 0.0],
@@ -1826,29 +1990,174 @@ def test_annotation_layer_edit_guard_direct_drag_rolls_back_invalid_simple_polyg
     valid_coordinate = np.asarray([0.0, 11.0])
     invalid_coordinate = np.asarray([20.0, 0.0])
     layer = Shapes([original_vertices], shape_type="polygon")
+    data_actions: list[ActionType] = []
+    layer.events.data.connect(lambda event: data_actions.append(event.action))
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex_sequence(
-        moved_vertex_index=1,
-        moved_coordinates=[valid_coordinate, invalid_coordinate],
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=1)
     warnings: list[str] = []
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[1]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(valid_coordinate)
+    assert next(drag) is None
     accepted_vertices = np.asarray(layer.data[0], dtype=float).copy()
     np.testing.assert_allclose(accepted_vertices[1], valid_coordinate)
-    assert next(drag) == "move"
+    event.position = tuple(invalid_coordinate)
+    assert next(drag) is None
     event.type = "mouse_release"
     with pytest.raises(StopIteration):
         next(drag)
 
     np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), accepted_vertices)
     assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+    assert data_actions == [ActionType.CHANGED]
+    assert layer._moving_value == (None, None)
+
+
+def test_annotation_layer_edit_guard_direct_drag_syncs_closed_simple_polygon_endpoints() -> None:
+    original_vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0], [0.0, 0.0]],
+        dtype=float,
+    )
+    moved_coordinate = np.asarray([-1.0, 0.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=0)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[0]))
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    edited_vertices = np.asarray(layer.data[0], dtype=float)
+    np.testing.assert_array_equal(edited_vertices[[0, -1]], np.repeat(moved_coordinate[None, :], 2, axis=0))
+    _ = napari_polygon_vertices_to_shapely_polygon(edited_vertices)
+
+
+def test_annotation_layer_edit_guard_direct_drag_rejects_anchor_topology_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=8)
+    warnings: list[str] = []
+
+    def fail_edit(*args: object, **kwargs: object) -> None:
+        raise AssertionError("A topology-changing candidate reached the live row.")
+
+    monkeypatch.setattr(layer._data_view, "edit", fail_edit)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[8]))
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    event.position = tuple(original_vertices[0])
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    np.testing.assert_array_equal(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+
+
+def test_annotation_layer_edit_guard_direct_drag_noop_does_not_write_or_emit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]],
+        dtype=float,
+    )
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=1)
+    data_actions: list[ActionType] = []
+    layer.events.data.connect(lambda event: data_actions.append(event.action))
+
+    def fail_edit(*args: object, **kwargs: object) -> None:
+        raise AssertionError("An unchanged polygon candidate reached `_data_view.edit(...)`.")
+
+    def fail_thumbnail(*args: object, **kwargs: object) -> None:
+        raise AssertionError("A no-op polygon drag updated the thumbnail.")
+
+    monkeypatch.setattr(layer._data_view, "edit", fail_edit)
+    monkeypatch.setattr(layer, "_update_thumbnail", fail_thumbnail)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[1]))
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    np.testing.assert_array_equal(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert data_actions == []
+    assert layer._is_moving is False
+
+
+def test_annotation_layer_edit_guard_direct_drag_restores_after_partial_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]],
+        dtype=float,
+    )
+    moved_coordinate = np.asarray([0.0, 11.0])
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=1)
+    warnings: list[str] = []
+    data_actions: list[ActionType] = []
+    written_rows: list[np.ndarray] = []
+    layer.events.data.connect(lambda event: data_actions.append(event.action))
+    original_edit = layer._data_view.edit
+
+    def fail_after_first_write(row_index: int, vertices: np.ndarray, *args: object, **kwargs: object) -> None:
+        written_rows.append(np.asarray(vertices, dtype=float).copy())
+        original_edit(row_index, vertices, *args, **kwargs)
+        if len(written_rows) == 1:
+            raise RuntimeError("simulated failure after the candidate row was written")
+
+    monkeypatch.setattr(layer._data_view, "edit", fail_after_first_write)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[1]))
+
+    drag = layer._drag_modes[Mode.DIRECT](layer, event)
+    assert next(drag) == "press"
+    event.type = "mouse_move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    assert len(written_rows) == 2
+    np.testing.assert_array_equal(written_rows[0][1], moved_coordinate)
+    np.testing.assert_array_equal(written_rows[1], original_vertices)
+    np.testing.assert_array_equal(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+    assert data_actions == []
+    assert layer._is_moving is False
     assert layer._moving_value == (None, None)
 
 
@@ -1861,24 +2170,25 @@ def test_annotation_layer_edit_guard_direct_drag_warns_for_already_invalid_polyg
     moved_coordinate = invalid_vertices[6] + np.asarray([1.0, 1.0])
     layer = Shapes([invalid_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=6,
-        moved_coordinate=moved_coordinate,
-    )
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=6)
     warnings: list[str] = []
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(invalid_vertices[6]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
-    np.testing.assert_allclose(edited_vertices[6], moved_coordinate)
-    np.testing.assert_allclose(edited_vertices[9], invalid_vertices[9])
+    np.testing.assert_allclose(edited_vertices, invalid_vertices)
     assert warnings == [shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING]
+    assert layer._moving_value == (None, None)
 
 
 def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topology() -> None:
@@ -1887,22 +2197,25 @@ def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topolo
     moved_coordinate = np.asarray([1234.0, 2345.0])
     layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
-    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_moving_vertex(
-        moved_vertex_index=0,
-        moved_coordinate=moved_coordinate,
-    )
-    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=0)
+    warnings: list[str] = []
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
     guard.attach(layer)
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[0]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(moved_coordinate)
+    assert next(drag) is None
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
 
     edited_vertices = np.asarray(layer.data[0], dtype=float)
-    np.testing.assert_allclose(edited_vertices[0], moved_coordinate)
-    np.testing.assert_allclose(edited_vertices[5], original_vertices[5])
+    np.testing.assert_allclose(edited_vertices, original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING]
+    assert layer._moving_value == (None, None)
 
 
 def test_annotation_layer_edit_guard_vertex_remove_delegates_when_no_vertex(monkeypatch) -> None:
@@ -2491,14 +2804,14 @@ def test_shapes_annotation_widget_invalid_drag_warning_clears_after_release(
         widget,
         layer,
         moved_vertex_index=8,
-        moved_coordinate=np.asarray([10_000.0, 10_000.0]),
     )
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[8]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = (10_000.0, 10_000.0)
+    assert next(drag) is None
 
     status = _status_text(widget)
     assert "Edit Rejected" in status
@@ -2513,7 +2826,7 @@ def test_shapes_annotation_widget_invalid_drag_warning_clears_after_release(
     assert shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING not in status
 
 
-def test_shapes_annotation_widget_already_invalid_drag_warning_does_not_clear_after_release(
+def test_shapes_annotation_widget_already_invalid_drag_warning_clears_after_rejected_release(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -2532,22 +2845,22 @@ def test_shapes_annotation_widget_already_invalid_drag_warning_does_not_clear_af
         widget,
         layer,
         moved_vertex_index=6,
-        moved_coordinate=invalid_vertices[6] + np.asarray([1.0, 1.0]),
     )
-    event = SimpleNamespace(type="mouse_press")
+    event = SimpleNamespace(type="mouse_press", position=tuple(invalid_vertices[6]))
 
     drag = layer._drag_modes[Mode.DIRECT](layer, event)
     assert next(drag) == "press"
     event.type = "mouse_move"
-    assert next(drag) == "move"
+    event.position = tuple(invalid_vertices[6] + np.asarray([1.0, 1.0]))
+    assert next(drag) is None
 
     event.type = "mouse_release"
     with pytest.raises(StopIteration):
         next(drag)
 
     status = _status_text(widget)
-    assert "Edit Rejected" in status
-    assert shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING in status
+    assert "Annotation Layer Ready" in status
+    assert shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING not in status
 
 
 def test_shapes_annotation_widget_annotation_edit_warning_uses_generic_title(qtbot) -> None:
@@ -3392,7 +3705,6 @@ def test_shapes_annotation_widget_edit_existing_shell_anchor_edit_saves_and_relo
         widget,
         layer,
         moved_vertex_index=0,
-        moved_coordinate=moved_coordinate,
     )
 
     edited_vertices = _drag_annotation_vertex(layer, vertex_index=0, moved_coordinate=moved_coordinate)
@@ -3466,7 +3778,6 @@ def test_shapes_annotation_widget_adopted_native_hole_anchor_edit_saves_and_relo
         widget,
         adopted_layer,
         moved_vertex_index=6,
-        moved_coordinate=moved_coordinate,
     )
 
     edited_vertices = _drag_annotation_vertex(adopted_layer, vertex_index=6, moved_coordinate=moved_coordinate)

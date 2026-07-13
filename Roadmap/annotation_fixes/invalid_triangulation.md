@@ -3,8 +3,9 @@
 ## Status
 
 Investigated and reproduced. Slice 1's passing native characterizations and
-reusable regression fixtures are implemented. No production fix has been
-implemented yet.
+reusable regression fixtures are implemented. Slice 2's prevalidated,
+transactional direct-polygon movement guard is also implemented. Deletion and
+the shared recovery/unsafe-session work remain in Slices 3 and 4.
 
 ## Context
 
@@ -1081,7 +1082,7 @@ already covered. Widget-level fixed-behavior assertions belong to Slices 2–4:
 
 ### Slice 2: Prevalidated Transactional Polygon Moves
 
-Status: specified; not yet implemented.
+Status: implemented.
 
 Implement the chosen native-press/Harpy-move hybrid without copying napari's
 complete `select(...)` generator. Slice 2 owns guarded polygon movement from
