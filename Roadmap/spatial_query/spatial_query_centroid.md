@@ -492,6 +492,12 @@ which instance is bound to an observation invalidates the region. Including the
 labels name domain-separates otherwise identical bindings in different regions.
 The digest avoids storing a potentially enormous binding list in uns.
 
+Instance-ID normalization is numeric only. Positive integral scalars and finite
+integer-like real scalars such as 1.0 normalize to the same canonical integer.
+Booleans, strings such as "1", missing values, non-finite values, zero, negative
+values, and fractional values are rejected. Observation names remain exact UTF-8
+row identities; they are not trimmed or numerically normalized.
+
 Normal AnnData slicing/reordering must preserve obsm alignment. Unsupported
 external mutations that break AnnData's alignment guarantees are outside the
 contract.
@@ -550,8 +556,11 @@ Run behavior:
 - stale: recalculate and atomically replace only the selected region, then
   query;
 - invalid: report the pair-wide mismatch, calculate the selected region, and
-  rebuild the managed matrix/metadata pair. Other region entries are preserved
-  only when they remain valid against the shared matrix and table.
+  rebuild the managed matrix/metadata pair. The rebuild is conservative: an
+  existing region is preserved only when its coordinates and metadata can be
+  fully substantiated against the shared matrix, current table, and current
+  source signature. If pair-wide inconsistency prevents that proof, rebuild a
+  selected-region-only pair rather than carrying the entry forward.
 
 The widget shows the current state before Run, including First query will
 calculate centroids when appropriate.
@@ -1592,6 +1601,175 @@ Deliverables:
   integration;
 - fixtures and tests for single- and multi-region missing, reusable, partial,
   stale, region-mismatched, and pair-wide-invalid states.
+
+#### Slice 1a typed API
+
+The public contracts live in `core/spatial_query/models.py`, and the operations
+that build, parse, inspect, and install them live in
+`core/spatial_query/canonical.py`. Stable consumers import the intentional
+exports from `napari_harpy.core.spatial_query` rather than either implementation
+module directly.
+
+Use string enums for cache state, installation action, and mismatch code:
+
+    CanonicalCacheState = absent | partial | valid | stale | invalid
+    CanonicalInstallAction = create | extend | refresh | rebuild
+    CanonicalMismatchCode = a closed set of stable, machine-readable reasons
+
+Mismatch codes, rather than human-readable messages, drive tests and controller
+behavior. Pair-wide versus region-local scope is represented explicitly on each
+mismatch.
+
+The immutable value contracts are conceptually:
+
+    CanonicalSourceSignature:
+        labels_name
+        source_scale = "scale0"
+        dims_yx
+        shape_yx
+        dtype
+
+    CanonicalTableSignature:
+        labels_name
+        region_key
+        instance_key
+        n_obs
+        row_identity_digest
+
+    CanonicalRegionBindings:
+        signature: CanonicalTableSignature
+        row_positions
+        obs_names
+        instance_ids
+
+    CanonicalRegionMetadata:
+        source_signature: CanonicalSourceSignature
+        table_signature: CanonicalTableSignature
+        algorithm_version
+        generated_by_package or None
+        generated_by_version or None
+        generated_at or None
+
+    CanonicalMetadata:
+        schema_version
+        region_key
+        instance_key
+        regions: mapping[str, CanonicalRegionMetadata]
+
+    CanonicalCacheMismatch:
+        code: CanonicalMismatchCode
+        scope: pair | region
+        region or None
+        bounded user-facing detail or None
+
+    CanonicalCacheReport:
+        state: CanonicalCacheState
+        selected_region
+        metadata or None
+        source_signature
+        bindings: CanonicalRegionBindings
+        mismatches: tuple[CanonicalCacheMismatch, ...]
+        valid_regions
+
+    CanonicalInstallationPayload:
+        table_name
+        labels_name
+        instance_ids
+        centers_xy
+        source_signature
+        table_signature
+
+    CanonicalInstallationResult:
+        table_name
+        labels_name
+        action: CanonicalInstallAction
+        previous_state: CanonicalCacheState
+        n_installed_rows
+        mismatches: tuple[CanonicalCacheMismatch, ...]
+        changed_paths
+
+`CanonicalCacheReport` is both the non-mutating inspector result and the typed
+mismatch report; do not add a second inspection-result wrapper with the same
+information. `CanonicalRegionBindings` arrays and installation-payload arrays
+are normalized eager NumPy arrays and are made read-only at the contract
+boundary. The metadata regions mapping is defensively copied and exposed as a
+read-only mapping rather than retaining a caller-owned mutable dictionary.
+
+Schema-v1 constants are not configurable dataclass fields. `obsm_key`, axes,
+matrix dtype, source element type, scale, coordinate-frame type, calculation
+method, weighting, background value, and pixel-coordinate convention are
+written by the builder and required exactly by the strict parser. The typed
+metadata therefore represents variable data without allowing callers to
+construct unsupported calculation semantics. Provenance remains optional and
+does not participate in cache validity.
+
+The public operation surface is:
+
+    build_canonical_source_signature(sdata, labels_name)
+        -> CanonicalSourceSignature
+
+    build_canonical_region_bindings(table, table_metadata, labels_name)
+        -> CanonicalRegionBindings
+
+    build_row_identity_digest(labels_name, obs_names, instance_ids)
+        -> str
+
+    build_canonical_metadata(...)
+        -> CanonicalMetadata
+
+    parse_canonical_metadata(value)
+        -> CanonicalMetadata
+
+    canonical_metadata_to_storage(metadata)
+        -> dict[str, object]
+
+    inspect_canonical_cache(sdata, *, table_name, labels_name)
+        -> CanonicalCacheReport
+
+    build_canonical_installation_payload(...)
+        -> CanonicalInstallationPayload
+
+    install_canonical_cache(sdata, payload)
+        -> CanonicalInstallationResult
+
+The exact builder keyword layout may evolve during implementation, but these
+operation boundaries and return contracts are stable. Parsing and inspection
+must not mutate AnnData, SpatialData, or stored metadata. In particular, the
+inspector must not call an existing helper through a code path that normalizes
+SpatialData table attrs in place.
+
+`CanonicalInstallationPayload` deliberately carries instance IDs rather than
+authoritative table row positions. Immediately before installation, the
+installer rebuilds the current region bindings, verifies the source and table
+signatures, and maps payload instance IDs onto current row positions. A normal
+AnnData row reorder can therefore complete safely, while a changed
+observation-to-instance binding rejects the payload.
+
+The installer derives its action from a fresh inspection rather than trusting
+the state observed before calculation:
+
+- absent produces create;
+- partial produces extend;
+- stale produces refresh;
+- invalid produces rebuild;
+- valid is reused by the caller and normally does not reach installation;
+  forced recalculation of a valid region produces refresh.
+
+Before the first assignment, the installer constructs and validates the
+complete candidate matrix and metadata registry in local values. An internal,
+non-public pair snapshot records whether each managed path existed and its
+complete prior value. If either assignment fails, rollback restores both exact
+prior path states, including absence. Only a successful installation returns
+the two changed component paths.
+
+Reuse existing core types only where their contracts match. In particular,
+`SpatialDataTableMetadata` remains the shared linkage value type. The canonical
+binding validator adds the stricter selected-region rules required here.
+Existing general feature-matrix normalization is not reused for
+`spatial_canonical`, because it permits sparse matrices, one-dimensional
+reshaping, and dtype coercion that the canonical schema must reject. A pure
+table-metadata reader may be factored from the existing SpatialData helpers so
+the inspector does not trigger their current in-place normalization behavior.
 
 Exit criteria:
 
