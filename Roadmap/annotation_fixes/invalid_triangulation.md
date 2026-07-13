@@ -1266,32 +1266,213 @@ framework.
 
 ### Slice 3: Guard Every Polygon Vertex Deletion
 
+Status: specified; not implemented.
+
 Extend the existing `Mode.VERTEX_REMOVE` wrapper from hole-bearing polygons to
-all polygon rows.
+all polygon rows owned by the annotation widget. Slice 3 owns hit
+classification, candidate construction, validation, successful row rebuilds,
+and whole-shape removal. It completes normal-path deletion prevalidation;
+forced rendering-failure recovery remains in Slice 4.
 
-- capture the source row and the complete restorable layer state before
-  mutation;
-- use `delete_napari_polygon_vertex(...)` for hole-bearing rows;
-- construct and Shapely-validate simple-polygon deletion candidates in memory;
-- preserve intentional whole-shape removal at the minimum vertex count;
-- reject invalid candidates before emitting `ActionType.CHANGING`;
-- rebuild row-length-changing accepted candidates while preserving features,
-  identity, styles, opacity, selection, mode, and current draw defaults;
-- verify the rebuilt private vertex cache and hit-test indices;
-- emit `ActionType.CHANGED` and the delete-finished callback only after the
-  complete commit succeeds;
-- never fall back to napari's raw polygon deletion for a valid widget-owned
-  polygon row.
+#### Hit Test and Three-Way Routing
 
-Use the Slice 1 concave fixture to require that the same deletion rejected by
-Harpy/Shapely is rejected by the completed widget path without mutation or data
-events. Retain the existing hole-bearing cases, and make the intended boundary
-semantics explicit in tests: removing a vertex from a minimal hole removes the
-hole rather than the polygon row, while deleting from a polygon at napari's
-minimum vertex threshold preserves the deliberate whole-shape removal path.
+Call `layer.get_value(event.position, world=True)` once and classify the result
+before invoking any mutation path. Deletion needs the same explicit ownership
+boundary as movement, even though it is a one-shot callback rather than a drag
+generator:
 
-This slice completes normal-path prevalidation for deletion. Rendering-failure
-recovery is completed in Slice 4.
+- `DELEGATE`: no raw vertex was hit, or the hit resolves to a valid
+  non-polygon row whose native behavior Harpy does not own. Call napari's
+  original `vertex_remove(...)` callback unchanged.
+- `GUARD`: the hit contains in-bounds integer row and raw-vertex indices, the
+  row is a polygon, its vertices can be copied as a finite floating array, its
+  encoded topology can be parsed, and the complete starting row decodes as
+  valid Shapely geometry. Capture the copied row and topology before
+  constructing a candidate.
+- `REJECT`: a raw-vertex hit cannot be safely resolved, or it resolves to a
+  polygon row with an invalid index, malformed encoding, non-numeric data, or
+  already-invalid geometry. Warn without mutation and do not call napari's raw
+  deletion callback.
+
+Only a clearly non-polygon or no-vertex interaction may delegate. Failure to
+capture a polygon deletion safely must not silently expose the row to native
+unvalidated deletion. A small deletion-specific route result is sufficient;
+do not introduce a generic gesture router or copy napari's complete
+`vertex_remove(...)` implementation.
+
+`GUARD` and `REJECT` are Harpy-owned from classification through return. A
+rejected deletion emits no data event, performs no refresh or thumbnail update,
+and does not invoke the delete-finished callback.
+
+#### Hole-Bearing Candidate Construction
+
+For a valid row whose cached topology contains hole-anchor groups:
+
+1. Pass the copied starting row, cached topology, and clicked raw index to
+   `delete_napari_polygon_vertex(...)`.
+2. Let that helper handle ordinary shell and hole vertices, synchronized shell
+   and hole anchors, separator-index shifts, and removal of an entire minimal
+   hole.
+3. Treat the returned vertices and topology as an in-memory candidate only.
+   Require the candidate's parsed topology to equal the helper's returned
+   topology and decode the complete row through
+   `napari_polygon_vertices_to_shapely_polygon(...)` before any live mutation.
+4. Reject any helper, topology, or Shapely error without emitting
+   `ActionType.CHANGING`.
+
+Deleting any raw vertex from a minimal three-vertex hole removes that complete
+hole and its encoding aliases; it does not remove the polygon row. A shell
+deletion which cannot retain a valid hole-bearing polygon is rejected rather
+than converted implicitly into whole-shape removal.
+
+#### Simple-Polygon Candidate Construction
+
+Simple rows may be implicitly closed:
+
+```text
+A, B, C, D
+```
+
+or explicitly closed, as produced by Harpy's Shapely encoder:
+
+```text
+A, B, C, D, A
+```
+
+For an explicitly closed row, raw indices `0` and `last` are aliases of one
+semantic shell vertex. Compute the semantic shell-vertex count as
+`len(vertices) - 1` for an explicitly closed row and `len(vertices)` otherwise.
+
+If deleting one semantic vertex would leave at least three shell vertices:
+
+- delete an ordinary vertex from an implicitly closed row with one in-memory
+  `np.delete(...)`;
+- delete an ordinary non-endpoint vertex from an explicitly closed row while
+  retaining its existing closing alias;
+- when raw index `0` or `last` is clicked on an explicitly closed row, delete
+  the shared semantic vertex rather than only one duplicate coordinate, then
+  reclose the shortened ring on its new first vertex.
+
+The endpoint rule prevents deletion of one closure copy from becoming a
+geometric no-op. For example:
+
+```text
+A, B, C, D, A
+    delete A
+B, C, D, B
+```
+
+After construction, require the candidate to remain a simple-polygon encoding
+with the same implicit or explicit closure form and validate it through
+`napari_polygon_vertices_to_shapely_polygon(...)`. Reject coordinate
+collisions, malformed rows, zero-area results, self-intersections, and all
+other invalid Shapely candidates before a live write.
+
+#### Semantic Triangle and Whole-Shape Removal
+
+If the starting simple polygon has exactly three semantic shell vertices,
+deleting any of them removes the complete shape row. Apply this rule to both
+representations:
+
+```text
+A, B, C       # implicit triangle
+A, B, C, A    # explicitly closed triangle
+```
+
+This preserves the intent of napari's minimum-polygon behavior without copying
+its raw-length bug. Napari removes a row only when its raw row length is three;
+therefore it mishandles Harpy's four-coordinate closed triangle by either
+removing only one closure alias or accepting a row with two unique vertices.
+Slice 3 must use semantic vertices and remove the row directly instead.
+
+Whole-shape removal is a deliberate valid operation, not an invalid-candidate
+fallback. It applies only after a valid simple triangle has been captured. A
+malformed or already-invalid short row takes `REJECT`.
+
+#### Successful Commit and Layer Preservation
+
+Candidate validation must complete before emitting any data event. For an
+accepted shortened-row candidate:
+
+1. Emit one native-compatible `ActionType.CHANGING` event with the original
+   row index and clicked raw vertex index.
+2. Replace the affected row through a Harpy-owned layer rebuild, because a
+   low-level row-shortening `_data_view.edit(...)` can leave napari's private
+   vertex-boundary cache stale.
+3. Block intermediate `data` and `features` events from the bulk data setter;
+   the guarded delete owns the public event pair.
+4. Preserve every unaffected data row and shape type, the complete features
+   table and source identities, per-row edge and face colors, edge widths,
+   z-indices, layer opacity, current draw defaults, active mode, and selected
+   rows.
+5. Leave `_data_view._vertices_index` consistent with the rebuilt row lengths
+   so later hit testing cannot report a stale raw index.
+6. Refresh the layer, then emit one `ActionType.CHANGED` with the same payload
+   and invoke the delete-finished callback exactly once.
+
+For semantic-triangle whole-shape removal, use the same Harpy-owned rebuild
+principle but remove the corresponding entries from every row-aligned
+structure:
+
+- remove the polygon data row and shape type;
+- remove its feature/source-identity row;
+- remove its edge color, face color, edge width, and z-index rows;
+- preserve opacity and current draw defaults;
+- remove the deleted row from selection and decrement selected indices above
+  it;
+- preserve the active mode and rebuild the private vertex-boundary cache for
+  all surviving rows.
+
+The successful whole-shape event payload still uses the original row and raw
+vertex indices, matching napari's `vertex_remove(...)` contract. Refresh/update
+the thumbnail, then emit `CHANGED` and call the delete-finished callback only
+after the complete row removal succeeds.
+
+If a rebuild raises, do not emit `CHANGED` or invoke the completion callback.
+Slice 3 does not add a generic recovery framework or claim that a partially
+failed rebuild is recoverable. Slice 4 captures and restores the complete
+pre-commit layer baseline, tests forced renderer failures, and blocks an unsafe
+session if restoration also fails.
+
+#### Slice 3 Test Matrix
+
+Adapt existing deletion tests where they already cover the contract. Required
+passing coverage is:
+
+- no-vertex and valid non-polygon hits remain delegated to napari;
+- malformed, already-invalid, non-numeric, and invalid-index polygon hits are
+  rejected without native fallback, mutation, data events, refresh, or the
+  completion callback;
+- the Slice 1 concave simple-polygon fixture rejects the characterized
+  invalid deletion before any live write or triangulation and leaves the row
+  unchanged;
+- valid ordinary deletion succeeds for an implicitly closed simple polygon;
+- valid ordinary deletion succeeds for an explicitly closed simple polygon
+  and preserves its closing alias;
+- deleting raw index `0` or `last` from an explicitly closed simple polygon
+  removes the one semantic endpoint, recloses the row, and does not become a
+  no-op;
+- deleting any vertex from representative implicit and explicitly closed
+  semantic triangles removes the complete polygon row;
+- whole-shape removal from a multi-row layer removes and shifts the correct
+  feature, identity, style, and selection rows while preserving mode, opacity,
+  current draw defaults, and surviving geometry;
+- existing hole-bearing ordinary-shell, ordinary-hole, shell-anchor,
+  hole-anchor, and terminal-separator deletions continue to use the topology
+  helper;
+- deleting from a minimal hole removes the hole but retains the polygon row;
+- a successful shortened-row rebuild preserves features and styles, produces
+  correct private vertex-cache boundaries, and supports a correct subsequent
+  hit test and deletion;
+- each accepted deletion emits exactly `CHANGING` then `CHANGED` with the
+  native payload and calls the completion callback once; every rejected
+  deletion emits neither event and does not call the callback;
+- a successful deletion after a rejected deletion clears the stale widget
+  warning through the existing completion callback.
+
+Do not add forced edit, rebuild, triangulation, or restoration failures to this
+slice; those are Slice 4 recovery tests. Do not add insertion coverage or a
+general mutation transaction abstraction.
 
 ### Slice 4: Shared Transaction Recovery and Rendering Integration
 
