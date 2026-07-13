@@ -1548,13 +1548,18 @@ label chunks, polygons, or dataframes by default.
 Each slice ends with integrated tests, error handling, documentation, and
 reviewable behavior. A happy path alone does not complete a slice.
 
-### Slice 1: Canonical metadata, validation, and centroid construction
+### Slice 1a: Canonical metadata and cache lifecycle
+
+Slice 1a defines and safely manages the canonical cache without calculating any
+centroids. Tests use synthetic x/y arrays and must not invoke RasterAggregator
+or read labels chunks.
 
 Deliverables:
 
-- typed cache state, mismatch report, metadata, and ensure/build result
-  contracts;
-- spatial_coordinates/spatial_canonical schema version 1;
+- typed cache state, mismatch report, metadata, source/table signature,
+  installation payload, and installation-result contracts;
+- spatial_coordinates/spatial_canonical schema version 1 using values supported
+  by AnnData's zarr encoding;
 - strict parser/builder plus a non-mutating inspector;
 - structural labels signature covering source element, scale0 dimensions,
   shape, and dtype; chunking is excluded from persisted metadata and cache
@@ -1563,39 +1568,96 @@ Deliverables:
   selected-row count, and a deterministic row_identity_digest over the
   unordered (obs_name, instance_id) bindings for that region; the canonical
   digest input also includes the labels name and a schema/domain tag;
+- one exact, versioned digest encoding implemented and pinned by test vectors,
+  including normalized integer representation and length-delimited UTF-8 row
+  identities;
 - selected-region binding validation that rejects zero matching rows, duplicate
   or missing obs_names, and missing, non-positive, non-integer-like, or
   duplicate instance IDs without creating or deleting table rows;
-- scale0-only RasterAggregator adapter that lazily wraps 2D labels with a
-  singleton z axis, passes exactly the selected table-region instance IDs as
-  index, and converts returned z/y/x centers to x/y;
+- matrix/metadata validation for shape, dtype, axes, finite registered-region
+  coordinates, and multi-region coverage;
+- deterministic absent, partial, valid, stale, and invalid cache-state
+  classification with structured mismatch reasons;
+- synthetic installation payload construction and an atomic installer that:
+  - creates an n_obs by 2 NaN-initialized matrix when absent;
+  - fills or replaces only the selected region's current row positions;
+  - preserves every other still-valid region and its metadata;
+  - rebuilds the managed pair and drops unsubstantiated region entries after a
+    pair-wide matrix/top-level mismatch;
+  - restores the complete previous obsm/uns pair if validation or assignment
+    fails;
+- installation results that report the exact changed component paths
+  obsm/spatial_canonical and
+  uns/spatial_coordinates/spatial_canonical for later shared dirty-state
+  integration;
+- fixtures and tests for single- and multi-region missing, reusable, partial,
+  stale, region-mismatched, and pair-wide-invalid states.
+
+Exit criteria:
+
+- metadata can be built, serialized, parsed, and validated deterministically;
+- cache inspection performs no labels computation or labels-chunk reads;
+- every cache state and mismatch reason is covered by tests;
+- each region entry carries its own row-identity digest; row reordering alone
+  preserves it, while region membership or an obs-name-to-instance binding
+  change invalidates it;
+- a valid shared matrix refresh changes only the selected region's current row
+  positions and metadata, leaving other valid regions byte-for-byte unchanged;
+- NaN occurs only in rows for regions without valid coverage metadata;
+- region-local refresh preserves other valid regions, while pair-wide rebuild
+  never preserves metadata that no longer describes the shared matrix;
+- no installation failure leaves partially replaced obsm/uns state;
+- the structural-validation limitation for undetectable same-signature pixel
+  edits is documented;
+- no SpatialData-level Harpy revision attributes or affine snapshots are
+  introduced;
+- the slice has no RasterAggregator, Qt, napari-layer, or background-worker
+  dependency.
+
+### Slice 1b: Harpy centroid construction and cache ensure
+
+Slice 1b calculates the values consumed by Slice 1a and supplies the blocking,
+UI-independent ensure operation. Background execution, progress, cancellation,
+and production performance hardening remain Slice 2 responsibilities.
+
+Deliverables:
+
+- a scale0-only labels resolver that requires a known-chunk 2D integer Dask
+  array and never falls back to NumPy or a lower-resolution scale;
+- preflight validation that every normalized positive table instance ID is
+  representable by the labels dtype before starting the global aggregation;
+- a RasterAggregator adapter that:
+  - adds the singleton z axis lazily without copying or rechunking;
+  - explicitly uses run_on_gpu=False so behavior does not depend on whether
+    CuPy happens to be installed;
+  - passes exactly the selected table-region instance IDs as index;
+  - converts returned z/y/x centers to float64 x/y;
+  - joins results by instance ID rather than aggregator output order;
 - selective raster-membership validation from the requested aggregation result:
   every requested ID must have exactly one finite center, missing requested IDs
   raise before mutation, and raster IDs absent from the table are neither
   calculated nor globally enumerated;
+- production-safe count precision in the RasterAggregator center-of-mass path:
+  counts must use an integer or floating representation that remains exact for
+  supported label sizes before division into float64 moments; this may require
+  an upstream Harpy fix and pinned minimum version;
+- immutable build results that Slice 1a can validate and install;
 - an ensure operation that:
   - reuses a structurally valid selected-region cache without reading labels;
-  - calculates and creates spatial_canonical plus metadata when absent;
+  - calculates and installs spatial_canonical plus metadata when absent;
   - accepts an explicit forced-recalculation mode that bypasses valid reuse;
   - treats a selected region's row-identity digest mismatch as stale and
     recalculates that complete region;
-  - when the shared matrix/top-level contract is valid, atomically replaces
-    only the current selected-region row positions and its region metadata;
-  - preserves coordinates and metadata for every other still-valid region;
-  - rebuilds the managed matrix and drops unsubstantiated region entries after
-    a pair-wide matrix/top-level mismatch;
-- multi-region matrix construction that initializes uncovered rows to NaN but
-  permits no NaN or inf in any region with a valid metadata entry;
-- calculation-before-replacement and rollback-safe table update behavior;
-- fixtures and tests for missing, reusable, partial, region-mismatched, and
-  pair-wide-invalid states.
+  - delegates every table mutation and rollback to the Slice 1a installer;
+- representative zarr-backed Dask fixtures and integration tests, including
+  labels spanning chunks and requested IDs absent from the raster.
 
 Exit criteria:
 
-- one UI-independent operation can ensure valid canonical centers for a
-  selected labels/table region;
+- one UI-independent blocking operation can ensure valid canonical centers for
+  a selected labels/table region;
 - its forced mode recalculates a valid selected-region cache instead of reusing
-  it and retains the same validation and atomic-installation guarantees;
+  it and retains Slice 1a's validation and atomic-installation guarantees;
 - a valid cache is reused with zero labels-chunk reads;
 - missing or mismatched cache data is calculated from Dask-backed scale0
   without loading the labels raster into RAM;
@@ -1605,26 +1667,17 @@ Exit criteria:
   obsm/uns mutation; raster IDs absent from the table produce no center;
 - calculated output is joined to table rows by instance ID, not aggregator
   order, and is finite for every selected-region row;
-- each region entry carries its own row-identity digest; row reordering alone
-  preserves it, while region membership or an obs-name-to-instance binding
-  change invalidates it and refreshes the complete selected region;
-- a valid shared matrix refresh changes only the selected region's current row
-  positions and metadata, leaving other valid regions byte-for-byte unchanged;
-- NaN occurs only in rows for regions without valid coverage metadata;
-- region-local refresh preserves other valid regions, while pair-wide rebuild
-  never preserves metadata that no longer describes the shared matrix;
-- no calculation failure leaves partially replaced obsm/uns state;
-- the structural-validation limitation for undetectable same-signature pixel
-  edits is documented;
-- no SpatialData-level Harpy revision attributes or affine snapshots are
-  introduced;
+- instance IDs outside the labels dtype range fail before Dask work;
+- count precision is verified beyond the float32 exact-integer boundary without
+  requiring a production-sized raster fixture;
+- no calculation failure reaches the Slice 1a installer or changes obsm/uns;
 - domain modules have no Qt dependency.
 
 ### Slice 2: Canonical calculation performance and async hardening
 
 Deliverables:
 
-- background-worker integration for the Slice 1 ensure operation;
+- background-worker integration for the Slice 1b ensure operation;
 - bounded Dask concurrency, progress diagnostics, cancellation, and stale-result
   protection;
 - representative zarr-backed correctness and memory tests;
