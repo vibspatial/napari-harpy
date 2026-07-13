@@ -2,8 +2,9 @@
 
 ## Status
 
-Investigated and reproduced. No implementation has been done for this issue
-yet.
+Investigated and reproduced. Slice 1's passing native characterizations and
+reusable regression fixtures are implemented. No production fix has been
+implemented yet.
 
 ## Context
 
@@ -999,6 +1000,9 @@ Slices 1–4 form the first delivery phase and cover direct movement plus vertex
 deletion. Insertion is deliberately handled afterward in Slices 5–7.
 
 ### Slice 1: Passing Characterizations and Reusable Regression Fixtures
+
+Status: implemented as passing test-only coverage. Production behavior remains
+unchanged.
 
 Slice 1 changes tests and test data only. It introduces no production-code
 changes, no `xfail` tests, and no assertions that describe behavior which only
