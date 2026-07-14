@@ -12,11 +12,15 @@ from napari.utils.triangulation_backend import TriangulationBackend, get_backend
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
+from napari_harpy._shapes_triangulation import (
+    configure_shapes_triangulation_backend,
+    ensure_shapes_triangulation_backend,
+)
 from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
+from napari_harpy.viewer.adapter import _build_shapes_layer
 
 TRIANGULATION_REGRESSION_POLYGONS = (
     pytest.param(POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1, id="annotation_1"),
@@ -52,11 +56,34 @@ def _shape_mesh_metrics(layer: Shapes, expected: Polygon) -> tuple[str | None, f
     return mesh_path, overdraw, symmetric_difference
 
 
+def test_harpy_shapes_construction_without_interactive_uses_default_bermuda(
+    restore_triangulation_backend: None,
+    sdata_blobs,
+) -> None:
+    """Cover the viewer-adapter path used after napari's CLI reader launch."""
+    settings = get_settings()
+    settings.experimental.triangulation_backend = TriangulationBackend.numba
+    set_backend(TriangulationBackend.numba)
+
+    built_layer = _build_shapes_layer(
+        sdata_blobs,
+        "blobs_polygons",
+        "global",
+        name="blobs_polygons",
+    )
+
+    shape = built_layer.layer._data_view.shapes[0]
+    assert settings.experimental.triangulation_backend == TriangulationBackend.bermuda
+    assert get_backend() == TriangulationBackend.bermuda
+    assert shape._set_meshes.__name__ == "_set_meshes_compiled_bermuda"
+
+
 @pytest.mark.parametrize("polygon", TRIANGULATION_REGRESSION_POLYGONS)
-def test_shapes_triangulation_backend_helper_makes_polygon_fixtures_use_numba_mesh(
+def test_shapes_triangulation_backend_helper_preserves_configured_numba_backend(
     restore_triangulation_backend: None,
     polygon: Polygon,
 ) -> None:
+    configure_shapes_triangulation_backend("numba")
     settings = get_settings()
     settings.experimental.triangulation_backend = TriangulationBackend.fastest_available
     set_backend(TriangulationBackend.fastest_available)
@@ -74,14 +101,16 @@ def test_shapes_triangulation_backend_helper_makes_polygon_fixtures_use_numba_me
 
 
 @pytest.mark.parametrize("polygon", TRIANGULATION_REGRESSION_POLYGONS)
-def test_bermuda_triangulation_backend_overdraws_polygon_fixtures(
+def test_shapes_triangulation_backend_helper_preserves_configured_bermuda_backend(
     restore_triangulation_backend: None,
     polygon: Polygon,
 ) -> None:
+    configure_shapes_triangulation_backend("bermuda")
     settings = get_settings()
-    settings.experimental.triangulation_backend = TriangulationBackend.bermuda
-    set_backend(TriangulationBackend.bermuda)
+    settings.experimental.triangulation_backend = TriangulationBackend.fastest_available
+    set_backend(TriangulationBackend.fastest_available)
 
+    ensure_shapes_triangulation_backend()
     vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
     layer = Shapes([vertices], shape_type="polygon")
     expected = napari_polygon_vertices_to_shapely_polygon(layer.data[0])
@@ -92,3 +121,15 @@ def test_bermuda_triangulation_backend_overdraws_polygon_fixtures(
     assert mesh_path == "_set_meshes_compiled_bermuda"
     assert overdraw > tolerance
     assert symmetric_difference > tolerance
+
+
+def test_shapes_triangulation_backend_rejects_unsupported_backend(
+    restore_triangulation_backend: None,
+) -> None:
+    configure_shapes_triangulation_backend("bermuda")
+
+    with pytest.raises(ValueError, match="Unknown Shapes triangulation backend.*bermuda, numba"):
+        configure_shapes_triangulation_backend("fastest_available")  # type: ignore[arg-type]
+
+    assert get_settings().experimental.triangulation_backend == TriangulationBackend.bermuda
+    assert get_backend() == TriangulationBackend.bermuda

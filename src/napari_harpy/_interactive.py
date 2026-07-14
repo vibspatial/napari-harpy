@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal
 
 import napari
 
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy._shapes_triangulation import (
+    ShapesTriangulationBackend,
+    configure_shapes_triangulation_backend,
+)
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-HarpyWidgetId: TypeAlias = Literal[
-    "viewer", "feature_extraction", "histogram", "object_classification", "shapes_annotation"
-]
-HarpyWidgetSelection: TypeAlias = Literal["all"] | HarpyWidgetId | Sequence[HarpyWidgetId]
+type HarpyWidgetId = Literal["viewer", "feature_extraction", "histogram", "object_classification", "shapes_annotation"]
+type HarpyWidgetSelection = Literal["all"] | HarpyWidgetId | Sequence[HarpyWidgetId]
 
 
 class Interactive:
@@ -41,6 +43,9 @@ class Interactive:
         If ``True`` or ``False``, explicitly enable or disable napari's
         experimental async slicing for this session. If ``None``, leave napari's
         current setting unchanged.
+    triangulation_backend
+        Process-wide backend used to triangulate Shapes layers. Supported
+        values are ``"bermuda"`` and ``"numba"``. Defaults to ``"bermuda"``.
     """
 
     _PLUGIN_NAME = "napari-harpy"
@@ -66,8 +71,12 @@ class Interactive:
         headless: bool = False,
         widgets: HarpyWidgetSelection = "all",
         async_slicing: bool | None = False,
+        triangulation_backend: ShapesTriangulationBackend = "bermuda",
     ) -> None:
         widget_ids = self._normalize_widget_selection(widgets)
+        # Napari chooses the Shapes mesh implementation while constructing
+        # shapes, so configure it before creating the viewer or dock widgets.
+        configure_shapes_triangulation_backend(triangulation_backend)
         if async_slicing is not None:
             _set_napari_async_slicing(async_slicing)
         self._viewer = viewer or napari.current_viewer() or napari.Viewer()

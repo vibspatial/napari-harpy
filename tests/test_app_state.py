@@ -456,6 +456,28 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
     ]
 
 
+def test_interactive_configures_default_and_explicit_triangulation_backends(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    configured_backends: list[str] = []
+
+    monkeypatch.setattr(
+        interactive_module,
+        "configure_shapes_triangulation_backend",
+        configured_backends.append,
+    )
+
+    interactive_module.Interactive(sdata_blobs, viewer=viewer, headless=True, widgets=())
+    interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets=(),
+        triangulation_backend="numba",
+    )
+
+    assert configured_backends == ["bermuda", "numba"]
+
+
 def test_interactive_sets_async_slicing_when_requested(monkeypatch, sdata_blobs) -> None:
     viewer = DummyViewer()
     async_slicing_calls: list[bool] = []

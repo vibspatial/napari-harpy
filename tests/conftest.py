@@ -101,17 +101,21 @@ def backed_sdata_blobs_points_repartitioned(tmp_path) -> SpatialData:
 
 @pytest.fixture
 def restore_triangulation_backend() -> Iterator[None]:
-    """Restore napari's settings and runtime triangulation backends."""
+    """Restore Harpy's configured backend and napari's backend state."""
     from napari.settings import get_settings
     from napari.utils.triangulation_backend import get_backend, set_backend
 
+    import napari_harpy._shapes_triangulation as shapes_triangulation_module
+
     settings = get_settings()
+    previous_configured_backend = shapes_triangulation_module._CONFIGURED_SHAPES_TRIANGULATION_BACKEND
     previous_settings_backend = settings.experimental.triangulation_backend
     previous_runtime_backend = get_backend()
 
     try:
         yield
     finally:
+        shapes_triangulation_module._CONFIGURED_SHAPES_TRIANGULATION_BACKEND = previous_configured_backend
         settings.experimental.triangulation_backend = previous_settings_backend
         if get_backend() != previous_runtime_backend:
             set_backend(previous_runtime_backend)
@@ -119,11 +123,7 @@ def restore_triangulation_backend() -> Iterator[None]:
 
 @pytest.fixture
 def numba_triangulation_backend(restore_triangulation_backend: None) -> None:
-    """Run a test with napari's settings and runtime backend set to Numba."""
-    from napari.settings import get_settings
-    from napari.utils.triangulation_backend import TriangulationBackend, get_backend, set_backend
+    """Run a test with Harpy's configured backend set to Numba."""
+    from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
 
-    settings = get_settings()
-    settings.experimental.triangulation_backend = TriangulationBackend.numba
-    if get_backend() != TriangulationBackend.numba:
-        set_backend(TriangulationBackend.numba)
+    configure_shapes_triangulation_backend("numba")
