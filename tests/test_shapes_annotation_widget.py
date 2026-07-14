@@ -2647,23 +2647,144 @@ def test_annotation_layer_edit_guard_vertex_insert_delegates_native_target(
     assert calls == [((layer, event), {"source": "test"})]
 
 
-def test_annotation_layer_edit_guard_vertex_insert_commit_failure_emits_no_completion(
+def test_annotation_layer_edit_guard_vertex_insert_restores_after_commit_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A late commit failure propagates after CHANGING, without success signals."""
+    """Restore the row-change baseline after a late insertion failure.
+
+    Perform the real longer-row rebuild, fail the final commit refresh, restore
+    the original layer baseline, and report the insertion-rendering warning.
+    Only ``CHANGING`` remains for the recovered attempt and the shared finished
+    callback is withheld. A later valid insertion can still commit.
+    """
     original_vertices = np.asarray(
         [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]],
         dtype=float,
     )
+    path_vertices = np.asarray([[8.0, 0.0], [9.0, 2.0], [10.0, 0.0]], dtype=float)
     insert_index = 1
     inserted_coordinate = np.mean(original_vertices[[0, 1]], axis=0)
-    topology = napari_polygon_vertices_to_topology(original_vertices)
-    expected_vertices, _ = insert_napari_polygon_vertex(
+    original_topology = napari_polygon_vertices_to_topology(original_vertices)
+    expected_inserted_vertices, _ = insert_napari_polygon_vertex(
         original_vertices,
-        topology,
+        original_topology,
         insert_index,
         inserted_coordinate,
     )
+    layer = Shapes(
+        [original_vertices, path_vertices],
+        shape_type=["polygon", "path"],
+        features=pd.DataFrame(
+            {
+                "instance_id": ["polygon-0", "path-1"],
+                "label": ["first", "second"],
+            },
+        ),
+    )
+    identity_guard = shapes_annotation_identity_defaults_module._AnnotationIdentityFeatureDefaultGuard()
+    identity_guard.attach(layer, feature_name="instance_id")
+    layer._drag_modes = dict(layer._drag_modes)
+    original_data = [np.asarray(vertices).copy() for vertices in layer.data]
+    original_shape_types = list(layer.shape_type)
+    original_features = layer.features.copy(deep=True)
+    events: list[ActionType] = []
+    warnings: list[str] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_insert_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("polygon insertion should be guarded")
+
+    layer._drag_modes[Mode.VERTEX_INSERT] = original_vertex_insert_callback
+    layer.events.data.connect(lambda event: events.append(event.action))
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        warning_callback=warnings.append,
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
+    )
+    original_replace = guard._replace_shape_row_preserving_layer_state
+    original_refresh = layer.refresh
+    fail_next_refresh = False
+
+    def replace_then_arm_refresh_failure(
+        bound_layer: Shapes,
+        row_index: int,
+        vertices: np.ndarray,
+    ) -> None:
+        nonlocal fail_next_refresh
+        original_replace(bound_layer, row_index, vertices)
+        fail_next_refresh = True
+
+    def fail_once_refresh(*args: object, **kwargs: object) -> None:
+        nonlocal fail_next_refresh
+        if fail_next_refresh:
+            fail_next_refresh = False
+            raise RuntimeError("simulated final insertion refresh failure")
+        original_refresh(*args, **kwargs)
+
+    monkeypatch.setattr(
+        guard,
+        "_replace_shape_row_preserving_layer_state",
+        replace_then_arm_refresh_failure,
+    )
+    monkeypatch.setattr(layer, "refresh", fail_once_refresh)
+    guard.attach(layer)
+    layer.mode = Mode.VERTEX_INSERT
+    layer.selected_data = {0}
+    layer.feature_defaults = pd.DataFrame(
+        {
+            "instance_id": [pd.NA],
+            "label": ["next-polygon"],
+        },
+    )
+
+    layer.mouse_drag_callbacks[0](
+        layer,
+        SimpleNamespace(position=tuple(inserted_coordinate)),
+    )
+
+    _assert_layer_data_unchanged(layer, original_data)
+    assert list(layer.shape_type) == original_shape_types
+    assert napari_polygon_vertices_to_topology(layer.data[0]) == original_topology
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    _assert_identity_feature_default_missing(layer, "instance_id")
+    assert layer.feature_defaults["label"].iloc[0] == "next-polygon"
+    assert layer.mode == Mode.VERTEX_INSERT
+    assert set(layer.selected_data) == {0}
+    assert layer._data_view._vertices_index.tolist() == [
+        0,
+        len(original_vertices),
+        len(original_vertices) + len(path_vertices),
+    ]
+    restored_hit = layer.get_value(original_vertices[0], world=True)
+    assert restored_hit is not None
+    assert int(restored_hit[0]) == 0
+    assert events == [ActionType.CHANGING]
+    assert warnings == [shapes_annotation_edit_guard_module._POLYGON_INSERT_RENDERING_WARNING]
+    assert finished_calls == []
+
+    monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", original_replace)
+    layer.mouse_drag_callbacks[0](
+        layer,
+        SimpleNamespace(position=tuple(inserted_coordinate)),
+    )
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_inserted_vertices)
+    assert events == [
+        ActionType.CHANGING,
+        ActionType.CHANGING,
+        ActionType.CHANGED,
+    ]
+    assert finished_calls == ["finished"]
+
+
+def test_annotation_layer_edit_guard_vertex_insert_preserves_application_and_restoration_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve both errors when insertion application and recovery fail."""
+    original_vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]],
+        dtype=float,
+    )
+    inserted_coordinate = np.mean(original_vertices[[0, 1]], axis=0)
     layer = Shapes([original_vertices], shape_type="polygon")
     layer._drag_modes = dict(layer._drag_modes)
     events: list[ActionType] = []
@@ -2680,7 +2801,8 @@ def test_annotation_layer_edit_guard_vertex_insert_commit_failure_emits_no_compl
         polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     original_replace = guard._replace_shape_row_preserving_layer_state
-    commit_error = RuntimeError("simulated failure after insertion row rebuild")
+    application_error = RuntimeError("simulated insertion application failure")
+    restoration_error = RuntimeError("simulated insertion baseline restoration failure")
 
     def fail_after_rebuild(
         bound_layer: Shapes,
@@ -2688,20 +2810,32 @@ def test_annotation_layer_edit_guard_vertex_insert_commit_failure_emits_no_compl
         vertices: np.ndarray,
     ) -> None:
         original_replace(bound_layer, row_index, vertices)
-        raise commit_error
+        raise application_error
+
+    def fail_restoration(
+        bound_layer: Shapes,
+        baseline: shapes_annotation_edit_guard_module._PolygonVertexRowChangeBaseline,
+    ) -> None:
+        raise restoration_error
 
     monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
+    monkeypatch.setattr(
+        shapes_annotation_edit_guard_module,
+        "_restore_polygon_vertex_row_change_baseline",
+        fail_restoration,
+    )
     guard.attach(layer)
     layer.mode = Mode.VERTEX_INSERT
     layer.selected_data = {0}
 
-    with pytest.raises(RuntimeError, match="failure after insertion row rebuild"):
+    with pytest.raises(ExceptionGroup) as caught:
         layer.mouse_drag_callbacks[0](
             layer,
             SimpleNamespace(position=tuple(inserted_coordinate)),
         )
 
-    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert caught.value.exceptions == (application_error, restoration_error)
+    assert caught.value.__cause__ is application_error
     assert events == [ActionType.CHANGING]
     assert warnings == []
     assert finished_calls == []
@@ -3075,14 +3209,14 @@ def test_annotation_layer_edit_guard_vertex_remove_preserves_application_and_res
 
     def fail_restoration(
         bound_layer: Shapes,
-        baseline: shapes_annotation_edit_guard_module._PolygonVertexDeletionBaseline,
+        baseline: shapes_annotation_edit_guard_module._PolygonVertexRowChangeBaseline,
     ) -> None:
         raise restoration_error
 
     monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
     monkeypatch.setattr(
         shapes_annotation_edit_guard_module,
-        "_restore_polygon_vertex_deletion_baseline",
+        "_restore_polygon_vertex_row_change_baseline",
         fail_restoration,
     )
     guard.attach(layer)

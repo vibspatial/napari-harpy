@@ -1598,8 +1598,8 @@ type adjacent to the edit guard:
 
 ```python
 @dataclass(frozen=True)
-class _PolygonVertexDeletionBaseline:
-    """Restorable Shapes state captured before guarded vertex deletion."""
+class _PolygonVertexRowChangeBaseline:
+    """Restorable Shapes state captured before a polygon row change."""
 
     data: tuple[np.ndarray, ...]
     shape_types: tuple[str, ...]
@@ -1648,14 +1648,14 @@ polygon a fresh stable identity when it is saved.
 Do not repurpose the hash-based `_ShapesAnnotationLayerSnapshot`, which is a
 dirty-state fingerprint rather than restorable layer data.
 
-Construct `_PolygonVertexDeletionBaseline(...)` inline immediately before the
+Construct `_PolygonVertexRowChangeBaseline(...)` inline immediately before the
 `CHANGING` event. Baseline capture is a short, single-use enumeration of the
 dataclass fields at the transaction boundary and does not need a separate
-helper. Keep the non-trivial rebuilding sequence in its deletion-specific
+helper. Keep the non-trivial rebuilding sequence in the focused row-change
 restoration helper:
 
 ```python
-_restore_polygon_vertex_deletion_baseline(...)
+_restore_polygon_vertex_row_change_baseline(...)
 ```
 
 Use `baseline` for the captured local value. This matches the movement path's
@@ -1801,9 +1801,10 @@ failure sites. Do not duplicate the full field matrix for every injected
 exception.
 
 At the end of Slice 5, guarded movement and guarded deletion both restore their
-previous accepted state when application or rendering fails. They retain
-operation-specific baselines and recovery helpers rather than sharing a generic
-transaction abstraction.
+previous accepted state when application or rendering fails. Movement retains
+its lightweight row baseline; deletion uses the complete row-change baseline
+later shared with insertion. Neither path uses a generic transaction
+abstraction.
 
 ### Slice 6: Unified Polygon Insertion Candidate API
 
@@ -2063,7 +2064,7 @@ work.
 
 ### Slice 8: Insertion-Local Transaction Rollback
 
-Status: specified; implementation pending.
+Status: implemented.
 
 Upgrade Slice 7's propagation-only insertion commit boundary to the same
 recovery guarantee as deletion. Candidate construction, target routing,
@@ -2200,12 +2201,12 @@ guard-to-widget failure callback.
 Use deterministic fail-once seams with the Numba backend rather than depending
 on a platform-specific Bermuda, VisPy, or triangulation failure.
 
-Adapt
+The transitional
 `test_annotation_layer_edit_guard_vertex_insert_commit_failure_emits_no_completion(...)`
-instead of retaining the transitional expectation that the longer candidate
-remains live. Rename it to
-`test_annotation_layer_edit_guard_vertex_insert_restores_after_commit_failure(...)`
-and make its docstring state the complete sequence:
+was replaced rather than retaining the expectation that the longer candidate
+remains live. The implemented test is
+`test_annotation_layer_edit_guard_vertex_insert_restores_after_commit_failure(...)`,
+and its docstring states the complete sequence:
 
 ```text
 real longer-row rebuild succeeds

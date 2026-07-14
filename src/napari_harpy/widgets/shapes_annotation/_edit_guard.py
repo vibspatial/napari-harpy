@@ -41,6 +41,9 @@ _POLYGON_DRAG_RENDERING_WARNING = (
 _POLYGON_DELETE_RENDERING_WARNING = (
     "The polygon deletion could not be rendered, so the previous layer state was restored."
 )
+_POLYGON_INSERT_RENDERING_WARNING = (
+    "The polygon insertion could not be rendered, so the previous layer state was restored."
+)
 _ALREADY_INVALID_POLYGON_DRAG_WARNING = "This polygon is already invalid, so this edit cannot be safely rolled back."
 _SPACE_PAN_RESUMABLE_DRAW_MODES = frozenset(
     {
@@ -105,8 +108,13 @@ class _VertexInsertState:
 
 
 @dataclass(frozen=True)
-class _PolygonVertexDeletionBaseline:
-    """Restorable Shapes state captured before guarded vertex deletion."""
+class _PolygonVertexRowChangeBaseline:
+    """Capture Shapes state needed to roll back polygon insertion or removal.
+
+    These edits change a polygon row's length, or remove the complete row, so
+    recovery must restore full row-aligned layer state and rebuild napari's
+    derived vertex caches rather than restore only the affected vertices.
+    """
 
     data: tuple[np.ndarray, ...]
     shape_types: tuple[str, ...]
@@ -124,11 +132,11 @@ def _shape_type_at(layer: Shapes, row_index: int) -> object:
         return None
 
 
-def _restore_polygon_vertex_deletion_baseline(
+def _restore_polygon_vertex_row_change_baseline(
     layer: Shapes,
-    baseline: _PolygonVertexDeletionBaseline,
+    baseline: _PolygonVertexRowChangeBaseline,
 ) -> None:
-    """Restore a failed deletion through napari's public rebuilding path."""
+    """Restore a failed polygon row change through the public data path."""
     restored_data = [
         (np.array(vertices, copy=True), shape_type)
         for vertices, shape_type in zip(baseline.data, baseline.shape_types, strict=True)
@@ -138,10 +146,10 @@ def _restore_polygon_vertex_deletion_baseline(
     # caches. Restoring `features` then resets napari's defaults from a feature
     # row, so restore the separately captured defaults afterwards.
     #
-    # The failed deletion has already emitted CHANGING. Block the public
+    # The failed row change has already emitted CHANGING. Block the public
     # setters' intermediate data and features events so mechanical recovery is
     # not reported as another edit or as a successful completion. The visible
-    # transaction remains: CHANGING -> deletion fails -> baseline is restored
+    # transaction remains: CHANGING -> commit fails -> baseline is restored
     # silently -> no CHANGED.
     with layer.events.data.blocker(), layer.events.features.blocker():
         ensure_shapes_triangulation_backend()
@@ -867,7 +875,13 @@ class _AnnotationLayerEditGuard:
         kwargs: dict[str, Any],
         event: object,
     ) -> Any:
-        """Route and commit one prevalidated polygon-vertex insertion."""
+        """Route and transactionally apply one polygon-vertex insertion.
+
+        Candidate validation happens before the live layer is changed. Because
+        insertion lengthens a row and rebuilds napari's complete public data
+        and derived vertex caches, capture the shared row-change baseline and
+        restore it if rebuild, triangulation, or final refresh raises.
+        """
         route, insert_state = self._classify_vertex_insert(layer, event)
         if route is _PolygonVertexInsertRoute.DELEGATE:
             return original_vertex_insert_callback(*args, **kwargs)
@@ -887,6 +901,16 @@ class _AnnotationLayerEditGuard:
             self._warn(_INVALID_POLYGON_DRAG_WARNING)
             return None
 
+        baseline = _PolygonVertexRowChangeBaseline(
+            data=tuple(np.array(vertices, copy=True) for vertices in layer.data),
+            shape_types=tuple(layer.shape_type),
+            features=layer.features.copy(deep=True),
+            feature_defaults=layer.feature_defaults.copy(deep=True),
+            style=_capture_shapes_layer_style(layer, row_count=len(layer.data)),
+            selected_data=frozenset(layer.selected_data),
+            mode=layer.mode,
+        )
+
         # Mirror napari's native `vertex_insert(...)` event contract, but only
         # after the complete candidate has passed topology and geometry checks.
         layer.events.data(
@@ -895,12 +919,26 @@ class _AnnotationLayerEditGuard:
             data_indices=(insert_state.row_index,),
             vertex_indices=((insert_state.insert_index,),),
         )
-        self._replace_shape_row_preserving_layer_state(
-            layer,
-            insert_state.row_index,
-            candidate_vertices,
-        )
-        layer.refresh()
+        try:
+            self._replace_shape_row_preserving_layer_state(
+                layer,
+                insert_state.row_index,
+                candidate_vertices,
+            )
+            layer.refresh()
+        except Exception as application_error:  # noqa: BLE001 - transaction boundary
+            try:
+                # Roll back a partially committed longer row after rebuild,
+                # triangulation, refresh, or another rendering step raises.
+                _restore_polygon_vertex_row_change_baseline(layer, baseline)
+            except Exception as restoration_error:  # noqa: BLE001 - retain both failures
+                raise ExceptionGroup(
+                    "Polygon insertion failed and restoring the previous layer state also failed.",
+                    [application_error, restoration_error],
+                ) from application_error
+            self._warn(_POLYGON_INSERT_RENDERING_WARNING)
+            return None
+
         layer.events.data(
             value=layer.data,
             action=ActionType.CHANGED,
@@ -1028,7 +1066,7 @@ class _AnnotationLayerEditGuard:
         deletion rollback is broader than a movement rollback: shortening a
         row or removing a shape can shift geometry, features, styles,
         selection, and derived vertex caches. Capture the complete
-        ``_PolygonVertexDeletionBaseline`` instead of movement's single-row
+        ``_PolygonVertexRowChangeBaseline`` instead of movement's single-row
         vertex baseline so all of that row-aligned state can be restored.
         """
         route, delete_state = self._classify_vertex_delete(layer, event)
@@ -1049,7 +1087,7 @@ class _AnnotationLayerEditGuard:
             self._warn(str(error))
             return None
 
-        baseline = _PolygonVertexDeletionBaseline(
+        baseline = _PolygonVertexRowChangeBaseline(
             data=tuple(np.array(vertices, copy=True) for vertices in layer.data),
             shape_types=tuple(layer.shape_type),
             features=layer.features.copy(deep=True),
@@ -1085,7 +1123,7 @@ class _AnnotationLayerEditGuard:
             try:
                 # Roll back any partial deletion commit after triangulation,
                 # refresh, or another rendering/application step raises.
-                _restore_polygon_vertex_deletion_baseline(layer, baseline)
+                _restore_polygon_vertex_row_change_baseline(layer, baseline)
             except Exception as restoration_error:  # noqa: BLE001 - retain both failures
                 raise ExceptionGroup(
                     "Polygon deletion failed and restoring the previous layer state also failed.",
