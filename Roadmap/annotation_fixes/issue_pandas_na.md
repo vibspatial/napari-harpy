@@ -2,7 +2,7 @@
 
 ## Status
 
-Investigated and reproduced. No fix has been implemented yet.
+Implemented and covered by a focused regression test.
 
 ## Observed Failure
 
@@ -152,16 +152,13 @@ would leave the native press contract incomplete. Replacing napari's selection
 machinery or moving source identity out of `layer.features` would be unnecessary
 for this issue.
 
-## Proposed Minimal Implementation
+## Implemented Fix
 
-1. Add one regression test with two polygon rows whose source identity values
-   are a stored identity and the guard's missing default. Multi-select both
-   rows and assert that no exception is raised.
-2. Change only the identity default sentinel from `pd.NA` to `None`.
-3. Keep the existing assertions that newly drawn rows remain missing until
-   save and receive fresh identities on save.
-4. Verify that selecting existing rows does not overwrite their source
-   identities and that Harpy's status text still omits missing identities.
+The identity default sentinel now uses `None` instead of `pd.NA`. A focused
+regression test creates a stored polygon and an unsaved polygon using that
+default, selects both rows, and verifies that napari retains the complete
+selection without raising. Existing tests continue to cover missing identities,
+fresh identity assignment on save, and preservation of stored identities.
 
 No custom selection wrapper, generalized missing-value abstraction, or napari
 monkeypatch is required.

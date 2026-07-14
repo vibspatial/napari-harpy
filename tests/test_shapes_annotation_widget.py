@@ -987,6 +987,30 @@ def test_annotation_identity_feature_default_guard_reentrant_event_is_ignored() 
     _assert_identity_feature_default_missing(layer, "instance_id")
 
 
+def test_annotation_identity_feature_default_guard_allows_selecting_stored_and_unsaved_rows() -> None:
+    """Select stored and unsaved rows without an ambiguous missing-value comparison."""
+    first = np.asarray(
+        [[0.0, 0.0], [0.0, 2.0], [2.0, 2.0], [2.0, 0.0]],
+        dtype=float,
+    )
+    layer = Shapes(
+        [first],
+        shape_type="polygon",
+        features=pd.DataFrame({"instance_id": ["__annotation_0"]}),
+    )
+    guard = shapes_annotation_identity_defaults_module._AnnotationIdentityFeatureDefaultGuard()
+    guard.attach(layer, feature_name="instance_id")
+
+    layer.add(first + 4.0, shape_type="polygon")
+
+    assert layer.features["instance_id"].iloc[1] is None
+    layer.selected_data = {0}
+    layer.selected_data.add(1)
+
+    assert set(layer.selected_data) == {0, 1}
+    assert layer.features["instance_id"].tolist() == ["__annotation_0", None]
+
+
 def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance_mapping() -> None:
     layer = Shapes([], ndim=2)
     layer._drag_modes = dict(layer._drag_modes)

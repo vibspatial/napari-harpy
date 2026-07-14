@@ -248,7 +248,7 @@ This release supports 2D x/y labels queries. Labels with a spatial z dimension
 are rejected rather than implicitly querying the current napari slice or
 projecting a volume.
 
-### Table binding and row identity
+### Table binding and instance membership
 
 Selectable tables are discovered using the existing annotating-table helper.
 Before cache inspection or query execution, the selected binding must pass the
@@ -261,15 +261,17 @@ The table row for an instance is identified by both linkage keys:
     and
     obs[instance_key] == instance_id
 
-Matching by obs row order alone or by obs_names alone is forbidden.
+Matching by obs row order or by obs_names is forbidden. Spatial identity is the
+validated `(region_key value, instance_key value)` pair; the AnnData index does
+not participate in canonical cache identity.
 
 Within the selected labels region, instance-key values must be non-missing,
 positive, integer-like, and unique. Booleans, fractional numbers, non-finite
 numbers, and strings that only resemble numbers are rejected rather than
 silently coerced. Duplicate instance IDs in another region are allowed.
-The selected-region row set must be non-empty, and obs_names used as row
-identities must be unique. An empty selection is a binding error: this feature
-does not create table rows.
+The selected-region row set must be non-empty. An empty selection is a binding
+error: this feature does not create table rows. Missing or duplicate obs_names
+do not affect this contract because they are not SpatialData linkage values.
 
 Canonical-center calculation uses the validated instance IDs from the selected
 table region as RasterAggregator's requested index. This avoids a separate
@@ -402,7 +404,7 @@ A representative schema is:
                 "coverage": {
                     "scope": "all_rows_for_region",
                     "n_obs": 125000,
-                    "row_identity_digest": "sha256:...",
+                    "instance_set_digest": "sha256:...",
                 },
                 "source": {
                     "element_path": "labels/nuclei",
@@ -482,30 +484,41 @@ entry yet. Every row covered by a registered region entry must have finite x/y
 coordinates; a region is never registered with partial coverage.
 
 Coverage is complete only when every current table row in that region has one
-finite center. Each labels element has a separate row_identity_digest stored in
+finite center. Each labels element has a separate instance_set_digest stored in
 its own regions[labels_name].coverage entry; there is no table-global digest.
 The digest is calculated from a domain/schema tag, the selected labels name,
-and the unordered set of (obs_name, normalized instance_id) bindings using a
-versioned canonical binary encoding and SHA-256. Canonically sorting the pairs
-before hashing makes normal AnnData row reordering irrelevant, while changing
-which instance is bound to an observation invalidates the region. Including the
-labels name domain-separates otherwise identical bindings in different regions.
-The digest avoids storing a potentially enormous binding list in uns.
+and the sorted set of normalized instance IDs using a versioned canonical
+binary encoding and SHA-256. Including the labels name domain-separates
+otherwise identical instance sets in different regions. The digest avoids
+storing a potentially enormous instance-ID list in uns, and obs_names do not
+participate.
 
 Instance-ID normalization is numeric only. Positive integral scalars and finite
 integer-like real scalars such as 1.0 normalize to the same canonical integer.
 Booleans, strings such as "1", missing values, non-finite values, zero, negative
-values, and fractional values are rejected. Observation names remain exact UTF-8
-row identities; they are not trimmed or numerically normalized.
+values, and fractional values are rejected. Every normalized ID must fit in an
+unsigned 64-bit integer, which covers the positive range of every supported
+integer labels dtype.
 
-Normal AnnData slicing/reordering must preserve obsm alignment. Unsupported
-external mutations that break AnnData's alignment guarantees are outside the
-contract.
+Normal AnnData slicing/reordering must preserve obsm alignment. Row reordering
+and obs-name changes do not alter the instance-set digest. Unsupported external
+mutations that break AnnData's alignment guarantees are outside the contract.
+
+An unordered instance-set digest cannot detect a reassignment that preserves
+the complete per-region instance set, such as swapping two instance-key values
+between existing rows. Supported mutations to obs, region_key, or instance_key
+must therefore emit semantic table events that invalidate every affected region
+entry before the cache can be reused, even when the resulting instance sets are
+unchanged. An out-of-band same-set reassignment that bypasses those events is an
+explicit structural-validation limitation, like an out-of-band labels-pixel
+edit that preserves the labels structural signature. Forced recalculation is
+the recovery path.
 
 Subsetting a table, changing linkage values, replacing obs, or changing
 region/instance-key metadata must cause coverage revalidation. Semantic table
-events should invalidate affected region entries immediately rather than
-waiting until Run.
+events must invalidate affected region entries immediately rather than waiting
+until Run; this is required for same-set linkage reassignments that structural
+inspection cannot detect.
 
 ### Structural cache validity
 
@@ -520,7 +533,7 @@ A selected-region cache is structurally reusable when:
 - dimensions, shape, and dtype agree;
 - the calculation semantics and algorithm version agree;
 - region_key, instance_key, selected-row count, and the selected region's
-  row-identity digest agree;
+  instance-set digest agree;
 - all selected-region x/y coordinates are finite.
 
 Changing a SpatialData coordinate transformation does not invalidate centers
@@ -694,7 +707,7 @@ does not perform a spatial query, and never changes an annotation column.
 On activation:
 
 1. capture the selected labels/table-region identities, structural signatures,
-   row-identity digest, current cache generation, and a new operation token;
+   instance-set digest, current cache generation, and a new operation token;
 2. bypass valid-cache reuse and calculate all requested table-region centroids
    lazily from scale0;
 3. validate that every requested table ID has exactly one finite result;
@@ -847,8 +860,8 @@ calculation path.
 For a 2D scale0 labels Dask array:
 
 1. select the rows for the requested labels region and reject an empty set;
-2. validate unique obs_names and non-missing, positive, unique integer-like
-   instance IDs within that region;
+2. validate non-missing, positive, unique integer-like instance IDs within that
+   region;
 3. require integer labels dtype and known 2D shape/chunks;
 4. add a singleton z dimension lazily, without copying or rechunking the raster,
    to satisfy RasterAggregator's z, y, x input contract;
@@ -887,7 +900,7 @@ Use a UI-independent worker result, conceptually:
         instance_ids
         centers_xy
         source_signature
-        coverage_digest
+        instance_set_digest
         cache_action
         mismatch_reasons
         diagnostics
@@ -1389,7 +1402,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   refresh;
 - rechunking alone does not invalidate canonical centers;
 - transform-only changes do not stale intrinsic centers;
-- coverage digest and finite-coordinate validation;
+- instance-set digest and finite-coordinate validation;
 - multi-region incremental fill preserves other valid regions;
 - pair-wide mismatch rebuilds the managed pair only after recalculation
   succeeds;
@@ -1574,15 +1587,14 @@ Deliverables:
   shape, and dtype; chunking is excluded from persisted metadata and cache
   validity;
 - a table signature for each labels region covering region/instance keys,
-  selected-row count, and a deterministic row_identity_digest over the
-  unordered (obs_name, instance_id) bindings for that region; the canonical
-  digest input also includes the labels name and a schema/domain tag;
+  selected-row count, and a deterministic instance_set_digest over the sorted
+  unique normalized instance IDs for that region; the canonical digest input
+  also includes the labels name and a schema/domain tag;
 - one exact, versioned digest encoding implemented and pinned by test vectors,
-  including normalized integer representation and length-delimited UTF-8 row
-  identities;
-- selected-region binding validation that rejects zero matching rows, duplicate
-  or missing obs_names, and missing, non-positive, non-integer-like, or
-  duplicate instance IDs without creating or deleting table rows;
+  including vectorized sorted big-endian uint64 instance-ID representation;
+- selected-region binding validation that rejects zero matching rows and
+  missing, non-positive, non-integer-like, duplicate, or uint64-overflowing
+  instance IDs without creating or deleting table rows;
 - matrix/metadata validation for shape, dtype, axes, finite registered-region
   coordinates, and multi-region coverage;
 - deterministic absent, partial, valid, stale, and invalid cache-state
@@ -1614,11 +1626,56 @@ Use string enums for cache state, installation action, and mismatch code:
 
     CanonicalCacheState = absent | partial | valid | stale | invalid
     CanonicalInstallAction = create | extend | refresh | rebuild
-    CanonicalMismatchCode = a closed set of stable, machine-readable reasons
+    CanonicalMismatchCode:
+        matrix_without_metadata
+        metadata_without_matrix
+        matrix_invalid
+        metadata_invalid
+        schema_version_unsupported
+        top_level_contract_mismatch
+        region_not_registered
+        region_metadata_invalid
+        source_signature_mismatch
+        table_signature_mismatch
+        algorithm_version_mismatch
+        region_coordinates_invalid
 
 Mismatch codes, rather than human-readable messages, drive tests and controller
 behavior. Pair-wide versus region-local scope is represented explicitly on each
-mismatch.
+mismatch. Keep the code set at behaviorally meaningful categories; the bounded
+detail identifies the particular malformed field or expected/actual value. For
+example, wrong rank, shape, storage type, or matrix dtype uses `matrix_invalid`,
+while a disagreement among supported top-level `obsm_key`, axes, coordinate
+dtype, or linkage keys uses `top_level_contract_mismatch`.
+
+Cache-state classification follows this deterministic evaluation order:
+
+1. Inspect the two managed paths. If neither
+   `obsm/spatial_canonical` nor
+   `uns/spatial_coordinates/spatial_canonical` exists, return `absent`. The
+   presence of the parent `spatial_coordinates` registry without its
+   `spatial_canonical` entry still counts as absent.
+2. If exactly one managed path exists, return `invalid` with
+   `matrix_without_metadata` or `metadata_without_matrix`.
+3. If both exist but the matrix, schema, top-level contract, or strict metadata
+   structure is malformed, contradictory, or unsupported, return `invalid`.
+   Pair-wide invalidity takes precedence over every region-local outcome.
+4. Once the shared pair is valid, if the selected region has no metadata entry,
+   return `partial` with `region_not_registered`.
+5. If the selected region entry exists and is interpretable but its source
+   signature, table signature, supported algorithm version, or finite complete
+   coordinate coverage does not match current state, return `stale` with the
+   corresponding region-local mismatch code.
+6. If all selected-region checks pass, return `valid`.
+
+The report state describes the selected region. A stale but structurally
+interpretable entry for another region does not downgrade an otherwise valid
+selected region; that other region is omitted from `valid_regions` and its
+mismatch remains available in the report. A malformed region entry that makes
+the strict metadata registry uninterpretable is pair-wide `invalid` instead.
+Mismatch tuples are ordered deterministically: pair-wide reasons first, then
+the selected region, then other regions sorted by name, preserving validation
+order within each group.
 
 The immutable value contracts are conceptually:
 
@@ -1634,12 +1691,11 @@ The immutable value contracts are conceptually:
         region_key
         instance_key
         n_obs
-        row_identity_digest
+        instance_set_digest
 
     CanonicalRegionBindings:
         signature: CanonicalTableSignature
         row_positions
-        obs_names
         instance_ids
 
     CanonicalRegionMetadata:
@@ -1744,6 +1800,106 @@ contract. Do not persist a redundant `ndim`; it is `len(dims)`. These source
 dimensions are distinct from the top-level `axes == ("x", "y")`, which describe
 the column order of the canonical coordinate matrix.
 
+##### Instance-set digest encoding
+
+The instance-set digest hashes the semantic selected-region instance
+membership, not AnnData row identities, an AnnData file, a zarr group, or any
+other storage serialization. Implement it with Python's standard-library
+`hashlib.sha256()` and a vectorized NumPy canonicalization path. Do not encode or
+hash instance IDs one at a time in a Python loop.
+
+Digest encoding version 1 uses these exact primitives:
+
+- `U16(n)`: unsigned two-byte big-endian integer;
+- `U64(n)`: unsigned eight-byte big-endian integer;
+- `LP(value)`: `U64(len(value))` followed by the bytes in `value`;
+- the labels name is encoded as exact UTF-8 without trimming, case folding, or
+  Unicode normalization;
+- every normalized instance ID is encoded as one fixed-width `U64` value.
+
+The fixed domain bytes are:
+
+    b"napari-harpy/spatial-canonical/instance-set"
+
+For labels name `L` and normalized unique positive instance IDs `I_i`, sort the
+IDs numerically and encode the sorted array as contiguous big-endian uint64.
+The exact SHA-256 input is:
+
+    LP(domain)
+    || U16(1)
+    || LP(L.encode("utf-8"))
+    || U64(number_of_ids)
+    || U64(I_1)
+    || U64(I_2)
+    || ...
+    || U64(I_n)
+
+The corresponding implementation is expected to follow this pseudocode:
+
+```python
+import hashlib
+from collections.abc import Sequence
+
+import numpy as np
+
+_DIGEST_DOMAIN = b"napari-harpy/spatial-canonical/instance-set"
+_DIGEST_ENCODING_VERSION = 1
+
+
+def _encode_u64(value: int) -> bytes:
+    return value.to_bytes(8, byteorder="big", signed=False)
+
+
+def _update_length_delimited(hasher, value: bytes) -> None:
+    hasher.update(_encode_u64(len(value)))
+    hasher.update(value)
+
+
+def build_instance_set_digest(
+    labels_name: str,
+    instance_ids: Sequence[int],
+) -> str:
+    canonical_ids = np.sort(
+        np.asarray(instance_ids, dtype=np.uint64)
+    ).astype(">u8", copy=False)
+
+    hasher = hashlib.sha256()
+    _update_length_delimited(hasher, _DIGEST_DOMAIN)
+    hasher.update(
+        _DIGEST_ENCODING_VERSION.to_bytes(
+            2,
+            byteorder="big",
+            signed=False,
+        )
+    )
+    _update_length_delimited(hasher, labels_name.encode("utf-8"))
+    hasher.update(_encode_u64(len(canonical_ids)))
+    hasher.update(memoryview(canonical_ids).cast("B"))
+    return f"sha256:{hasher.hexdigest()}"
+```
+
+This pseudocode assumes `instance_ids` already contains unique, validated,
+normalized positive integers that fit in uint64. The canonical binding
+validator must reject invalid values before NumPy conversion so casting cannot
+wrap or silently admit negative, fractional, Boolean, string, missing, or
+overflowing values. The contiguous memoryview prevents an additional Python
+bytes copy and supplies all sorted IDs to `hashlib` in one update.
+
+Here `||` describes byte-sequence concatenation for the encoding contract. The
+stored value is `"sha256:" + hasher.hexdigest()`, using the lowercase
+64-character hexadecimal digest returned by `hashlib`.
+
+Pinned digest test vectors cover at least table row reordering, obs-name
+changes, a changed labels name, adding/removing/replacing an instance ID,
+integer normalization such as `1` versus `1.0`, and uint64 byte-order cases such
+as 255 versus 256. They also demonstrate that a same-set reassignment produces
+the same digest and is handled only by the required semantic invalidation
+events. File bytes, AnnData serialization, zarr chunking, table row order, and
+obs_names never enter the digest. A representative 400,000-ID benchmark must
+guard against regression to per-ID Python hashing; observed performance should
+remain in the low tens of milliseconds on a typical development machine rather
+than becoming a hard, platform-sensitive CI timing assertion.
+
 Schema-v1 constants are not configurable dataclass fields. `obsm_key`, axes,
 matrix dtype, source element type, scale, coordinate-frame type, calculation
 method, weighting, background value, and pixel-coordinate convention are
@@ -1760,7 +1916,7 @@ The public operation surface is:
     build_canonical_region_bindings(table, table_metadata, labels_name)
         -> CanonicalRegionBindings
 
-    build_row_identity_digest(labels_name, obs_names, instance_ids)
+    build_instance_set_digest(labels_name, instance_ids)
         -> str
 
     build_canonical_metadata(...)
@@ -1791,8 +1947,10 @@ SpatialData table attrs in place.
 authoritative table row positions. Immediately before installation, the
 installer rebuilds the current region bindings, verifies the source and table
 signatures, and maps payload instance IDs onto current row positions. A normal
-AnnData row reorder can therefore complete safely, while a changed
-observation-to-instance binding rejects the payload.
+AnnData row reorder can therefore complete safely. A changed instance set
+rejects the payload; a same-set row reassignment is remapped safely during
+installation but requires semantic invalidation to prevent reuse of an older
+already-installed cache.
 
 The installer derives its action from a fresh inspection rather than trusting
 the state observed before calculation:
@@ -1825,9 +1983,13 @@ Exit criteria:
 - metadata can be built, serialized, parsed, and validated deterministically;
 - cache inspection performs no labels computation or labels-chunk reads;
 - every cache state and mismatch reason is covered by tests;
-- each region entry carries its own row-identity digest; row reordering alone
-  preserves it, while region membership or an obs-name-to-instance binding
-  change invalidates it;
+- each region entry carries its own instance-set digest; row reordering and
+  obs-name changes preserve it, while a region's instance membership change
+  invalidates it;
+- same-set instance-key reassignment is pinned as an explicitly undetectable
+  structural case, and the contract requires later semantic-event integration
+  to invalidate affected region entries before reuse for supported obs/linkage
+  mutations;
 - a valid shared matrix refresh changes only the selected region's current row
   positions and metadata, leaving other valid regions byte-for-byte unchanged;
 - NaN occurs only in rows for regions without valid coverage metadata;
@@ -1873,7 +2035,7 @@ Deliverables:
   - reuses a structurally valid selected-region cache without reading labels;
   - calculates and installs spatial_canonical plus metadata when absent;
   - accepts an explicit forced-recalculation mode that bypasses valid reuse;
-  - treats a selected region's row-identity digest mismatch as stale and
+  - treats a selected region's instance-set digest mismatch as stale and
     recalculates that complete region;
   - delegates every table mutation and rollback to the Slice 1a installer;
 - representative zarr-backed Dask fixtures and integration tests, including
@@ -1922,7 +2084,8 @@ Exit criteria:
 Deliverables:
 
 - shared dirty-state and semantic table-state event integration for cache
-  creation/refresh/rebuild;
+  creation/refresh/rebuild, plus mandatory affected-region invalidation for
+  supported obs/linkage mutations, including same-set instance reassignment;
 - component-level dirty paths for obsm/spatial_canonical and
   uns/spatial_coordinates/spatial_canonical;
 - selective ad.io.write_elem persistence and reload support for the canonical
@@ -1939,6 +2102,9 @@ Exit criteria:
 - the table is not marked clean when either half of the canonical pair fails to
   persist;
 - reload/reopen reuses only structurally valid metadata;
+- a supported region-key, instance-key, or obs replacement event invalidates
+  every affected region before cache reuse even when its instance set is
+  unchanged;
 - all widgets observe the same current canonical table state.
 
 ### Slice 4: Vectorized centroid-containment query
@@ -2097,7 +2263,8 @@ Completion additionally requires:
   metadata path as dirty, while calculation without installation does not;
 - overwrite is never silent;
 - no stale/cancelled worker installs data, opens a dialog, or mutates a table;
-- row identity always uses region_key and instance_key;
+- spatial instance identity always uses region_key and instance_key; obs_names
+  do not participate in canonical cache identity;
 - table rows with no source label are rejected as binding inconsistencies;
 - labels absent from the table are not claimed as queryable or counted;
 - annotation apply/rollback and undo are safe and atomic;

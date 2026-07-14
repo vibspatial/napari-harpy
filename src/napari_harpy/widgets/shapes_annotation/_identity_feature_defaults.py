@@ -29,13 +29,14 @@ class _AnnotationIdentityFeatureDefaultGuard:
     The guard changes only the active source identity feature::
 
         layer.current_properties == {
-            "instance_id": np.asarray([pd.NA], dtype=object),
+            "instance_id": np.asarray([None], dtype=object),
             "label": np.asarray(["tumor"], dtype=object),
         }
 
-    Because ``pd.NA`` is treated as a missing feature value, Harpy's status text
+    Because ``None`` is treated as a missing feature value, Harpy's status text
     omits the identity feature for a newly drawn unsaved row instead of showing
-    ``instance_id: <NA>``.
+    an identity. Unlike ``pd.NA``, ``None`` also remains safely comparable when
+    napari derives common properties from multiple selected shapes.
 
     Existing ``layer.features`` rows are left untouched. Newly drawn rows receive
     a missing source ID while they are unsaved, so Harpy's status text has no
@@ -113,7 +114,7 @@ class _AnnotationIdentityFeatureDefaultGuard:
             return
 
         current_properties = dict(layer.current_properties)
-        current_properties[feature_name] = np.asarray([pd.NA], dtype=object)
+        current_properties[feature_name] = np.asarray([None], dtype=object)
         self._is_clearing = True
         try:
             # Setting `current_properties` can write through to selected rows in
