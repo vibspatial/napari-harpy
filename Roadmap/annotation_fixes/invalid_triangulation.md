@@ -1553,7 +1553,7 @@ insertion remains pending for Slices 6–8.
 
 ### Slice 5: Deletion-Local Transaction Rollback
 
-Status: specified; implementation pending.
+Status: implemented.
 
 Upgrade guarded vertex deletion from Slice 4's propagation-only failure
 boundary to a deletion-local rollback transaction. This slice does not change
@@ -1648,10 +1648,13 @@ polygon a fresh stable identity when it is saved.
 Do not repurpose the hash-based `_ShapesAnnotationLayerSnapshot`, which is a
 dirty-state fingerprint rather than restorable layer data.
 
-Use matching deletion-specific helpers:
+Construct `_PolygonVertexDeletionBaseline(...)` inline immediately before the
+`CHANGING` event. Baseline capture is a short, single-use enumeration of the
+dataclass fields at the transaction boundary and does not need a separate
+helper. Keep the non-trivial rebuilding sequence in its deletion-specific
+restoration helper:
 
 ```python
-_capture_polygon_vertex_deletion_baseline(...)
 _restore_polygon_vertex_deletion_baseline(...)
 ```
 
@@ -1728,17 +1731,17 @@ is the fail-loud terminal outcome for the one deletion attempt.
 
 #### Slice 5 Test Matrix
 
-Adapt the Slice 4 late-deletion-failure test rather than retaining a test which
-expects the rebuilt candidate to remain live. Use deterministic fail-once seams
-and the Numba backend; do not rely on a platform-specific Bermuda or VisPy
-failure.
+The Slice 4 late-deletion-failure test was adapted rather than retaining a test
+which expected the rebuilt candidate to remain live. The recovery tests use
+deterministic fail-once seams and the Numba backend; they do not rely on a
+platform-specific Bermuda or VisPy failure.
 
 In particular,
 `test_annotation_layer_edit_guard_vertex_remove_commit_failure_emits_no_completion(...)`
-is a transitional characterization of the propagation-only behavior. It
-currently injects an exception after the real shortened-row rebuild and asserts
-that the shortened candidate remains live and the application exception
-propagates. Replace those expectations when implementing this slice:
+was the transitional characterization of the propagation-only behavior. It
+injected an exception after the real shortened-row rebuild and asserted that
+the shortened candidate remained live and the application exception
+propagated. Slice 5 replaced that contract:
 
 ```text
 current test contract
@@ -1753,13 +1756,13 @@ Slice 5 test contract
     -> `CHANGING` only; no completion callback
 ```
 
-Rename the adapted test to describe restoration, for example
+The adapted test is named
 `test_annotation_layer_edit_guard_vertex_remove_restores_after_commit_failure(...)`.
-Give the adapted test an equally explicit docstring describing its new sequence:
-the real rebuild succeeds, the injected exception is caught, the complete
-original layer baseline is restored, the renderer-failure warning is reported,
-the application exception does not propagate, and only `CHANGING` remains in
-the data-event stream with no completion callback.
+Its docstring describes the new sequence: the real rebuild succeeds, the
+injected exception is caught, the complete original layer baseline is restored,
+the renderer-failure warning is reported, the application exception does not
+propagate, and only `CHANGING` remains in the data-event stream with no
+completion callback.
 Do not retain a second test which expects the application exception to propagate
 after successful restoration. Exception propagation belongs only to the
 separate double-failure test where both deletion application and baseline

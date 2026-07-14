@@ -2484,27 +2484,61 @@ def test_annotation_layer_edit_guard_vertex_remove_guards_valid_explicitly_close
     assert finished_calls == ["finished"]
 
 
-def test_annotation_layer_edit_guard_vertex_remove_commit_failure_emits_no_completion(
+def test_annotation_layer_edit_guard_vertex_remove_restores_after_commit_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Propagate a late deletion failure without reporting completion.
+    """Restore the complete deletion baseline after a late commit failure.
 
     Perform the real shortened-row rebuild, then inject an exception before the
-    final refresh and success notifications. The shortened row therefore
-    remains live and the exception propagates. ``CHANGING`` has already been
-    emitted, but ``CHANGED`` and the delete-finished callback must not be
-    emitted because the deletion did not complete successfully.
+    final refresh and success notifications. The exception is caught, the
+    original layer baseline is restored, and a renderer-failure warning is
+    reported. ``CHANGING`` has already been emitted, but ``CHANGED`` and the
+    delete-finished callback are withheld. Later movement and deletion remain
+    usable.
     """
-    _, polygon = _polygon_hole_roundtrip_fixture()
+    polygon, simple_polygon = _polygon_hole_roundtrip_fixture()
     original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    second_vertices = shapely_polygon_to_napari_polygon_vertices(simple_polygon)
     deleted_vertex_index = 1
-    topology = napari_polygon_vertices_to_topology(original_vertices)
-    candidate = delete_napari_polygon_vertex(original_vertices, topology, deleted_vertex_index)
-    assert candidate.vertices is not None
-    expected_vertices = candidate.vertices
-    layer = Shapes([original_vertices], shape_type="polygon")
+    layer = Shapes(
+        [original_vertices, second_vertices],
+        shape_type=["polygon", "polygon"],
+        features=pd.DataFrame(
+            {
+                "instance_id": ["polygon-0", "polygon-1"],
+                "label": ["first", "second"],
+            },
+        ),
+    )
+    identity_guard = shapes_annotation_identity_defaults_module._AnnotationIdentityFeatureDefaultGuard()
+    identity_guard.attach(layer, feature_name="instance_id")
+    layer.feature_defaults = pd.DataFrame(
+        {
+            "instance_id": [pd.NA],
+            "label": ["next-polygon"],
+        },
+    )
+    layer.edge_color = np.asarray([_rgba("#112233"), _rgba("#445566")])
+    layer.face_color = np.asarray([_rgba("#01020344"), _rgba("#05060744")])
+    layer.edge_width = [2, 4]
+    layer.z_index = [3, 5]
+    layer.opacity = 0.42
+    layer.current_edge_color = "#abcdef"
+    layer.current_face_color = "#12345678"
+    layer.current_edge_width = 11
+    layer.mode = Mode.VERTEX_REMOVE
+    layer.selected_data = set()
     layer._drag_modes = dict(layer._drag_modes)
+    layer._drag_modes[Mode.DIRECT] = _direct_drag_callback_selecting_vertex(moved_vertex_index=2)
+    original_data = [np.asarray(vertices).copy() for vertices in layer.data]
+    original_shape_types = list(layer.shape_type)
+    original_features = layer.features.copy(deep=True)
+    original_edge_color = np.asarray(layer.edge_color).copy()
+    original_face_color = np.asarray(layer.face_color).copy()
+    original_edge_width = list(layer.edge_width)
+    original_z_index = list(layer.z_index)
     events: list[ActionType] = []
+    warnings: list[str] = []
     finished_calls: list[str] = []
 
     def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
@@ -2518,7 +2552,8 @@ def test_annotation_layer_edit_guard_vertex_remove_commit_failure_emits_no_compl
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
     layer.events.data.connect(lambda event: events.append(event.action))
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished")
+        warning_callback=warnings.append,
+        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
     )
     original_replace = guard._replace_shape_row_preserving_layer_state
     commit_error = RuntimeError("simulated failure after the deletion row was rebuilt")
@@ -2530,17 +2565,184 @@ def test_annotation_layer_edit_guard_vertex_remove_commit_failure_emits_no_compl
     monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
     guard.attach(layer)
 
-    with pytest.raises(RuntimeError) as caught:
+    layer._drag_modes[Mode.VERTEX_REMOVE](
+        layer,
+        SimpleNamespace(position=tuple(original_vertices[deleted_vertex_index])),
+    )
+
+    _assert_layer_data_unchanged(layer, original_data)
+    assert list(layer.shape_type) == original_shape_types
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    _assert_identity_feature_default_missing(layer, "instance_id")
+    assert layer.feature_defaults["label"].iloc[0] == "next-polygon"
+    np.testing.assert_allclose(layer.edge_color, original_edge_color)
+    np.testing.assert_allclose(layer.face_color, original_face_color)
+    assert layer.edge_width == original_edge_width
+    assert layer.z_index == original_z_index
+    assert layer.opacity == 0.42
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#abcdef"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#12345678"))
+    assert layer.current_edge_width == 11
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert set(layer.selected_data) == set()
+    assert layer._data_view._vertices_index.tolist() == [
+        0,
+        len(original_data[0]),
+        len(original_data[0]) + len(original_data[1]),
+    ]
+    restored_hit = layer.get_value(original_data[0][0], world=True)
+    assert restored_hit is not None
+    assert int(restored_hit[0]) == 0
+    assert warnings == [shapes_annotation_edit_guard_module._POLYGON_DELETE_RENDERING_WARNING]
+    assert events == [ActionType.CHANGING]
+    assert finished_calls == []
+
+    # Recovery leaves no persistent unsafe state: a later move and deletion can
+    # both commit through the same guard.
+    monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", original_replace)
+    move_event = SimpleNamespace(type="mouse_press", position=tuple(layer.data[0][2]))
+    drag = layer._drag_modes[Mode.DIRECT](layer, move_event)
+    assert next(drag) == "press"
+    move_event.type = "mouse_move"
+    move_event.position = tuple(np.asarray(layer.data[0][2], dtype=float) + np.asarray([0.1, 0.1]))
+    assert next(drag) is None
+    move_event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(drag)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](
+        layer,
+        SimpleNamespace(position=tuple(layer.data[0][deleted_vertex_index])),
+    )
+
+    # The recovered deletion contributes CHANGING only. The first CHANGED is
+    # from the later successful movement; the final CHANGING/CHANGED pair is
+    # from the later successful deletion.
+    assert events == [
+        ActionType.CHANGING,
+        ActionType.CHANGED,
+        ActionType.CHANGING,
+        ActionType.CHANGED,
+    ]
+    assert finished_calls == ["finished"]
+
+
+def test_annotation_layer_edit_guard_vertex_remove_restores_after_final_refresh_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Include the final layer refresh in the deletion transaction boundary."""
+    _, polygon = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    deleted_vertex_index = 1
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    events: list[ActionType] = []
+    warnings: list[str] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("polygon deletion should be guarded")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, deleted_vertex_index))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    layer.events.data.connect(lambda event: events.append(event.action))
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        warning_callback=warnings.append,
+        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+    )
+    original_replace = guard._replace_shape_row_preserving_layer_state
+    original_refresh = layer.refresh
+    fail_next_refresh = False
+
+    def replace_then_arm_refresh_failure(
+        bound_layer: Shapes,
+        row_index: int,
+        vertices: np.ndarray,
+    ) -> None:
+        nonlocal fail_next_refresh
+        original_replace(bound_layer, row_index, vertices)
+        fail_next_refresh = True
+
+    def fail_once_refresh(*args: object, **kwargs: object) -> None:
+        nonlocal fail_next_refresh
+        if fail_next_refresh:
+            fail_next_refresh = False
+            raise RuntimeError("simulated final deletion refresh failure")
+        original_refresh(*args, **kwargs)
+
+    monkeypatch.setattr(
+        guard,
+        "_replace_shape_row_preserving_layer_state",
+        replace_then_arm_refresh_failure,
+    )
+    monkeypatch.setattr(layer, "refresh", fail_once_refresh)
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](
+        layer,
+        SimpleNamespace(position=tuple(original_vertices[deleted_vertex_index])),
+    )
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._POLYGON_DELETE_RENDERING_WARNING]
+    assert events == [ActionType.CHANGING]
+    assert finished_calls == []
+
+
+def test_annotation_layer_edit_guard_vertex_remove_preserves_application_and_restoration_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve both errors when deletion application and recovery fail."""
+    _, polygon = _polygon_hole_roundtrip_fixture()
+    original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+    deleted_vertex_index = 1
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    events: list[ActionType] = []
+    warnings: list[str] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("polygon deletion should be guarded")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (0, deleted_vertex_index))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    layer.events.data.connect(lambda event: events.append(event.action))
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        warning_callback=warnings.append,
+        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+    )
+    original_replace = guard._replace_shape_row_preserving_layer_state
+    application_error = RuntimeError("simulated deletion application failure")
+    restoration_error = RuntimeError("simulated deletion baseline restoration failure")
+
+    def fail_after_rebuild(bound_layer: Shapes, row_index: int, vertices: np.ndarray) -> None:
+        original_replace(bound_layer, row_index, vertices)
+        raise application_error
+
+    def fail_restoration(
+        bound_layer: Shapes,
+        baseline: shapes_annotation_edit_guard_module._PolygonVertexDeletionBaseline,
+    ) -> None:
+        raise restoration_error
+
+    monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
+    monkeypatch.setattr(
+        shapes_annotation_edit_guard_module,
+        "_restore_polygon_vertex_deletion_baseline",
+        fail_restoration,
+    )
+    guard.attach(layer)
+
+    with pytest.raises(ExceptionGroup) as caught:
         layer._drag_modes[Mode.VERTEX_REMOVE](
             layer,
             SimpleNamespace(position=tuple(original_vertices[deleted_vertex_index])),
         )
 
-    assert caught.value is commit_error
-    # The failure occurs after the real rebuild, so the shortened row is already
-    # live. The exception must propagate without a CHANGED event or completion
-    # callback falsely reporting that the deletion finished successfully.
-    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert caught.value.exceptions == (application_error, restoration_error)
+    assert caught.value.__cause__ is application_error
+    assert warnings == []
     assert events == [ActionType.CHANGING]
     assert finished_calls == []
 
@@ -2761,6 +2963,90 @@ def test_annotation_layer_edit_guard_semantic_triangle_removal_preserves_multiro
     assert steps[-2:] == [(ActionType.CHANGED, (1,), ((3,),)), "finished"]
     assert steps[1:-2]
     assert all(step == "refresh" for step in steps[1:-2])
+
+
+def test_annotation_layer_edit_guard_semantic_triangle_removal_restores_after_commit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restore a removed mixed-layer row and every shifted row attribute."""
+    rectangle_vertices = np.asarray([[0.0, 0.0], [0.0, 2.0], [2.0, 2.0], [2.0, 0.0]], dtype=float)
+    triangle_vertices = np.asarray([[4.0, 0.0], [4.0, 3.0], [7.0, 0.0], [4.0, 0.0]], dtype=float)
+    path_vertices = np.asarray([[9.0, 0.0], [10.0, 2.0], [11.0, 0.0]], dtype=float)
+    layer = Shapes(
+        [rectangle_vertices, triangle_vertices, path_vertices],
+        shape_type=["rectangle", "polygon", "path"],
+        features=pd.DataFrame(
+            {
+                "source_identity": ["rectangle-id", "triangle-id", "path-id"],
+                "label": ["first", "deleted", "last"],
+            },
+        ),
+    )
+    layer.edge_color = np.asarray([_rgba("#112233"), _rgba("#445566"), _rgba("#778899")])
+    layer.face_color = np.asarray([_rgba("#01020344"), _rgba("#05060744"), _rgba("#090a0b44")])
+    layer.edge_width = [2, 4, 6]
+    layer.z_index = [3, 5, 7]
+    layer.opacity = 0.42
+    layer.current_edge_color = "#abcdef"
+    layer.current_face_color = "#12345678"
+    layer.current_edge_width = 11
+    layer.mode = Mode.VERTEX_REMOVE
+    layer.selected_data = {0, 1, 2}
+    layer._drag_modes = dict(layer._drag_modes)
+    original_data = [np.asarray(vertices).copy() for vertices in layer.data]
+    original_shape_types = list(layer.shape_type)
+    original_features = layer.features.copy(deep=True)
+    original_edge_color = np.asarray(layer.edge_color).copy()
+    original_face_color = np.asarray(layer.face_color).copy()
+    events: list[ActionType] = []
+    warnings: list[str] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_remove_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("semantic triangle deletion should be guarded")
+
+    monkeypatch.setattr(layer, "get_value", lambda position, world=True: (1, 3))
+    layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
+    layer.events.data.connect(lambda event: events.append(event.action))
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        warning_callback=warnings.append,
+        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+    )
+    original_remove = guard._remove_shape_row_preserving_layer_state
+    commit_error = RuntimeError("simulated failure after the polygon row was removed")
+
+    def fail_after_remove(bound_layer: Shapes, row_index: int) -> None:
+        original_remove(bound_layer, row_index)
+        raise commit_error
+
+    monkeypatch.setattr(guard, "_remove_shape_row_preserving_layer_state", fail_after_remove)
+    guard.attach(layer)
+
+    layer._drag_modes[Mode.VERTEX_REMOVE](
+        layer,
+        SimpleNamespace(position=tuple(triangle_vertices[-1])),
+    )
+
+    _assert_layer_data_unchanged(layer, original_data)
+    assert list(layer.shape_type) == original_shape_types
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    np.testing.assert_allclose(layer.edge_color, original_edge_color)
+    np.testing.assert_allclose(layer.face_color, original_face_color)
+    assert layer.edge_width == [2, 4, 6]
+    assert layer.z_index == [3, 5, 7]
+    assert layer.opacity == 0.42
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#abcdef"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#12345678"))
+    assert layer.current_edge_width == 11
+    assert layer.mode == Mode.VERTEX_REMOVE
+    assert set(layer.selected_data) == {0, 1, 2}
+    assert layer._data_view._vertices_index.tolist() == [0, 4, 8, 11]
+    restored_hit = layer.get_value(triangle_vertices[-1], world=True)
+    assert restored_hit is not None
+    assert int(restored_hit[0]) == 1
+    assert warnings == [shapes_annotation_edit_guard_module._POLYGON_DELETE_RENDERING_WARNING]
+    assert events == [ActionType.CHANGING]
+    assert finished_calls == []
 
 
 def test_annotation_layer_edit_guard_vertex_remove_uses_helper_for_hole_bearing_polygon(monkeypatch) -> None:
