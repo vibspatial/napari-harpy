@@ -846,7 +846,7 @@ row-length-changing rebuilds. Slice 4 closes the remaining focused gaps by:
 - proving that movement restoration failure preserves both exceptions and
   produces no successful completion for the failed candidate;
 - proving that a guarded deletion commit exception propagates after `CHANGING`
-  without `CHANGED` or the delete-finished callback;
+  without `CHANGED` or the shared polygon-edit finished callback;
 - distinguishing a renderer failure from invalid geometry in the user-facing
   movement warning.
 
@@ -923,7 +923,7 @@ Deletion changes row length. Harpy rebuilds `layer.data` so napari reconstructs
 its private vertex-boundary cache, while preserving features, styles, selection,
 mode, and current draw defaults on successful commits. Candidate validation
 must finish before emitting `ActionType.CHANGING` or replacing live layer data.
-Emit `ActionType.CHANGED` and the delete-finished callback only after the rebuild
+Emit `ActionType.CHANGED` and the shared polygon-edit finished callback only after the rebuild
 and refresh succeed. A rejected or failed deletion must not be reported as a
 completed edit.
 
@@ -1267,7 +1267,7 @@ do not introduce a generic gesture router or copy napari's complete
 
 `GUARD` and `REJECT` are Harpy-owned from classification through return. A
 rejected deletion emits no data event, performs no refresh or thumbnail update,
-and does not invoke the delete-finished callback.
+and does not invoke the shared polygon-edit finished callback.
 
 #### Hole-Bearing Candidate Construction
 
@@ -1383,7 +1383,7 @@ accepted shortened-row candidate:
 5. Leave `_data_view._vertices_index` consistent with the rebuilt row lengths
    so later hit testing cannot report a stale raw index.
 6. Refresh the layer, then emit one `ActionType.CHANGED` with the same payload
-   and invoke the delete-finished callback exactly once.
+   and invoke the shared polygon-edit finished callback exactly once.
 
 For semantic-triangle whole-shape removal, use the same Harpy-owned rebuild
 principle but remove the corresponding entries from every row-aligned
@@ -1400,7 +1400,7 @@ structure:
 
 The successful whole-shape event payload still uses the original row and raw
 vertex indices, matching napari's `vertex_remove(...)` contract. Refresh/update
-the thumbnail, then emit `CHANGED` and call the delete-finished callback only
+the thumbnail, then emit `CHANGED` and call the shared polygon-edit finished callback only
 after the complete row removal succeeds.
 
 If a rebuild raises, do not emit `CHANGED` or invoke the completion callback.
@@ -1482,7 +1482,7 @@ contract which Slice 5 subsequently strengthens:
    before any live mutation or data event.
 2. An accepted deletion emits `CHANGING`, then attempts the Harpy-owned row
    rebuild or whole-shape removal and refresh.
-3. `CHANGED` and the delete-finished callback occur only after the complete
+3. `CHANGED` and the shared polygon-edit finished callback occur only after the complete
    commit succeeds.
 4. A commit exception propagates. It may leave `CHANGING` in the event stream,
    but must not emit `CHANGED` or call the completion callback.
@@ -1522,7 +1522,7 @@ Required passing coverage is:
   retained, the failed candidate produces no successful completion, and normal
   Harpy-owned interaction cleanup still runs;
 - if a guarded deletion commit raises after `CHANGING`, the exception
-  propagates, no `CHANGED` is emitted, and the delete-finished callback is not
+  propagates, no `CHANGED` is emitted, and the shared polygon-edit finished callback is not
   called;
 - a successfully restored movement renderer failure uses the renderer-specific
   warning rather than the invalid-geometry warning.
@@ -1689,7 +1689,7 @@ For an accepted deletion:
 3. Attempt the existing shortened-row replacement or whole-shape removal and
    final refresh.
 4. Only after every commit step succeeds, emit the matching `CHANGED` payload
-   and invoke the delete-finished callback once.
+   and invoke the shared polygon-edit finished callback once.
 5. If any commit step raises, retain that application exception and restore the
    complete baseline under blocked intermediate `data` and `features` events.
 6. Restore geometry and shape types first, then features, mode, and selection.
@@ -1704,7 +1704,7 @@ After successful restoration:
   the application exception;
 - show a deletion renderer-failure warning which states that the previous layer
   state was restored, not that the candidate geometry was invalid;
-- emit no `CHANGED` and do not call the delete-finished callback;
+- emit no `CHANGED` and do not call the shared polygon-edit finished callback;
 - preserve the pre-attempt selection and mode rather than applying the index
   remapping of a successful whole-shape removal;
 - keep the annotation layer editable so a later deletion or movement can
@@ -1722,7 +1722,7 @@ If restoring the baseline also raises:
 - preserve the original deletion-application exception and the restoration
   exception in one `ExceptionGroup`;
 - propagate that combined error to napari/psygnal;
-- emit no `CHANGED` and do not call the delete-finished callback;
+- emit no `CHANGED` and do not call the shared polygon-edit finished callback;
 - do not attempt a second speculative rebuild.
 
 This slice does not add persistent unsafe-session state, disable Save or
@@ -2063,37 +2063,190 @@ work.
 
 ### Slice 8: Insertion-Local Transaction Rollback
 
-Status: outlined; detailed implementation specifications pending.
+Status: specified; implementation pending.
 
-Upgrade Slice 7's propagation-only commit boundary to the same recovery
-guarantee as deletion. Candidate construction, target routing, successful
-commit behavior, lifecycle handling, and success events remain unchanged.
+Upgrade Slice 7's propagation-only insertion commit boundary to the same
+recovery guarantee as deletion. Candidate construction, target routing,
+successful commit behavior, callback lifecycle, and success events remain
+unchanged. This slice adds no new geometry policy: a candidate still has to
+pass `insert_napari_polygon_vertex(...)` before any baseline capture, event, or
+live mutation.
 
-- capture the complete pre-insertion geometry, shape-type, feature,
-  feature-default, style, selection, mode, opacity, and current-draw baseline;
-- wrap the existing Slice 7 row rebuild and final refresh in the recovery
-  boundary;
-- restore the complete baseline after triangulation, rebuild, refresh, or
-  another insertion-commit failure;
-- report the insertion renderer-failure warning, return normally, emit no
-  `CHANGED`, and invoke no completion callback after successful restoration;
-- preserve topology, private vertex-cache boundaries, hit testing, and the
-  ability to perform later movement, deletion, and insertion;
-- preserve both errors in an `ExceptionGroup` without a second repair attempt if
-  insertion restoration also fails;
-- keep the already-emitted `CHANGING` event as the only data event for a
-  successfully recovered failure.
+#### Shared Row-Change Baseline and Restoration
 
-Keep insertion recovery local to its row-length-changing commit path. Reuse the
-deletion baseline's focused field set and proven public-data restoration order
-where appropriate, but do not introduce a generic transaction framework or
-persistent unsafe-session architecture merely to share the two call sites.
+Insertion lengthens a polygon row; deletion shortens a row or removes the
+shape. These operations commit through the full public layer-data rebuild or
+removal path. A failed commit can therefore affect the same full-layer public
+state and derived vertex caches.
+Rename the deletion-specific recovery data and helper to describe that shared
+responsibility:
 
-Use deterministic fail-once seams rather than a platform-specific Bermuda or
-VisPy failure. Adapt the transitional Slice 7 commit-failure test for successful
-restoration, add one double-failure test, and rely on the existing complete
-deletion restoration matrix instead of duplicating every baseline field across
-multiple insertion failure sites.
+```python
+@dataclass(frozen=True)
+class _PolygonVertexRowChangeBaseline:
+    """Restorable Shapes state captured before a polygon row change."""
+
+    data: tuple[np.ndarray, ...]
+    shape_types: tuple[str, ...]
+    features: pd.DataFrame
+    feature_defaults: pd.DataFrame
+    style: _ShapesLayerStyleSnapshot
+    selected_data: frozenset[int]
+    mode: str
+```
+
+```python
+_restore_polygon_vertex_row_change_baseline(...)
+```
+
+This is a focused reuse of the exact baseline and public-data restoration
+sequence already proven by deletion. It is not a generic transaction
+framework. Movement retains its smaller `last_valid_vertices` row baseline,
+while deletion and insertion retain separate operation-local `try`/`except`
+branches, warnings, event payloads, and `ExceptionGroup` messages.
+
+Update the existing deletion path and tests to use the shared class and helper
+names without changing deletion behavior. Continue constructing `baseline`
+inline at each operation's transaction boundary; a separate capture helper is
+not needed.
+
+The shared baseline fields and exclusions remain those specified for Slice 5:
+
+- copy every geometry row and shape type because a public rebuild can affect
+  the complete row-aligned layer;
+- deep-copy `features` and `feature_defaults` separately;
+- capture row and current drawing styles, opacity, selection, and mode;
+- do not capture private vertex-cache indices, topology, highlight, or
+  thumbnail state because they are derived from restored public state;
+- do not capture unrelated layer name, transform, visibility, blending, or
+  editability state because neither row-change operation modifies them.
+
+Restoration must continue to block intermediate `data` and `features` events,
+restore geometry and shape types through napari's public full-data path, then
+restore features, mode, selection, feature defaults, current drawing styles,
+and row styles in the proven order. Finish with a real layer refresh so meshes,
+highlight, thumbnail, hit testing, and private vertex-cache boundaries match
+the restored baseline.
+
+#### Insertion Transaction Boundary
+
+For a `GUARD` insertion whose candidate was successfully constructed:
+
+1. Construct `_PolygonVertexRowChangeBaseline(...)` inline after candidate
+   validation and immediately before `CHANGING`.
+2. If baseline capture unexpectedly raises, propagate that error without
+   emitting `CHANGING`, mutating the layer, or reporting an invalid-geometry or
+   renderer warning.
+3. Emit the existing native-compatible `CHANGING` payload.
+4. Inside one insertion-local recovery boundary, attempt
+   `_replace_shape_row_preserving_layer_state(...)` followed by the final
+   `layer.refresh()`.
+5. Only when both steps succeed, emit the matching `CHANGED` payload and invoke
+   the shared `polygon_edit_finished_callback` once.
+6. If row rebuild, triangulation, refresh, or another commit step raises,
+   retain that application exception and call
+   `_restore_polygon_vertex_row_change_baseline(...)` with the captured
+   baseline.
+
+The transaction boundary must include the final refresh. A Shapely-valid,
+topologically valid insertion can still fail during triangulation or rendering
+after the longer row has already become live.
+
+#### Successful Recovery Contract
+
+After the insertion application fails and baseline restoration succeeds:
+
+- treat the insertion as a recovered rejection and return normally rather
+  than propagating the application exception;
+- report a dedicated insertion rendering warning:
+
+  ```text
+  The polygon insertion could not be rendered, so the previous layer state was restored.
+  ```
+
+- retain the already-emitted `CHANGING` as the only user data event; emit no
+  `CHANGED` and keep intermediate restoration events blocked;
+- do not invoke `polygon_edit_finished_callback` for the failed insertion;
+- restore every original row length and topology, feature and source-identity
+  value, feature default, row style, opacity, current drawing default,
+  selection, and mode;
+- rebuild the original private vertex-cache boundaries and preserve hit
+  testing;
+- leave the annotation layer usable for later guarded movement, deletion, and
+  insertion.
+
+The warning must describe a renderer/application failure and successful
+restoration. Do not report this branch as invalid candidate geometry: candidate
+validation already succeeded before the transaction began.
+
+#### Restoration Failure
+
+If `_restore_polygon_vertex_row_change_baseline(...)` also raises:
+
+- preserve the original insertion-application exception and the restoration
+  exception in one `ExceptionGroup`;
+- use an insertion-specific message stating that insertion and restoration
+  both failed;
+- propagate the combined error to napari/psygnal;
+- emit no `CHANGED` and invoke no `polygon_edit_finished_callback`;
+- do not attempt a second speculative repair.
+
+As with deletion, this fail-loud double-failure branch does not introduce
+persistent unsafe-session state, disable Save or **Create holes**, or add a new
+guard-to-widget failure callback.
+
+#### Focused Slice 8 Coverage
+
+Use deterministic fail-once seams with the Numba backend rather than depending
+on a platform-specific Bermuda, VisPy, or triangulation failure.
+
+Adapt
+`test_annotation_layer_edit_guard_vertex_insert_commit_failure_emits_no_completion(...)`
+instead of retaining the transitional expectation that the longer candidate
+remains live. Rename it to
+`test_annotation_layer_edit_guard_vertex_insert_restores_after_commit_failure(...)`
+and make its docstring state the complete sequence:
+
+```text
+real longer-row rebuild succeeds
+    -> final commit step raises
+    -> original row-change baseline is restored
+    -> insertion-rendering warning
+    -> application exception does not propagate
+    -> `CHANGING` only
+    -> no shared finished callback
+```
+
+Required passing coverage is:
+
+- the adapted test proves that the original row, topology, selection, mode,
+  private vertex-cache boundaries, and hit testing are restored after the real
+  longer-row rebuild has made the candidate live;
+- focused feature assertions prove that source-identity rows remain unchanged,
+  a source-identity default kept missing by
+  `_AnnotationIdentityFeatureDefaultGuard` remains missing, and an ordinary
+  drawing default is restored;
+- one fail-once final-refresh seam proves that refresh belongs to the insertion
+  recovery boundary; this may be the adapted primary recovery test rather than
+  a separate full-state test;
+- a successfully recovered insertion emits `CHANGING` only, reports the
+  insertion rendering warning once, and invokes no shared finished callback;
+- at least one later valid guarded insertion succeeds after recovery; rely on
+  the existing deletion recovery coverage rather than repeating all later-move
+  and later-delete combinations;
+- one double-failure test verifies that insertion application and shared
+  baseline restoration errors are retained in order in the propagated
+  `ExceptionGroup`, with no success notification;
+- existing successful simple, shell, and later-hole insertion tests and their
+  event payloads remain unchanged;
+- existing deletion recovery tests continue to pass under the renamed shared
+  baseline and restoration helper.
+
+Do not duplicate the complete deletion restoration matrix for multiple
+insertion failure sites. The shared restoration helper already has broad
+deletion coverage; insertion adds one representative recovered commit, one
+double failure, and the insertion-specific event, warning, callback, cache, and
+continued-editability assertions.
 
 At the end of Slice 8, direct movement, deletion, and insertion all satisfy the
 shared prevalidation, rendering rollback, and completed-event safety invariant.
@@ -2142,7 +2295,8 @@ The first delivery phase is complete when:
   selection, mode, opacity, current draw defaults, and derived vertex-cache
   consistency;
 - a successfully restored deletion failure emits `CHANGING` only, reports the
-  renderer-specific deletion warning, and invokes no delete-finished callback;
+  renderer-specific deletion warning, and invokes no shared polygon-edit
+  finished callback;
 - a later valid deletion and movement can succeed after deletion recovery;
 - if deletion restoration itself fails, both errors are reported together and
   no successful completion is emitted;
@@ -2166,7 +2320,7 @@ The insertion follow-up is complete when:
 - successful insertion rebuilds preserve the same layer and vertex-cache state
   required for deletion;
 - insertion commit failures restore the complete prior layer state without
-  `CHANGED` or the completion callback;
+  `CHANGED` or the shared polygon-edit finished callback;
 - insertion restoration failure preserves both errors without a second repair
   attempt;
 - no valid widget-owned polygon insertion uses napari's raw unvalidated path.
@@ -2184,7 +2338,8 @@ Across both phases:
 
 This roadmap does not introduce a general layer-transaction framework or
 persistent unsafe-session UI state. Row-length-changing deletion and insertion
-use focused operation-local recovery baselines because their public and derived
-row state must be rebuilt together. Prevalidation and encoding integrity remain
-the primary fix; renderer-failure rollback supplements them at each concrete
-mutation boundary.
+share one focused baseline representation and public-data restoration helper
+because their public and derived row state must be rebuilt together. Their
+transaction boundaries, warnings, and error messages remain operation-local.
+Prevalidation and encoding integrity remain the primary fix; renderer-failure
+rollback supplements them at each concrete mutation boundary.
