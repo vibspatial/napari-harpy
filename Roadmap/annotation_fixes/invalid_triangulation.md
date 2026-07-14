@@ -749,12 +749,12 @@ today. The change is that Harpy verifies the shift, topology grammar, and
 geometry inside the insertion transaction instead of relying on a later
 operation to rediscover whatever napari committed.
 
-Harpy already provides `insert_napari_polygon_vertex(...)`. For hole-bearing
-rows it rejects bridge/separator insertion indices, shifts topology indices,
-validates the resulting Shapely polygon, and verifies the parsed topology.
-However, the annotation widget does not currently call this helper. The helper
-also intentionally rejects simple-polygon topology, so the widget still needs
-a separate candidate-construction and validation path for simple polygons.
+Harpy provides `insert_napari_polygon_vertex(...)` as the single insertion
+candidate API for simple and hole-bearing polygon rows. It preserves implicit
+or explicit simple-ring closure, rejects non-edge simple insertion indices,
+rejects hole-encoding bridge and separator indices, shifts hole-bearing
+topology indices, validates the resulting Shapely polygon, and verifies the
+parsed topology. The annotation widget does not yet call this helper.
 
 Insertion increases row length and therefore has the same private vertex-cache
 and transactional rebuild concerns as deletion. It is specified as a follow-up
@@ -1905,28 +1905,51 @@ insertion candidate.
 
 ### Slice 7: Guard and Commit Every Polygon Vertex Insertion
 
-Status: specified; implementation pending.
+Status: implemented.
 
-Install a complete `Mode.VERTEX_INSERT` wrapper, route the interaction before
-native mutation, call the Slice 6 geometry API for every polygon target, and
-commit accepted candidates through the existing full-row rebuild path.
+Install a complete `Mode.VERTEX_INSERT` wrapper in
+`_AnnotationLayerEditGuard`, route each insertion click before native mutation,
+call `insert_napari_polygon_vertex(...)` for every polygon target, and commit
+accepted candidates through the existing full-row rebuild path. This slice
+implements guarded insertion and successful commit. Insertion-local recovery
+from a renderer or rebuild failure remains Slice 8.
 
 Napari's native `vertex_insert(...)` is an immediate callback rather than a
 generator. Once called, it selects an edge, emits `CHANGING`, mutates the row,
 emits `CHANGED`, and refreshes before returning. There is no press-only yield at
 which Harpy can suspend it. Delegated interactions therefore call native once
-normally, while Harpy-owned polygon interactions must never call it.
+normally. `GUARD` and `REJECT` interactions must never call it because native
+mutation would already have happened before control returned to Harpy.
+
+Add the insertion counterparts to the existing edit-guard structure:
+
+- `_PolygonVertexInsertRoute` with `DELEGATE`, `GUARD`, and `REJECT`;
+- a frozen `_VertexInsertState` containing the target row, raw insertion
+  index, copied source vertices, parsed topology, and 2D data-space cursor
+  coordinate;
+- a wrapped insertion callback which calls `_route_vertex_insert(...)`;
+- the shared optional `polygon_edit_finished_callback`, connected by the
+  Shapes annotation widget to `_reset_annotation_edit_warning` and also used
+  by guarded movement and deletion.
 
 #### Target Selection and Routing
 
-Reproduce only napari's target-selection step:
+Introduce one focused classifier that reproduces only napari's target-selection
+step; do not copy its mutation and event code:
 
-1. Collect the same raw displayed edges from all selected eligible shapes.
-2. Transform the actual cursor through `world_to_data(...)` and select the
-   nearest raw edge across the complete selection.
-3. Carry the target row, raw insertion index, and actual data-space cursor
-   coordinate into routing. Insert the cursor coordinate, not its projection
-   onto the selected edge.
+1. Iterate all selected rows and collect the same edges native
+   `vertex_insert(...)` constructs from napari's displayed vertex cache. Skip
+   ellipses, close every non-path edge sequence, and keep the row and zero-based
+   edge index alongside each edge.
+2. Transform `event.position` once with `layer.world_to_data(...)`. Use its
+   displayed components to choose the nearest raw edge across the complete
+   selection, exactly as native insertion does.
+3. Convert the chosen zero-based edge index to the raw insertion index with
+   `insert_index = edge_index + 1`.
+4. Carry the target row, raw insertion index, copied source row, parsed
+   topology, and actual 2D data-space cursor coordinate into routing. The
+   candidate must insert the cursor coordinate itself, matching napari; do not
+   replace it with the closest point projected onto the edge.
 
 Select the nearest raw edge before applying Harpy topology rules. Filtering
 bridge or separator edges first could silently insert into a more distant
@@ -1935,74 +1958,102 @@ genuine edge than the one the user selected.
 Use explicit `DELEGATE`, `GUARD`, and `REJECT` routes:
 
 - `DELEGATE`: no eligible edge exists, or the chosen target is not a polygon.
-  Call native once and preserve its no-op, path, line, rectangle, and other
-  non-polygon behavior. A mixed selection delegates when its nearest edge
-  belongs to a non-polygon.
-- `GUARD`: the chosen target is a valid polygon row with a safely captured raw
-  insertion index and 2D data-space cursor coordinate.
-- `REJECT`: the chosen polygon row, topology, index, or coordinate cannot be
-  captured safely. Warn that the polygon is already invalid and never delegate
-  it to napari's raw insertion path.
+  `_route_vertex_insert(...)` calls the captured native callback exactly once,
+  with its original arguments, preserving native no-op, path, line, rectangle,
+  and other non-polygon behavior. A mixed selection delegates when the nearest
+  raw edge belongs to a non-polygon.
+- `GUARD`: the nearest raw edge belongs to a polygon whose row, topology,
+  insertion index, and finite 2D data-space coordinate were captured safely.
+  Require the source row to decode as a valid polygon before returning this
+  route.
+- `REJECT`: the nearest edge belongs to a polygon, but its row, source geometry,
+  topology, index, or coordinate cannot be captured safely. Report the existing
+  invalid-polygon warning and return without calling native code, emitting data
+  events, or mutating the layer.
 
 A chosen artificial bridge, separator, or closing-alias edge remains a
-Harpy-owned polygon interaction. Pass it to the Slice 6 public helper and
-reject the helper error without mutation; do not re-route the click to another
-edge or native insertion.
+`GUARD` interaction at classification time: it is still the raw edge the user
+selected. Pass its raw index to `insert_napari_polygon_vertex(...)` and reject
+the helper error without mutation. Do not re-route the click to another edge
+and do not fall back to native insertion.
 
 #### Candidate and Commit Contract
 
 For every `GUARD` route:
 
-1. Call `insert_napari_polygon_vertex(...)` once. The edit guard must not branch
-   between simple and hole-bearing encoding.
-2. If candidate construction raises, report the invalid-geometry/topology
-   warning and return without mutation or data events.
-3. Emit `ActionType.CHANGING` only after the complete candidate is validated.
-4. Rebuild the affected row with
+1. Call `insert_napari_polygon_vertex(...)` once with the captured source row,
+   topology, raw insertion index, and cursor coordinate. The edit guard must
+   not branch between simple and hole-bearing encodings.
+2. If candidate construction raises `ValueError`, report the rejected-edit
+   warning and return without live mutation, `CHANGING`, `CHANGED`, refresh, or
+   completion callback.
+3. Emit `ActionType.CHANGING` only after the complete candidate has passed
+   topology and Shapely validation. Match napari's payload:
+   `data_indices=(row_index,)` and
+   `vertex_indices=((insert_index,),)`.
+4. Rebuild only the affected row with
    `_replace_shape_row_preserving_layer_state(...)`. That existing helper
    supports a longer row, preserves the row count and row-aligned layer state,
    and rebuilds napari's derived vertex cache through the public data path.
 5. Refresh the layer.
-6. Only after the rebuild and refresh succeed, emit the matching `CHANGED` and
-   invoke a dedicated polygon-insertion-finished callback once.
+6. Only after both rebuild and refresh succeed, emit the matching `CHANGED`
+   payload and invoke `polygon_edit_finished_callback` exactly once. Return
+   normally without calling the captured native callback.
 
 Successful insertion must preserve features, source identity, feature defaults,
 row styles, opacity, selection, mode, current drawing defaults, shape type,
-private vertex-cache boundaries, and hit testing. The callback resets a stale
-edit warning in the widget just as the movement- and deletion-finished
-callbacks do.
+private vertex-cache boundaries, and hit testing. The shared callback resets a
+stale edit warning in the widget for successful insertion just as it does for
+guarded movement and deletion.
 
 Slice 7 deliberately retains the smaller propagation-only commit-failure
 boundary that deletion had before Slice 5: a rebuild or refresh exception
-propagates, while `CHANGED` and the insertion-finished callback are withheld.
+propagates, while `CHANGED` and the shared polygon-edit-finished callback are
+withheld.
 Slice 8 replaces that transitional failure contract with insertion-local
 rollback.
 
 #### Lifecycle and Focused Coverage
 
-Capture and restore the original insertion callback with the same lifecycle as
-the existing guarded modes. Cover attach, repeated attach, layer switching,
-disconnect, inherited callback maps, and active-mode callback replacement
-without introducing insertion-specific lifecycle machinery.
+Require `Mode.VERTEX_INSERT` in the layer's drag-mode mapping during `attach()`.
+Capture its original callback, install the wrapped callback in the copied
+mapping, store the wrapper identity, and clear that stored identity during
+`disconnect()`. Existing mapping restoration must restore an owned instance
+mapping or remove Harpy's temporary instance mapping exactly as it already does
+for direct movement and deletion.
+
+If the layer is already in `Mode.VERTEX_INSERT` when the guard attaches, replace
+the original callback in `layer.mouse_drag_callbacks` as well as in
+`layer._drag_modes`; changing only the mapping would leave the active native
+callback live. Reverse that active callback replacement during disconnect.
+Extend the current lifecycle helpers or tests rather than creating a parallel
+insertion-only lifecycle framework.
 
 Keep widget coverage focused:
 
-- parameterize successful simple, genuine shell-edge, and genuine hole-edge
-  insertion where that improves clarity;
-- cover a later-hole insertion whose shifted topology remains correct;
-- reject one artificial bridge reproduction and one invalid simple candidate
-  before events or mutation;
-- cover one malformed polygon rejection;
-- cover no-edge native no-op and a mixed-selection non-polygon delegation;
-- verify successful event payloads, callback count, preserved layer state,
-  rebuilt vertex-cache boundaries, and hit testing in one representative
-  successful case;
+- parameterize successful simple, shell-edge, and hole-edge insertions; use a
+  later-hole case for the hole branch so the same test proves that all shifted
+  topology indices remain correct;
+- reject one real artificial-bridge reproduction and one invalid simple
+  candidate before mutation or data events;
+- reject one malformed polygon without calling native insertion;
+- cover native delegation with one no-edge no-op and one mixed-selection case
+  whose nearest raw edge belongs to a non-polygon;
+- in one representative successful insertion, verify the `CHANGING`/`CHANGED`
+  payloads, one completion callback, preserved row-aligned state, rebuilt
+  private vertex-cache boundaries, and working hit testing;
+- extend existing attach/disconnect tests with insertion-wrapper assertions and
+  add only the active-`VERTEX_INSERT` callback case that the current lifecycle
+  tests do not exercise;
 - characterize one deterministic late commit failure as `CHANGING` only, with
-  no completion callback, for Slice 8 to adapt.
+  no `CHANGED` and no completion callback, for Slice 8 to adapt.
 
 Do not add a separate suite of native broken-behavior characterizations. The
 guard rejection tests should directly reproduce the bridge and invalid-simple
-cases that the implementation fixes.
+cases that the implementation fixes. Do not repeat the complete successful
+state-preservation matrix for every insertion topology; one representative
+integration test plus the focused geometry-helper tests from Slice 6 is the
+required boundary.
 
 At the end of Slice 7, every valid widget-owned polygon insertion is
 prevalidated and committed by Harpy, every invalid polygon candidate is

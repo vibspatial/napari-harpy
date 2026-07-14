@@ -12,12 +12,15 @@ import pandas as pd
 from napari.layers import Shapes
 from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes._shapes_constants import Mode
+from napari.layers.shapes._shapes_models import Ellipse, Path
+from napari.layers.shapes._shapes_utils import point_to_lines
 from napari.utils.key_bindings import coerce_keybinding
 
 from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonTopology,
     delete_napari_polygon_vertex,
+    insert_napari_polygon_vertex,
     move_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
@@ -47,6 +50,13 @@ _SPACE_PAN_RESUMABLE_DRAW_MODES = frozenset(
         Mode.ADD_POLYLINE,
     }
 )
+_POLYGON_GUARDED_EDIT_MODES = frozenset(
+    {
+        Mode.DIRECT,
+        Mode.VERTEX_REMOVE,
+        Mode.VERTEX_INSERT,
+    }
+)
 
 
 @dataclass
@@ -71,12 +81,27 @@ class _PolygonVertexDeleteRoute(Enum):
     REJECT = auto()
 
 
+class _PolygonVertexInsertRoute(Enum):
+    DELEGATE = auto()
+    GUARD = auto()
+    REJECT = auto()
+
+
 @dataclass(frozen=True)
 class _VertexDeleteState:
     row_index: int
     deleted_vertex_index: int
     vertices: np.ndarray
     topology: NapariPolygonTopology
+
+
+@dataclass(frozen=True)
+class _VertexInsertState:
+    row_index: int
+    insert_index: int
+    vertices: np.ndarray
+    topology: NapariPolygonTopology
+    inserted_coordinate: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -154,8 +179,7 @@ class _AnnotationLayerEditGuard:
         self,
         *,
         warning_callback: Callable[[str], None] | None = None,
-        polygon_vertex_drag_finished_callback: Callable[[], None] | None = None,
-        polygon_vertex_delete_finished_callback: Callable[[], None] | None = None,
+        polygon_edit_finished_callback: Callable[[], None] | None = None,
         can_space_pan_draw: Callable[[Shapes], bool] | None = None,
     ) -> None:
         self._layer: Shapes | None = None
@@ -165,6 +189,7 @@ class _AnnotationLayerEditGuard:
         self._had_instance_move_modes = False
         self._wrapped_direct_callback: Callable[..., Any] | None = None
         self._wrapped_vertex_remove_callback: Callable[..., Any] | None = None
+        self._wrapped_vertex_insert_callback: Callable[..., Any] | None = None
         self._wrapped_space_keybinding: Callable[..., Any] | None = None
         # Track Space and mouse release independently so drawing resumes only
         # after both halves of a temporary Space-pan have ended.
@@ -174,8 +199,7 @@ class _AnnotationLayerEditGuard:
         self._previous_space_keybinding: object | None = None
         self._had_instance_space_keybinding = False
         self._warning_callback = warning_callback
-        self._polygon_vertex_drag_finished_callback = polygon_vertex_drag_finished_callback
-        self._polygon_vertex_delete_finished_callback = polygon_vertex_delete_finished_callback
+        self._polygon_edit_finished_callback = polygon_edit_finished_callback
         self._can_space_pan_draw = can_space_pan_draw
 
     @property
@@ -194,6 +218,7 @@ class _AnnotationLayerEditGuard:
             or not isinstance(move_modes, dict)
             or Mode.DIRECT not in drag_modes
             or Mode.VERTEX_REMOVE not in drag_modes
+            or Mode.VERTEX_INSERT not in drag_modes
             or not _SPACE_PAN_RESUMABLE_DRAW_MODES.issubset(drag_modes)
             or not _SPACE_PAN_RESUMABLE_DRAW_MODES.issubset(move_modes)
         ):
@@ -201,6 +226,7 @@ class _AnnotationLayerEditGuard:
 
         original_direct_callback = drag_modes[Mode.DIRECT]
         original_vertex_remove_callback = drag_modes[Mode.VERTEX_REMOVE]
+        original_vertex_insert_callback = drag_modes[Mode.VERTEX_INSERT]
 
         def wrapped_direct_callback(*args: Any, **kwargs: Any) -> Any:
             direct_drag = original_direct_callback(*args, **kwargs)
@@ -219,12 +245,23 @@ class _AnnotationLayerEditGuard:
                 event,
             )
 
+        def wrapped_vertex_insert_callback(*args: Any, **kwargs: Any) -> Any:
+            event = args[1] if len(args) > 1 else kwargs.get("event")
+            return self._route_vertex_insert(
+                layer,
+                original_vertex_insert_callback,
+                args,
+                kwargs,
+                event,
+            )
+
         def wrapped_space_keybinding(bound_layer: Shapes) -> Iterator[None]:
             yield from self._handle_space_keybinding(bound_layer)
 
         patched_drag_modes = dict(drag_modes)
         patched_drag_modes[Mode.DIRECT] = wrapped_direct_callback
         patched_drag_modes[Mode.VERTEX_REMOVE] = wrapped_vertex_remove_callback
+        patched_drag_modes[Mode.VERTEX_INSERT] = wrapped_vertex_insert_callback
         patched_move_modes = dict(move_modes)
         for mode in _SPACE_PAN_RESUMABLE_DRAW_MODES:
             patched_drag_modes[mode] = self._wrap_supported_draw_drag_callback(
@@ -248,9 +285,15 @@ class _AnnotationLayerEditGuard:
         self._had_instance_move_modes = "_move_modes" in vars(layer)
         self._wrapped_direct_callback = wrapped_direct_callback
         self._wrapped_vertex_remove_callback = wrapped_vertex_remove_callback
+        self._wrapped_vertex_insert_callback = wrapped_vertex_insert_callback
         self._wrapped_space_keybinding = wrapped_space_keybinding
         layer._drag_modes = patched_drag_modes
         layer._move_modes = patched_move_modes
+        self._replace_current_guarded_edit_callback(
+            layer,
+            old_drag_modes=drag_modes,
+            new_drag_modes=patched_drag_modes,
+        )
         # Defensive guard for layers already in a supported draw mode: napari's
         # active mouse callback lists may still point at the original callbacks
         # even after we replace `_drag_modes` / `_move_modes`.
@@ -285,6 +328,7 @@ class _AnnotationLayerEditGuard:
         self._had_instance_move_modes = False
         self._wrapped_direct_callback = None
         self._wrapped_vertex_remove_callback = None
+        self._wrapped_vertex_insert_callback = None
         self._wrapped_space_keybinding = None
         self._space_pan_key_held = False
         self._space_pan_mouse_gesture_active = False
@@ -304,6 +348,11 @@ class _AnnotationLayerEditGuard:
             had_instance_space_keybinding=had_instance_space_keybinding,
         )
         if original_drag_modes is not None and original_move_modes is not None:
+            self._replace_current_guarded_edit_callback(
+                layer,
+                old_drag_modes=layer._drag_modes,
+                new_drag_modes=original_drag_modes,
+            )
             # Edge case: if attach happened while this layer was already in a
             # supported draw mode, attach swapped the active mouse callback
             # lists from napari's originals to our wrappers. Swap those entries
@@ -327,6 +376,31 @@ class _AnnotationLayerEditGuard:
                 layer._move_modes = original_move_modes
         elif "_move_modes" in vars(layer):
             delattr(layer, "_move_modes")
+
+    def _replace_current_guarded_edit_callback(
+        self,
+        layer: Shapes,
+        *,
+        old_drag_modes: dict[object, Callable[..., Any]],
+        new_drag_modes: dict[object, Callable[..., Any]],
+    ) -> None:
+        mode = layer._mode
+        if mode not in _POLYGON_GUARDED_EDIT_MODES:
+            return
+
+        # Lifecycle handled here: a guarded mode is already active, so napari
+        # has copied its callback from `_drag_modes` into
+        # `mouse_drag_callbacks`. Harpy then replaces `_drag_modes`, but that
+        # does not update the copied active callback. Without this explicit
+        # swap, napari's native mutating callback would remain active and
+        # bypass Harpy's movement, deletion, or insertion guard. Disconnect
+        # calls the same helper with old/new mappings reversed to restore the
+        # active native callback.
+        _replace_callback(
+            layer.mouse_drag_callbacks,
+            old_callback=old_drag_modes[mode],
+            new_callback=new_drag_modes[mode],
+        )
 
     def _replace_current_supported_draw_callbacks(
         self,
@@ -782,8 +856,162 @@ class _AnnotationLayerEditGuard:
 
         if emit_completed and has_accepted_move:
             layer._update_thumbnail()
-        if self._polygon_vertex_drag_finished_callback is not None:
-            self._polygon_vertex_drag_finished_callback()
+        if self._polygon_edit_finished_callback is not None:
+            self._polygon_edit_finished_callback()
+
+    def _route_vertex_insert(
+        self,
+        layer: Shapes,
+        original_vertex_insert_callback: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        event: object,
+    ) -> Any:
+        """Route and commit one prevalidated polygon-vertex insertion."""
+        route, insert_state = self._classify_vertex_insert(layer, event)
+        if route is _PolygonVertexInsertRoute.DELEGATE:
+            return original_vertex_insert_callback(*args, **kwargs)
+        if route is _PolygonVertexInsertRoute.REJECT:
+            return None
+        if insert_state is None:  # pragma: no cover - routing invariant
+            raise RuntimeError("Guarded polygon insertion has no captured state.")
+
+        try:
+            candidate_vertices, _ = insert_napari_polygon_vertex(
+                insert_state.vertices,
+                insert_state.topology,
+                insert_state.insert_index,
+                insert_state.inserted_coordinate,
+            )
+        except ValueError:
+            self._warn(_INVALID_POLYGON_DRAG_WARNING)
+            return None
+
+        # Mirror napari's native `vertex_insert(...)` event contract, but only
+        # after the complete candidate has passed topology and geometry checks.
+        layer.events.data(
+            value=layer.data,
+            action=ActionType.CHANGING,
+            data_indices=(insert_state.row_index,),
+            vertex_indices=((insert_state.insert_index,),),
+        )
+        self._replace_shape_row_preserving_layer_state(
+            layer,
+            insert_state.row_index,
+            candidate_vertices,
+        )
+        layer.refresh()
+        layer.events.data(
+            value=layer.data,
+            action=ActionType.CHANGED,
+            data_indices=(insert_state.row_index,),
+            vertex_indices=((insert_state.insert_index,),),
+        )
+
+        if self._polygon_edit_finished_callback is not None:
+            self._polygon_edit_finished_callback()
+        return None
+
+    def _classify_vertex_insert(
+        self,
+        layer: Shapes,
+        event: object,
+    ) -> tuple[_PolygonVertexInsertRoute, _VertexInsertState | None]:
+        """Select napari's nearest raw edge before applying polygon rules."""
+        all_edges = np.empty((0, 2, 2))
+        all_edge_targets = np.empty((0, 2), dtype=int)
+        try:
+            for selected_index in layer.selected_data:
+                if isinstance(selected_index, (bool, np.bool_)) or not isinstance(
+                    selected_index,
+                    (int, np.integer),
+                ):
+                    raise ValueError("Selected shape index is not an integer.")
+                row_index = int(selected_index)
+                if row_index < 0 or row_index >= len(layer._data_view.shapes):
+                    raise IndexError("Selected shape index is outside the layer.")
+
+                shape_type = type(layer._data_view.shapes[row_index])
+                if shape_type is Ellipse:
+                    continue
+                vertices = layer._data_view.displayed_vertices[
+                    layer._data_view.displayed_vertices_to_shape_num == row_index
+                ]
+                closed = shape_type is not Path
+                vertex_count = len(vertices)
+                if closed:
+                    edges = np.asarray(
+                        [[vertices[index], vertices[(index + 1) % vertex_count]] for index in range(vertex_count)]
+                    )
+                else:
+                    edges = np.asarray([[vertices[index], vertices[index + 1]] for index in range(vertex_count - 1)])
+                if len(edges) == 0:
+                    continue
+                all_edges = np.append(all_edges, edges, axis=0)
+                edge_targets = np.asarray(
+                    [np.repeat(row_index, len(edges)), np.arange(len(edges))],
+                    dtype=int,
+                ).T
+                all_edge_targets = np.append(all_edge_targets, edge_targets, axis=0)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexInsertRoute.REJECT, None
+
+        if len(all_edges) == 0:
+            return _PolygonVertexInsertRoute.DELEGATE, None
+
+        try:
+            inserted_coordinate = np.asarray(
+                layer.world_to_data(event.position),
+                dtype=float,
+            )
+            displayed_coordinate = inserted_coordinate[list(layer._slice_input.displayed)]
+            if (
+                inserted_coordinate.shape != (2,)
+                or displayed_coordinate.shape != (2,)
+                or not np.isfinite(inserted_coordinate).all()
+            ):
+                raise ValueError("Inserted polygon coordinate must be finite and 2D.")
+            nearest_edge_index, _ = point_to_lines(displayed_coordinate, all_edges)
+            row_index = int(all_edge_targets[nearest_edge_index, 0])
+            insert_index = int(all_edge_targets[nearest_edge_index, 1]) + 1
+        except (AttributeError, IndexError, TypeError, ValueError):
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexInsertRoute.REJECT, None
+
+        shape_type = _shape_type_at(layer, row_index)
+        if shape_type is None:
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexInsertRoute.REJECT, None
+        if shape_type != "polygon":
+            return _PolygonVertexInsertRoute.DELEGATE, None
+
+        try:
+            vertices = np.asarray(layer.data[row_index], dtype=float).copy()
+        except (IndexError, TypeError, ValueError):
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexInsertRoute.REJECT, None
+        if vertices.ndim != 2 or vertices.shape[1:] != (2,) or not np.isfinite(vertices).all():
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexInsertRoute.REJECT, None
+
+        try:
+            topology = napari_polygon_vertices_to_topology(vertices)
+            _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+        except ValueError:
+            self._warn(_ALREADY_INVALID_POLYGON_DRAG_WARNING)
+            return _PolygonVertexInsertRoute.REJECT, None
+
+        return (
+            _PolygonVertexInsertRoute.GUARD,
+            _VertexInsertState(
+                row_index=row_index,
+                insert_index=insert_index,
+                vertices=vertices,
+                topology=topology,
+                inserted_coordinate=inserted_coordinate,
+            ),
+        )
 
     def _route_vertex_remove(
         self,
@@ -872,11 +1100,11 @@ class _AnnotationLayerEditGuard:
             data_indices=(delete_state.row_index,),
             vertex_indices=((delete_state.deleted_vertex_index,),),
         )
-        if self._polygon_vertex_delete_finished_callback is not None:
+        if self._polygon_edit_finished_callback is not None:
             # Without this reset, a previous rejected-delete warning would
             # keep showing in the status card even after this successful
             # guarded delete.
-            self._polygon_vertex_delete_finished_callback()
+            self._polygon_edit_finished_callback()
         return None
 
     def _replace_shape_row_preserving_layer_state(
@@ -895,14 +1123,13 @@ class _AnnotationLayerEditGuard:
         _trim_stale_private_color_rows_before_rebuild(layer, style_snapshot)
 
         # The caller emits the napari-style CHANGING/CHANGED data events for
-        # this vertex deletion, so block intermediate events triggered by
-        # `layer.data = rebuilt_data`.
+        # the guarded row-length-changing edit, so block intermediate events
+        # triggered by `layer.data = rebuilt_data`.
         with layer.events.data.blocker(), layer.events.features.blocker():
-            # Work around napari's private vertex cache after row-shortening
-            # edits: low-level `_data_view.edit(...)` updates the shape data
-            # but can leave old clickable vertex indices behind, so a later
-            # hit-test may report an index that no longer exists in
-            # `layer.data[row_index]`.
+            # Rebuild napari's private vertex cache after row-length-changing
+            # edits. Low-level `_data_view.edit(...)` can leave old clickable
+            # boundaries behind after deletion and does not provide the public
+            # rebuild needed by guarded insertion.
             ensure_shapes_triangulation_backend()
             layer.data = rebuilt_data
 

@@ -40,6 +40,7 @@ from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
 from napari_harpy.core.shapes_geometry import (
     NapariPolygonVertexDeletion,
     delete_napari_polygon_vertex,
+    insert_napari_polygon_vertex,
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
@@ -1000,6 +1001,7 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
 
     original_drag_modes[Mode.DIRECT] = original_direct_callback
     original_vertex_remove_callback = original_drag_modes[Mode.VERTEX_REMOVE]
+    original_vertex_insert_callback = original_drag_modes[Mode.VERTEX_INSERT]
     original_lasso_move_callback = original_move_modes[Mode.ADD_POLYGON_LASSO]
     original_lasso_drag_callback = original_drag_modes[Mode.ADD_POLYGON_LASSO]
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
@@ -1007,12 +1009,14 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
     guard.attach(layer)
     wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
     wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    wrapped_vertex_insert_callback = layer._drag_modes[Mode.VERTEX_INSERT]
 
     assert guard.layer is layer
     assert layer._drag_modes is not original_drag_modes
     assert layer._move_modes is not original_move_modes
     assert wrapped_direct_callback is not original_direct_callback
     assert wrapped_vertex_remove_callback is not original_vertex_remove_callback
+    assert wrapped_vertex_insert_callback is not original_vertex_insert_callback
     assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_drag_callback
     assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_move_callback
     assert wrapped_direct_callback("event", value=3) == "delegated"
@@ -1025,6 +1029,7 @@ def test_annotation_layer_edit_guard_delegates_direct_mode_and_restores_instance
     assert layer._move_modes is original_move_modes
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+    assert layer._drag_modes[Mode.VERTEX_INSERT] is original_vertex_insert_callback
     assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_drag_callback
     assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
@@ -1033,6 +1038,7 @@ def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_map
     layer = Shapes([], ndim=2)
     original_direct_callback = layer._drag_modes[Mode.DIRECT]
     original_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    original_vertex_insert_callback = layer._drag_modes[Mode.VERTEX_INSERT]
     original_lasso_move_callback = layer._move_modes[Mode.ADD_POLYGON_LASSO]
     original_lasso_drag_callback = layer._drag_modes[Mode.ADD_POLYGON_LASSO]
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
@@ -1040,11 +1046,13 @@ def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_map
     guard.attach(layer)
     first_wrapped_direct_callback = layer._drag_modes[Mode.DIRECT]
     first_wrapped_vertex_remove_callback = layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_wrapped_vertex_insert_callback = layer._drag_modes[Mode.VERTEX_INSERT]
     first_move_modes = layer._move_modes
     guard.attach(layer)
 
     assert layer._drag_modes[Mode.DIRECT] is first_wrapped_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is first_wrapped_vertex_remove_callback
+    assert layer._drag_modes[Mode.VERTEX_INSERT] is first_wrapped_vertex_insert_callback
     assert layer._move_modes is first_move_modes
     assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_drag_callback
     assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is not original_lasso_move_callback
@@ -1058,6 +1066,7 @@ def test_annotation_layer_edit_guard_attach_is_idempotent_and_restores_class_map
     assert "_move_modes" not in vars(layer)
     assert layer._drag_modes[Mode.DIRECT] is original_direct_callback
     assert layer._drag_modes[Mode.VERTEX_REMOVE] is original_vertex_remove_callback
+    assert layer._drag_modes[Mode.VERTEX_INSERT] is original_vertex_insert_callback
     assert layer._drag_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_drag_callback
     assert layer._move_modes[Mode.ADD_POLYGON_LASSO] is original_lasso_move_callback
 
@@ -1067,6 +1076,7 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     second_layer = Shapes([], ndim=2)
     first_direct_callback = first_layer._drag_modes[Mode.DIRECT]
     first_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_vertex_insert_callback = first_layer._drag_modes[Mode.VERTEX_INSERT]
     first_lasso_move_callback = first_layer._move_modes[Mode.ADD_POLYGON_LASSO]
     first_lasso_drag_callback = first_layer._drag_modes[Mode.ADD_POLYGON_LASSO]
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
@@ -1074,6 +1084,7 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     guard.attach(first_layer)
     first_wrapped_direct_callback = first_layer._drag_modes[Mode.DIRECT]
     first_wrapped_vertex_remove_callback = first_layer._drag_modes[Mode.VERTEX_REMOVE]
+    first_wrapped_vertex_insert_callback = first_layer._drag_modes[Mode.VERTEX_INSERT]
     first_move_modes = first_layer._move_modes
     # `attach(...)` first calls `disconnect(...)`, so moving the guard to a new
     # layer must restore the previous layer before patching the new one.
@@ -1082,6 +1093,7 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert guard.layer is second_layer
     assert first_layer._drag_modes[Mode.DIRECT] is first_direct_callback
     assert first_layer._drag_modes[Mode.VERTEX_REMOVE] is first_vertex_remove_callback
+    assert first_layer._drag_modes[Mode.VERTEX_INSERT] is first_vertex_insert_callback
     assert first_layer._drag_modes[Mode.ADD_POLYGON_LASSO] is first_lasso_drag_callback
     assert first_layer._move_modes[Mode.ADD_POLYGON_LASSO] is first_lasso_move_callback
     assert "_drag_modes" not in vars(first_layer)
@@ -1090,6 +1102,7 @@ def test_annotation_layer_edit_guard_replacing_layer_disconnects_previous_layer(
     assert "_move_modes" in vars(second_layer)
     assert second_layer._drag_modes[Mode.DIRECT] is not first_wrapped_direct_callback
     assert second_layer._drag_modes[Mode.VERTEX_REMOVE] is not first_wrapped_vertex_remove_callback
+    assert second_layer._drag_modes[Mode.VERTEX_INSERT] is not first_wrapped_vertex_insert_callback
     assert second_layer._move_modes is not first_move_modes
 
 
@@ -1184,6 +1197,41 @@ def test_annotation_layer_edit_guard_replaces_active_supported_draw_callbacks() 
     assert original_move_callback in layer.mouse_move_callbacks
     assert wrapped_move_callback not in layer.mouse_move_callbacks
     assert unrelated_move_callback in layer.mouse_move_callbacks
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [Mode.DIRECT, Mode.VERTEX_REMOVE, Mode.VERTEX_INSERT],
+)
+def test_annotation_layer_edit_guard_replaces_active_guarded_edit_callback(
+    mode: Mode,
+) -> None:
+    layer = Shapes([], ndim=2)
+    layer.mode = mode
+    original_callback = layer._drag_modes[mode]
+
+    def unrelated_callback(_layer: Shapes, _event: object) -> None:
+        return None
+
+    layer.mouse_drag_callbacks.append(unrelated_callback)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+
+    assert original_callback in layer.mouse_drag_callbacks
+
+    guard.attach(layer)
+
+    wrapped_callback = layer._drag_modes[mode]
+    assert layer.mode == mode
+    assert original_callback not in layer.mouse_drag_callbacks
+    assert wrapped_callback in layer.mouse_drag_callbacks
+    assert unrelated_callback in layer.mouse_drag_callbacks
+
+    guard.disconnect()
+
+    assert layer.mode == mode
+    assert original_callback in layer.mouse_drag_callbacks
+    assert wrapped_callback not in layer.mouse_drag_callbacks
+    assert unrelated_callback in layer.mouse_drag_callbacks
 
 
 def test_annotation_layer_edit_guard_leaves_active_callbacks_for_non_resumable_mode() -> None:
@@ -2275,7 +2323,7 @@ def test_annotation_layer_edit_guard_direct_drag_preserves_application_and_resto
     monkeypatch.setattr(layer._data_view, "edit", fail_application_and_restoration)
     monkeypatch.setattr(layer, "_set_highlight", lambda: highlight_calls.append("highlight"))
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
-        polygon_vertex_drag_finished_callback=lambda: finished_calls.append("finished")
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished")
     )
     guard.attach(layer)
     event = SimpleNamespace(type="mouse_press", position=tuple(original_vertices[1]))
@@ -2353,6 +2401,310 @@ def test_annotation_layer_edit_guard_direct_drag_does_not_guess_malformed_topolo
     np.testing.assert_allclose(edited_vertices, original_vertices)
     assert warnings == [shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING]
     assert layer._moving_value == (None, None)
+
+
+@pytest.mark.parametrize("target_kind", ["simple", "shell", "later_hole"])
+def test_annotation_layer_edit_guard_vertex_insert_commits_valid_polygon_candidate(
+    target_kind: str,
+) -> None:
+    """Guard simple and genuine shell/hole edges through one candidate API."""
+    if target_kind == "simple":
+        original_vertices = np.asarray(
+            [[0.0, 0.0], [0.0, 20.0], [20.0, 20.0], [20.0, 0.0]],
+            dtype=float,
+        )
+        insert_index = 2
+    else:
+        shell_yx = np.asarray(
+            [[0.0, 0.0], [0.0, 20.0], [20.0, 20.0], [20.0, 0.0]],
+            dtype=float,
+        )
+        first_hole_yx = np.asarray(
+            [[3.0, 3.0], [3.0, 6.0], [6.0, 6.0], [6.0, 3.0]],
+            dtype=float,
+        )
+        second_hole_yx = np.asarray(
+            [[12.0, 12.0], [12.0, 15.0], [15.0, 15.0], [15.0, 12.0]],
+            dtype=float,
+        )
+        polygon = Polygon(
+            _yx_to_xy(shell_yx),
+            holes=[_yx_to_xy(first_hole_yx), _yx_to_xy(second_hole_yx)],
+        )
+        original_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)
+        topology = napari_polygon_vertices_to_topology(original_vertices)
+        insert_index = 2 if target_kind == "shell" else topology.hole_anchor_groups[-1][0] + 2
+
+    inserted_coordinate = np.mean(original_vertices[[insert_index - 1, insert_index]], axis=0)
+    original_topology = napari_polygon_vertices_to_topology(original_vertices)
+    expected_vertices, expected_topology = insert_napari_polygon_vertex(
+        original_vertices,
+        original_topology,
+        insert_index,
+        inserted_coordinate,
+    )
+    path_vertices = np.asarray([[30.0, 0.0], [32.0, 2.0], [34.0, 0.0]], dtype=float)
+    layer = Shapes(
+        [original_vertices, path_vertices],
+        shape_type=["polygon", "path"],
+        features=pd.DataFrame(
+            {
+                "source_identity": ["polygon-id", "path-id"],
+                "label": ["edited", "untouched"],
+            }
+        ),
+    )
+    layer.edge_color = np.asarray([_rgba("#112233"), _rgba("#445566")])
+    layer.face_color = np.asarray([_rgba("#01020344"), _rgba("#05060744")])
+    layer.edge_width = [3, 7]
+    layer.z_index = [2, 5]
+    layer.opacity = 0.42
+    layer._drag_modes = dict(layer._drag_modes)
+    original_features = layer.features.copy(deep=True)
+    events: list[tuple[ActionType, tuple[int, ...], tuple[tuple[int, ...], ...]]] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_insert_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("polygon insertion should be guarded")
+
+    def record_data_event(event: object) -> None:
+        events.append((event.action, event.data_indices, event.vertex_indices))
+
+    layer._drag_modes[Mode.VERTEX_INSERT] = original_vertex_insert_callback
+    layer.events.data.connect(record_data_event)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished")
+    )
+    guard.attach(layer)
+    layer.mode = Mode.VERTEX_INSERT
+    layer.selected_data = {0}
+    layer.current_edge_color = "#abcdef"
+    layer.current_face_color = "#12345678"
+    layer.current_edge_width = 11
+    original_feature_defaults = layer.feature_defaults.copy(deep=True)
+    original_edge_color = np.asarray(layer.edge_color).copy()
+    original_face_color = np.asarray(layer.face_color).copy()
+    original_edge_width = list(layer.edge_width)
+
+    layer.mouse_drag_callbacks[0](
+        layer,
+        SimpleNamespace(position=tuple(inserted_coordinate)),
+    )
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    np.testing.assert_allclose(np.asarray(layer.data[1], dtype=float), path_vertices)
+    assert napari_polygon_vertices_to_topology(layer.data[0]) == expected_topology
+    assert list(layer.shape_type) == ["polygon", "path"]
+    pd.testing.assert_frame_equal(layer.features, original_features)
+    pd.testing.assert_frame_equal(layer.feature_defaults, original_feature_defaults)
+    np.testing.assert_allclose(layer.edge_color, original_edge_color)
+    np.testing.assert_allclose(layer.face_color, original_face_color)
+    assert layer.edge_width == original_edge_width
+    assert layer.z_index == [2, 5]
+    assert layer.opacity == 0.42
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba("#abcdef"))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba("#12345678"))
+    assert layer.current_edge_width == 11
+    assert layer.mode == Mode.VERTEX_INSERT
+    assert set(layer.selected_data) == {0}
+    assert layer._data_view._vertices_index.tolist() == [
+        0,
+        len(expected_vertices),
+        len(expected_vertices) + len(path_vertices),
+    ]
+    inserted_hit = layer.get_value(inserted_coordinate, world=True)
+    assert inserted_hit is not None
+    assert int(inserted_hit[0]) == 0
+    assert events == [
+        (ActionType.CHANGING, (0,), ((insert_index,),)),
+        (ActionType.CHANGED, (0,), ((insert_index,),)),
+    ]
+    assert finished_calls == ["finished"]
+
+
+@pytest.mark.parametrize("rejection_kind", ["bridge", "invalid_simple"])
+def test_annotation_layer_edit_guard_vertex_insert_rejects_invalid_candidate_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    rejection_kind: str,
+) -> None:
+    """Reject the selected raw edge rather than falling back to native code."""
+    if rejection_kind == "bridge":
+        shell_yx = np.asarray(
+            [[0.0, 0.0], [0.0, 10.0], [10.0, 10.0], [10.0, 0.0]],
+            dtype=float,
+        )
+        hole_yx = np.asarray(
+            [[3.0, 3.0], [3.0, 6.0], [6.0, 6.0], [6.0, 3.0]],
+            dtype=float,
+        )
+        original_vertices = shapely_polygon_to_napari_polygon_vertices(
+            Polygon(_yx_to_xy(shell_yx), holes=[_yx_to_xy(hole_yx)])
+        )
+        topology = napari_polygon_vertices_to_topology(original_vertices)
+        shell_end = topology.shell_anchor_group[1]
+        inserted_coordinate = np.mean(original_vertices[[shell_end, shell_end + 1]], axis=0)
+    else:
+        original_vertices = np.asarray(
+            [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]],
+            dtype=float,
+        )
+        inserted_coordinate = np.asarray([0.0, -6.0])
+
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    events: list[object] = []
+    warnings: list[str] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_insert_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("rejected polygon insertion must not call native code")
+
+    layer._drag_modes[Mode.VERTEX_INSERT] = original_vertex_insert_callback
+    layer.events.data.connect(events.append)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        warning_callback=warnings.append,
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
+    )
+    guard.attach(layer)
+    layer.mode = Mode.VERTEX_INSERT
+    layer.selected_data = {0}
+    monkeypatch.setattr(layer, "refresh", lambda: pytest.fail("rejected insertion refreshed the layer"))
+
+    layer.mouse_drag_callbacks[0](
+        layer,
+        SimpleNamespace(position=tuple(inserted_coordinate)),
+    )
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), original_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._INVALID_POLYGON_DRAG_WARNING]
+    assert events == []
+    assert finished_calls == []
+
+
+def test_annotation_layer_edit_guard_vertex_insert_rejects_malformed_polygon() -> None:
+    polygon, _ = _polygon_hole_roundtrip_fixture()
+    malformed_vertices = shapely_polygon_to_napari_polygon_vertices(polygon)[:-1]
+    inserted_coordinate = np.mean(malformed_vertices[[0, 1]], axis=0)
+    layer = Shapes([malformed_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    events: list[object] = []
+    warnings: list[str] = []
+
+    def original_vertex_insert_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("malformed polygon insertion must not call native code")
+
+    layer._drag_modes[Mode.VERTEX_INSERT] = original_vertex_insert_callback
+    layer.events.data.connect(events.append)
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(warning_callback=warnings.append)
+    guard.attach(layer)
+    layer.mode = Mode.VERTEX_INSERT
+    layer.selected_data = {0}
+
+    layer.mouse_drag_callbacks[0](
+        layer,
+        SimpleNamespace(position=tuple(inserted_coordinate)),
+    )
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), malformed_vertices)
+    assert warnings == [shapes_annotation_edit_guard_module._ALREADY_INVALID_POLYGON_DRAG_WARNING]
+    assert events == []
+
+
+@pytest.mark.parametrize("delegation_kind", ["no_edge", "mixed_selection"])
+def test_annotation_layer_edit_guard_vertex_insert_delegates_native_target(
+    delegation_kind: str,
+) -> None:
+    if delegation_kind == "no_edge":
+        layer = Shapes([], ndim=2)
+        event = SimpleNamespace(position=(0.0, 0.0))
+    else:
+        polygon_vertices = np.asarray(
+            [[20.0, 20.0], [20.0, 24.0], [24.0, 24.0], [24.0, 20.0]],
+            dtype=float,
+        )
+        path_vertices = np.asarray([[0.0, 0.0], [0.0, 4.0], [4.0, 4.0]], dtype=float)
+        layer = Shapes(
+            [polygon_vertices, path_vertices],
+            shape_type=["polygon", "path"],
+        )
+        layer.selected_data = {0, 1}
+        event = SimpleNamespace(position=(0.0, 2.0))
+
+    layer._drag_modes = dict(layer._drag_modes)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def original_vertex_insert_callback(*args: object, **kwargs: object) -> str:
+        calls.append((args, kwargs))
+        return "delegated"
+
+    layer._drag_modes[Mode.VERTEX_INSERT] = original_vertex_insert_callback
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard()
+    guard.attach(layer)
+
+    result = layer._drag_modes[Mode.VERTEX_INSERT](layer, event, source="test")
+
+    assert result == "delegated"
+    assert calls == [((layer, event), {"source": "test"})]
+
+
+def test_annotation_layer_edit_guard_vertex_insert_commit_failure_emits_no_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late commit failure propagates after CHANGING, without success signals."""
+    original_vertices = np.asarray(
+        [[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]],
+        dtype=float,
+    )
+    insert_index = 1
+    inserted_coordinate = np.mean(original_vertices[[0, 1]], axis=0)
+    topology = napari_polygon_vertices_to_topology(original_vertices)
+    expected_vertices, _ = insert_napari_polygon_vertex(
+        original_vertices,
+        topology,
+        insert_index,
+        inserted_coordinate,
+    )
+    layer = Shapes([original_vertices], shape_type="polygon")
+    layer._drag_modes = dict(layer._drag_modes)
+    events: list[ActionType] = []
+    warnings: list[str] = []
+    finished_calls: list[str] = []
+
+    def original_vertex_insert_callback(*args: object, **kwargs: object) -> None:
+        raise AssertionError("polygon insertion should be guarded")
+
+    layer._drag_modes[Mode.VERTEX_INSERT] = original_vertex_insert_callback
+    layer.events.data.connect(lambda event: events.append(event.action))
+    guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
+        warning_callback=warnings.append,
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
+    )
+    original_replace = guard._replace_shape_row_preserving_layer_state
+    commit_error = RuntimeError("simulated failure after insertion row rebuild")
+
+    def fail_after_rebuild(
+        bound_layer: Shapes,
+        row_index: int,
+        vertices: np.ndarray,
+    ) -> None:
+        original_replace(bound_layer, row_index, vertices)
+        raise commit_error
+
+    monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
+    guard.attach(layer)
+    layer.mode = Mode.VERTEX_INSERT
+    layer.selected_data = {0}
+
+    with pytest.raises(RuntimeError, match="failure after insertion row rebuild"):
+        layer.mouse_drag_callbacks[0](
+            layer,
+            SimpleNamespace(position=tuple(inserted_coordinate)),
+        )
+
+    np.testing.assert_allclose(np.asarray(layer.data[0], dtype=float), expected_vertices)
+    assert events == [ActionType.CHANGING]
+    assert warnings == []
+    assert finished_calls == []
 
 
 def test_annotation_layer_edit_guard_vertex_remove_delegates_when_no_vertex(monkeypatch) -> None:
@@ -2439,7 +2791,7 @@ def test_annotation_layer_edit_guard_vertex_remove_rejects_unsafe_polygon_hit(
     layer.events.data.connect(events.append)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     guard.attach(layer)
 
@@ -2470,7 +2822,7 @@ def test_annotation_layer_edit_guard_vertex_remove_guards_valid_explicitly_close
     layer.events.data.connect(lambda event: events.append(event.action))
     finished_calls: list[str] = []
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))
@@ -2553,7 +2905,7 @@ def test_annotation_layer_edit_guard_vertex_remove_restores_after_commit_failure
     layer.events.data.connect(lambda event: events.append(event.action))
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     original_replace = guard._replace_shape_row_preserving_layer_state
     commit_error = RuntimeError("simulated failure after the deletion row was rebuilt")
@@ -2617,14 +2969,15 @@ def test_annotation_layer_edit_guard_vertex_remove_restores_after_commit_failure
 
     # The recovered deletion contributes CHANGING only. The first CHANGED is
     # from the later successful movement; the final CHANGING/CHANGED pair is
-    # from the later successful deletion.
+    # from the later successful deletion. The shared finished callback runs
+    # once for each of those two successful follow-up polygon edits.
     assert events == [
         ActionType.CHANGING,
         ActionType.CHANGED,
         ActionType.CHANGING,
         ActionType.CHANGED,
     ]
-    assert finished_calls == ["finished"]
+    assert finished_calls == ["finished", "finished"]
 
 
 def test_annotation_layer_edit_guard_vertex_remove_restores_after_final_refresh_failure(
@@ -2648,7 +3001,7 @@ def test_annotation_layer_edit_guard_vertex_remove_restores_after_final_refresh_
     layer.events.data.connect(lambda event: events.append(event.action))
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     original_replace = guard._replace_shape_row_preserving_layer_state
     original_refresh = layer.refresh
@@ -2710,7 +3063,7 @@ def test_annotation_layer_edit_guard_vertex_remove_preserves_application_and_res
     layer.events.data.connect(lambda event: events.append(event.action))
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     original_replace = guard._replace_shape_row_preserving_layer_state
     application_error = RuntimeError("simulated deletion application failure")
@@ -2823,7 +3176,7 @@ def test_annotation_layer_edit_guard_vertex_remove_rejects_invalid_concave_simpl
     layer.events.data.connect(events.append)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     guard.attach(layer)
 
@@ -2875,7 +3228,7 @@ def test_annotation_layer_edit_guard_vertex_remove_removes_semantic_triangle(
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
     layer.events.data.connect(record_data_event)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     guard.attach(layer)
 
@@ -2939,7 +3292,7 @@ def test_annotation_layer_edit_guard_semantic_triangle_removal_preserves_multiro
     layer._drag_modes[Mode.VERTEX_REMOVE] = original_vertex_remove_callback
     layer.events.data.connect(record_data_event)
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
-        polygon_vertex_delete_finished_callback=lambda: steps.append("finished"),
+        polygon_edit_finished_callback=lambda: steps.append("finished"),
     )
     guard.attach(layer)
 
@@ -3010,7 +3363,7 @@ def test_annotation_layer_edit_guard_semantic_triangle_removal_restores_after_co
     layer.events.data.connect(lambda event: events.append(event.action))
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     original_remove = guard._remove_shape_row_preserving_layer_state
     commit_error = RuntimeError("simulated failure after the polygon row was removed")
@@ -3275,7 +3628,7 @@ def test_annotation_layer_edit_guard_vertex_remove_rejects_malformed_topology(mo
     finished_calls: list[str] = []
     guard = shapes_annotation_edit_guard_module._AnnotationLayerEditGuard(
         warning_callback=warnings.append,
-        polygon_vertex_delete_finished_callback=lambda: finished_calls.append("finished"),
+        polygon_edit_finished_callback=lambda: finished_calls.append("finished"),
     )
     guard.attach(layer)
     event = SimpleNamespace(position=(0.0, 0.0))
