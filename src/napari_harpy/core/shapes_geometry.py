@@ -215,10 +215,73 @@ def insert_napari_polygon_vertex(
     insert_index: int,
     inserted_coordinate: ArrayLike,
 ) -> tuple[np.ndarray, NapariPolygonTopology]:
-    """Return vertices and topology after inserting one ordinary ring vertex."""
+    """Return the validated result of inserting one polygon vertex.
+
+    Simple polygons preserve their implicit or explicit closure encoding.
+    Hole-bearing rows additionally reject artificial bridge and separator
+    edges and shift every affected anchor index.
+    """
     vertices = _coerce_vertices(vertices)
-    insert_index = _coerce_insert_index(insert_index, vertex_count=len(vertices))
     inserted_coordinate = _coerce_inserted_coordinate(inserted_coordinate)
+    parsed_topology = napari_polygon_vertices_to_topology(vertices)
+    if parsed_topology != topology:
+        raise ValueError("Polygon topology does not match the encoded vertex row.")
+    _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+
+    if not topology.hole_anchor_groups:
+        return _insert_simple_napari_polygon_vertex(
+            vertices,
+            topology=topology,
+            insert_index=insert_index,
+            inserted_coordinate=inserted_coordinate,
+        )
+
+    return _insert_hole_bearing_napari_polygon_vertex(
+        vertices,
+        topology=topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+
+def _insert_simple_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    insert_index: int,
+    inserted_coordinate: np.ndarray,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    explicitly_closed = bool(np.array_equal(vertices[0], vertices[-1]))
+    if isinstance(insert_index, bool) or not isinstance(insert_index, (int, np.integer)):
+        raise ValueError("Inserted polygon vertex index must be an integer.")
+
+    insert_index = int(insert_index)
+    if insert_index < 0 or insert_index > len(vertices):
+        raise ValueError("Inserted polygon vertex index is outside the vertex row.")
+    if insert_index == 0:
+        raise ValueError("Inserted polygon vertex must split a polygon edge.")
+    if explicitly_closed and insert_index == len(vertices):
+        raise ValueError("Inserted polygon vertex must split a polygon edge.")
+
+    inserted_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    inserted_explicitly_closed = bool(np.array_equal(inserted_vertices[0], inserted_vertices[-1]))
+    if inserted_explicitly_closed != explicitly_closed:
+        raise ValueError("Polygon insertion changed the row's closure encoding.")
+    inserted_topology = napari_polygon_vertices_to_topology(inserted_vertices)
+    if inserted_topology != topology:
+        raise ValueError("Polygon insertion changed the encoded topology.")
+    _ = napari_polygon_vertices_to_shapely_polygon(inserted_vertices)
+    return inserted_vertices, inserted_topology
+
+
+def _insert_hole_bearing_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    insert_index: int,
+    inserted_coordinate: np.ndarray,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    insert_index = _coerce_insert_index(insert_index, vertex_count=len(vertices))
     shell_anchor_group, hole_anchor_groups = _validated_hole_topology(topology, vertex_count=len(vertices))
 
     shell_start, shell_end = shell_anchor_group[0], shell_anchor_group[1]
@@ -450,7 +513,11 @@ def _coerce_vertex_index(index: int, *, vertex_count: int) -> int:
     return vertex_index
 
 
-def _coerce_insert_index(index: int, *, vertex_count: int) -> int:
+def _coerce_insert_index(
+    index: int,
+    *,
+    vertex_count: int,
+) -> int:
     if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
         raise ValueError("Inserted polygon vertex index must be an integer.")
 

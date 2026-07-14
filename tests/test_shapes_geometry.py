@@ -608,18 +608,121 @@ def test_insert_napari_polygon_vertex_rejects_invalid_inserted_coordinate() -> N
         )
 
 
-def test_insert_napari_polygon_vertex_rejects_simple_polygon_topology() -> None:
-    source = Polygon([(0, 0), (8, 0), (8, 8), (0, 8)])
-    vertices = shapely_polygon_to_napari_polygon_vertices(source)
+@pytest.mark.parametrize("explicitly_closed", [False, True])
+def test_insert_napari_polygon_vertex_inserts_simple_polygon_vertex(
+    explicitly_closed: bool,
+) -> None:
+    semantic_vertices = np.asarray([[0.0, 0.0], [0.0, 8.0], [8.0, 8.0], [8.0, 0.0]])
+    vertices = np.vstack([semantic_vertices, semantic_vertices[0]]) if explicitly_closed else semantic_vertices
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    insert_index = 2
+    inserted_coordinate = np.mean(vertices[[insert_index - 1, insert_index]], axis=0)
+
+    inserted_vertices, inserted_topology = insert_napari_polygon_vertex(
+        vertices,
+        topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+    expected_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    np.testing.assert_allclose(inserted_vertices, expected_vertices)
+    assert bool(np.array_equal(inserted_vertices[0], inserted_vertices[-1])) is explicitly_closed
+    assert inserted_topology == topology
+    assert inserted_topology == napari_polygon_vertices_to_topology(inserted_vertices)
+    _ = napari_polygon_vertices_to_shapely_polygon(inserted_vertices)
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_insert_napari_polygon_vertex_inserts_implicit_simple_polygon_closing_edge() -> None:
+    vertices = np.asarray([[0.0, 0.0], [0.0, 8.0], [8.0, 8.0], [8.0, 0.0]])
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+    insert_index = len(vertices)
+    inserted_coordinate = np.mean(vertices[[-1, 0]], axis=0)
+
+    inserted_vertices, inserted_topology = insert_napari_polygon_vertex(
+        vertices,
+        topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+    expected_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    np.testing.assert_allclose(inserted_vertices, expected_vertices)
+    assert not np.array_equal(inserted_vertices[0], inserted_vertices[-1])
+    assert inserted_topology == topology
+    _ = napari_polygon_vertices_to_shapely_polygon(inserted_vertices)
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+@pytest.mark.parametrize(
+    ("explicitly_closed", "insert_index"),
+    [(False, 0), (True, 0), (True, 5)],
+)
+def test_insert_napari_polygon_vertex_rejects_simple_polygon_non_edge_index(
+    explicitly_closed: bool,
+    insert_index: int,
+) -> None:
+    semantic_vertices = np.asarray([[0.0, 0.0], [0.0, 8.0], [8.0, 8.0], [8.0, 0.0]])
+    vertices = np.vstack([semantic_vertices, semantic_vertices[0]]) if explicitly_closed else semantic_vertices
+    original_vertices = vertices.copy()
     topology = napari_polygon_vertices_to_topology(vertices)
 
-    with pytest.raises(ValueError, match="hole-bearing vertex row"):
+    with pytest.raises(ValueError):
         insert_napari_polygon_vertex(
             vertices,
             topology,
-            insert_index=2,
-            inserted_coordinate=np.asarray([8.0, 4.0]),
+            insert_index=insert_index,
+            inserted_coordinate=np.asarray([4.0, 0.0]),
         )
+
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+@pytest.mark.parametrize(
+    ("insert_index", "inserted_coordinate", "error_match"),
+    [
+        (4, np.asarray([0.0, 0.0]), "closure encoding"),
+        (2, np.asarray([0.0, 0.0]), None),
+        (2, np.asarray([5.0, 2.0]), "valid polygon"),
+    ],
+    ids=["closure", "topology", "geometry"],
+)
+def test_insert_napari_polygon_vertex_rejects_invalid_simple_polygon_candidate(
+    insert_index: int,
+    inserted_coordinate: np.ndarray,
+    error_match: str | None,
+) -> None:
+    vertices = np.asarray([[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]])
+    original_vertices = vertices.copy()
+    topology = napari_polygon_vertices_to_topology(vertices)
+
+    with pytest.raises(ValueError, match=error_match):
+        insert_napari_polygon_vertex(
+            vertices,
+            topology,
+            insert_index=insert_index,
+            inserted_coordinate=inserted_coordinate,
+        )
+
+    np.testing.assert_allclose(vertices, original_vertices)
+
+
+def test_insert_napari_polygon_vertex_rejects_mismatched_source_topology() -> None:
+    vertices = np.asarray([[0.0, 0.0], [0.0, 4.0], [4.0, 4.0], [4.0, 0.0]])
+    original_vertices = vertices.copy()
+
+    with pytest.raises(ValueError, match="topology does not match"):
+        insert_napari_polygon_vertex(
+            vertices,
+            NapariPolygonTopology(shell_anchor_group=(0, 3), hole_anchor_groups=()),
+            insert_index=2,
+            inserted_coordinate=np.asarray([2.0, 4.0]),
+        )
+
+    np.testing.assert_allclose(vertices, original_vertices)
 
 
 def test_insert_napari_polygon_vertex_rejects_ambiguous_inserted_coordinate() -> None:

@@ -1807,7 +1807,7 @@ transaction abstraction.
 
 ### Slice 6: Unified Polygon Insertion Candidate API
 
-Status: specified; implementation pending.
+Status: implemented.
 
 Turn the existing hole-only `insert_napari_polygon_vertex(...)` helper into the
 single public candidate-construction API for both simple and hole-bearing
