@@ -4656,7 +4656,7 @@ def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_
     widget.save_shapes_button.click()
 
     saved_geodataframe = sdata_blobs.shapes[shapes_name]
-    assert saved_geodataframe.index.to_list() == [*original_index, "__annotation_0"]
+    assert saved_geodataframe.index.to_list() == [*original_index, max(original_index) + 1]
     assert widget._annotation_session is not None
     assert widget._annotation_session.mode == "edit_existing"
     assert widget._annotation_session.source_geodataframe is not saved_geodataframe
