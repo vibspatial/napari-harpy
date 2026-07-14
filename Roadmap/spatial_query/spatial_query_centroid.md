@@ -406,8 +406,8 @@ A representative schema is:
                 },
                 "source": {
                     "element_path": "labels/nuclei",
-                    "dims_yx": ["y", "x"],
-                    "shape_yx": [50000, 70000],
+                    "dims": ["y", "x"],
+                    "shape": [50000, 70000],
                     "dtype": "uint32",
                 },
                 "generated_by": {
@@ -1625,8 +1625,8 @@ The immutable value contracts are conceptually:
     CanonicalSourceSignature:
         labels_name
         source_scale = "scale0"
-        dims_yx
-        shape_yx
+        dims
+        shape
         dtype
 
     CanonicalTableSignature:
@@ -1688,12 +1688,61 @@ The immutable value contracts are conceptually:
         mismatches: tuple[CanonicalCacheMismatch, ...]
         changed_paths
 
+The source-signature value type has this concrete shape:
+
+```python
+SpatialDimension = Literal["z", "y", "x"]
+
+
+@dataclass(frozen=True)
+class CanonicalSourceSignature:
+    labels_name: str
+    source_scale: Literal["scale0"]
+    dims: tuple[SpatialDimension, ...]
+    shape: tuple[int, ...]
+    dtype: str
+
+    def __post_init__(self) -> None:
+        if len(self.dims) != len(self.shape):
+            raise ValueError("Source dims and shape must have equal lengths.")
+
+        if len(set(self.dims)) != len(self.dims):
+            raise ValueError("Source dims must be unique.")
+
+        if any(
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or size <= 0
+            for size in self.shape
+        ):
+            raise ValueError("Source shape must contain positive integers.")
+
+    @property
+    def ndim(self) -> int:
+        return len(self.dims)
+```
+
+The builder normalizes source shape entries to built-in Python integers before
+constructing this value. The dataclass enforces dimension-independent
+structural invariants; schema- and algorithm-specific dimensionality rules
+belong to the metadata builder and parser.
+
 `CanonicalCacheReport` is both the non-mutating inspector result and the typed
 mismatch report; do not add a second inspection-result wrapper with the same
 information. `CanonicalRegionBindings` arrays and installation-payload arrays
 are normalized eager NumPy arrays and are made read-only at the contract
 boundary. The metadata regions mapping is defensively copied and exposed as a
 read-only mapping rather than retaining a caller-owned mutable dictionary.
+
+`CanonicalSourceSignature.dims` records the exact ordered scale0
+`DataArray.dims`, and `shape` records the corresponding extent in the same
+order. Construction requires equal tuple lengths, unique non-empty dimension
+names, and positive integer shape entries. Schema version 1 additionally
+requires `dims == ("y", "x")`; a future 3D schema can use
+`dims == ("z", "y", "x")` and a three-entry shape without renaming the value
+contract. Do not persist a redundant `ndim`; it is `len(dims)`. These source
+dimensions are distinct from the top-level `axes == ("x", "y")`, which describe
+the column order of the canonical coordinate matrix.
 
 Schema-v1 constants are not configurable dataclass fields. `obsm_key`, axes,
 matrix dtype, source element type, scale, coordinate-frame type, calculation
