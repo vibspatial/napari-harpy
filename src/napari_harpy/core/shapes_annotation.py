@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from numbers import Integral
+from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 import geopandas as gpd
@@ -18,7 +18,12 @@ from spatialdata.transformations import (
 )
 
 from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
-from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
+from napari_harpy.core.spatialdata import (
+    get_annotating_table_names,
+    get_coordinate_system_names_from_sdata,
+    get_table,
+    get_table_metadata,
+)
 from napari_harpy.core.validation import (
     normalize_spatialdata_dataframe_column_name,
     normalize_spatialdata_name,
@@ -77,11 +82,16 @@ class ExistingShapesLayerConversion:
     ``source_geodataframe.index.name`` because unnamed GeoDataFrame indexes are
     stored in napari under a fallback feature column such as ``"index"`` but
     must still save back with ``geodataframe.index.name is None``.
+
+    ``reserved_source_instance_ids`` contains identities used by linked table
+    rows. New Shapes rows must not accidentally acquire one of those identities
+    when the table itself is not being updated.
     """
 
     source_geodataframe: gpd.GeoDataFrame
     source_shapes_index_feature_name: str
     index_prefix: str = DEFAULT_SHAPES_INDEX_PREFIX
+    reserved_source_instance_ids: tuple[object, ...] = ()
 
 
 def create_shapes_element_from_napari_shapes_layer(
@@ -180,6 +190,10 @@ def edit_shapes_element_from_napari_shapes_layer(
             source_geodataframe=request.source_geodataframe,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
             index_prefix=index_prefix,
+            reserved_source_instance_ids=_get_annotating_table_instance_ids(
+                sdata,
+                shapes_name=shapes_name,
+            ),
         ),
     )
 
@@ -201,6 +215,21 @@ def edit_shapes_element_from_napari_shapes_layer(
         coordinate_system=coordinate_system,
         row_count=len(geodataframe),
     )
+
+
+def _get_annotating_table_instance_ids(
+    sdata: SpatialData,
+    *,
+    shapes_name: str,
+) -> tuple[object, ...]:
+    """Return linked-table identities reserved for one Shapes element."""
+    reserved_ids: list[object] = []
+    for table_name in get_annotating_table_names(sdata, shapes_name):
+        metadata = get_table_metadata(sdata, table_name)
+        table = get_table(sdata, table_name)
+        matching_region = table.obs[metadata.region_key] == shapes_name
+        reserved_ids.extend(table.obs.loc[matching_region, metadata.instance_key].tolist())
+    return tuple(reserved_ids)
 
 
 def _build_edit_shapes_transformations(
@@ -293,6 +322,7 @@ def napari_shapes_layer_to_geodataframe(
             source_shapes_index_feature_name=conversion.source_shapes_index_feature_name,
             source_index_values=conversion.source_geodataframe.index,
             index_prefix=conversion.index_prefix,
+            reserved_source_instance_ids=conversion.reserved_source_instance_ids,
         )
         geodataframe = _edited_shapes_geodataframe_from_source(
             conversion.source_geodataframe,
@@ -317,11 +347,7 @@ def _new_shapes_geodataframe_from_features(
     geometries: list[Polygon],
     index_name: str,
 ) -> gpd.GeoDataFrame:
-    geodataframe_data = {
-        column: features[column].tolist()
-        for column in features.columns
-        if column != index_name
-    }
+    geodataframe_data = {column: features[column].tolist() for column in features.columns if column != index_name}
     # Napari keeps row identity in features; SpatialData shapes keep it in the
     # GeoDataFrame index.
     instance_ids = features[index_name]
@@ -339,7 +365,17 @@ def _edited_shapes_geodataframe_from_source(
     row_ids: list[object],
     geometries: list[Polygon],
 ) -> gpd.GeoDataFrame:
-    row_index = pd.Index(row_ids, name=source_geodataframe.index.name)
+    try:
+        row_index = pd.Index(
+            row_ids,
+            name=source_geodataframe.index.name,
+            dtype=source_geodataframe.index.dtype,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"Edited Shapes row identities are incompatible with source index dtype "
+            f"`{source_geodataframe.index.dtype}`."
+        ) from error
     geometry_column_name = source_geodataframe.geometry.name
     geodataframe_data = {
         column: _align_source_column_to_row_ids(source_geodataframe[column], row_index)
@@ -402,6 +438,7 @@ def _normalize_shapes_layer_conversion(
                 field_name="`source_shapes_index_feature_name`",
             ),
             index_prefix=_normalize_string_field(conversion.index_prefix, field_name="`index_prefix`"),
+            reserved_source_instance_ids=tuple(conversion.reserved_source_instance_ids),
         )
     raise ValueError("`conversion` must be a NewShapesLayerConversion or ExistingShapesLayerConversion.")
 
@@ -519,14 +556,15 @@ def _build_features_with_source_instance_ids(
     source_shapes_index_feature_name: str,
     source_index_values: pd.Index,
     index_prefix: str,
+    reserved_source_instance_ids: tuple[object, ...] = (),
 ) -> pd.DataFrame:
     """Return layer features with stable source row IDs for edit-existing saves.
 
-    The first pass validates and normalizes existing feature values: real
-    duplicates are rejected, while duplicated generated IDs such as
-    `__annotation_0` are treated as missing because napari may copy feature
-    values to new rows. The second pass fills all missing values with the next
-    unused generated ID.
+    The source GeoDataFrame index is authoritative for identity type. Integer
+    sources receive the next unused integer, including linked-table identities
+    in the reserved set; string sources retain ``__annotation_N`` generation.
+    Real duplicates are rejected, while duplicated generated string IDs are
+    treated as missing because napari may copy feature values to new rows.
     """
     features = features.copy()
     features = features.reindex(range(row_count)).reset_index(drop=True)
@@ -535,8 +573,21 @@ def _build_features_with_source_instance_ids(
             f"Napari shapes layer is missing source index feature column `{source_shapes_index_feature_name}`."
         )
 
+    # Treat the source GeoDataFrame index as the identity contract. Napari may
+    # upcast an integer feature column from ``[0]`` to ``[0.0, NaN]`` when a
+    # newly drawn row has no identity yet. Normalize existing values back to
+    # the source identity type, while rejecting lossy conversions such as
+    # ``1.5`` to ``1``, before allocating identities for missing rows.
+    identity_kind = _source_index_identity_kind(source_index_values)
     raw_values = features[source_shapes_index_feature_name].tolist()
-    existing_values = [_normalize_source_instance_id(value) for value in raw_values]
+    existing_values = [
+        _normalize_existing_source_instance_id(
+            value,
+            identity_kind=identity_kind,
+            source_index_dtype=source_index_values.dtype,
+        )
+        for value in raw_values
+    ]
     normalized_values: list[object | None] = []
     used_current_values: set[object] = set()
     duplicate_values: set[object] = set()
@@ -554,25 +605,99 @@ def _build_features_with_source_instance_ids(
 
     if duplicate_values:
         preview = ", ".join(f"`{value}`" for value in sorted(duplicate_values, key=str)[:5])
-        raise ValueError(
-            f"`{source_shapes_index_feature_name}` values must be unique before saving shapes: {preview}."
-        )
+        raise ValueError(f"`{source_shapes_index_feature_name}` values must be unique before saving shapes: {preview}.")
 
     used_values = set(source_index_values.tolist()) | used_current_values
+    # Linked-table instance IDs remain occupied even when their Shapes rows are
+    # absent. Reusing one for a new shape would accidentally associate that
+    # shape with the existing table row.
+    used_values.update(reserved_source_instance_ids)
+    has_missing_values = any(value is None for value in normalized_values)
+    if has_missing_values and identity_kind == "unsupported":
+        raise ValueError(
+            f"Cannot add rows to this Shapes element because its source index dtype "
+            f"`{source_index_values.dtype}` has no supported identity allocator. "
+            "Existing rows can still be edited or deleted."
+        )
+
     next_suffix = _next_generated_suffix(used_values, index_prefix=index_prefix)
+    next_integer = _next_generated_integer(used_values) if identity_kind == "integer" else None
     instance_ids: list[object] = []
     for value in normalized_values:
         if value is None:
-            value = f"{index_prefix}_{next_suffix}"
-            while value in used_values:
-                next_suffix += 1
+            if identity_kind == "integer":
+                if next_integer is None:  # pragma: no cover - identity-kind invariant
+                    raise RuntimeError("Integer identity allocation has no candidate value.")
+                value = _coerce_integer_source_instance_id(
+                    next_integer,
+                    source_index_dtype=source_index_values.dtype,
+                )
+                next_integer += 1
+            else:
                 value = f"{index_prefix}_{next_suffix}"
+                while value in used_values:
+                    next_suffix += 1
+                    value = f"{index_prefix}_{next_suffix}"
+                next_suffix += 1
             used_values.add(value)
-            next_suffix += 1
         instance_ids.append(value)
 
     features[source_shapes_index_feature_name] = instance_ids
     return features
+
+
+def _source_index_identity_kind(source_index_values: pd.Index) -> str:
+    if pd.api.types.is_integer_dtype(source_index_values.dtype) and not pd.api.types.is_bool_dtype(
+        source_index_values.dtype
+    ):
+        return "integer"
+
+    values = source_index_values.tolist()
+    if pd.api.types.is_object_dtype(source_index_values.dtype):
+        if values and all(isinstance(value, Integral) and not isinstance(value, bool) for value in values):
+            return "integer"
+        if values and all(isinstance(value, str) for value in values):
+            return "string"
+        return "unsupported"
+    if pd.api.types.is_string_dtype(source_index_values.dtype):
+        return "string"
+    return "unsupported"
+
+
+def _normalize_existing_source_instance_id(
+    value: object,
+    *,
+    identity_kind: str,
+    source_index_dtype: object,
+) -> object | None:
+    value = _normalize_source_instance_id(value)
+    if value is None or identity_kind != "integer":
+        return value
+    return _coerce_integer_source_instance_id(value, source_index_dtype=source_index_dtype)
+
+
+def _coerce_integer_source_instance_id(value: object, *, source_index_dtype: object) -> object:
+    if isinstance(value, bool) or not isinstance(value, Real) or not np.isfinite(value):
+        raise ValueError(f"Shapes row identity {value!r} is not compatible with integer source identities.")
+
+    integer_value = int(value)
+    if value != integer_value:
+        raise ValueError(f"Shapes row identity {value!r} is not compatible with integer source identities.")
+
+    try:
+        coerced_value = pd.Index([integer_value], dtype=source_index_dtype)[0]
+    except (OverflowError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"Shapes row identity {value!r} is outside source index dtype `{source_index_dtype}`."
+        ) from error
+    if int(coerced_value) != integer_value:
+        raise ValueError(f"Shapes row identity {value!r} is outside source index dtype `{source_index_dtype}`.")
+    return coerced_value
+
+
+def _next_generated_integer(values: set[object]) -> int:
+    integer_values = [int(value) for value in values if isinstance(value, Integral) and not isinstance(value, bool)]
+    return max(integer_values, default=-1) + 1
 
 
 def _normalize_instance_id(value: object) -> str | None:
@@ -686,9 +811,7 @@ def _align_source_column_to_row_ids(source_column: pd.Series, row_index: pd.Inde
             column = column.astype("boolean")
 
     aligned = column.reindex(row_index)
-    if has_new_rows and (
-        pd.api.types.is_object_dtype(aligned.dtype) or pd.api.types.is_string_dtype(aligned.dtype)
-    ):
+    if has_new_rows and (pd.api.types.is_object_dtype(aligned.dtype) or pd.api.types.is_string_dtype(aligned.dtype)):
         new_row_mask = ~row_index.isin(source_column.index)
         aligned.iloc[np.flatnonzero(new_row_mask)] = pd.NA
     return aligned

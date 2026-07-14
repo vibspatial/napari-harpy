@@ -267,8 +267,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_layer: Shapes | None = None
         self._annotation_edit_guard = _AnnotationLayerEditGuard(
             warning_callback=self._set_annotation_edit_warning,
-            polygon_vertex_drag_finished_callback=self._reset_annotation_edit_warning,
-            polygon_vertex_delete_finished_callback=self._reset_annotation_edit_warning,
+            polygon_edit_finished_callback=self._reset_annotation_edit_warning,
             can_space_pan_draw=self._can_annotation_layer_space_pan_draw,
         )
         self._annotation_identity_feature_default_guard = _AnnotationIdentityFeatureDefaultGuard()

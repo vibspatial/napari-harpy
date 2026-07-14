@@ -72,7 +72,7 @@ validation.
 The existing helpers in `src/napari_harpy/core/shapes_geometry.py` are relevant:
 
 - `napari_polygon_vertices_to_topology(...)`
-- `sync_napari_polygon_anchor_vertex(...)`
+- `move_napari_polygon_vertex(...)`
 - `napari_polygon_vertices_to_shapely_polygon(...)`
 
 The radius tool should add pure geometry helpers beside these rather than

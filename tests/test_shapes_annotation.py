@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import anndata as ad
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -7,7 +8,7 @@ import pytest
 from napari.layers import Shapes
 from shapely.geometry import MultiPolygon, Point, Polygon
 from spatialdata import SpatialData, read_zarr, transform
-from spatialdata.models import ShapesModel
+from spatialdata.models import ShapesModel, TableModel
 from spatialdata.transformations import Identity, Translation, get_transformation
 
 import napari_harpy.core.shapes_annotation as shapes_annotation_module
@@ -288,6 +289,52 @@ def test_napari_shapes_layer_to_geodataframe_edit_existing_preserves_metadata_an
     assert layer.features["instance_id"].tolist() == ["cell_2", "__annotation_0"]
 
 
+def test_napari_shapes_layer_to_geodataframe_edit_existing_preserves_integer_identity_type() -> None:
+    source = gpd.GeoDataFrame(
+        {"class_id": [1]},
+        geometry=[_source_polygon()],
+        index=pd.Index([0], name="cell_ID"),
+    )
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    _add_polygon(layer, offset=3)
+    # Napari/pandas may upcast an integer identity column while a new row is
+    # missing its identity. The source index remains authoritative for dtype.
+    layer.features["cell_ID"] = [0.0, np.nan]
+
+    geodataframe = napari_shapes_layer_to_geodataframe(
+        layer,
+        conversion=ExistingShapesLayerConversion(
+            source_geodataframe=source,
+            source_shapes_index_feature_name="cell_ID",
+        ),
+    )
+
+    assert geodataframe.index.tolist() == [0, 1]
+    assert geodataframe.index.dtype == source.index.dtype
+    assert layer.features["cell_ID"].tolist() == [0, 1]
+
+
+def test_napari_shapes_layer_to_geodataframe_edit_existing_rejects_new_row_for_unsupported_identity_type() -> None:
+    source = gpd.GeoDataFrame(
+        geometry=[_source_polygon()],
+        index=pd.DatetimeIndex(["2026-01-01"], name="timestamp"),
+    )
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    _add_polygon(layer, offset=3)
+    layer.features["timestamp"] = [source.index[0], None]
+
+    with pytest.raises(ValueError, match="source index dtype.*no supported identity allocator"):
+        napari_shapes_layer_to_geodataframe(
+            layer,
+            conversion=ExistingShapesLayerConversion(
+                source_geodataframe=source,
+                source_shapes_index_feature_name="timestamp",
+            ),
+        )
+
+
 def test_napari_shapes_layer_to_geodataframe_edit_existing_preserves_unnamed_source_index() -> None:
     source = gpd.GeoDataFrame(
         {"class_id": [1]},
@@ -479,6 +526,49 @@ def test_edit_shapes_element_from_napari_shapes_layer_overwrites_existing_shapes
     assert isinstance(get_transformation(edited, get_all=True)["global"], Identity)
 
 
+def test_edit_shapes_element_from_napari_shapes_layer_reserves_linked_table_integer_ids() -> None:
+    source = gpd.GeoDataFrame(
+        geometry=[_source_polygon()],
+        index=pd.Index([0], name="cell_ID"),
+    )
+    sdata = _make_shapes_sdata(source)
+    table = TableModel.parse(
+        ad.AnnData(
+            obs=pd.DataFrame(
+                {
+                    "region": ["regions", "regions", "regions"],
+                    "cell_ID": [0, 1, 2],
+                },
+                index=["obs_0", "obs_1", "obs_2"],
+            )
+        ),
+        region="regions",
+        region_key="region",
+        instance_key="cell_ID",
+    )
+    sdata.tables["annotations"] = table
+    original_obs = table.obs.copy(deep=True)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    _add_polygon(layer, offset=3)
+    layer.features["cell_ID"] = [0.0, np.nan]
+
+    edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=source,
+            source_shapes_index_feature_name="cell_ID",
+        ),
+        layer,
+    )
+
+    assert sdata.shapes["regions"].index.tolist() == [0, 3]
+    assert layer.features["cell_ID"].tolist() == [0, 3]
+    pd.testing.assert_frame_equal(table.obs, original_obs)
+
+
 def test_edit_shapes_element_from_napari_shapes_layer_preserves_other_coordinate_systems() -> None:
     source = gpd.GeoDataFrame(
         geometry=[_source_polygon()],
@@ -628,6 +718,57 @@ def test_edit_shapes_element_from_napari_shapes_layer_persists_backed_overwrite_
     assert edited["class_id"].iloc[0] == 2
     assert pd.isna(edited["class_id"].iloc[1])
     assert isinstance(get_transformation(edited, get_all=True)["global"], Identity)
+
+
+def test_edit_shapes_element_from_napari_shapes_layer_persists_new_rows_for_integer_index(
+    tmp_path,
+) -> None:
+    source = gpd.GeoDataFrame(
+        {"class_id": [1]},
+        geometry=[_source_polygon()],
+        index=pd.Index([0], name="cell_ID"),
+    )
+    path = tmp_path / "integer-index-shapes.zarr"
+    _make_shapes_sdata(source).write(path)
+    backed_sdata = read_zarr(path)
+    layer = Shapes(ndim=2)
+    _add_polygon(layer)
+    _add_polygon(layer, offset=3)
+    layer.features["cell_ID"] = [0.0, np.nan]
+
+    first_result = edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=backed_sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=backed_sdata.shapes["regions"],
+            source_shapes_index_feature_name="cell_ID",
+        ),
+        layer,
+    )
+
+    assert first_result.row_count == 2
+    assert backed_sdata.shapes["regions"].index.tolist() == [0, 1]
+
+    _add_polygon(layer, offset=6)
+    layer.features.loc[len(layer.features) - 1, "cell_ID"] = None
+    second_result = edit_shapes_element_from_napari_shapes_layer(
+        EditShapesElementRequest(
+            sdata=backed_sdata,
+            shapes_name="regions",
+            coordinate_system="global",
+            source_geodataframe=backed_sdata.shapes["regions"],
+            source_shapes_index_feature_name="cell_ID",
+        ),
+        layer,
+    )
+
+    reread = read_zarr(path)
+    assert second_result.row_count == 3
+    assert reread.shapes["regions"].index.tolist() == [0, 1, 2]
+    assert reread.shapes["regions"].index.dtype == source.index.dtype
+    assert layer.features["cell_ID"].tolist() == [0, 1, 2]
+    assert sorted(child.name for child in (path / "shapes").iterdir()) == ["regions", "zarr.json"]
 
 
 def test_edit_shapes_element_from_napari_shapes_layer_calls_harpy_with_overwrite_and_index_name(

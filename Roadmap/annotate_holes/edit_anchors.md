@@ -215,14 +215,15 @@ events.
 
 Implemented in:
 
-- `sync_napari_polygon_anchor_vertex(...)`
+- `move_napari_polygon_vertex(...)`
 - validation for moved vertex index, moved coordinate, topology group bounds,
-  and overlapping topology groups
+  overlapping topology groups, unchanged encoded topology, and valid starting
+  and candidate geometry
 
 Suggested scope:
 
-- Add a small pure function that applies one moved vertex to its synchronized
-  group.
+- Add a small pure function that applies one moved vertex to its own raw index
+  and every synchronized alias.
 - The function should work on raw napari vertices in `(y, x)` order, not on the
   private `_ParsedNapariPolygonVertices` shell/hole bundle. The private parsed
   object stores Shapely-oriented rings and can go stale after an edit; the sync
@@ -231,7 +232,7 @@ Suggested scope:
 - Proposed API:
 
   ```python
-  def sync_napari_polygon_anchor_vertex(
+  def move_napari_polygon_vertex(
       vertices: ArrayLike,
       topology: NapariPolygonTopology,
       moved_vertex_index: int,
@@ -245,8 +246,9 @@ Suggested scope:
   captured before one anchor copy is moved.
 - `moved_vertex_index` is the raw vertex index napari moved.
 - `moved_coordinate` is the moved coordinate in napari `(y, x)` order.
-- The function should return updated vertices. For ordinary non-anchor vertices,
-  returning a copy equal to the input is acceptable.
+- The function returns the complete moved candidate. Ordinary vertices change
+  only at their own raw index; duplicated shell/hole anchors and explicitly
+  closed simple endpoints change at every alias.
 - It should copy data rather than mutate caller-owned arrays unexpectedly.
 
 Suggested behavior:
@@ -822,14 +824,10 @@ Suggested scope:
   moving either `5` or `9` copies the moved coordinate to both indices.
 - If topology parsing fails on mouse press, do not guess. Delegate to napari's
   original direct-edit generator unchanged for the rest of the drag.
-- During each mouse-move iteration, advance napari's original generator once
-  first so napari performs its normal direct edit.
-- After napari's edit, if the moved vertex belongs to a cached anchor group,
-  read the moved coordinate from `layer.data[row_index][vertex_index]`, call
-  `sync_napari_polygon_anchor_vertex(...)`, write the synchronized row back to
-  the layer, and refresh the layer.
-- If the moved vertex is ordinary/non-anchor, do nothing after napari's edit and
-  leave Slice 1D non-anchor behavior unchanged.
+- The original post-native repair design is superseded. During each mouse move,
+  call `move_napari_polygon_vertex(...)` against the cached valid row before
+  any live write. Apply only the synchronized, topology-preserving, Shapely-valid
+  candidate; never advance native code into an unsynchronized intermediate row.
 - Use a re-entrancy guard so guard-triggered edits do not recursively trigger
   guard logic.
 - Preserve napari's mouse-release behavior, including its existing
@@ -1205,12 +1203,10 @@ Suggested scope:
   - insertions and deletions are handled by the topology insert/delete helpers
   - row-length changes should not enter this event-time repair path
 - Compare cached vertices with the current row.
-- If exactly one synchronized anchor group has changed, and exactly one
-  coordinate value from that group appears to be the moved value, copy that
-  coordinate to the rest of the group with
-  `sync_napari_polygon_anchor_vertex(...)`.
-- Use `_data_view.edit(...)` for the repair because this is coordinate-only:
-  the row length and napari vertex cache stay stable.
+- The event-time repair path is superseded by prevalidated transactional moves.
+  `move_napari_polygon_vertex(...)` requires the cached valid starting row and
+  constructs every alias before `_data_view.edit(...)`; it is deliberately not
+  an after-the-fact repair helper for an already-unsynchronized row.
 - Add a reentrancy guard so the repair write does not recursively trigger
   another repair pass.
 - Clear the cached row state after the event is handled, or when the guard is

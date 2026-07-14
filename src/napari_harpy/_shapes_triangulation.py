@@ -1,25 +1,37 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from napari.settings import get_settings
 from napari.utils.triangulation_backend import TriangulationBackend, get_backend, set_backend
 
-_NUMBA_TRIANGULATION_BACKEND = TriangulationBackend.numba
-_UNSAFE_SHAPES_TRIANGULATION_BACKENDS = {
-    TriangulationBackend.fastest_available,
-    TriangulationBackend.bermuda,
+type ShapesTriangulationBackend = Literal["bermuda", "numba"]
+
+_SUPPORTED_SHAPES_TRIANGULATION_BACKENDS: dict[str, TriangulationBackend] = {
+    "bermuda": TriangulationBackend.bermuda,
+    "numba": TriangulationBackend.numba,
 }
+_CONFIGURED_SHAPES_TRIANGULATION_BACKEND = TriangulationBackend.bermuda
+
+
+def configure_shapes_triangulation_backend(backend: ShapesTriangulationBackend) -> None:
+    """Configure the process-wide backend used by Harpy Shapes layers."""
+    try:
+        configured_backend = _SUPPORTED_SHAPES_TRIANGULATION_BACKENDS[backend]
+    except (KeyError, TypeError) as error:
+        valid_backends = ", ".join(_SUPPORTED_SHAPES_TRIANGULATION_BACKENDS)
+        raise ValueError(
+            f"Unknown Shapes triangulation backend {backend!r}. Valid options are: {valid_backends}."
+        ) from error
+
+    global _CONFIGURED_SHAPES_TRIANGULATION_BACKEND
+    _CONFIGURED_SHAPES_TRIANGULATION_BACKEND = configured_backend
+    ensure_shapes_triangulation_backend()
 
 
 def ensure_shapes_triangulation_backend() -> None:
-    """Prefer napari's Numba Shapes triangulation backend."""
+    """Keep napari aligned with Harpy's configured Shapes backend."""
     settings = get_settings()
-    settings_backend = settings.experimental.triangulation_backend
-    runtime_backend = get_backend()
-
-    if (
-        settings_backend in _UNSAFE_SHAPES_TRIANGULATION_BACKENDS
-        or runtime_backend in _UNSAFE_SHAPES_TRIANGULATION_BACKENDS
-    ):
-        settings.experimental.triangulation_backend = _NUMBA_TRIANGULATION_BACKEND
-        if get_backend() != _NUMBA_TRIANGULATION_BACKEND:
-            set_backend(_NUMBA_TRIANGULATION_BACKEND)
+    settings.experimental.triangulation_backend = _CONFIGURED_SHAPES_TRIANGULATION_BACKEND
+    if get_backend() != _CONFIGURED_SHAPES_TRIANGULATION_BACKEND:
+        set_backend(_CONFIGURED_SHAPES_TRIANGULATION_BACKEND)

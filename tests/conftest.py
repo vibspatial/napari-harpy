@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -32,10 +33,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 atexit.register(shutil.rmtree, TEST_HOME, ignore_errors=True)
 
-SRC = Path(__file__).resolve().parents[1] / "src"
+TESTS = Path(__file__).resolve().parent
+SRC = TESTS.parent / "src"
 
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+for import_path in (SRC, TESTS):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 
 def _make_sdata_blobs() -> SpatialData:
@@ -94,3 +97,33 @@ def backed_sdata_blobs_points_repartitioned(tmp_path) -> SpatialData:
     sdata = blobs_points_repartitioned()
     sdata.write(path)
     return read_zarr(path)
+
+
+@pytest.fixture
+def restore_triangulation_backend() -> Iterator[None]:
+    """Restore Harpy's configured backend and napari's backend state."""
+    from napari.settings import get_settings
+    from napari.utils.triangulation_backend import get_backend, set_backend
+
+    import napari_harpy._shapes_triangulation as shapes_triangulation_module
+
+    settings = get_settings()
+    previous_configured_backend = shapes_triangulation_module._CONFIGURED_SHAPES_TRIANGULATION_BACKEND
+    previous_settings_backend = settings.experimental.triangulation_backend
+    previous_runtime_backend = get_backend()
+
+    try:
+        yield
+    finally:
+        shapes_triangulation_module._CONFIGURED_SHAPES_TRIANGULATION_BACKEND = previous_configured_backend
+        settings.experimental.triangulation_backend = previous_settings_backend
+        if get_backend() != previous_runtime_backend:
+            set_backend(previous_runtime_backend)
+
+
+@pytest.fixture
+def numba_triangulation_backend(restore_triangulation_backend: None) -> None:
+    """Run a test with Harpy's configured backend set to Numba."""
+    from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
+
+    configure_shapes_triangulation_backend("numba")

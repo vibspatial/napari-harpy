@@ -70,6 +70,27 @@ class NapariPolygonTopology:
 
 
 @dataclass(frozen=True)
+class NapariPolygonVertexDeletion:
+    """Validated outcome of deleting one semantic polygon vertex.
+
+    ``vertices`` and ``topology`` contain a shortened polygon candidate. Both
+    are ``None`` when deleting from a semantic triangle must remove the whole
+    polygon instead of constructing an invalid two-vertex row.
+    """
+
+    vertices: np.ndarray | None
+    topology: NapariPolygonTopology | None
+
+    def __post_init__(self) -> None:
+        if (self.vertices is None) != (self.topology is None):
+            raise ValueError("Polygon deletion vertices and topology must either both be present or both be absent.")
+
+    @property
+    def removes_shape(self) -> bool:
+        return self.vertices is None
+
+
+@dataclass(frozen=True)
 class _ParsedNapariPolygonVertices:
     shell: np.ndarray
     holes: tuple[np.ndarray, ...]
@@ -125,37 +146,38 @@ def napari_polygon_vertices_to_topology(vertices: ArrayLike) -> NapariPolygonTop
 
 
 # Topology-preserving edit helpers for one napari polygon vertex row.
-def sync_napari_polygon_anchor_vertex(
+def move_napari_polygon_vertex(
     vertices: ArrayLike,
     topology: NapariPolygonTopology,
     moved_vertex_index: int,
     moved_coordinate: ArrayLike,
 ) -> np.ndarray:
-    """Return vertices with the moved anchor copied to its synchronized group.
+    """Return a synchronized and geometrically valid moved-vertex candidate.
 
     ``NapariPolygonTopology`` stores raw indices into the napari vertex row.
     For a one-hole row encoded as ``A B C D A E F G H E A``, the synchronized
     groups are ``(0, 4, 10)`` for the shell anchor copies and ``(5, 9)`` for
     the hole-anchor copies.
 
-    If napari moves one member of such a group, this helper writes the moved
-    coordinate to every index in that group. Moving shell-anchor index ``4`` to
-    ``A'`` therefore turns ``A B C D A' E F G H E A`` into
-    ``A' B C D A' E F G H E A'``. Moving an ordinary non-anchor vertex, such as
-    ``G`` at index ``7``, returns an unchanged copy.
+    Moving one member of such a group writes the proposed coordinate to every
+    alias. Moving shell-anchor index ``4`` to ``A'`` therefore turns
+    ``A B C D A E F G H E A`` into ``A' B C D A' E F G H E A'``. The first and
+    last coordinates of an explicitly closed simple polygon are treated as the
+    same semantic vertex. An ordinary vertex changes only at its own index.
 
     The topology is not returned because it stores indices, not coordinates.
-    Synchronizing a moved coordinate does not insert or remove vertices, so the
-    anchor-group indices remain unchanged.
+    Moving coordinates does not insert or remove vertices, so the anchor-group
+    indices must remain unchanged.
 
-    Topology groups are validated before synchronization so a vertex index
-    cannot belong to multiple groups or point outside the vertex row.
+    Both the starting row and moved candidate must match the supplied topology
+    and decode as valid Shapely polygons. Topology groups are also validated so
+    they cannot overlap or point outside the vertex row.
     """
     vertices = _coerce_vertices(vertices)
     moved_vertex_index = _coerce_vertex_index(moved_vertex_index, vertex_count=len(vertices))
     moved_coordinate = _coerce_moved_coordinate(moved_coordinate)
 
-    matched_group: tuple[int, ...] | None = None
+    alias_indices = (moved_vertex_index,)
     seen_indices: set[int] = set()
     for group in topology.synchronized_anchor_groups:
         normalized_group = _validated_anchor_group(group, vertex_count=len(vertices))
@@ -164,12 +186,27 @@ def sync_napari_polygon_anchor_vertex(
             raise ValueError("Polygon topology anchor groups must not overlap.")
         seen_indices.update(normalized_group)
         if moved_vertex_index in normalized_group:
-            matched_group = normalized_group
+            alias_indices = normalized_group
 
-    synchronized = vertices.copy()
-    if matched_group is not None:
-        synchronized[list(matched_group)] = moved_coordinate
-    return synchronized
+    parsed_topology = napari_polygon_vertices_to_topology(vertices)
+    if parsed_topology != topology:
+        raise ValueError("Polygon topology does not match the encoded vertex row.")
+    _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+    explicitly_closed = bool(np.array_equal(vertices[0], vertices[-1]))
+
+    if not topology.synchronized_anchor_groups and moved_vertex_index in {0, len(vertices) - 1} and explicitly_closed:
+        alias_indices = (0, len(vertices) - 1)
+
+    moved_vertices = vertices.copy()
+    moved_vertices[list(alias_indices)] = moved_coordinate
+    moved_explicitly_closed = bool(np.array_equal(moved_vertices[0], moved_vertices[-1]))
+    if moved_explicitly_closed != explicitly_closed:
+        raise ValueError("Polygon move changed the row's closure encoding.")
+    moved_topology = napari_polygon_vertices_to_topology(moved_vertices)
+    if moved_topology != topology:
+        raise ValueError("Polygon move changed the encoded topology.")
+    _ = napari_polygon_vertices_to_shapely_polygon(moved_vertices)
+    return moved_vertices
 
 
 def insert_napari_polygon_vertex(
@@ -178,10 +215,73 @@ def insert_napari_polygon_vertex(
     insert_index: int,
     inserted_coordinate: ArrayLike,
 ) -> tuple[np.ndarray, NapariPolygonTopology]:
-    """Return vertices and topology after inserting one ordinary ring vertex."""
+    """Return the validated result of inserting one polygon vertex.
+
+    Simple polygons preserve their implicit or explicit closure encoding.
+    Hole-bearing rows additionally reject artificial bridge and separator
+    edges and shift every affected anchor index.
+    """
     vertices = _coerce_vertices(vertices)
-    insert_index = _coerce_insert_index(insert_index, vertex_count=len(vertices))
     inserted_coordinate = _coerce_inserted_coordinate(inserted_coordinate)
+    parsed_topology = napari_polygon_vertices_to_topology(vertices)
+    if parsed_topology != topology:
+        raise ValueError("Polygon topology does not match the encoded vertex row.")
+    _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+
+    if not topology.hole_anchor_groups:
+        return _insert_simple_napari_polygon_vertex(
+            vertices,
+            topology=topology,
+            insert_index=insert_index,
+            inserted_coordinate=inserted_coordinate,
+        )
+
+    return _insert_hole_bearing_napari_polygon_vertex(
+        vertices,
+        topology=topology,
+        insert_index=insert_index,
+        inserted_coordinate=inserted_coordinate,
+    )
+
+
+def _insert_simple_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    insert_index: int,
+    inserted_coordinate: np.ndarray,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    explicitly_closed = bool(np.array_equal(vertices[0], vertices[-1]))
+    if isinstance(insert_index, bool) or not isinstance(insert_index, (int, np.integer)):
+        raise ValueError("Inserted polygon vertex index must be an integer.")
+
+    insert_index = int(insert_index)
+    if insert_index < 0 or insert_index > len(vertices):
+        raise ValueError("Inserted polygon vertex index is outside the vertex row.")
+    if insert_index == 0:
+        raise ValueError("Inserted polygon vertex must split a polygon edge.")
+    if explicitly_closed and insert_index == len(vertices):
+        raise ValueError("Inserted polygon vertex must split a polygon edge.")
+
+    inserted_vertices = np.insert(vertices, insert_index, [inserted_coordinate], axis=0)
+    inserted_explicitly_closed = bool(np.array_equal(inserted_vertices[0], inserted_vertices[-1]))
+    if inserted_explicitly_closed != explicitly_closed:
+        raise ValueError("Polygon insertion changed the row's closure encoding.")
+    inserted_topology = napari_polygon_vertices_to_topology(inserted_vertices)
+    if inserted_topology != topology:
+        raise ValueError("Polygon insertion changed the encoded topology.")
+    _ = napari_polygon_vertices_to_shapely_polygon(inserted_vertices)
+    return inserted_vertices, inserted_topology
+
+
+def _insert_hole_bearing_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    insert_index: int,
+    inserted_coordinate: np.ndarray,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
+    insert_index = _coerce_insert_index(insert_index, vertex_count=len(vertices))
     shell_anchor_group, hole_anchor_groups = _validated_hole_topology(topology, vertex_count=len(vertices))
 
     shell_start, shell_end = shell_anchor_group[0], shell_anchor_group[1]
@@ -218,10 +318,75 @@ def delete_napari_polygon_vertex(
     vertices: ArrayLike,
     topology: NapariPolygonTopology,
     deleted_vertex_index: int,
-) -> tuple[np.ndarray, NapariPolygonTopology]:
-    """Return vertices and topology after deleting one ordinary ring vertex."""
+) -> NapariPolygonVertexDeletion:
+    """Return the validated outcome of deleting one polygon vertex.
+
+    Simple polygons preserve their implicit or explicit closure form. The
+    first and last coordinates of an explicitly closed row are treated as
+    aliases of one semantic vertex. Deleting from a semantic triangle reports
+    whole-shape removal.
+
+    Hole-bearing rows additionally synchronize encoded shell and hole anchors,
+    shift separator indices, and remove a complete minimal hole when needed.
+    """
     vertices = _coerce_vertices(vertices)
     deleted_vertex_index = _coerce_deleted_vertex_index(deleted_vertex_index, vertex_count=len(vertices))
+    parsed_topology = napari_polygon_vertices_to_topology(vertices)
+    if parsed_topology != topology:
+        raise ValueError("Polygon topology does not match the encoded vertex row.")
+    _ = napari_polygon_vertices_to_shapely_polygon(vertices)
+
+    if not topology.hole_anchor_groups:
+        return _delete_simple_napari_polygon_vertex(
+            vertices,
+            topology=topology,
+            deleted_vertex_index=deleted_vertex_index,
+        )
+
+    # Parsing above has already proved the hole-bearing row grammar: the shell
+    # and every hole are explicitly closed, every hole has a following shell
+    # separator, and the complete row ends on the shell anchor. The private
+    # branch can therefore operate on the validated anchor-group indices.
+    deleted_vertices, deleted_topology = _delete_hole_bearing_napari_polygon_vertex(
+        vertices,
+        topology=topology,
+        deleted_vertex_index=deleted_vertex_index,
+    )
+    return NapariPolygonVertexDeletion(vertices=deleted_vertices, topology=deleted_topology)
+
+
+def _delete_simple_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> NapariPolygonVertexDeletion:
+    explicitly_closed = bool(np.array_equal(vertices[0], vertices[-1]))
+    semantic_vertex_count = len(vertices) - int(explicitly_closed)
+    if semantic_vertex_count == 3:
+        return NapariPolygonVertexDeletion(vertices=None, topology=None)
+    if semantic_vertex_count < 3:
+        raise ValueError("Polygon deletion requires at least three semantic vertices.")
+
+    if explicitly_closed and deleted_vertex_index in {0, len(vertices) - 1}:
+        semantic_vertices = np.delete(vertices[:-1], 0, axis=0)
+        deleted_vertices = np.vstack([semantic_vertices, semantic_vertices[0]])
+    else:
+        deleted_vertices = np.delete(vertices, deleted_vertex_index, axis=0)
+
+    deleted_topology = napari_polygon_vertices_to_topology(deleted_vertices)
+    if deleted_topology != topology:
+        raise ValueError("Polygon deletion changed the encoded topology.")
+    _ = napari_polygon_vertices_to_shapely_polygon(deleted_vertices)
+    return NapariPolygonVertexDeletion(vertices=deleted_vertices, topology=deleted_topology)
+
+
+def _delete_hole_bearing_napari_polygon_vertex(
+    vertices: np.ndarray,
+    *,
+    topology: NapariPolygonTopology,
+    deleted_vertex_index: int,
+) -> tuple[np.ndarray, NapariPolygonTopology]:
     shell_anchor_group, hole_anchor_groups = _validated_hole_topology(topology, vertex_count=len(vertices))
 
     if deleted_vertex_index in shell_anchor_group:
@@ -348,7 +513,11 @@ def _coerce_vertex_index(index: int, *, vertex_count: int) -> int:
     return vertex_index
 
 
-def _coerce_insert_index(index: int, *, vertex_count: int) -> int:
+def _coerce_insert_index(
+    index: int,
+    *,
+    vertex_count: int,
+) -> int:
     if isinstance(index, bool) or not isinstance(index, (int, np.integer)):
         raise ValueError("Inserted polygon vertex index must be an integer.")
 

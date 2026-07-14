@@ -47,6 +47,8 @@ Interactive(sdata)
 
 This opens napari with the Harpy widgets docked and the
 `blobs_multi_region` dataset available in the shared viewer state.
+Shapes triangulation uses the fast Bermuda backend by default. To use Numba
+instead, launch with `Interactive(sdata, triangulation_backend="numba")`.
 
 The current repository contains four working widgets:
 
