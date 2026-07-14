@@ -728,13 +728,15 @@ replaced until a complete valid calculation result is available.
 ### Run and result flow
 
 1. The user configures a complete valid selection.
-2. Run Spatial Query becomes enabled for valid, missing, partial, stale, and
+2. Run Spatial Query becomes enabled for valid, absent, partial, stale, and
    rebuildable-invalid cache states.
-3. Clicking Run captures an immutable request containing stable source
-   identities, selected coordinate system, table linkage, target intent, cache
-   state, structural signatures, and a generation token.
-4. If cache state is absent, partial, or stale, the worker calculates centers
-   for all rows of the selected table region from scale0.
+3. Clicking Run performs a fresh selected-region cache inspection, including
+   one instance-set digest, then captures an immutable request containing stable
+   source identities, selected coordinate system, table linkage, target intent,
+   cache state, structural signatures, and a generation token.
+4. A valid cache supplies the selected rows of `spatial_canonical` directly. If
+   cache state is absent, partial, stale, or rebuildable-invalid, the worker
+   calculates centers for all rows of the selected table region from scale0.
 5. The UI shows phase-specific progress and offers Cancel. Selection controls
    remain readable, but changes invalidate the active request.
 6. The worker evaluates the transformed annotation against either the validated
@@ -742,9 +744,11 @@ replaced until a complete valid calculation result is available.
 7. The worker returns instance IDs, diagnostics, and, when needed, a cache
    installation payload. It never mutates SpatialData, AnnData, or Qt state.
 8. The controller revalidates all captured identities and structural
-   signatures.
-9. If a cache payload exists, install it atomically on the main thread and mark
-   the table dirty before accepting the query result.
+   signatures. If a cache payload exists, installation re-resolves the selected
+   rows and calculates its instance-set digest a second time.
+9. If that signature still matches, install the payload atomically on the main
+   thread and mark the table dirty before accepting the query result; otherwise
+   discard it without mutation.
 10. Resolve returned IDs to current table rows using region_key and
     instance_key.
 11. If no centroids match, show No instance centroids found in the
@@ -1403,6 +1407,10 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - rechunking alone does not invalidate canonical centers;
 - transform-only changes do not stale intrinsic centers;
 - instance-set digest and finite-coordinate validation;
+- a valid Run calculates one selected-region digest and never hashes unrelated
+  registered regions;
+- installation rechecks the selected-region digest and hashes other regions
+  only when deciding whether to preserve them;
 - multi-region incremental fill preserves other valid regions;
 - pair-wide mismatch rebuilds the managed pair only after recalculation
   succeeds;
@@ -1668,14 +1676,16 @@ Cache-state classification follows this deterministic evaluation order:
    corresponding region-local mismatch code.
 6. If all selected-region checks pass, return `valid`.
 
-The report state describes the selected region. A stale but structurally
-interpretable entry for another region does not downgrade an otherwise valid
-selected region; that other region is omitted from `valid_regions` and its
-mismatch remains available in the report. A malformed region entry that makes
-the strict metadata registry uninterpretable is pair-wide `invalid` instead.
-Mismatch tuples are ordered deterministically: pair-wide reasons first, then
-the selected region, then other regions sorted by name, preserving validation
-order within each group.
+The report state and region-local mismatches describe the selected region only.
+Ordinary inspection does not calculate live source/table signatures or
+instance-set digests for every other registered region. A stale but
+structurally interpretable entry for another region therefore does not downgrade
+an otherwise valid selected region and is evaluated only if a later
+installation proposes to preserve it. A malformed region entry discovered by
+the strict metadata parser can still make the shared registry pair-wide
+`invalid`. Cache-report mismatch tuples are ordered deterministically with
+pair-wide reasons first and selected-region reasons second, preserving
+validation order within each group.
 
 The immutable value contracts are conceptually:
 
@@ -1725,7 +1735,6 @@ The immutable value contracts are conceptually:
         source_signature
         bindings: CanonicalRegionBindings
         mismatches: tuple[CanonicalCacheMismatch, ...]
-        valid_regions
 
     CanonicalInstallationPayload:
         table_name
@@ -1899,6 +1908,54 @@ obs_names never enter the digest. A representative 400,000-ID benchmark must
 guard against regression to per-ID Python hashing; observed performance should
 remain in the low tens of milliseconds on a typical development machine rather
 than becoming a hard, platform-sensitive CI timing assertion.
+
+##### Digest frequency and cache/query flow
+
+An authoritative cache inspection for Run calculates the instance-set digest
+once for the selected labels region. It does not calculate digests for all
+regions in a multi-region table. This selected-region calculation is required
+for every spatial-query Run so an out-of-band addition, removal, or replacement
+of an instance ID cannot silently reuse stale centers. With the vectorized
+uint64 encoding, hashing 400,000 already-normalized IDs is expected to take low
+tens of milliseconds; table filtering and numeric validation are additional
+bounded table work and never read labels chunks.
+
+The normal valid-cache path is:
+
+1. resolve the selected region's current rows and normalize its instance IDs;
+2. calculate its current instance-set digest and source signature;
+3. compare them with the selected region's stored metadata;
+4. when valid, reuse the selected rows of `spatial_canonical` and run the query
+   without another digest calculation or any labels read.
+
+The calculation-and-installation path calculates the selected-region digest
+twice:
+
+1. initial inspection calculates it and captures the table signature in the
+   immutable calculation request;
+2. immediately before installation, the installer resolves the current
+   selected-region bindings and calculates it again;
+3. a changed instance set rejects the stale payload without mutation;
+4. an unchanged set lets the installer map calculated centers by instance ID
+   onto the current row positions and install atomically.
+
+Other registered regions are not hashed during an ordinary selected-region
+query. When an extend or region-local refresh proposes to preserve existing
+other-region coordinates, the installer validates the source signature, table
+signature, digest, and finite coverage of each preservation candidate at that
+time. Regions that are not fully validated are dropped from the candidate
+metadata. A conservative selected-region-only rebuild need not hash regions it
+will not preserve.
+
+The widget may perform an earlier inspection to display cache status. Such a
+report may be memoized against the shared table/cache generation to prevent
+incidental UI refreshes from repeating the digest, but it is not authoritative
+for a later Run: Run performs its own fresh selected-region inspection. If an
+annotation result remains open before Apply, apply-time table/cache
+revalidation performs another selected-region digest unless the operation has
+an equivalent authoritative fresh signature from the same guarded generation.
+No status, Run, installation, or Apply path hashes every table region by
+default.
 
 Schema-v1 constants are not configurable dataclass fields. `obsm_key`, axes,
 matrix dtype, source element type, scale, coordinate-frame type, calculation
@@ -2133,7 +2190,8 @@ Deliverables:
 - exact row resolution through region and instance keys;
 - missing/equal/overwrite summaries;
 - compatible existing-column mutation and new categorical-column creation;
-- apply-time cache/binding/table revalidation and rollback;
+- apply-time selected-region signature plus cache/binding/table revalidation
+  and rollback;
 - single-operation undo with cache-aware dirty derivation;
 - table-domain tests.
 
