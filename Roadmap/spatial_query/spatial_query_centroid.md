@@ -89,7 +89,7 @@ results, or confuse in-memory state with persisted state.
   and the same per-table dirty marker.
 - **Deterministic and testable:** identical geometry, transforms, canonical
   centers, linkage metadata, and table state produce identical results.
-- **Accessible:** all important states, warnings, progress, and errors are
+- **Accessible:** all important states, warnings, busy states, and errors are
   conveyed textually and are keyboard accessible.
 
 ## Terminology and Normative Decisions
@@ -318,8 +318,8 @@ centers still scans all scale0 chunks lazily.
 - canonical-center containment using vectorized Shapely;
 - assignment to one existing compatible obs column or one newly created column;
 - mandatory overwrite disclosure and confirmation;
-- asynchronous center calculation and query execution, cancellation, progress,
-  and stale-result protection;
+- asynchronous center calculation and query execution, cancellation, textual
+  busy status, and stale-result protection;
 - per-table shared clean/dirty state;
 - selective AnnData element-level persistence of all supported dirty table
   components, including canonical centers and their metadata, without rewriting
@@ -635,7 +635,7 @@ Recommended control order:
 6. Existing-column combo or new-column line edit.
 7. Centroid cache status and Recalculate centroids button.
 8. Run Spatial Query button.
-9. Query/action status and progress area with Cancel while running.
+9. Query/action status card that reports when calculation is busy.
 10. Undo last annotation button.
 11. Write Table State and Reload Table from zarr buttons.
 12. Persistent shared clean/dirty table-state status.
@@ -746,31 +746,33 @@ but is not replaced until a complete valid calculation result is available.
 3. Clicking Run performs a fresh selected-region cache inspection, including
    one instance-set digest, then captures an immutable request containing stable
    source identities, selected coordinate system, table linkage, target intent,
-   cache state, structural signatures, and a generation token.
-4. A valid cache supplies the selected rows of `spatial_canonical` directly. If
-   cache state is absent, partial, stale, or rebuildable-invalid, the worker
-   calculates centers for all rows of the selected table region from scale0.
-5. The UI shows phase-specific progress and offers Cancel. Selection controls
-   remain readable, but changes invalidate the active request.
-6. The worker evaluates the transformed annotation against either the validated
-   cached coordinates or the newly calculated coordinates.
-7. The worker returns instance IDs, diagnostics, and, when needed, a cache
-   cache-update payload. It never mutates SpatialData, AnnData, or Qt state.
-8. The controller revalidates all captured identities and structural
-   signatures. If a cache payload exists, applying the update re-resolves the selected
-   rows and calculates its instance-set digest a second time.
-9. If that signature still matches, apply the cache-update payload atomically on the main
-   thread and mark the table dirty before accepting the query result; otherwise
-   discard it without mutation.
-10. Resolve returned IDs to current table rows using region_key and
-    instance_key.
-11. If no centroids match, show No instance centroids found in the
-    annotation and make no annotation-column changes.
-12. Otherwise open the Apply Spatial Annotation dialog.
+   cache state, structural signatures, and one operation generation.
+4. A valid cache supplies the selected rows of `spatial_canonical` directly and
+   skips centroid calculation. If the cache is absent, partial, stale, or
+   rebuildable-invalid, a worker calculates centers for all rows of the selected
+   table region from scale0 and returns a `CanonicalCacheUpdatePayload` without
+   mutating the table.
+5. The main-thread controller accepts the payload only for the current operation
+   generation and applies it through `apply_canonical_cache_update()`. Its fresh
+   source/binding validation re-resolves current rows and rejects outdated work.
+6. Once canonical centers are valid or the cache update has succeeded, a worker
+   evaluates them against the transformed Shapes geometry. It returns matching
+   instance IDs without mutating SpatialData, AnnData, or Qt state.
+7. Throughout either worker phase, the status card reports that calculation is
+   busy without a progress bar or percentage. Selection changes invalidate the
+   operation generation.
+8. The main-thread controller accepts the query result only for the current
+   generation, revalidates the captured request, and resolves returned IDs to
+   current table rows using `region_key` and `instance_key`.
+9. If no centroids match, show No instance centroids found in the
+   annotation and make no annotation-column changes.
+10. Otherwise open the Apply Spatial Annotation dialog.
 
-Cancellation before the cache update makes no changes. Cancellation of the
-Apply dialog after a newly calculated cache was applied leaves that cache in
-memory and leaves the table dirty.
+Cancellation before the cache update makes no changes. If a newly calculated
+cache was already applied before the query phase is cancelled or invalidated,
+that useful cache remains in memory and remains dirty, but no result dialog or
+annotation mutation follows. Cancelling the Apply dialog likewise leaves an
+already-applied cache intact.
 
 ### Apply Spatial Annotation dialog
 
@@ -904,46 +906,38 @@ validated; this is the intended table-defined query universe.
 
 RasterAggregator may currently use more than one full lazy pass, for example to
 calculate counts and coordinate moments. The product contract is out-of-core
-execution and bounded working memory, not a promise of exactly one storage
-pass. The implementation must be benchmarked on representative local and remote
-stores. If the current per-chunk intermediate layout exceeds the declared
-production memory budget for high instance counts, RasterAggregator must be
-optimized before release; falling back to loading labels eagerly is forbidden.
+execution through Harpy, not a promise of exactly one storage pass. Harpy owns
+RasterAggregator scheduling, concurrency, memory, and performance. napari-harpy
+does not add local performance budgets or eager fallbacks.
 
-### Cache generation result
+### Background calculation result
 
-Use a UI-independent worker result, conceptually:
+The worker calls `calculate_canonical_centers()` and returns its existing
+`CanonicalCacheUpdatePayload`; do not introduce a second result type that
+duplicates the binding, source signature, instance IDs, or centers. The arrays
+are compact and eager only after Harpy's Dask calculation completes. They
+contain one row per selected table instance, not one row per label pixel.
 
-    CanonicalCenterBuildResult:
-        labels_name
-        table_name
-        instance_ids
-        centers
-        source_signature
-        instance_set_digest
-        cache_action
-        mismatch_reasons
-        diagnostics
-        generation
+The worker receives no Qt or napari layer objects and never mutates table state.
+Applying the payload through `apply_canonical_cache_update()` is a separate
+main-thread domain operation.
 
-The arrays are compact and eager only after Dask completes. They contain one
-row per table instance, not one row per label pixel.
-
-The worker must not receive Qt or napari layer objects and must not mutate table
-state. Applying the cache update on the main thread is a separate domain operation.
-
-### Performance and cancellation
+### Background execution and cancellation
 
 - Run all labels I/O and Dask calculation off the Qt main thread.
-- Preserve zarr-aligned scale0 chunks; do not rechunk as part of this feature.
-- Never compute the full labels array, a full coordinate raster, or a full
-  boolean mask.
-- Bound local Dask concurrency against a documented memory budget.
-- Use scheduler diagnostics for progress where feasible; otherwise show
-  indeterminate progress with the current phase.
-- Cancellation immediately prevents the cache update, result dialogs, and
-  table mutation. Already scheduled local chunk reads may finish in the
-  background; the UI must not claim hard I/O cancellation.
+- Preserve the scale0 Dask representation; do not rechunk or eagerly load the
+  labels raster as part of this feature.
+- Follow the existing Feature Extraction and Object Classification worker
+  lifecycle: assign a monotonically increasing operation generation, keep the
+  active worker and generation, call `worker.quit()` when invalidating it,
+  clear the active references, and ignore every late signal whose generation
+  is no longer current.
+- `worker.quit()` is best-effort invalidation, not hard interruption of Harpy's
+  synchronous calculation. The underlying calculation may finish, but its
+  result cannot update the cache, open a later dialog, or mutate a table.
+- Do not add a Dask cancellation token, scheduler callback, concurrency policy,
+  task diagnostics, progress bar, percentage, or performance telemetry.
+- While current work is running, show a textual busy message in the status card.
 - Errors become actionable UI feedback and structured logs, with controls
   restored to a usable state.
 
@@ -1040,8 +1034,9 @@ queries against the same labels/table region should be snappy.
 
 ### Stale-result protection
 
-Every Run has a monotonically increasing generation token and captured source
-identities/structural signatures. Discard all worker output if, while it runs:
+Every Run has a monotonically increasing operation generation and captured
+source identities/structural signatures. Discard all worker output if, while it
+runs:
 
 - the SpatialData object changes;
 - coordinate system, Shapes, labels, table, or target-column intent changes;
@@ -1135,7 +1130,7 @@ dirty truth.
 | --- | --- | --- |
 | Bind/select inputs | No | Unchanged |
 | Query using valid centers | No | Unchanged |
-| Cancel center calculation | No accepted mutation | Unchanged |
+| Invalidate/cancel center calculation | No accepted mutation | Unchanged |
 | Center calculation fails | No accepted mutation | Unchanged |
 | Create/extend/refresh/rebuild centers | obsm and uns | Dirty |
 | Successful Recalculate centroids | selected-region obsm and uns | Dirty |
@@ -1297,7 +1292,7 @@ user-facing message.
 - Warning meaning uses text/icon as well as color.
 - Status cards are word-wrapped and copyable where practical.
 - Long names are elided visually and shown fully in tooltips.
-- Running phase, progress, cancellation, success, and failure are textual.
+- Busy, cancellation, success, and failure states are textual.
 - Destructive rebuild, overwrite, and reload actions use explicit verbs.
 - Modal dialogs have the widget as parent and cannot appear behind napari.
 - The first-run cost and reuse state are understandable without reading logs.
@@ -1363,7 +1358,7 @@ The corresponding widget package is:
                 cache update, apply, and undo orchestration
 
             widget.py
-                selectors, cache status, progress, persistence actions
+                selectors, cache status, busy state, persistence actions
 
             dialogs.py
                 cache mismatch reporting
@@ -1453,7 +1448,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - no NumPy/full-array labels fallback;
 - only scale0 is read;
 - cancellation/stale completion cannot update the cache;
-- memory and concurrency remain within the declared budget.
+- worker wrapping does not change Harpy's Dask scheduling policy.
 
 ### Geometry/query tests
 
@@ -1513,8 +1508,9 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - all centroid cache status states and phase text;
 - Recalculate centroids enablement is based on labels/table binding rather than
   Shapes or annotation-target validity;
-- Recalculate centroids bypasses cache reuse, exposes progress/cancellation,
-  refreshes status on success, and never starts a query or annotation flow;
+- Recalculate centroids bypasses cache reuse, shows textual busy/cancellation
+  status, refreshes status on success, and never starts a query or annotation
+  flow;
 - invalid-cache mismatch reporting and automatic rebuild state;
 - result dialog contents and centroid predicate wording;
 - live conflict recount and value validation;
@@ -1559,18 +1555,16 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   coexist in one write;
 - late center/query completion after reload cannot affect the table.
 
-### Performance tests
+### Background calculation tests
 
-- benchmark first-run aggregation for representative instance counts, raster
-  sizes, chunk shapes, local stores, and remote-like latency;
-- benchmark cached point queries for representative table sizes and polygon
-  complexity;
-- measure Dask task count, storage passes, peak memory, concurrency, and
-  cancellation latency;
-- establish regression thresholds from measured supported hardware;
-- test repeated queries to demonstrate cache amortization;
-- fail the release gate if current RasterAggregator intermediates exceed the
-  declared production memory budget.
+- calculation runs through a worker and returns a cache-update payload without
+  mutating AnnData;
+- only the current operation generation can apply a returned payload;
+- invalidated, cancelled, and late worker signals are ignored;
+- accepted payloads are revalidated and applied on the main thread;
+- the status card reports a textual busy state without progress telemetry;
+- Harpy's Dask scheduler and performance behavior are not reimplemented or
+  regression-gated in napari-harpy.
 
 ## Observability
 
@@ -1578,8 +1572,7 @@ Log structured diagnostic context for:
 
 - cache inspection state and reason;
 - center calculation start/cancel/stale-drop/success/failure;
-- source scale0 dimensions, shape, dtype, chunks, requested instance count,
-  Dask task count, elapsed time, and peak/concurrency diagnostics;
+- source scale0 dimensions, shape, dtype, and requested instance count;
 - cache-update action, covered region/count, schema/algorithm version;
 - query start/cancel/stale-drop/success/failure;
 - coordinate system, transform identities, annotation bounds, eligible and
@@ -2111,8 +2104,9 @@ Exit criteria:
 **Implementation status: Implemented.**
 
 Slice 1b calculates the values consumed by Slice 1a and supplies the blocking,
-UI-independent ensure operation. Background execution, progress, cancellation,
-and production performance hardening remain Slice 2 responsibilities.
+UI-independent ensure operation. The thin background calculation boundary and
+late-result safety remain Slice 2 responsibilities; complete query-controller
+orchestration remains Slice 7.
 
 Deliverables:
 
@@ -2230,22 +2224,50 @@ Exit criteria:
 - no calculation failure reaches the Slice 1a cache-update operation or changes obsm/uns;
 - domain modules have no Qt dependency.
 
-### Slice 2: Canonical calculation performance and async hardening
+### Slice 2: Background canonical calculation boundary
+
+The required mutation boundary is:
+
+    main thread
+        inspect_canonical_cache() and capture CanonicalCacheReport
+            ↓
+    worker
+        calculate_canonical_centers()
+        return CanonicalCacheUpdatePayload
+            ↓
+    main thread
+        reject a cancelled, invalidated, or outdated job
+        apply_canonical_cache_update()
+
+The worker never calls `ensure_canonical_centers()`, because that blocking
+operation includes cache mutation. The existing blocking ensure remains the
+UI-independent convenience operation for synchronous callers.
 
 Deliverables:
 
-- background-worker integration for the Slice 1b ensure operation;
-- bounded Dask concurrency, progress diagnostics, cancellation, and stale-result
-  protection;
-- representative zarr-backed correctness and memory tests;
-- upstream RasterAggregator optimizations if benchmarks show production limits.
+- a thin worker wrapper that calls `calculate_canonical_centers()` and returns
+  its `CanonicalCacheUpdatePayload` without calling
+  `apply_canonical_cache_update()` or otherwise mutating AnnData;
+- the same monotonically increasing operation-generation, active-worker,
+  `worker.quit()`, and late-signal rejection pattern used by existing
+  napari-harpy controllers;
+- an accepted-result boundary that applies the payload only on the main thread,
+  where the existing fresh source/binding validation remains authoritative;
+- textual busy, cancellation, success, and failure status without a progress
+  bar, percentage, scheduler diagnostics, or performance telemetry;
+- focused worker tests for accepted, invalidated, cancelled, late, and errored
+  results.
 
 Exit criteria:
 
-- large fixtures demonstrate bounded working memory under configured
-  concurrency;
-- cancellation/stale completion cannot replace table state;
-- first-build performance and resource use meet the declared product budget.
+- labels I/O and centroid calculation run outside the Qt main thread;
+- the worker returns the existing payload contract and never mutates AnnData;
+- cancellation or invalidation immediately prevents result acceptance even if
+  the underlying Harpy call later completes;
+- only the current operation generation may reach
+  `apply_canonical_cache_update()` on the main thread;
+- napari-harpy does not override or regression-gate Harpy's Dask scheduling,
+  concurrency, memory, or calculation performance.
 
 ### Slice 3: Shared cache state, events, and persistence
 
@@ -2336,16 +2358,39 @@ Exit criteria:
 
 Deliverables:
 
-- worker orchestration with generation tokens and two execution phases;
-- standalone Recalculate centroids orchestration through the forced ensure
-  mode, ending after the cache update rather than continuing into query or
-  annotation review;
-- progress, cancellation, cleanup, and error routing;
+- worker orchestration with one monotonically increasing operation generation
+  spanning an optional centroid-calculation phase and a spatial-query phase;
+- standalone Recalculate centroids orchestration that bypasses valid reuse,
+  calculates a payload in the worker, and applies it on the main thread, ending
+  after the cache update rather than continuing into query or annotation
+  review;
+- textual busy status, cancellation, cleanup, and error routing;
 - main-thread cache update/revalidation;
 - no-result outcome;
 - Apply dialog with live counts and mandatory overwrite warning;
 - main-thread annotation apply and undo UI;
 - controller/dialog async tests.
+
+The centroid-calculation phase is:
+
+    worker: calculate_canonical_centers()
+        ↓
+    main thread: accept and apply cache payload
+
+It is skipped when the selected-region cache is already valid. Standalone
+Recalculate centroids performs this phase with valid reuse bypassed and ends
+after the main-thread cache update.
+
+The spatial-query phase is:
+
+    worker: evaluate canonical centers against the Shapes geometry
+        ↓
+    main thread: accept result and open the review dialog
+
+The same operation generation governs both phases; do not introduce a separate
+job-ID concept. The controller also records which phase owns the active worker.
+Cancellation, selection changes, reload, a newer operation, or widget shutdown
+invalidate that generation, and every late signal from either phase is ignored.
 
 Exit criteria:
 
@@ -2386,9 +2431,6 @@ Exit criteria:
 
 Deliverables:
 
-- representative first-build and cached-query benchmarks;
-- documented memory/concurrency budgets and regression thresholds;
-- cancellation-latency and remote-store testing;
 - structured logging and diagnostic coverage;
 - accessibility and keyboard pass;
 - user documentation with screenshots and exact centroid semantics;
@@ -2401,9 +2443,7 @@ Exit criteria:
 
 - all Definition of Done items pass;
 - no correctness, data-loss, stale-worker, cache-coherency, or persistence
-  defect is deferred as polish;
-- performance limitations are measured and documented;
-- first-build resource usage meets the declared professional-product budget.
+  defect is deferred as polish.
 
 ## Definition of Done
 
@@ -2444,7 +2484,7 @@ Completion additionally requires:
   components and never rewrites unrelated AnnData elements;
 - reload and dirty-dataset replacement protect local changes;
 - accessible validation/status/error feedback is complete;
-- repository tests, lint, formatting, benchmarks, and manual smoke tests pass.
+- repository tests, lint, formatting, and manual smoke tests pass.
 
 ## Final Architectural Decision
 
