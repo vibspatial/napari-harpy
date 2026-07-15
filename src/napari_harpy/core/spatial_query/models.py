@@ -235,11 +235,11 @@ class CanonicalCacheReport:
 
 @dataclass(frozen=True)
 class CanonicalInstallationPayload:
-    """Calculated centers paired with the identity used to calculate them."""
+    """Calculated centers and the identity used to calculate them."""
 
     table_name: str
     binding: CanonicalRegionBinding
-    centers_xy: NDArray[np.float64] = field(repr=False, compare=False)
+    centers: NDArray[np.float64] = field(repr=False, compare=False)
     source_signature: CanonicalSourceSignature
 
     def __post_init__(self) -> None:
@@ -250,17 +250,19 @@ class CanonicalInstallationPayload:
         if self.source_signature.labels_name != self.binding.labels_name:
             raise ValueError("Canonical payload source signature labels name does not match.")
         try:
-            centers = np.asarray(self.centers_xy)
+            centers = np.asarray(self.centers)
         except (TypeError, ValueError) as exc:
             raise ValueError("Canonical payload centers must be a dense numeric array.") from exc
-        if centers.shape != (len(self.binding.instance_ids), 2):
-            raise ValueError("Canonical payload centers must have shape (n_instances, 2).")
+        if centers.shape != (len(self.binding.instance_ids), 3):
+            raise ValueError("Canonical payload centers must have shape (n_instances, 3) in z, y, x order.")
         if centers.dtype.kind not in "fiu":
             raise ValueError("Canonical payload centers must have a numeric dtype.")
-        centers_xy = _readonly_array(centers, dtype=np.float64)
-        if not np.isfinite(centers_xy).all():
+        normalized_centers = _readonly_array(centers, dtype=np.float64)
+        if not np.isfinite(normalized_centers).all():
             raise ValueError("Canonical payload centers must contain only finite values.")
-        object.__setattr__(self, "centers_xy", centers_xy)
+        if self.source_signature.dims == ("y", "x") and np.any(normalized_centers[:, 0] != 0.0):
+            raise ValueError("Canonical payload centers for a 2D labels source must use z=0.")
+        object.__setattr__(self, "centers", normalized_centers)
 
 
 @dataclass(frozen=True)

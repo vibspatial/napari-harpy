@@ -138,9 +138,12 @@ labels instance, using equal weight for every pixel:
     center_x = mean(pixel column indices)
     center_y = mean(pixel row indices)
 
-For two-dimensional labels, the stored coordinate order is always x, y.
-RasterAggregator may internally use z, y, x; the singleton z coordinate is
-discarded and y, x is explicitly reordered to x, y before storage.
+The canonical cache always uses a fixed z, y, x storage layout, including for
+two-dimensional labels. RasterAggregator already returns z, y, x. For a 2D
+source, the lazily added singleton z plane produces and stores z=0.0 for every
+covered row. This z value is a storage-padding convention, not evidence that
+the source labels element is three-dimensional. The source signature continues
+to record the actual source dims, for example ("y", "x").
 
 Pixel indices denote pixel centers in the same convention used by Harpy's
 RasterAggregator: x=0, y=0 is the center represented by array position [0, 0].
@@ -246,7 +249,10 @@ spatial_canonical.
 
 This release supports 2D x/y labels queries. Labels with a spatial z dimension
 are rejected rather than implicitly querying the current napari slice or
-projecting a volume.
+projecting a volume. The fixed z/y/x cache layout is deliberately 3D-ready, but
+does not add 3D calculation, transformation, or query semantics in this
+release. A 2D query reads y from column 1 and x from column 2 and ignores the
+synthetic z column; it does not pass z into a 2D transformation.
 
 ### Table binding and instance membership
 
@@ -329,7 +335,8 @@ centers still scans all scale0 chunks lazily.
 - querying arbitrary unregistered napari Shapes layers;
 - querying unsaved Shapes Annotation edits;
 - per-polygon annotation values within one Shapes element;
-- 3D center calculation/query semantics;
+- 3D center calculation/query semantics; the storage layout is 3D-ready, but
+  3D sources remain unsupported in this release;
 - any-pixel overlap, full-label containment, or percentage-overlap predicates;
 - boolean combinations selected interactively across Shapes elements;
 - automatically writing to zarr after every cache or annotation change;
@@ -355,11 +362,12 @@ without overloading feature-matrix metadata.
 
 The matrix:
 
-- has shape n_obs by 2;
+- has shape n_obs by 3;
 - is a dense floating-point NumPy-compatible array;
-- uses columns x, y in that order;
+- uses columns z, y, x in that order;
 - is row-aligned through AnnData's obsm contract;
 - contains finite coordinates for every row covered by a valid region entry;
+- contains z=0.0 for every covered row belonging to a 2D labels source;
 - may contain NaN for rows belonging to table regions whose centers have not
   yet been calculated;
 - must not contain inf;
@@ -377,7 +385,7 @@ A representative schema is:
     adata.uns["spatial_coordinates"]["spatial_canonical"] = {
         "schema_version": 1,
         "obsm_key": "spatial_canonical",
-        "axes": ["x", "y"],
+        "axes": ["z", "y", "x"],
         "dtype": "float64",
         "region_key": "region",
         "instance_key": "instance_id",
@@ -389,7 +397,7 @@ A representative schema is:
                 "coordinate_frame": {
                     "type": "element_intrinsic",
                     "element": "nuclei",
-                    "axes": ["x", "y"],
+                    "axes": ["z", "y", "x"],
                 },
                 "calculation": {
                     "method": "center_of_mass",
@@ -441,7 +449,7 @@ source_element, coordinate-frame element, and selected labels name must agree.
 Metadata validation requires:
 
 - supported schema version;
-- matching obsm key, two-dimensional x/y axes, matrix shape, and dtype;
+- matching obsm key, fixed z/y/x axes, three-column matrix shape, and dtype;
 - current table region_key and instance_key;
 - a selected-region entry with matching source labels element;
 - scale0 as the source level;
@@ -451,7 +459,7 @@ Metadata validation requires:
 - the supported pixel-center convention and algorithm version;
 - coverage of all current rows in the selected table region;
 - matching source element, scale0 dimensions, shape, and dtype;
-- finite x/y coordinates on every covered row.
+- finite z/y/x coordinates on every covered row, with z=0.0 for a 2D source.
 
 Dimensions, shape, dtype, and table coverage form the structural cache
 signature. A mismatch is reported and triggers recalculation. Dask/zarr
@@ -466,7 +474,7 @@ the supported algorithm/schema version or documented semantics changed.
 
 ### Coverage and multi-region tables
 
-One table may annotate multiple labels regions. The single n_obs by 2 matrix can
+One table may annotate multiple labels regions. The single n_obs by 3 matrix can
 therefore contain coordinates expressed in different labels-intrinsic frames.
 The row's obs[region_key] value selects the metadata entry that defines its
 frame.
@@ -480,8 +488,9 @@ When a new spatial_canonical matrix is created, initialize all rows to NaN and
 fill the selected region's rows. When another region is later calculated, fill
 only that region and preserve valid existing region coordinates and metadata.
 NaN is a placeholder only for rows in table regions that have no valid region
-entry yet. Every row covered by a registered region entry must have finite x/y
-coordinates; a region is never registered with partial coverage.
+entry yet. Every row covered by a registered region entry must have finite
+z/y/x coordinates, and every covered row for a 2D source must have z=0.0; a
+region is never registered with partial coverage.
 
 Coverage is complete only when every current table row in that region has one
 finite center. Each labels element has a separate instance_set_digest stored in
@@ -556,10 +565,10 @@ The cache inspector returns one of these typed states for the selected region:
   covered;
 - valid: matrix, metadata, structural source signature, table coverage, and
   finite values pass;
-- stale: the pair is interpretable but its selected-region structural
+- stale: the cache is interpretable but its selected-region structural
   source/coverage/algorithm signature no longer matches;
 - invalid: matrix/metadata is malformed, contradictory, unsupported, or only
-  one half of the pair exists.
+  one managed component exists.
 
 Run behavior:
 
@@ -568,12 +577,12 @@ Run behavior:
   query;
 - stale: recalculate and atomically replace only the selected region, then
   query;
-- invalid: report the pair-wide mismatch, calculate the selected region, and
+- invalid: report the all-regions mismatch, calculate the selected region, and
   rebuild the managed matrix/metadata pair. The rebuild is conservative: an
   existing region is preserved only when its coordinates and metadata can be
   fully substantiated against the shared matrix, current table, and current
-  source signature. If pair-wide inconsistency prevents that proof, rebuild a
-  selected-region-only pair rather than carrying the entry forward.
+  source signature. If an all-regions inconsistency prevents that proof,
+  rebuild a selected-region-only cache rather than carrying the entry forward.
 
 The widget shows the current state before Run, including First query will
 calculate centroids when appropriate.
@@ -720,10 +729,10 @@ On activation:
    status, and report completion.
 
 If calculation is cancelled, fails, produces a missing/non-finite requested ID,
-or becomes stale before installation, the previous obsm/uns pair is preserved
-exactly, no mutation event is emitted, and dirty state is unchanged. A pair-wide
-invalid matrix/metadata state follows the existing rebuild rules, but is not
-replaced until a complete valid calculation result is available.
+or becomes stale before installation, the previous obsm/uns state is preserved
+exactly, no mutation event is emitted, and dirty state is unchanged. An
+all-regions invalid matrix/metadata state follows the existing rebuild rules,
+but is not replaced until a complete valid calculation result is available.
 
 ### Run and result flow
 
@@ -873,8 +882,8 @@ For a 2D scale0 labels Dask array:
 6. exclude background zero before aggregation;
 7. let RasterAggregator construct and execute its Dask aggregation;
 8. receive the compact per-requested-instance z, y, x result;
-9. require z to be the expected singleton-plane value;
-10. drop z and reorder y, x to x, y;
+9. require z to equal the expected singleton-plane value 0.0;
+10. retain the float64 z, y, x result unchanged for canonical storage;
 11. validate exactly one finite result for every requested ID; a zero-count or
     non-finite result means that a table instance is absent from the raster and
     is a binding error;
@@ -902,7 +911,7 @@ Use a UI-independent worker result, conceptually:
         labels_name
         table_name
         instance_ids
-        centers_xy
+        centers
         source_signature
         instance_set_digest
         cache_action
@@ -1412,7 +1421,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - installation rechecks the selected-region digest and hashes other regions
   only when deciding whether to preserve them;
 - multi-region incremental fill preserves other valid regions;
-- pair-wide mismatch rebuilds the managed pair only after recalculation
+- an all-regions mismatch rebuilds the managed matrix and metadata only after recalculation
   succeeds;
 - forced recalculation bypasses valid reuse, replaces only the selected region,
   and preserves all other valid regions;
@@ -1603,16 +1612,16 @@ Deliverables:
 - selected-region binding validation that rejects zero matching rows and
   missing, non-positive, non-integer-like, duplicate, or uint64-overflowing
   instance IDs without creating or deleting table rows;
-- matrix/metadata validation for shape, dtype, axes, finite registered-region
-  coordinates, and multi-region coverage;
+- matrix/metadata validation for fixed z/y/x shape, dtype, axes, finite
+  registered-region coordinates, 2D z=0.0, and multi-region coverage;
 - deterministic absent, partial, valid, stale, and invalid cache-state
   classification with structured mismatch reasons;
 - synthetic installation payload construction and an atomic installer that:
-  - creates an n_obs by 2 NaN-initialized matrix when absent;
+  - creates an n_obs by 3 NaN-initialized matrix when absent;
   - fills or replaces only the selected region's current row positions;
   - preserves every other still-valid region and its metadata;
-  - rebuilds the managed pair and drops unsubstantiated region entries after a
-    pair-wide matrix/top-level mismatch;
+  - rebuilds the managed matrix and metadata and drops unsubstantiated region
+    entries after an all-regions matrix/top-level mismatch;
   - restores the complete previous obsm/uns pair if validation or assignment
     fails;
 - installation results that report the exact changed component paths
@@ -1620,7 +1629,7 @@ Deliverables:
   uns/spatial_coordinates/spatial_canonical for later shared dirty-state
   integration;
 - fixtures and tests for single- and multi-region missing, reusable, partial,
-  stale, region-mismatched, and pair-wide-invalid states.
+  stale, region-mismatched, and all-regions-invalid states.
 
 #### Slice 1a typed API
 
@@ -1649,7 +1658,7 @@ Use string enums for cache state, installation action, and mismatch code:
         region_coordinates_invalid
 
 Mismatch codes, rather than human-readable messages, drive tests and controller
-behavior. Pair-wide versus region-local scope is represented explicitly on each
+behavior. All-regions versus region-local scope is represented explicitly on each
 mismatch. Keep the code set at behaviorally meaningful categories; the bounded
 detail identifies the particular malformed field or expected/actual value. For
 example, wrong rank, shape, storage type, or matrix dtype uses `matrix_invalid`,
@@ -1667,11 +1676,11 @@ Cache-state classification follows this deterministic evaluation order:
    `matrix_without_metadata` or `metadata_without_matrix`.
 3. If both exist but the matrix, schema, top-level contract, or strict metadata
    structure is malformed, contradictory, or unsupported, return `invalid`.
-   Pair-wide invalidity takes precedence over every region-local outcome.
-4. Once the shared pair is valid, if the selected region has no metadata entry,
+   All-regions invalidity takes precedence over every region-local outcome.
+4. Once the shared cache is valid, if the selected region has no metadata entry,
    return `partial` with `region_not_registered`.
 5. If the selected region entry exists and is interpretable but its source
-   signature, table signature, supported algorithm version, or finite complete
+   signature, table coverage, supported algorithm version, or finite complete
    coordinate coverage does not match current state, return `stale` with the
    corresponding region-local mismatch code.
 6. If all selected-region checks pass, return `valid`.
@@ -1682,9 +1691,9 @@ instance-set digests for every other registered region. A stale but
 structurally interpretable entry for another region therefore does not downgrade
 an otherwise valid selected region and is evaluated only if a later
 installation proposes to preserve it. A malformed region entry discovered by
-the strict metadata parser can still make the shared registry pair-wide
-`invalid`. Cache-report mismatch tuples are ordered deterministically with
-pair-wide reasons first and selected-region reasons second, preserving
+the strict metadata parser can still make the shared registry `invalid` for
+`all_regions`. Cache-report mismatch tuples are ordered deterministically with
+all-regions reasons first and selected-region reasons second, preserving
 validation order within each group.
 
 The immutable value contracts are conceptually:
@@ -1696,21 +1705,19 @@ The immutable value contracts are conceptually:
         shape
         dtype
 
-    CanonicalTableSignature:
+    CanonicalRegionBinding:
         labels_name
         region_key
         instance_key
-        n_obs
-        instance_set_digest
-
-    CanonicalRegionBindings:
-        signature: CanonicalTableSignature
         row_positions
         instance_ids
+        instance_set_digest
+        n_obs property derived from instance_ids
 
     CanonicalRegionMetadata:
         source_signature: CanonicalSourceSignature
-        table_signature: CanonicalTableSignature
+        n_obs
+        instance_set_digest
         algorithm_version
         generated_by_package or None
         generated_by_version or None
@@ -1724,7 +1731,7 @@ The immutable value contracts are conceptually:
 
     CanonicalCacheMismatch:
         code: CanonicalMismatchCode
-        scope: pair | region
+        scope: all_regions | region
         region or None
         bounded user-facing detail or None
 
@@ -1733,16 +1740,14 @@ The immutable value contracts are conceptually:
         selected_region
         metadata or None
         source_signature
-        bindings: CanonicalRegionBindings
+        binding: CanonicalRegionBinding
         mismatches: tuple[CanonicalCacheMismatch, ...]
 
     CanonicalInstallationPayload:
         table_name
-        labels_name
-        instance_ids
-        centers_xy
+        binding: CanonicalRegionBinding
+        centers with shape (n_instances, 3) in z, y, x order
         source_signature
-        table_signature
 
     CanonicalInstallationResult:
         table_name
@@ -1794,7 +1799,7 @@ belong to the metadata builder and parser.
 
 `CanonicalCacheReport` is both the non-mutating inspector result and the typed
 mismatch report; do not add a second inspection-result wrapper with the same
-information. `CanonicalRegionBindings` arrays and installation-payload arrays
+information. `CanonicalRegionBinding` arrays and installation-payload arrays
 are normalized eager NumPy arrays and are made read-only at the contract
 boundary. The metadata regions mapping is defensively copied and exposed as a
 read-only mapping rather than retaining a caller-owned mutable dictionary.
@@ -1806,8 +1811,10 @@ names, and positive integer shape entries. Schema version 1 additionally
 requires `dims == ("y", "x")`; a future 3D schema can use
 `dims == ("z", "y", "x")` and a three-entry shape without renaming the value
 contract. Do not persist a redundant `ndim`; it is `len(dims)`. These source
-dimensions are distinct from the top-level `axes == ("x", "y")`, which describe
-the column order of the canonical coordinate matrix.
+dimensions are distinct from the fixed top-level
+`axes == ("z", "y", "x")`, which describe the column order of the canonical
+coordinate matrix. A 2D source therefore has dims ("y", "x") while its stored
+centers use z, y, x with z=0.0.
 
 ##### Instance-set digest encoding
 
@@ -1970,8 +1977,8 @@ The public operation surface is:
     build_canonical_source_signature(sdata, labels_name)
         -> CanonicalSourceSignature
 
-    build_canonical_region_bindings(table, table_metadata, labels_name)
-        -> CanonicalRegionBindings
+    build_canonical_region_binding(table, table_metadata, labels_name)
+        -> CanonicalRegionBinding
 
     build_instance_set_digest(labels_name, instance_ids)
         -> str
@@ -2000,10 +2007,11 @@ must not mutate AnnData, SpatialData, or stored metadata. In particular, the
 inspector must not call an existing helper through a code path that normalizes
 SpatialData table attrs in place.
 
-`CanonicalInstallationPayload` deliberately carries instance IDs rather than
-authoritative table row positions. Immediately before installation, the
-installer rebuilds the current region bindings, verifies the source and table
-signatures, and maps payload instance IDs onto current row positions. A normal
+`CanonicalInstallationPayload` deliberately carries the calculation-time
+`CanonicalRegionBinding`, whose instance IDs are authoritative but whose row
+positions are not. Immediately before installation, the installer rebuilds the
+current region binding, verifies the source signature and binding identity, and
+maps the payload binding's instance IDs onto current row positions. A normal
 AnnData row reorder can therefore complete safely. A changed instance set
 rejects the payload; a same-set row reassignment is remapped safely during
 installation but requires semantic invalidation to prevent reuse of an older
@@ -2050,7 +2058,7 @@ Exit criteria:
 - a valid shared matrix refresh changes only the selected region's current row
   positions and metadata, leaving other valid regions byte-for-byte unchanged;
 - NaN occurs only in rows for regions without valid coverage metadata;
-- region-local refresh preserves other valid regions, while pair-wide rebuild
+- region-local refresh preserves other valid regions, while an all-regions rebuild
   never preserves metadata that no longer describes the shared matrix;
 - no installation failure leaves partially replaced obsm/uns state;
 - the structural-validation limitation for undetectable same-signature pixel
@@ -2077,7 +2085,8 @@ Deliverables:
   - explicitly uses run_on_gpu=False so behavior does not depend on whether
     CuPy happens to be installed;
   - passes exactly the selected table-region instance IDs as index;
-  - converts returned z/y/x centers to float64 x/y;
+  - converts returned z/y/x centers to float64 without dropping or reordering
+    axes and requires z=0.0 for the supported 2D source;
   - joins results by instance ID rather than aggregator output order;
 - selective raster-membership validation from the requested aggregation result:
   every requested ID must have exactly one finite center, missing requested IDs

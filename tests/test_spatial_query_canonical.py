@@ -152,6 +152,8 @@ def test_metadata_round_trip_is_strict_and_regions_are_read_only() -> None:
     metadata = _metadata_for("nuclei", [1, 2])
     storage = canonical_metadata_to_storage(metadata)
 
+    assert storage["axes"] == ["z", "y", "x"]
+    assert storage["regions"]["nuclei"]["coordinate_frame"]["axes"] == ["z", "y", "x"]
     parsed = parse_canonical_metadata(storage)
 
     assert parsed == metadata
@@ -165,7 +167,7 @@ def test_metadata_round_trip_is_strict_and_regions_are_read_only() -> None:
 
 def test_metadata_storage_round_trips_through_anndata_zarr(tmp_path) -> None:
     table = _simple_table(instance_ids=[1, 2])
-    table.obsm[CANONICAL_OBSM_KEY] = np.ones((2, 2), dtype=np.float64)
+    table.obsm[CANONICAL_OBSM_KEY] = np.zeros((2, 3), dtype=np.float64)
     table.uns[SPATIAL_COORDINATES_KEY] = {
         CANONICAL_OBSM_KEY: canonical_metadata_to_storage(_metadata_for("nuclei", [1, 2]))
     }
@@ -178,12 +180,12 @@ def test_metadata_storage_round_trips_through_anndata_zarr(tmp_path) -> None:
     assert parsed == _metadata_for("nuclei", [1, 2])
 
 
-def test_inspector_classifies_absent_and_pair_presence_mismatches(sdata_blobs: SpatialData) -> None:
+def test_inspector_classifies_absent_and_incomplete_cache_states(sdata_blobs: SpatialData) -> None:
     absent = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
     assert absent.state is CanonicalCacheState.ABSENT
 
     table = sdata_blobs.tables["table"]
-    table.obsm[CANONICAL_OBSM_KEY] = np.full((table.n_obs, 2), np.nan)
+    table.obsm[CANONICAL_OBSM_KEY] = np.full((table.n_obs, 3), np.nan)
     matrix_only = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
     assert _codes(matrix_only) == [CanonicalMismatchCode.MATRIX_WITHOUT_METADATA]
 
@@ -198,7 +200,7 @@ def test_inspector_classifies_absent_and_pair_presence_mismatches(sdata_blobs: S
     [
         (
             lambda table, storage: table.obsm.__setitem__(
-                CANONICAL_OBSM_KEY, np.ones((table.n_obs, 2), dtype=np.int64)
+                CANONICAL_OBSM_KEY, np.ones((table.n_obs, 3), dtype=np.int64)
             ),
             CanonicalMismatchCode.MATRIX_INVALID,
         ),
@@ -222,7 +224,7 @@ def test_inspector_classifies_absent_and_pair_presence_mismatches(sdata_blobs: S
         (lambda table, storage: storage.pop("dtype"), CanonicalMismatchCode.TOP_LEVEL_CONTRACT_MISMATCH),
     ],
 )
-def test_inspector_classifies_pair_wide_invalid_states(
+def test_inspector_classifies_all_regions_invalid_states(
     sdata_blobs: SpatialData,
     mutation,
     expected_code: CanonicalMismatchCode,
@@ -243,6 +245,7 @@ def test_inspector_classifies_partial_valid_and_region_staleness(sdata_blobs: Sp
     _install_selected(sdata_blobs, "blobs_labels")
     table = sdata_blobs.tables["table"]
     baseline_storage = deepcopy(table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY])
+    baseline_matrix = table.obsm[CANONICAL_OBSM_KEY].copy()
 
     valid = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
     assert valid.state is CanonicalCacheState.VALID
@@ -278,24 +281,43 @@ def test_inspector_classifies_partial_valid_and_region_staleness(sdata_blobs: Sp
         assert report.state is expected_state
         assert expected_code in _codes(report)
 
-    table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY] = deepcopy(baseline_storage)
-    table.obsm[CANONICAL_OBSM_KEY][0, 0] = np.nan
-    coordinates_stale = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
-    assert coordinates_stale.state is CanonicalCacheState.STALE
-    assert _codes(coordinates_stale) == [CanonicalMismatchCode.REGION_COORDINATES_INVALID]
+    for column, value in ((2, np.nan), (0, 1.0)):
+        table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY] = deepcopy(baseline_storage)
+        table.obsm[CANONICAL_OBSM_KEY] = baseline_matrix.copy()
+        table.obsm[CANONICAL_OBSM_KEY][0, column] = value
+        coordinates_stale = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
+        assert coordinates_stale.state is CanonicalCacheState.STALE
+        assert _codes(coordinates_stale) == [CanonicalMismatchCode.REGION_COORDINATES_INVALID]
 
 
 def test_installer_creates_then_refreshes_and_reports_changed_paths(sdata_blobs: SpatialData) -> None:
     first = _install_selected(sdata_blobs, "blobs_labels", offset=0.0)
     second = _install_selected(sdata_blobs, "blobs_labels", offset=100.0)
+    centers = sdata_blobs.tables["table"].obsm[CANONICAL_OBSM_KEY]
 
     assert first.action is CanonicalInstallAction.CREATE
     assert second.action is CanonicalInstallAction.REFRESH
     assert first.changed_paths == CANONICAL_CHANGED_PATHS
+    assert centers.shape == (sdata_blobs.tables["table"].n_obs, 3)
+    assert np.all(centers[:, 0] == 0.0)
     assert (
         inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels").state
         is CanonicalCacheState.VALID
     )
+
+
+def test_payload_rejects_nonzero_z_for_2d_source(sdata_blobs: SpatialData) -> None:
+    report = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
+    centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
+    centers[:, 0] = 1.0
+
+    with pytest.raises(ValueError, match="z=0"):
+        build_canonical_installation_payload(
+            table_name="table",
+            binding=report.binding,
+            centers=centers,
+            source_signature=report.source_signature,
+        )
 
 
 def test_installer_extends_and_preserves_other_region_byte_for_byte(sdata_blobs: SpatialData) -> None:
@@ -314,7 +336,7 @@ def test_installer_extends_and_preserves_other_region_byte_for_byte(sdata_blobs:
     assert table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_labels"] == first_metadata
 
 
-def test_pair_wide_invalid_install_rebuilds_selected_region_only(sdata_blobs: SpatialData) -> None:
+def test_all_regions_invalid_install_rebuilds_selected_region_only(sdata_blobs: SpatialData) -> None:
     _make_two_region_table(sdata_blobs)
     _install_selected(sdata_blobs, "blobs_labels")
     _install_selected(sdata_blobs, "blobs_multiscale_labels")
@@ -418,11 +440,12 @@ def _metadata_for(labels_name: str, instance_ids: list[int]):
 
 
 def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
-    centers = np.arange(report.binding.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
+    centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
+    centers[:, 1:] = np.arange(report.binding.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
     return build_canonical_installation_payload(
         table_name=table_name,
         binding=report.binding,
-        centers_xy=centers,
+        centers=centers,
         source_signature=report.source_signature,
     )
 

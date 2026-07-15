@@ -35,6 +35,7 @@ CANONICAL_CHANGED_PATHS = (
     "obsm/spatial_canonical",
     "uns/spatial_coordinates/spatial_canonical",
 )
+CANONICAL_AXES = ("z", "y", "x")
 
 _TOP_LEVEL_KEYS = {
     "schema_version",
@@ -170,7 +171,7 @@ def canonical_metadata_to_storage(metadata: CanonicalMetadata) -> dict[str, obje
             "coordinate_frame": {
                 "type": "element_intrinsic",
                 "element": region,
-                "axes": ["x", "y"],
+                "axes": list(CANONICAL_AXES),
             },
             "calculation": {
                 "method": "center_of_mass",
@@ -200,7 +201,7 @@ def canonical_metadata_to_storage(metadata: CanonicalMetadata) -> dict[str, obje
     return {
         "schema_version": CANONICAL_SCHEMA_VERSION,
         "obsm_key": CANONICAL_OBSM_KEY,
-        "axes": ["x", "y"],
+        "axes": list(CANONICAL_AXES),
         "dtype": "float64",
         "region_key": metadata.region_key,
         "instance_key": metadata.instance_key,
@@ -219,7 +220,7 @@ def parse_canonical_metadata(value: object) -> CanonicalMetadata:
     _require_exact_keys(mapping, _TOP_LEVEL_KEYS, "canonical metadata", _TopLevelContractError)
 
     _require_equal(mapping["obsm_key"], CANONICAL_OBSM_KEY, "obsm_key")
-    _require_string_sequence(mapping["axes"], ("x", "y"), "axes", _TopLevelContractError)
+    _require_string_sequence(mapping["axes"], CANONICAL_AXES, "axes", _TopLevelContractError)
     _require_equal(mapping["dtype"], "float64", "dtype")
     region_key = _require_nonempty_string(mapping["region_key"], "region_key")
     instance_key = _require_nonempty_string(mapping["instance_key"], "instance_key")
@@ -360,7 +361,10 @@ def inspect_canonical_cache(
         mismatches.append(_region_mismatch(CanonicalMismatchCode.TABLE_SIGNATURE_MISMATCH, labels_name))
     if region_metadata.algorithm_version != CANONICAL_ALGORITHM_VERSION:
         mismatches.append(_region_mismatch(CanonicalMismatchCode.ALGORITHM_VERSION_MISMATCH, labels_name))
-    if not np.isfinite(matrix[binding.row_positions]).all():
+    region_centers = matrix[binding.row_positions]
+    if not np.isfinite(region_centers).all() or (
+        source_signature.dims == ("y", "x") and np.any(region_centers[:, 0] != 0.0)
+    ):
         mismatches.append(_region_mismatch(CanonicalMismatchCode.REGION_COORDINATES_INVALID, labels_name))
 
     return _report(
@@ -377,14 +381,14 @@ def build_canonical_installation_payload(
     *,
     table_name: str,
     binding: CanonicalRegionBinding,
-    centers_xy: object,
+    centers: object,
     source_signature: CanonicalSourceSignature,
 ) -> CanonicalInstallationPayload:
     """Validate calculated centers and capture them in an immutable payload."""
     return CanonicalInstallationPayload(
         table_name=table_name,
         binding=binding,
-        centers_xy=centers_xy,
+        centers=centers,
         source_signature=source_signature,
     )
 
@@ -448,7 +452,7 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
     table = sdata.tables[payload.table_name]
     table_metadata = get_table_metadata(sdata, payload.table_name)
     existing_matrix = table.obsm.get(CANONICAL_OBSM_KEY)
-    candidate_matrix = np.full((table.n_obs, 2), np.nan, dtype=np.float64)
+    candidate_matrix = np.full((table.n_obs, 3), np.nan, dtype=np.float64)
     preserved_regions: dict[str, CanonicalRegionMetadata] = {}
 
     # Cache installation flow by CanonicalCacheState:
@@ -486,7 +490,7 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
         sorted_payload_ids[selected_positions], report.binding.instance_ids
     ):
         raise ValueError("Canonical payload does not contain every current selected-region instance ID.")
-    candidate_matrix[report.binding.row_positions] = payload.centers_xy[sorted_payload_positions[selected_positions]]
+    candidate_matrix[report.binding.row_positions] = payload.centers[sorted_payload_positions[selected_positions]]
 
     preserved_regions[labels_name] = CanonicalRegionMetadata(
         source_signature=report.source_signature,
@@ -548,7 +552,7 @@ def _parse_region_metadata(
     _require_equal(coordinate_frame["element"], region, "coordinate_frame.element", _RegionMetadataError)
     _require_string_sequence(
         coordinate_frame["axes"],
-        ("x", "y"),
+        CANONICAL_AXES,
         "coordinate_frame.axes",
         _RegionMetadataError,
     )
@@ -686,7 +690,9 @@ def _preserve_valid_other_regions(
         if stored.algorithm_version != CANONICAL_ALGORITHM_VERSION:
             continue
         values = existing_matrix[live_binding.row_positions]
-        if not np.isfinite(values).all():
+        if not np.isfinite(values).all() or (
+            live_source.dims == ("y", "x") and np.any(values[:, 0] != 0.0)
+        ):
             continue
         candidate_matrix[live_binding.row_positions] = values
         preserved[region] = stored
@@ -734,8 +740,8 @@ def _validate_canonical_matrix(value: object, n_obs: int) -> np.ndarray | str:
         matrix = np.asarray(value)
     except (TypeError, ValueError):
         return "Canonical matrix must be a NumPy-compatible dense array."
-    if matrix.shape != (n_obs, 2):
-        return f"Canonical matrix must have shape ({n_obs}, 2)."
+    if matrix.shape != (n_obs, 3):
+        return f"Canonical matrix must have shape ({n_obs}, 3) in z, y, x order."
     if matrix.dtype != np.dtype(np.float64):
         return "Canonical matrix dtype must be float64."
     if np.isinf(matrix).any():
