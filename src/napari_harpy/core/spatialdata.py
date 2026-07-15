@@ -123,6 +123,12 @@ class SpatialDataTableMetadata:
     instance_key: str
     regions: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if not self.regions or any(not region for region in self.regions):
+            raise ValueError(f"Table `{self.table_name}` must declare at least one non-empty region.")
+        if len(set(self.regions)) != len(self.regions):
+            raise ValueError(f"Table `{self.table_name}` declares duplicate regions.")
+
     def annotates(self, element_name: str) -> bool:
         """Return whether this table can annotate the given spatial element."""
         return element_name in self.regions
@@ -147,14 +153,22 @@ def normalize_table_metadata(table: AnnData) -> AnnData:
 
 
 def get_table_metadata(sdata: SpatialData, table_name: str) -> SpatialDataTableMetadata:
-    """Return linkage metadata for an annotating table."""
-    table = get_table(sdata, table_name)
+    """Read linkage metadata without modifying or validating the table."""
+    table = sdata[table_name]
     attrs = _get_table_model_attrs(table, table_name)
 
     return SpatialDataTableMetadata(
         table_name=table_name,
-        region_key=str(attrs[TableModel.REGION_KEY_KEY]),
-        instance_key=str(attrs[TableModel.INSTANCE_KEY]),
+        region_key=_normalize_required_scalar_string_attr_value(
+            attrs[TableModel.REGION_KEY_KEY],
+            table_name=table_name,
+            key=TableModel.REGION_KEY_KEY,
+        ),
+        instance_key=_normalize_required_scalar_string_attr_value(
+            attrs[TableModel.INSTANCE_KEY],
+            table_name=table_name,
+            key=TableModel.INSTANCE_KEY,
+        ),
         regions=_normalize_regions(attrs.get(TableModel.REGION_KEY)),
     )
 
@@ -647,6 +661,13 @@ def _normalize_scalar_string_attr_value(value: Any) -> Any:
         return flattened[0]
 
     return value
+
+
+def _normalize_required_scalar_string_attr_value(value: Any, *, table_name: str, key: str) -> str:
+    normalized = _normalize_scalar_string_attr_value(value)
+    if not isinstance(normalized, str) or not normalized:
+        raise ValueError(f"Table `{table_name}` metadata `{key}` must contain exactly one non-empty string.")
+    return normalized
 
 
 def _flatten_string_values(value: Any) -> list[str]:
