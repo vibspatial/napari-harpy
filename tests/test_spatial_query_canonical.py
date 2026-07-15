@@ -36,13 +36,13 @@ from napari_harpy.core.spatialdata import SpatialDataTableMetadata
 
 
 def test_mismatch_scope_is_derived_from_code() -> None:
-    pair_mismatch = CanonicalCacheMismatch(code=CanonicalMismatchCode.MATRIX_INVALID)
+    all_regions_mismatch = CanonicalCacheMismatch(code=CanonicalMismatchCode.MATRIX_INVALID)
     region_mismatch = CanonicalCacheMismatch(
         code=CanonicalMismatchCode.TABLE_SIGNATURE_MISMATCH,
         region="nuclei",
     )
 
-    assert pair_mismatch.scope == "pair"
+    assert all_regions_mismatch.scope == "all_regions"
     assert region_mismatch.scope == "region"
 
     with pytest.raises(ValueError, match="must not name a region"):
@@ -236,7 +236,7 @@ def test_inspector_classifies_pair_wide_invalid_states(
 
     assert report.state is CanonicalCacheState.INVALID
     assert _codes(report) == [expected_code]
-    assert report.mismatches[0].scope == "pair"
+    assert report.mismatches[0].scope == "all_regions"
 
 
 def test_inspector_classifies_partial_valid_and_region_staleness(sdata_blobs: SpatialData) -> None:

@@ -17,7 +17,7 @@ _DIGEST_ENCODING_VERSION = 1
 
 
 class CanonicalCacheState(StrEnum):
-    """State of the managed canonical-coordinate cache pair."""
+    """State of the managed canonical-coordinate cache."""
 
     ABSENT = "absent"
     PARTIAL = "partial"
@@ -52,7 +52,7 @@ class CanonicalMismatchCode(StrEnum):
     REGION_COORDINATES_INVALID = "region_coordinates_invalid"
 
 
-_PAIR_WIDE_MISMATCH_CODES = frozenset(
+_ALL_REGIONS_MISMATCH_CODES = frozenset(
     {
         CanonicalMismatchCode.MATRIX_WITHOUT_METADATA,
         CanonicalMismatchCode.METADATA_WITHOUT_MATRIX,
@@ -193,20 +193,25 @@ class CanonicalMetadata:
 
 @dataclass(frozen=True)
 class CanonicalCacheMismatch:
-    """One deterministic cache mismatch."""
+    """One deterministic cache mismatch.
+
+    An ``all_regions`` mismatch means that no existing region can be trusted
+    or preserved. A ``region`` mismatch affects only the named region, so
+    other regions may be independently revalidated and preserved.
+    """
 
     code: CanonicalMismatchCode
     region: str | None = None
     detail: str | None = None
 
     @property
-    def scope(self) -> Literal["pair", "region"]:
-        """Return whether this mismatch invalidates the pair or one region."""
-        return "pair" if self.code in _PAIR_WIDE_MISMATCH_CODES else "region"
+    def scope(self) -> Literal["all_regions", "region"]:
+        """Return whether this mismatch invalidates all regions or one region."""
+        return "all_regions" if self.code in _ALL_REGIONS_MISMATCH_CODES else "region"
 
     def __post_init__(self) -> None:
-        if self.scope == "pair" and self.region is not None:
-            raise ValueError("Pair-wide canonical mismatches must not name a region.")
+        if self.scope == "all_regions" and self.region is not None:
+            raise ValueError("All-regions canonical mismatches must not name a region.")
         if self.scope == "region" and not self.region:
             raise ValueError("Region-local canonical mismatches must name a region.")
         if self.detail is not None:

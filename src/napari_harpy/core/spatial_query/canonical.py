@@ -127,21 +127,13 @@ def build_canonical_region_binding(
     if len(row_positions) == 0:
         raise ValueError(f"Table `{table_metadata.table_name}` contains no rows for labels region `{labels_name}`.")
 
-    try:
-        return CanonicalRegionBinding(
-            labels_name=labels_name,
-            region_key=table_metadata.region_key,
-            instance_key=table_metadata.instance_key,
-            row_positions=row_positions,
-            instance_ids=table.obs.iloc[row_positions][table_metadata.instance_key].to_numpy(),
-        )
-    except ValueError as exc:
-        if "unique" not in str(exc):
-            raise
-        raise ValueError(
-            f"Table `{table_metadata.table_name}` contains duplicate `{table_metadata.instance_key}` values "
-            f"within labels region `{labels_name}`."
-        ) from exc
+    return CanonicalRegionBinding(
+        labels_name=labels_name,
+        region_key=table_metadata.region_key,
+        instance_key=table_metadata.instance_key,
+        row_positions=row_positions,
+        instance_ids=table.obs.iloc[row_positions][table_metadata.instance_key].to_numpy(),
+    )
 
 
 def build_canonical_metadata(
@@ -253,7 +245,7 @@ def inspect_canonical_cache(
     labels_name: str,
 ) -> CanonicalCacheReport:
     """Inspect the selected region's canonical cache without mutating stored state."""
-    table = sdata[table_name]
+    table = sdata.tables[table_name]
     table_metadata = get_table_metadata(sdata, table_name)
     source_signature = build_canonical_source_signature(sdata, labels_name)
     binding = build_canonical_region_binding(table, table_metadata, labels_name)
@@ -271,7 +263,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.MATRIX_WITHOUT_METADATA),
+            _all_regions_mismatch(CanonicalMismatchCode.MATRIX_WITHOUT_METADATA),
         )
     if metadata_exists and not matrix_exists:
         return _report(
@@ -280,7 +272,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.METADATA_WITHOUT_MATRIX),
+            _all_regions_mismatch(CanonicalMismatchCode.METADATA_WITHOUT_MATRIX),
         )
 
     matrix = _validate_canonical_matrix(table.obsm[CANONICAL_OBSM_KEY], table.n_obs)
@@ -291,7 +283,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.MATRIX_INVALID, matrix),
+            _all_regions_mismatch(CanonicalMismatchCode.MATRIX_INVALID, matrix),
         )
 
     raw_metadata = registry[CANONICAL_OBSM_KEY]  # type: ignore[index]
@@ -304,7 +296,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.SCHEMA_VERSION_UNSUPPORTED, str(exc)),
+            _all_regions_mismatch(CanonicalMismatchCode.SCHEMA_VERSION_UNSUPPORTED, str(exc)),
         )
     except _TopLevelContractError as exc:
         return _report(
@@ -313,7 +305,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.TOP_LEVEL_CONTRACT_MISMATCH, str(exc)),
+            _all_regions_mismatch(CanonicalMismatchCode.TOP_LEVEL_CONTRACT_MISMATCH, str(exc)),
         )
     except _RegionMetadataError as exc:
         return _report(
@@ -322,7 +314,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.REGION_METADATA_INVALID, str(exc)),
+            _all_regions_mismatch(CanonicalMismatchCode.REGION_METADATA_INVALID, str(exc)),
         )
     except (TypeError, ValueError, KeyError) as exc:
         return _report(
@@ -331,7 +323,7 @@ def inspect_canonical_cache(
             None,
             source_signature,
             binding,
-            _pair_mismatch(CanonicalMismatchCode.METADATA_INVALID, str(exc)),
+            _all_regions_mismatch(CanonicalMismatchCode.METADATA_INVALID, str(exc)),
         )
 
     if metadata.region_key != table_metadata.region_key or metadata.instance_key != table_metadata.instance_key:
@@ -341,7 +333,7 @@ def inspect_canonical_cache(
             metadata,
             source_signature,
             binding,
-            _pair_mismatch(
+            _all_regions_mismatch(
                 CanonicalMismatchCode.TOP_LEVEL_CONTRACT_MISMATCH,
                 "Canonical linkage keys do not match the current SpatialData table metadata.",
             ),
@@ -418,6 +410,27 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
     binding may have changed while centroids were being calculated. This
     fresh inspection rejects an outdated payload and determines the safe
     create, extend, refresh, or rebuild action before mutating the cache.
+
+    To prevent installing outdated results when the labels source or table
+    binding changed while centroids were being calculated, the installation
+    guard compares::
+
+        payload
+            → What was true when calculation started?
+
+        fresh report
+            → What is true immediately before installation?
+
+    When preserving other regions, the distinction is::
+
+        report.metadata
+            “What does the existing cache claim?”
+
+        table_metadata + current table
+            “What is true now?”
+
+    Only regions for which those stored and current identities agree are
+    preserved.
     """
     labels_name = payload.binding.labels_name
     report = inspect_canonical_cache(
@@ -432,7 +445,7 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
             "Table region binding changed after canonical centers were calculated; installation was rejected."
         )
 
-    table = sdata[payload.table_name]
+    table = sdata.tables[payload.table_name]
     table_metadata = get_table_metadata(sdata, payload.table_name)
     existing_matrix = table.obsm.get(CANONICAL_OBSM_KEY)
     candidate_matrix = np.full((table.n_obs, 2), np.nan, dtype=np.float64)
@@ -499,7 +512,7 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
         CanonicalCacheState.INVALID: CanonicalInstallAction.REBUILD,
         CanonicalCacheState.VALID: CanonicalInstallAction.REFRESH,
     }[report.state]
-    _assign_canonical_pair_atomically(table, candidate_matrix, candidate_storage)
+    _assign_canonical_matrix_and_metadata_atomically(table, candidate_matrix, candidate_storage)
     return CanonicalInstallationResult(
         table_name=payload.table_name,
         labels_name=labels_name,
@@ -680,7 +693,7 @@ def _preserve_valid_other_regions(
     return preserved
 
 
-def _assign_canonical_pair_atomically(
+def _assign_canonical_matrix_and_metadata_atomically(
     table: AnnData,
     matrix: np.ndarray,
     metadata_storage: dict[str, object],
@@ -708,7 +721,8 @@ def _assign_canonical_pair_atomically(
                 table.uns.pop(SPATIAL_COORDINATES_KEY, None)
         except BaseException as rollback_error:  # pragma: no cover - catastrophic mapping failure
             raise RuntimeError(
-                "Canonical cache assignment failed and rollback could not restore the prior pair."
+                "Canonical matrix and metadata assignment failed, and rollback could not restore "
+                "the previous cache state."
             ) from rollback_error
         raise
 
@@ -769,7 +783,7 @@ def _report(
     )
 
 
-def _pair_mismatch(code: CanonicalMismatchCode, detail: str | None = None) -> CanonicalCacheMismatch:
+def _all_regions_mismatch(code: CanonicalMismatchCode, detail: str | None = None) -> CanonicalCacheMismatch:
     return CanonicalCacheMismatch(code=code, detail=_bounded_detail(detail))
 
 
