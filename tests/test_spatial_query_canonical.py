@@ -299,7 +299,9 @@ def test_payload_rejects_nonzero_z_for_2d_source(sdata_blobs: SpatialData) -> No
         )
 
 
-def test_installer_extends_and_preserves_other_region_byte_for_byte(sdata_blobs: SpatialData) -> None:
+def test_installer_extends_then_refreshes_and_preserves_other_region_byte_for_byte(
+    sdata_blobs: SpatialData,
+) -> None:
     _make_two_region_table(sdata_blobs)
     first = _install_selected(sdata_blobs, "blobs_labels", offset=10.0)
     table = sdata_blobs.tables["table"]
@@ -313,6 +315,22 @@ def test_installer_extends_and_preserves_other_region_byte_for_byte(sdata_blobs:
     assert second.action is CanonicalInstallAction.EXTEND
     np.testing.assert_array_equal(table.obsm[CANONICAL_OBSM_KEY][first_rows], first_values)
     assert table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_labels"] == first_metadata
+
+    second_rows = np.flatnonzero(np.asarray(table.obs["region"] == "blobs_multiscale_labels"))
+    second_values = table.obsm[CANONICAL_OBSM_KEY][second_rows].copy()
+    second_metadata = deepcopy(
+        table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_multiscale_labels"]
+    )
+
+    refreshed = _install_selected(sdata_blobs, "blobs_labels", offset=200.0)
+
+    assert refreshed.action is CanonicalInstallAction.REFRESH
+    assert not np.array_equal(table.obsm[CANONICAL_OBSM_KEY][first_rows], first_values)
+    np.testing.assert_array_equal(table.obsm[CANONICAL_OBSM_KEY][second_rows], second_values)
+    assert (
+        table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_multiscale_labels"]
+        == second_metadata
+    )
 
 
 def test_all_regions_invalid_install_rebuilds_selected_region_only(sdata_blobs: SpatialData) -> None:

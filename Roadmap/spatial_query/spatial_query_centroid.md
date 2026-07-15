@@ -1595,18 +1595,19 @@ or read labels chunks.
 
 Deliverables:
 
-- typed cache state, mismatch report, metadata, source/table signature,
-  installation payload, and installation-result contracts;
+- typed cache state, mismatch report, metadata, source signature,
+  selected-region binding, installation payload, and installation-result
+  contracts;
 - spatial_coordinates/spatial_canonical schema version 1 using values supported
   by AnnData's zarr encoding;
 - strict parser/builder plus a non-mutating inspector;
 - structural labels signature covering source element, scale0 dimensions,
   shape, and dtype; chunking is excluded from persisted metadata and cache
   validity;
-- a table signature for each labels region covering region/instance keys,
+- a selected-region binding identity covering region/instance keys,
   selected-row count, and a deterministic instance_set_digest over the sorted
-  unique normalized instance IDs for that region; the canonical digest input
-  also includes the labels name and a schema/domain tag;
+  unique instance IDs for that region; the canonical digest input also includes
+  the labels name and a schema/domain tag;
 - one exact, versioned digest encoding implemented and pinned by test vectors,
   including vectorized sorted big-endian uint64 instance-ID representation;
 - selected-region binding validation that rejects zero matching rows and
@@ -1686,8 +1687,8 @@ Cache-state classification follows this deterministic evaluation order:
 6. If all selected-region checks pass, return `valid`.
 
 The report state and region-local mismatches describe the selected region only.
-Ordinary inspection does not calculate live source/table signatures or
-instance-set digests for every other registered region. A stale but
+Ordinary inspection does not calculate live source signatures, rebuild region
+bindings, or calculate instance-set digests for every other registered region. A stale but
 structurally interpretable entry for another region therefore does not downgrade
 an otherwise valid selected region and is evaluated only if a later
 installation proposes to preserve it. A malformed region entry discovered by
@@ -1905,16 +1906,16 @@ Here `||` describes byte-sequence concatenation for the encoding contract. The
 stored value is `"sha256:" + hasher.hexdigest()`, using the lowercase
 64-character hexadecimal digest returned by `hashlib`.
 
-Pinned digest test vectors cover at least table row reordering, obs-name
-changes, a changed labels name, adding/removing/replacing an instance ID,
-integer normalization such as `1` versus `1.0`, and uint64 byte-order cases such
-as 255 versus 256. They also demonstrate that a same-set reassignment produces
-the same digest and is handled only by the required semantic invalidation
-events. File bytes, AnnData serialization, zarr chunking, table row order, and
-obs_names never enter the digest. A representative 400,000-ID benchmark must
-guard against regression to per-ID Python hashing; observed performance should
-remain in the low tens of milliseconds on a typical development machine rather
-than becoming a hard, platform-sensitive CI timing assertion.
+Focused digest tests pin the exact encoding, order independence, labels-name
+sensitivity, and instance-membership sensitivity. Binding tests separately
+demonstrate that obs-name changes, table row reordering, and same-set
+reassignment preserve the same identity. Non-integer values, including
+integer-like floats, are rejected rather than normalized. File bytes, AnnData
+serialization, zarr chunking, table row order, and obs_names never enter the
+digest. A representative 400,000-ID benchmark must guard against regression to
+per-ID Python hashing; observed performance should remain in the low tens of
+milliseconds on a typical development machine rather than becoming a hard,
+platform-sensitive CI timing assertion.
 
 ##### Digest frequency and cache/query flow
 
@@ -1938,8 +1939,8 @@ The normal valid-cache path is:
 The calculation-and-installation path calculates the selected-region digest
 twice:
 
-1. initial inspection calculates it and captures the table signature in the
-   immutable calculation request;
+1. initial inspection calculates it and captures the selected-region binding
+   in the immutable calculation request;
 2. immediately before installation, the installer resolves the current
    selected-region bindings and calculates it again;
 3. a changed instance set rejects the stale payload without mutation;
