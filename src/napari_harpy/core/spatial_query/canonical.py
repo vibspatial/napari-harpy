@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 from numbers import Integral
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import numpy as np
 from scipy.sparse import issparse
@@ -38,8 +37,6 @@ CANONICAL_CHANGED_PATHS = (
     "uns/spatial_coordinates/spatial_canonical",
 )
 
-_DIGEST_DOMAIN = b"napari-harpy/spatial-canonical/instance-set"
-_DIGEST_ENCODING_VERSION = 1
 _TOP_LEVEL_KEYS = {
     "schema_version",
     "obsm_key",
@@ -71,29 +68,6 @@ class _TopLevelContractError(ValueError):
 
 class _RegionMetadataError(ValueError):
     pass
-
-
-def build_instance_set_digest(labels_name: str, instance_ids: Sequence[int] | np.ndarray) -> str:
-    """Return the versioned digest for one labels region's instance set."""
-    if not isinstance(labels_name, str) or not labels_name:
-        raise ValueError("Labels name must be a non-empty string.")
-    integer_ids = _require_integer_instance_ids(instance_ids)
-    return _build_instance_set_digest(labels_name, integer_ids)
-
-
-def _build_instance_set_digest(labels_name: str, instance_ids: np.ndarray) -> str:
-    if len(instance_ids) == 0:
-        raise ValueError("Instance IDs must not be empty.")
-    canonical_ids = np.sort(instance_ids).astype(">u8", copy=False)
-    if len(canonical_ids) > 1 and np.any(canonical_ids[1:] == canonical_ids[:-1]):
-        raise ValueError("Instance IDs must be unique within a labels region.")
-    hasher = hashlib.sha256()
-    _update_length_delimited(hasher, _DIGEST_DOMAIN)
-    hasher.update(_DIGEST_ENCODING_VERSION.to_bytes(2, byteorder="big", signed=False))
-    _update_length_delimited(hasher, labels_name.encode("utf-8"))
-    hasher.update(_encode_u64(len(canonical_ids)))
-    hasher.update(memoryview(canonical_ids).cast("B"))
-    return f"sha256:{hasher.hexdigest()}"
 
 
 def build_canonical_source_signature(sdata: SpatialData, labels_name: str) -> CanonicalSourceSignature:
@@ -154,10 +128,14 @@ def build_canonical_region_bindings(
     if len(row_positions) == 0:
         raise ValueError(f"Table `{table_metadata.table_name}` contains no rows for labels region `{labels_name}`.")
 
-    raw_ids = table.obs.iloc[row_positions][table_metadata.instance_key].to_numpy()
-    instance_ids = _require_integer_instance_ids(raw_ids)
     try:
-        digest = _build_instance_set_digest(labels_name, instance_ids)
+        return CanonicalRegionBindings(
+            labels_name=labels_name,
+            region_key=table_metadata.region_key,
+            instance_key=table_metadata.instance_key,
+            row_positions=row_positions,
+            instance_ids=table.obs.iloc[row_positions][table_metadata.instance_key].to_numpy(),
+        )
     except ValueError as exc:
         if "unique" not in str(exc):
             raise
@@ -165,18 +143,6 @@ def build_canonical_region_bindings(
             f"Table `{table_metadata.table_name}` contains duplicate `{table_metadata.instance_key}` values "
             f"within labels region `{labels_name}`."
         ) from exc
-    signature = CanonicalTableSignature(
-        labels_name=labels_name,
-        region_key=table_metadata.region_key,
-        instance_key=table_metadata.instance_key,
-        n_obs=len(instance_ids),
-        instance_set_digest=digest,
-    )
-    return CanonicalRegionBindings(
-        signature=signature,
-        row_positions=row_positions,
-        instance_ids=instance_ids,
-    )
 
 
 def build_canonical_metadata(
@@ -422,40 +388,16 @@ def inspect_canonical_cache(
 def build_canonical_installation_payload(
     *,
     table_name: str,
-    labels_name: str,
-    instance_ids: Sequence[int] | np.ndarray,
+    bindings: CanonicalRegionBindings,
     centers_xy: object,
     source_signature: CanonicalSourceSignature,
-    table_signature: CanonicalTableSignature,
 ) -> CanonicalInstallationPayload:
     """Validate calculated centers and capture them in an immutable payload."""
-    integer_ids = _require_integer_instance_ids(instance_ids)
-    if len(integer_ids) == 0:
-        raise ValueError("Canonical payload instance IDs must be non-empty and unique.")
-    if table_signature.n_obs != len(integer_ids):
-        raise ValueError("Canonical payload instance IDs do not match the table signature row count.")
-    try:
-        digest = _build_instance_set_digest(labels_name, integer_ids)
-    except ValueError as exc:
-        raise ValueError("Canonical payload instance IDs must be non-empty and unique.") from exc
-    if table_signature.instance_set_digest != digest:
-        raise ValueError("Canonical payload instance IDs do not match the table signature digest.")
-    try:
-        centers = np.asarray(centers_xy)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Canonical payload centers must be a dense numeric array.") from exc
-    if issparse(centers_xy) or centers.shape != (len(integer_ids), 2):
-        raise ValueError("Canonical payload centers must be dense with shape (n_instances, 2).")
-    if centers.dtype.kind not in "fiu":
-        raise ValueError("Canonical payload centers must have a numeric dtype.")
-
     return CanonicalInstallationPayload(
         table_name=table_name,
-        labels_name=labels_name,
-        instance_ids=integer_ids,
-        centers_xy=centers.astype(np.float64, copy=False),
+        bindings=bindings,
+        centers_xy=centers_xy,
         source_signature=source_signature,
-        table_signature=table_signature,
     )
 
 
@@ -481,14 +423,15 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
     fresh inspection rejects an outdated payload and determines the safe
     create, extend, refresh, or rebuild action before mutating the cache.
     """
+    labels_name = payload.bindings.labels_name
     report = inspect_canonical_cache(
         sdata,
         table_name=payload.table_name,
-        labels_name=payload.labels_name,
+        labels_name=labels_name,
     )
     if payload.source_signature != report.source_signature:
         raise ValueError("Labels source changed after canonical centers were calculated; installation was rejected.")
-    if payload.table_signature != report.bindings.signature:
+    if payload.bindings.signature != report.bindings.signature:
         raise ValueError(
             "Table region bindings changed after canonical centers were calculated; installation was rejected."
         )
@@ -523,12 +466,12 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
             table_metadata,
             report.metadata,
             np.asarray(existing_matrix),
-            selected_region=payload.labels_name,
+            selected_region=labels_name,
             candidate_matrix=candidate_matrix,
         )
 
-    sorted_payload_positions = np.argsort(payload.instance_ids)
-    sorted_payload_ids = payload.instance_ids[sorted_payload_positions]
+    sorted_payload_positions = np.argsort(payload.bindings.instance_ids)
+    sorted_payload_ids = payload.bindings.instance_ids[sorted_payload_positions]
     selected_positions = np.searchsorted(sorted_payload_ids, report.bindings.instance_ids)
     if np.any(selected_positions >= len(sorted_payload_ids)) or not np.array_equal(
         sorted_payload_ids[selected_positions], report.bindings.instance_ids
@@ -536,7 +479,7 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
         raise ValueError("Canonical payload does not contain every current selected-region instance ID.")
     candidate_matrix[report.bindings.row_positions] = payload.centers_xy[sorted_payload_positions[selected_positions]]
 
-    preserved_regions[payload.labels_name] = CanonicalRegionMetadata(
+    preserved_regions[labels_name] = CanonicalRegionMetadata(
         source_signature=report.source_signature,
         table_signature=report.bindings.signature,
         algorithm_version=CANONICAL_ALGORITHM_VERSION,
@@ -562,10 +505,10 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
     _assign_canonical_pair_atomically(table, candidate_matrix, candidate_storage)
     return CanonicalInstallationResult(
         table_name=payload.table_name,
-        labels_name=payload.labels_name,
+        labels_name=labels_name,
         action=action,
         previous_state=report.state,
-        n_installed_rows=len(payload.instance_ids),
+        n_installed_rows=len(payload.bindings.instance_ids),
         mismatches=report.mismatches,
         changed_paths=CANONICAL_CHANGED_PATHS,
     )
@@ -625,10 +568,11 @@ def _parse_region_metadata(
         ("implementation", "harpy.utils.RasterAggregator.center_of_mass"),
     ):
         _require_equal(calculation[key], expected, f"calculation.{key}", _RegionMetadataError)
-    algorithm_version = _require_positive_integer(
+    algorithm_version = _require_integer(
         calculation["algorithm_version"],
         "calculation.algorithm_version",
         _RegionMetadataError,
+        positive=True,
     )
 
     coverage = _require_mapping(entry["coverage"], "coverage", _RegionMetadataError)
@@ -639,7 +583,7 @@ def _parse_region_metadata(
         _RegionMetadataError,
     )
     _require_equal(coverage["scope"], "all_rows_for_region", "coverage.scope", _RegionMetadataError)
-    n_obs = _require_positive_integer(coverage["n_obs"], "coverage.n_obs", _RegionMetadataError)
+    n_obs = _require_integer(coverage["n_obs"], "coverage.n_obs", _RegionMetadataError, positive=True)
     digest = _require_nonempty_string(
         coverage["instance_set_digest"],
         "coverage.instance_set_digest",
@@ -654,7 +598,7 @@ def _parse_region_metadata(
     if len(shape_values) != 2:
         raise _RegionMetadataError("source.shape must contain exactly two values.")
     shape = tuple(
-        _require_positive_integer(size, f"source.shape[{index}]", _RegionMetadataError)
+        _require_integer(size, f"source.shape[{index}]", _RegionMetadataError, positive=True)
         for index, size in enumerate(shape_values)
     )
     dtype_value = _require_nonempty_string(source["dtype"], "source.dtype", _RegionMetadataError)
@@ -777,17 +721,6 @@ def _assign_canonical_pair_atomically(
         raise
 
 
-def _require_integer_instance_ids(values: Sequence[int] | np.ndarray) -> np.ndarray:
-    raw = np.asarray(values)
-    if raw.ndim != 1:
-        raise ValueError("Instance IDs must be one-dimensional.")
-    if raw.dtype.kind not in "iu" or raw.dtype.itemsize > np.dtype(np.uint64).itemsize:
-        raise TypeError("Instance IDs must use an integer NumPy dtype of at most 64 bits.")
-    if np.any(raw == 0) or (raw.dtype.kind == "i" and np.any(raw < 0)):
-        raise ValueError("Instance IDs must be positive integers.")
-    return raw
-
-
 def _validate_canonical_matrix(value: object, n_obs: int) -> np.ndarray | str:
     if issparse(value):
         return "Canonical matrix must be dense."
@@ -824,15 +757,6 @@ def _serialize_generated_by(metadata: CanonicalRegionMetadata) -> dict[str, str]
     if metadata.generated_at is not None:
         generated_by["generated_at"] = metadata.generated_at
     return generated_by or None
-
-
-def _encode_u64(value: int) -> bytes:
-    return value.to_bytes(8, byteorder="big", signed=False)
-
-
-def _update_length_delimited(hasher: Any, value: bytes) -> None:
-    hasher.update(_encode_u64(len(value)))
-    hasher.update(value)
 
 
 def _report(
@@ -946,21 +870,19 @@ def _require_equal(
         raise error_type(f"{field} must equal {expected!r}.")
 
 
-def _require_integer(value: object, field: str, error_type: type[ValueError] = ValueError) -> int:
+def _require_integer(
+    value: object,
+    field: str,
+    error_type: type[ValueError] = ValueError,
+    *,
+    positive: bool = False,
+) -> int:
     if isinstance(value, np.generic):
         value = value.item()
     if isinstance(value, bool) or not isinstance(value, Integral):
         raise error_type(f"{field} must be an integer.")
-    return int(value)
-
-
-def _require_positive_integer(
-    value: object,
-    field: str,
-    error_type: type[ValueError] = ValueError,
-) -> int:
-    integer = _require_integer(value, field, error_type)
-    if integer <= 0:
+    integer = int(value)
+    if positive and integer <= 0:
         raise error_type(f"{field} must be a positive integer.")
     return integer
 

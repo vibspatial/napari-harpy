@@ -430,11 +430,9 @@ def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
     centers = np.arange(report.bindings.signature.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
     return build_canonical_installation_payload(
         table_name=table_name,
-        labels_name=report.selected_region,
-        instance_ids=report.bindings.instance_ids,
+        bindings=report.bindings,
         centers_xy=centers,
         source_signature=report.source_signature,
-        table_signature=report.bindings.signature,
     )
 
 

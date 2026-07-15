@@ -10,7 +10,6 @@ from napari_harpy.core.spatial_query.canonical import (
     build_canonical_metadata,
     build_canonical_region_bindings,
     build_canonical_source_signature,
-    build_instance_set_digest,
     canonical_metadata_to_storage,
     inspect_canonical_cache,
     install_canonical_cache,
@@ -30,6 +29,7 @@ from napari_harpy.core.spatial_query.models import (
     CanonicalSourceSignature,
     CanonicalTableSignature,
     SpatialDimension,
+    build_instance_set_digest,
 )
 
 __all__ = [

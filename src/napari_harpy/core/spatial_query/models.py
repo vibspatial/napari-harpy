@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
 
 type SpatialDimension = Literal["z", "y", "x"]
+
+_DIGEST_DOMAIN = b"napari-harpy/spatial-canonical/instance-set"
+_DIGEST_ENCODING_VERSION = 1
 
 
 class CanonicalCacheState(StrEnum):
@@ -117,25 +121,41 @@ class CanonicalTableSignature:
 class CanonicalRegionBindings:
     """Current table rows and normalized instance IDs for one region."""
 
-    signature: CanonicalTableSignature
+    labels_name: str
+    region_key: str
+    instance_key: str
     row_positions: NDArray[np.intp] = field(repr=False, compare=False)
     instance_ids: NDArray[np.integer] = field(repr=False, compare=False)
+    instance_set_digest: str = field(init=False)
+
+    @property
+    def signature(self) -> CanonicalTableSignature:
+        """Return the table signature derived from these bindings."""
+        return CanonicalTableSignature(
+            labels_name=self.labels_name,
+            region_key=self.region_key,
+            instance_key=self.instance_key,
+            n_obs=len(self.instance_ids),
+            instance_set_digest=self.instance_set_digest,
+        )
 
     def __post_init__(self) -> None:
+        if not self.labels_name or not self.region_key or not self.instance_key:
+            raise ValueError("Canonical binding names and linkage keys must not be empty.")
         row_positions = _readonly_array(self.row_positions, dtype=np.intp)
         instance_ids = _readonly_integer_ids(self.instance_ids)
         if row_positions.ndim != 1 or instance_ids.ndim != 1:
             raise ValueError("Canonical region binding arrays must be one-dimensional.")
-        if len(row_positions) != len(instance_ids) or len(instance_ids) != self.signature.n_obs:
-            raise ValueError("Canonical region binding arrays must match the table signature row count.")
+        if len(row_positions) != len(instance_ids):
+            raise ValueError("Canonical region binding arrays must have equal lengths.")
         if np.any(row_positions < 0):
             raise ValueError("Canonical row positions must be non-negative.")
         if len(np.unique(row_positions)) != len(row_positions):
             raise ValueError("Canonical row positions must be unique.")
-        if len(np.unique(instance_ids)) != len(instance_ids):
-            raise ValueError("Canonical instance IDs must be unique.")
+        digest = _build_instance_set_digest(self.labels_name, instance_ids)
         object.__setattr__(self, "row_positions", row_positions)
         object.__setattr__(self, "instance_ids", instance_ids)
+        object.__setattr__(self, "instance_set_digest", digest)
 
 
 @dataclass(frozen=True)
@@ -239,32 +259,28 @@ class CanonicalInstallationPayload:
     """Calculated centers paired with the identity used to calculate them."""
 
     table_name: str
-    labels_name: str
-    instance_ids: NDArray[np.integer] = field(repr=False, compare=False)
+    bindings: CanonicalRegionBindings
     centers_xy: NDArray[np.float64] = field(repr=False, compare=False)
     source_signature: CanonicalSourceSignature
-    table_signature: CanonicalTableSignature
 
     def __post_init__(self) -> None:
-        if not self.table_name or not self.labels_name:
-            raise ValueError("Canonical payload names must not be empty.")
-        if self.source_signature.labels_name != self.labels_name:
+        if not self.table_name:
+            raise ValueError("Canonical payload table name must not be empty.")
+        if not isinstance(self.bindings, CanonicalRegionBindings):
+            raise TypeError("Canonical payload bindings must be CanonicalRegionBindings.")
+        if self.source_signature.labels_name != self.bindings.labels_name:
             raise ValueError("Canonical payload source signature labels name does not match.")
-        if self.table_signature.labels_name != self.labels_name:
-            raise ValueError("Canonical payload table signature labels name does not match.")
-        instance_ids = _readonly_integer_ids(self.instance_ids)
-        centers_xy = _readonly_array(self.centers_xy, dtype=np.float64)
-        if instance_ids.ndim != 1:
-            raise ValueError("Canonical payload instance IDs must be one-dimensional.")
-        if centers_xy.shape != (len(instance_ids), 2):
+        try:
+            centers = np.asarray(self.centers_xy)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Canonical payload centers must be a dense numeric array.") from exc
+        if centers.shape != (len(self.bindings.instance_ids), 2):
             raise ValueError("Canonical payload centers must have shape (n_instances, 2).")
-        if len(instance_ids) != self.table_signature.n_obs:
-            raise ValueError("Canonical payload arrays must match the table signature row count.")
-        if len(np.unique(instance_ids)) != len(instance_ids):
-            raise ValueError("Canonical payload instance IDs must be unique.")
+        if centers.dtype.kind not in "fiu":
+            raise ValueError("Canonical payload centers must have a numeric dtype.")
+        centers_xy = _readonly_array(centers, dtype=np.float64)
         if not np.isfinite(centers_xy).all():
             raise ValueError("Canonical payload centers must contain only finite values.")
-        object.__setattr__(self, "instance_ids", instance_ids)
         object.__setattr__(self, "centers_xy", centers_xy)
 
 
@@ -290,14 +306,45 @@ def _readonly_array(value: object, *, dtype: np.dtype | type[np.generic]) -> np.
 def _readonly_integer_ids(value: object) -> np.ndarray:
     array = np.asarray(value)
     if array.ndim != 1:
-        raise ValueError("Canonical instance IDs must be one-dimensional.")
+        raise ValueError("Instance IDs must be one-dimensional.")
     if array.dtype.kind not in "iu" or array.dtype.itemsize > np.dtype(np.uint64).itemsize:
-        raise TypeError("Canonical instance IDs must use an integer NumPy dtype of at most 64 bits.")
+        raise TypeError("Instance IDs must use an integer NumPy dtype of at most 64 bits.")
     if np.any(array == 0) or (array.dtype.kind == "i" and np.any(array < 0)):
-        raise ValueError("Canonical instance IDs must be positive integers.")
+        raise ValueError("Instance IDs must be positive integers.")
     result = np.array(array, copy=True)
     result.flags.writeable = False
     return result
+
+
+def build_instance_set_digest(labels_name: str, instance_ids: Sequence[int] | np.ndarray) -> str:
+    """Return the versioned digest for one labels region's instance set."""
+    if not isinstance(labels_name, str) or not labels_name:
+        raise ValueError("Labels name must be a non-empty string.")
+    return _build_instance_set_digest(labels_name, _readonly_integer_ids(instance_ids))
+
+
+def _build_instance_set_digest(labels_name: str, instance_ids: np.ndarray) -> str:
+    if len(instance_ids) == 0:
+        raise ValueError("Instance IDs must not be empty.")
+    canonical_ids = np.sort(instance_ids).astype(">u8", copy=False)
+    if len(canonical_ids) > 1 and np.any(canonical_ids[1:] == canonical_ids[:-1]):
+        raise ValueError("Instance IDs must be unique within a labels region.")
+    hasher = hashlib.sha256()
+    _update_length_delimited(hasher, _DIGEST_DOMAIN)
+    hasher.update(_DIGEST_ENCODING_VERSION.to_bytes(2, byteorder="big", signed=False))
+    _update_length_delimited(hasher, labels_name.encode("utf-8"))
+    hasher.update(_encode_u64(len(canonical_ids)))
+    hasher.update(memoryview(canonical_ids).cast("B"))
+    return f"sha256:{hasher.hexdigest()}"
+
+
+def _encode_u64(value: int) -> bytes:
+    return value.to_bytes(8, byteorder="big", signed=False)
+
+
+def _update_length_delimited(hasher: Any, value: bytes) -> None:
+    hasher.update(_encode_u64(len(value)))
+    hasher.update(value)
 
 
 def _validate_digest(value: str) -> None:
