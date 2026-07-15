@@ -2097,14 +2097,72 @@ Deliverables:
   counts must use an integer or floating representation that remains exact for
   supported label sizes before division into float64 moments; this may require
   an upstream Harpy fix and pinned minimum version;
-- immutable build results that Slice 1a can validate and install;
-- an ensure operation that:
+- a UI-independent calculation operation with this exact public boundary:
+
+      calculate_canonical_centers(
+          sdata: SpatialData,
+          report: CanonicalCacheReport,
+      ) -> CanonicalInstallationPayload
+
+  The operation consumes the calculation-time source signature and selected-region
+  binding already captured by `inspect_canonical_cache()`. It calculates and
+  validates centers for exactly that binding, then returns the existing Slice 1a
+  installation payload carrying the same calculation-time identity. It does not
+  mutate the table or install the cache; installation remains the responsibility
+  of `install_canonical_cache()`;
+- an immutable canonical-centers result with this concrete shape:
+
+      @dataclass(frozen=True)
+      class CanonicalCentersResult:
+          table_name: str
+          source_signature: CanonicalSourceSignature
+          binding: CanonicalRegionBinding
+          centers: NDArray[np.float64] = field(
+              repr=False,
+              compare=False,
+          )
+          installation: CanonicalInstallationResult | None = None
+
+          @property
+          def labels_name(self) -> str:
+              return self.binding.labels_name
+
+          @property
+          def n_obs(self) -> int:
+              return self.binding.n_obs
+
+          @property
+          def reused(self) -> bool:
+              return self.installation is None
+
+  `centers` is a read-only float64 array with shape `(binding.n_obs, 3)` and
+  fixed z, y, x column order. Row `i` belongs to
+  `binding.instance_ids[i]`. Consumers join centers through these instance IDs,
+  not through `binding.row_positions`; row positions are a snapshot and may
+  become outdated after table reordering. `source_signature` and `binding`
+  identify the state against which the returned centers were validated;
+- an ensure operation with this exact public boundary:
+
+      ensure_canonical_centers(
+          sdata: SpatialData,
+          *,
+          table_name: str,
+          labels_name: str,
+          force_recalculation: bool = False,
+      ) -> CanonicalCentersResult
+
+  The operation:
   - reuses a structurally valid selected-region cache without reading labels;
   - calculates and installs spatial_canonical plus metadata when absent;
   - accepts an explicit forced-recalculation mode that bypasses valid reuse;
   - treats a selected region's instance-set digest mismatch as stale and
     recalculates that complete region;
   - delegates every table mutation and rollback to the Slice 1a installer;
+  - returns selected-region centers rather than the complete table matrix;
+  - sets `installation` to `None` when it reuses a valid cache, otherwise to
+    the `CanonicalInstallationResult` returned by `install_canonical_cache()`.
+    Installation action, previous state, mismatches, and changed paths are not
+    duplicated on `CanonicalCentersResult`;
 - representative zarr-backed Dask fixtures and integration tests, including
   labels spanning chunks and requested IDs absent from the raster.
 
