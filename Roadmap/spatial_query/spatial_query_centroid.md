@@ -4,6 +4,10 @@
 
 Final product specification and implementation plan.
 
+Canonical metadata/cache lifecycle (Slice 1a) and blocking Harpy centroid
+construction/cache ensure (Slice 1b) are implemented. Later slices remain
+planned.
+
 This document supersedes the raster-overlap query algorithm described in
 spatial_query.md. It retains the agreed user interface, table mutation,
 overwrite protection, undo, dirty-state, persistence, reload, asynchronous
@@ -875,7 +879,8 @@ For a 2D scale0 labels Dask array:
 1. select the rows for the requested labels region and reject an empty set;
 2. validate non-missing, positive, unique integer-like instance IDs within that
    region;
-3. require integer labels dtype and known 2D shape/chunks;
+3. use SpatialData's validated 2D Dask raster representation and require an
+   integer labels dtype;
 4. add a singleton z dimension lazily, without copying or rechunking the raster,
    to satisfy RasterAggregator's z, y, x input contract;
 5. pass exactly the selected table-region instance IDs as index;
@@ -887,7 +892,9 @@ For a 2D scale0 labels Dask array:
 11. validate exactly one finite result for every requested ID; a zero-count or
     non-finite result means that a table instance is absent from the raster and
     is a binding error;
-12. join results back to table rows by instance ID, never by output order.
+12. require RasterAggregator to return the requested IDs in the same order, as
+    guaranteed by its `center_of_mass(index=...)` contract; retain centers in
+    that binding order.
 
 Passing a known index avoids RasterAggregator's separate global unique-label
 discovery. It does not avoid scanning scale0: every labels chunk may contribute
@@ -1256,7 +1263,7 @@ Run remains disabled, with concise status and a detailed tooltip, when:
 - the selected Shapes has unsaved Shapes Annotation edits;
 - Shapes geometry is invalid, empty, unsupported, or cannot be unioned;
 - no eligible 2D labels element is selected;
-- labels has no scale0 or scale0 is not a known-chunk 2D Dask array;
+- labels has no readable 2D scale0 array;
 - Shapes or labels is unavailable in the selected coordinate system;
 - a required transform is missing, non-finite, unsupported, or non-invertible;
 - no linked table is selected;
@@ -1434,14 +1441,15 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 ### RasterAggregator adapter tests
 
 - 2D Dask scale0 is wrapped as singleton-z without eager computation;
-- integer dtype and known chunks required;
+- integer labels dtype is required, while SpatialData's Dask raster contract is
+  trusted rather than revalidated locally;
 - table instance IDs are passed as index and background is excluded;
 - no global unique-label discovery when index is supplied;
 - one-pixel labels, irregular labels, disjoint components, concave labels, and
   labels spanning chunks have correct centers;
 - y/x to x/y conversion and integer pixel-center convention;
-- output is joined by instance ID, not aggregator row order;
-- absent label ID, duplicate result, NaN, and inf rejected;
+- output instance IDs must exactly match the requested IDs and order;
+- absent label ID, mismatched result IDs, NaN, and inf are rejected;
 - no NumPy/full-array labels fallback;
 - only scale0 is read;
 - cancellation/stale completion cannot update the cache;
@@ -1589,6 +1597,8 @@ reviewable behavior. A happy path alone does not complete a slice.
 
 ### Slice 1a: Canonical metadata and cache lifecycle
 
+**Implementation status: Implemented.**
+
 Slice 1a defines and safely manages the canonical cache without calculating any
 centroids. Tests use synthetic x/y arrays and must not invoke RasterAggregator
 or read labels chunks.
@@ -1625,10 +1635,8 @@ Deliverables:
     entries after an all-regions matrix/top-level mismatch;
   - restores the complete previous obsm/uns pair if validation or assignment
     fails;
-- cache-update results that report the exact changed component paths
-  obsm/spatial_canonical and
-  uns/spatial_coordinates/spatial_canonical for later shared dirty-state
-  integration;
+- cache-update results that report the performed create, extend, refresh, or
+  rebuild action together with the fresh inspection's mismatch reasons;
 - fixtures and tests for single- and multi-region missing, reusable, partial,
   stale, region-mismatched, and all-regions-invalid states.
 
@@ -1659,12 +1667,13 @@ Use string enums for cache state, cache-update action, and mismatch code:
         region_coordinates_invalid
 
 Mismatch codes, rather than human-readable messages, drive tests and controller
-behavior. All-regions versus region-local scope is represented explicitly on each
-mismatch. Keep the code set at behaviorally meaningful categories; the bounded
-detail identifies the particular malformed field or expected/actual value. For
-example, wrong rank, shape, storage type, or matrix dtype uses `matrix_invalid`,
-while a disagreement among supported top-level `obsm_key`, axes, coordinate
-dtype, or linkage keys uses `top_level_contract_mismatch`.
+behavior. All-regions versus region-local scope is derived from the mismatch
+code rather than stored as a second independently configurable field. Keep the
+code set at behaviorally meaningful categories; the bounded detail identifies
+the particular malformed field or expected/actual value. For example, wrong
+rank, shape, storage type, or matrix dtype uses `matrix_invalid`, while a
+disagreement among supported top-level `obsm_key`, axes, coordinate dtype, or
+linkage keys uses `top_level_contract_mismatch`.
 
 Cache-state classification follows this deterministic evaluation order:
 
@@ -1685,6 +1694,13 @@ Cache-state classification follows this deterministic evaluation order:
    coordinate coverage does not match current state, return `stale` with the
    corresponding region-local mismatch code.
 6. If all selected-region checks pass, return `valid`.
+
+`CanonicalCacheReport.state` is a derived property rather than stored alongside
+the mismatch tuple. All-regions mismatches derive `invalid`,
+`region_not_registered` derives `partial`, other non-empty region-local
+mismatches derive `stale`, no mismatches plus no readable stored metadata
+derives `absent`, and no mismatches plus readable stored metadata derives
+`valid`.
 
 The report state and region-local mismatches describe the selected region only.
 Ordinary inspection does not calculate live source signatures, rebuild region
@@ -1733,18 +1749,18 @@ The immutable value contracts are conceptually:
 
     CanonicalCacheMismatch:
         code: CanonicalMismatchCode
-        scope: all_regions | region
         region or None
         bounded user-facing detail or None
+        scope property derived from code: all_regions | region
 
     CanonicalCacheReport:
-        state: CanonicalCacheState
-        table_name property derived from binding
-        labels_name property derived from binding
-        metadata or None
-        source_signature
+        stored_metadata: CanonicalMetadata or None
+        source_signature: CanonicalSourceSignature
         binding: CanonicalRegionBinding
         mismatches: tuple[CanonicalCacheMismatch, ...]
+        state property derived from stored_metadata and mismatches
+        table_name property derived from binding
+        labels_name property derived from binding
 
     CanonicalCacheUpdatePayload:
         table_name property derived from binding
@@ -1754,18 +1770,13 @@ The immutable value contracts are conceptually:
         source_signature
 
     CanonicalCacheUpdateResult:
-        table_name
-        labels_name
         action: CanonicalCacheUpdateAction
-        previous_state: CanonicalCacheState
-        n_updated_rows
         mismatches: tuple[CanonicalCacheMismatch, ...]
-        changed_paths
 
 The source-signature value type has this concrete shape:
 
 ```python
-SpatialDimension = Literal["z", "y", "x"]
+type SpatialDimension = Literal["z", "y", "x"]
 
 
 @dataclass(frozen=True)
@@ -1777,11 +1788,27 @@ class CanonicalSourceSignature:
     dtype: str
 
     def __post_init__(self) -> None:
+        if not self.labels_name:
+            raise ValueError("Source labels name must not be empty.")
+
+        if self.source_scale != "scale0":
+            raise ValueError(
+                "Canonical coordinates must use labels source scale `scale0`."
+            )
+
+        if not self.dims:
+            raise ValueError("Source dims must not be empty.")
+
         if len(self.dims) != len(self.shape):
             raise ValueError("Source dims and shape must have equal lengths.")
 
         if len(set(self.dims)) != len(self.dims):
             raise ValueError("Source dims must be unique.")
+
+        if any(dim not in ("z", "y", "x") for dim in self.dims):
+            raise ValueError(
+                "Source dims must contain only `z`, `y`, and `x`."
+            )
 
         if any(
             isinstance(size, bool)
@@ -1790,6 +1817,9 @@ class CanonicalSourceSignature:
             for size in self.shape
         ):
             raise ValueError("Source shape must contain positive integers.")
+
+        if not self.dtype:
+            raise ValueError("Source dtype must not be empty.")
 
     @property
     def ndim(self) -> int:
@@ -2034,19 +2064,22 @@ the state observed before calculation:
 
 Before the first assignment, the cache-update operation constructs and validates the
 complete candidate matrix and metadata registry in local values. An internal,
-non-public pair snapshot records whether each managed path existed and its
-complete prior value. If either assignment fails, rollback restores both exact
-prior path states, including absence. Only a successful cache update returns
-the two changed component paths.
+non-public assignment helper records in local rollback variables whether each
+managed path existed and its complete prior value. If either assignment fails,
+rollback restores both exact prior path states, including absence. A successful
+update returns only its action and the fresh inspection's mismatch reasons; the
+two mutated managed paths are fixed by the canonical-cache contract rather than
+repeated in the result.
 
 Reuse existing core types only where their contracts match. In particular,
 `SpatialDataTableMetadata` remains the shared linkage value type. The canonical
 binding validator adds the stricter selected-region rules required here.
 Existing general feature-matrix normalization is not reused for
 `spatial_canonical`, because it permits sparse matrices, one-dimensional
-reshaping, and dtype coercion that the canonical schema must reject. A pure
-table-metadata reader may be factored from the existing SpatialData helpers so
-the inspector does not trigger their current in-place normalization behavior.
+reshaping, and dtype coercion that the canonical schema must reject. The
+inspector reuses the existing `get_table_metadata()` helper for read-only table
+linkage metadata and accesses the AnnData table explicitly through
+`sdata.tables[table_name]`.
 
 Exit criteria:
 
@@ -2075,14 +2108,17 @@ Exit criteria:
 
 ### Slice 1b: Harpy centroid construction and cache ensure
 
+**Implementation status: Implemented.**
+
 Slice 1b calculates the values consumed by Slice 1a and supplies the blocking,
 UI-independent ensure operation. Background execution, progress, cancellation,
 and production performance hardening remain Slice 2 responsibilities.
 
 Deliverables:
 
-- a scale0-only labels resolver that requires a known-chunk 2D integer Dask
-  array and never falls back to NumPy or a lower-resolution scale;
+- an exact-scale0 labels lookup that uses SpatialData's validated 2D Dask raster
+  representation directly and never falls back to NumPy or a lower-resolution
+  scale;
 - preflight validation that every normalized positive table instance ID is
   representable by the labels dtype before starting the global aggregation;
 - a RasterAggregator adapter that:
@@ -2092,7 +2128,8 @@ Deliverables:
   - passes exactly the selected table-region instance IDs as index;
   - converts returned z/y/x centers to float64 without dropping or reordering
     axes and requires z=0.0 for the supported 2D source;
-  - joins results by instance ID rather than aggregator output order;
+  - requires returned instance IDs to exactly match the requested IDs and order,
+    following RasterAggregator's `center_of_mass(index=...)` contract;
 - selective raster-membership validation from the requested aggregation result:
   every requested ID must have exactly one finite center, missing requested IDs
   raise before mutation, and raster IDs absent from the table are neither
@@ -2140,14 +2177,14 @@ Deliverables:
 
   `centers` is a read-only float64 array with shape `(binding.n_obs, 3)` and
   fixed z, y, x column order. Row `i` belongs to
-  `binding.instance_ids[i]`. Consumers join centers through these instance IDs,
-  not through `binding.row_positions`; row positions are a snapshot and may
-  become outdated after table reordering. `source_signature` and `binding`
-  identify the state against which the returned centers were validated. The
-  transient binding stores `table_name` once; the cache report, cache-update
-  payload, and centers result expose it as a derived property. The standalone
-  `CanonicalCacheUpdateResult` retains its own table name because it does not
-  carry a binding;
+  `binding.instance_ids[i]`. Consumers associate centers through these instance
+  IDs, not through `binding.row_positions`; row positions are a snapshot and may
+  become outdated after table reordering. `source_signature` describes the live
+  labels raster, while `binding` describes the live linked table rows and
+  instance IDs. They are independent calculation-time snapshots whose shared
+  invariant is the selected labels name. The transient binding stores
+  `table_name` once; the cache report, cache-update payload, and centers result
+  expose it as a derived property;
 - an ensure operation with this exact public boundary:
 
       ensure_canonical_centers(
@@ -2168,8 +2205,9 @@ Deliverables:
   - returns selected-region centers rather than the complete table matrix;
   - sets `cache_update` to `None` when it reuses a valid cache, otherwise to
     the `CanonicalCacheUpdateResult` returned by `apply_canonical_cache_update()`.
-    Cache-update action, previous state, mismatches, and changed paths are not
-    duplicated on `CanonicalCentersResult`;
+    That nested result contains only the performed action and the fresh
+    inspection's mismatch reasons; table/region identity and row count remain
+    available from the centers result's binding;
 - representative zarr-backed Dask fixtures and integration tests, including
   labels spanning chunks and requested IDs absent from the raster.
 
@@ -2186,8 +2224,8 @@ Exit criteria:
   requested, while all scale0 chunks may still be scanned lazily;
 - a table ID absent from the raster produces an actionable binding error and no
   obsm/uns mutation; raster IDs absent from the table produce no center;
-- calculated output is joined to table rows by instance ID, not aggregator
-  order, and is finite for every selected-region row;
+- calculated output exactly follows the requested instance-ID order and is
+  finite for every selected-region row;
 - instance IDs outside the labels dtype range fail before Dask work;
 - no calculation failure reaches the Slice 1a cache-update operation or changes obsm/uns;
 - domain modules have no Qt dependency.
