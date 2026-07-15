@@ -31,10 +31,6 @@ CANONICAL_OBSM_KEY = "spatial_canonical"
 SPATIAL_COORDINATES_KEY = "spatial_coordinates"
 CANONICAL_SCHEMA_VERSION = 1
 CANONICAL_ALGORITHM_VERSION = 1
-CANONICAL_CHANGED_PATHS = (
-    "obsm/spatial_canonical",
-    "uns/spatial_coordinates/spatial_canonical",
-)
 CANONICAL_AXES = ("z", "y", "x")
 
 _TOP_LEVEL_KEYS = {
@@ -129,6 +125,7 @@ def build_canonical_region_binding(
         raise ValueError(f"Table `{table_metadata.table_name}` contains no rows for labels region `{labels_name}`.")
 
     return CanonicalRegionBinding(
+        table_name=table_metadata.table_name,
         labels_name=labels_name,
         region_key=table_metadata.region_key,
         instance_key=table_metadata.instance_key,
@@ -256,11 +253,9 @@ def inspect_canonical_cache(
     metadata_exists = isinstance(registry, Mapping) and CANONICAL_OBSM_KEY in registry
 
     if not matrix_exists and not metadata_exists:
-        return _report(CanonicalCacheState.ABSENT, labels_name, None, source_signature, binding)
+        return _report(None, source_signature, binding)
     if matrix_exists and not metadata_exists:
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
@@ -268,8 +263,6 @@ def inspect_canonical_cache(
         )
     if metadata_exists and not matrix_exists:
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
@@ -279,8 +272,6 @@ def inspect_canonical_cache(
     matrix = _validate_canonical_matrix(table.obsm[CANONICAL_OBSM_KEY], table.n_obs)
     if isinstance(matrix, str):
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
@@ -289,11 +280,9 @@ def inspect_canonical_cache(
 
     raw_metadata = registry[CANONICAL_OBSM_KEY]  # type: ignore[index]
     try:
-        metadata = parse_canonical_metadata(raw_metadata)
+        stored_metadata = parse_canonical_metadata(raw_metadata)
     except _UnsupportedSchemaError as exc:
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
@@ -301,8 +290,6 @@ def inspect_canonical_cache(
         )
     except _TopLevelContractError as exc:
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
@@ -310,8 +297,6 @@ def inspect_canonical_cache(
         )
     except _RegionMetadataError as exc:
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
@@ -319,19 +304,18 @@ def inspect_canonical_cache(
         )
     except (TypeError, ValueError, KeyError) as exc:
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
             None,
             source_signature,
             binding,
             _all_regions_mismatch(CanonicalMismatchCode.METADATA_INVALID, str(exc)),
         )
 
-    if metadata.region_key != table_metadata.region_key or metadata.instance_key != table_metadata.instance_key:
+    if (
+        stored_metadata.region_key != table_metadata.region_key
+        or stored_metadata.instance_key != table_metadata.instance_key
+    ):
         return _report(
-            CanonicalCacheState.INVALID,
-            labels_name,
-            metadata,
+            stored_metadata,
             source_signature,
             binding,
             _all_regions_mismatch(
@@ -340,12 +324,10 @@ def inspect_canonical_cache(
             ),
         )
 
-    region_metadata = metadata.regions.get(labels_name)
+    region_metadata = stored_metadata.regions.get(labels_name)
     if region_metadata is None:
         return _report(
-            CanonicalCacheState.PARTIAL,
-            labels_name,
-            metadata,
+            stored_metadata,
             source_signature,
             binding,
             _region_mismatch(CanonicalMismatchCode.REGION_NOT_REGISTERED, labels_name),
@@ -368,9 +350,7 @@ def inspect_canonical_cache(
         mismatches.append(_region_mismatch(CanonicalMismatchCode.REGION_COORDINATES_INVALID, labels_name))
 
     return _report(
-        CanonicalCacheState.STALE if mismatches else CanonicalCacheState.VALID,
-        labels_name,
-        metadata,
+        stored_metadata,
         source_signature,
         binding,
         *mismatches,
@@ -379,14 +359,12 @@ def inspect_canonical_cache(
 
 def build_canonical_cache_update_payload(
     *,
-    table_name: str,
     binding: CanonicalRegionBinding,
     centers: object,
     source_signature: CanonicalSourceSignature,
 ) -> CanonicalCacheUpdatePayload:
     """Validate calculated centers and capture an immutable cache-update payload."""
     return CanonicalCacheUpdatePayload(
-        table_name=table_name,
         binding=binding,
         centers=centers,
         source_signature=source_signature,
@@ -430,7 +408,7 @@ def apply_canonical_cache_update(
 
     When preserving other regions, the distinction is::
 
-        report.metadata
+        report.stored_metadata
             “What does the existing cache claim?”
 
         table_metadata + current table
@@ -439,7 +417,7 @@ def apply_canonical_cache_update(
     Only regions for which those stored and current identities agree are
     preserved.
     """
-    labels_name = payload.binding.labels_name
+    labels_name = payload.labels_name
     report = inspect_canonical_cache(
         sdata,
         table_name=payload.table_name,
@@ -474,13 +452,13 @@ def apply_canonical_cache_update(
     #     → copy every independently revalidated other region
     #     → apply or replace selected region
     if report.state in (CanonicalCacheState.PARTIAL, CanonicalCacheState.STALE, CanonicalCacheState.VALID):
-        assert report.metadata is not None
+        assert report.stored_metadata is not None
         assert existing_matrix is not None
         preserved_regions = _preserve_valid_other_regions(
             sdata,
             table,
             table_metadata,
-            report.metadata,
+            report.stored_metadata,
             np.asarray(existing_matrix),
             selected_region=labels_name,
             candidate_matrix=candidate_matrix,
@@ -521,13 +499,8 @@ def apply_canonical_cache_update(
     }[report.state]
     _assign_canonical_matrix_and_metadata_atomically(table, candidate_matrix, candidate_storage)
     return CanonicalCacheUpdateResult(
-        table_name=payload.table_name,
-        labels_name=labels_name,
         action=action,
-        previous_state=report.state,
-        n_updated_rows=len(payload.binding.instance_ids),
         mismatches=report.mismatches,
-        changed_paths=CANONICAL_CHANGED_PATHS,
     )
 
 
@@ -668,17 +641,17 @@ def _preserve_valid_other_regions(
     sdata: SpatialData,
     table: AnnData,
     table_metadata: SpatialDataTableMetadata,
-    metadata: CanonicalMetadata,
+    stored_metadata: CanonicalMetadata,
     existing_matrix: np.ndarray,
     *,
     selected_region: str,
     candidate_matrix: np.ndarray,
 ) -> dict[str, CanonicalRegionMetadata]:
     preserved: dict[str, CanonicalRegionMetadata] = {}
-    for region in sorted(metadata.regions):
+    for region in sorted(stored_metadata.regions):
         if region == selected_region:
             continue
-        stored = metadata.regions[region]
+        stored = stored_metadata.regions[region]
         try:
             live_source = build_canonical_source_signature(sdata, region)
             live_binding = build_canonical_region_binding(table, table_metadata, region)
@@ -775,17 +748,13 @@ def _serialize_generated_by(metadata: CanonicalRegionMetadata) -> dict[str, str]
 
 
 def _report(
-    state: CanonicalCacheState,
-    labels_name: str,
-    metadata: CanonicalMetadata | None,
+    stored_metadata: CanonicalMetadata | None,
     source_signature: CanonicalSourceSignature,
     binding: CanonicalRegionBinding,
     *mismatches: CanonicalCacheMismatch,
 ) -> CanonicalCacheReport:
     return CanonicalCacheReport(
-        state=state,
-        selected_region=labels_name,
-        metadata=metadata,
+        stored_metadata=stored_metadata,
         source_signature=source_signature,
         binding=binding,
         mismatches=tuple(mismatches),

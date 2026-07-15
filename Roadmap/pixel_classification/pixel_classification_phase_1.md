@@ -24,6 +24,10 @@ Included:
 - explicitly save predicted labels to SpatialData as `sdata.labels[...]`;
 - report progress, errors, stale state, and cache reuse clearly in the UI.
 
+Phase 1 treats positive integer annotation values as the complete class identity. `0` means unlabeled, and `1..N` are
+user-defined classes. There is no semantic class-name schema or cross-target class mapping. Pooled training assumes
+that users apply the same integer label consistently across participating targets.
+
 Excluded from Phase 1:
 
 - no multiscale image-scale selector;
@@ -512,7 +516,8 @@ Acceptance criteria:
 3. Annotation layer lifecycle
 
 Implement `annotation_controller.py`. Create or reuse a napari labels layer matching the highest-resolution image grid.
-Use `0` as unlabeled. Keep class labels, class names, and colors stable while the user edits annotations.
+Use `0` as unlabeled. Preserve integer class ids while the user edits annotations. Use consistent per-label colors
+across target layers as a visual aid; colors and optional display names are not classifier compatibility metadata.
 
 Acceptance criteria:
 

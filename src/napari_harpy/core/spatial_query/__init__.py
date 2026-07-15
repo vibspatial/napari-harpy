@@ -3,7 +3,6 @@
 from napari_harpy.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
     CANONICAL_AXES,
-    CANONICAL_CHANGED_PATHS,
     CANONICAL_OBSM_KEY,
     CANONICAL_SCHEMA_VERSION,
     SPATIAL_COORDINATES_KEY,
@@ -16,6 +15,10 @@ from napari_harpy.core.spatial_query.canonical import (
     inspect_canonical_cache,
     parse_canonical_metadata,
 )
+from napari_harpy.core.spatial_query.centroids import (
+    calculate_canonical_centers,
+    ensure_canonical_centers,
+)
 from napari_harpy.core.spatial_query.models import (
     CanonicalCacheMismatch,
     CanonicalCacheReport,
@@ -23,6 +26,7 @@ from napari_harpy.core.spatial_query.models import (
     CanonicalCacheUpdateAction,
     CanonicalCacheUpdatePayload,
     CanonicalCacheUpdateResult,
+    CanonicalCentersResult,
     CanonicalMetadata,
     CanonicalMismatchCode,
     CanonicalRegionBinding,
@@ -35,7 +39,6 @@ from napari_harpy.core.spatial_query.models import (
 __all__ = [
     "CANONICAL_ALGORITHM_VERSION",
     "CANONICAL_AXES",
-    "CANONICAL_CHANGED_PATHS",
     "CANONICAL_OBSM_KEY",
     "CANONICAL_SCHEMA_VERSION",
     "SPATIAL_COORDINATES_KEY",
@@ -45,6 +48,7 @@ __all__ = [
     "CanonicalCacheUpdateAction",
     "CanonicalCacheUpdatePayload",
     "CanonicalCacheUpdateResult",
+    "CanonicalCentersResult",
     "CanonicalMetadata",
     "CanonicalMismatchCode",
     "CanonicalRegionBinding",
@@ -57,7 +61,9 @@ __all__ = [
     "build_canonical_region_binding",
     "build_canonical_source_signature",
     "build_instance_set_digest",
+    "calculate_canonical_centers",
     "canonical_metadata_to_storage",
     "inspect_canonical_cache",
+    "ensure_canonical_centers",
     "parse_canonical_metadata",
 ]

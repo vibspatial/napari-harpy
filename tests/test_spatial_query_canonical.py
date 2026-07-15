@@ -13,7 +13,6 @@ from spatialdata.models import TableModel
 from xarray import DataArray
 
 from napari_harpy.core.spatial_query import (
-    CANONICAL_CHANGED_PATHS,
     CANONICAL_OBSM_KEY,
     SPATIAL_COORDINATES_KEY,
     CanonicalCacheMismatch,
@@ -104,6 +103,7 @@ def test_region_binding_is_strict_and_read_only() -> None:
 
     binding = build_canonical_region_binding(table, metadata, "nuclei")
 
+    assert binding.table_name == "table"
     assert binding.instance_ids.tolist() == [2, 1]
     assert binding.n_obs == 2
     assert binding.instance_set_digest == build_instance_set_digest("nuclei", [1, 2])
@@ -269,14 +269,13 @@ def test_inspector_classifies_partial_valid_and_region_staleness(sdata_blobs: Sp
         assert _codes(coordinates_stale) == [CanonicalMismatchCode.REGION_COORDINATES_INVALID]
 
 
-def test_cache_update_creates_then_refreshes_and_reports_changed_paths(sdata_blobs: SpatialData) -> None:
+def test_cache_update_creates_then_refreshes(sdata_blobs: SpatialData) -> None:
     first = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=0.0)
     second = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=100.0)
     centers = sdata_blobs.tables["table"].obsm[CANONICAL_OBSM_KEY]
 
     assert first.action is CanonicalCacheUpdateAction.CREATE
     assert second.action is CanonicalCacheUpdateAction.REFRESH
-    assert first.changed_paths == CANONICAL_CHANGED_PATHS
     assert centers.shape == (sdata_blobs.tables["table"].n_obs, 3)
     assert np.all(centers[:, 0] == 0.0)
     assert (
@@ -292,7 +291,6 @@ def test_payload_rejects_nonzero_z_for_2d_source(sdata_blobs: SpatialData) -> No
 
     with pytest.raises(ValueError, match="z=0"):
         build_canonical_cache_update_payload(
-            table_name="table",
             binding=report.binding,
             centers=centers,
             source_signature=report.source_signature,
@@ -351,7 +349,7 @@ def test_all_regions_invalid_cache_update_rebuilds_selected_region_only(sdata_bl
 
 def test_cache_update_rejects_changed_table_without_mutation(sdata_blobs: SpatialData) -> None:
     report = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
-    payload = _payload_from_report(report, "table")
+    payload = _payload_from_report(report)
     table = sdata_blobs.tables["table"]
     table.obs.iloc[0, table.obs.columns.get_loc("instance_id")] = 999
 
@@ -364,7 +362,7 @@ def test_cache_update_rejects_changed_table_without_mutation(sdata_blobs: Spatia
 
 def test_cache_update_rolls_back_both_paths_when_second_assignment_fails(sdata_blobs: SpatialData) -> None:
     report = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
-    payload = _payload_from_report(report, "table")
+    payload = _payload_from_report(report)
     table = sdata_blobs.tables["table"]
     table.uns = _FailOnceSpatialCoordinatesDict(table.uns)
 
@@ -436,11 +434,10 @@ def _metadata_for(labels_name: str, instance_ids: list[int]):
     )
 
 
-def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
+def _payload_from_report(report, *, offset: float = 0.0):
     centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
     centers[:, 1:] = np.arange(report.binding.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
     return build_canonical_cache_update_payload(
-        table_name=table_name,
         binding=report.binding,
         centers=centers,
         source_signature=report.source_signature,
@@ -449,7 +446,7 @@ def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
 
 def _apply_selected_cache_update(sdata: SpatialData, labels_name: str, *, offset: float = 0.0):
     report = inspect_canonical_cache(sdata, table_name="table", labels_name=labels_name)
-    return apply_canonical_cache_update(sdata, _payload_from_report(report, "table", offset=offset))
+    return apply_canonical_cache_update(sdata, _payload_from_report(report, offset=offset))
 
 
 def _make_two_region_table(sdata: SpatialData) -> None:

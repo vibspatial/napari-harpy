@@ -1707,6 +1707,7 @@ The immutable value contracts are conceptually:
         dtype
 
     CanonicalRegionBinding:
+        table_name
         labels_name
         region_key
         instance_key
@@ -1738,14 +1739,16 @@ The immutable value contracts are conceptually:
 
     CanonicalCacheReport:
         state: CanonicalCacheState
-        selected_region
+        table_name property derived from binding
+        labels_name property derived from binding
         metadata or None
         source_signature
         binding: CanonicalRegionBinding
         mismatches: tuple[CanonicalCacheMismatch, ...]
 
     CanonicalCacheUpdatePayload:
-        table_name
+        table_name property derived from binding
+        labels_name property derived from binding
         binding: CanonicalRegionBinding
         centers with shape (n_instances, 3) in z, y, x order
         source_signature
@@ -2094,10 +2097,6 @@ Deliverables:
   every requested ID must have exactly one finite center, missing requested IDs
   raise before mutation, and raster IDs absent from the table are neither
   calculated nor globally enumerated;
-- production-safe count precision in the RasterAggregator center-of-mass path:
-  counts must use an integer or floating representation that remains exact for
-  supported label sizes before division into float64 moments; this may require
-  an upstream Harpy fix and pinned minimum version;
 - a UI-independent calculation operation with this exact public boundary:
 
       calculate_canonical_centers(
@@ -2115,7 +2114,6 @@ Deliverables:
 
       @dataclass(frozen=True)
       class CanonicalCentersResult:
-          table_name: str
           source_signature: CanonicalSourceSignature
           binding: CanonicalRegionBinding
           centers: NDArray[np.float64] = field(
@@ -2123,6 +2121,10 @@ Deliverables:
               compare=False,
           )
           cache_update: CanonicalCacheUpdateResult | None
+
+          @property
+          def table_name(self) -> str:
+              return self.binding.table_name
 
           @property
           def labels_name(self) -> str:
@@ -2141,7 +2143,11 @@ Deliverables:
   `binding.instance_ids[i]`. Consumers join centers through these instance IDs,
   not through `binding.row_positions`; row positions are a snapshot and may
   become outdated after table reordering. `source_signature` and `binding`
-  identify the state against which the returned centers were validated;
+  identify the state against which the returned centers were validated. The
+  transient binding stores `table_name` once; the cache report, cache-update
+  payload, and centers result expose it as a derived property. The standalone
+  `CanonicalCacheUpdateResult` retains its own table name because it does not
+  carry a binding;
 - an ensure operation with this exact public boundary:
 
       ensure_canonical_centers(
@@ -2183,8 +2189,6 @@ Exit criteria:
 - calculated output is joined to table rows by instance ID, not aggregator
   order, and is finite for every selected-region row;
 - instance IDs outside the labels dtype range fail before Dask work;
-- count precision is verified beyond the float32 exact-integer boundary without
-  requiring a production-sized raster fixture;
 - no calculation failure reaches the Slice 1a cache-update operation or changes obsm/uns;
 - domain modules have no Qt dependency.
 

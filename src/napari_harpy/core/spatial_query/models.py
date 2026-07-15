@@ -103,6 +103,7 @@ class CanonicalSourceSignature:
 class CanonicalRegionBinding:
     """Current table rows and normalized instance IDs for one region."""
 
+    table_name: str
     labels_name: str
     region_key: str
     instance_key: str
@@ -116,7 +117,7 @@ class CanonicalRegionBinding:
         return len(self.instance_ids)
 
     def __post_init__(self) -> None:
-        if not self.labels_name or not self.region_key or not self.instance_key:
+        if not self.table_name or not self.labels_name or not self.region_key or not self.instance_key:
             raise ValueError("Canonical binding names and linkage keys must not be empty.")
         row_positions = _readonly_array(self.row_positions, dtype=np.intp)
         instance_ids = _readonly_integer_ids(self.instance_ids)
@@ -225,63 +226,152 @@ class CanonicalCacheMismatch:
 class CanonicalCacheReport:
     """Non-mutating cache inspection result for one selected region."""
 
-    state: CanonicalCacheState
-    selected_region: str
-    metadata: CanonicalMetadata | None
+    stored_metadata: CanonicalMetadata | None
     source_signature: CanonicalSourceSignature
     binding: CanonicalRegionBinding
     mismatches: tuple[CanonicalCacheMismatch, ...] = ()
+
+    @property
+    def state(self) -> CanonicalCacheState:
+        """Derive the cache state from metadata presence and mismatch reasons."""
+        if any(mismatch.scope == "all_regions" for mismatch in self.mismatches):
+            return CanonicalCacheState.INVALID
+        if any(
+            mismatch.code is CanonicalMismatchCode.REGION_NOT_REGISTERED for mismatch in self.mismatches
+        ):
+            return CanonicalCacheState.PARTIAL
+        if self.mismatches:
+            return CanonicalCacheState.STALE
+        if self.stored_metadata is None:
+            return CanonicalCacheState.ABSENT
+        return CanonicalCacheState.VALID
+
+    @property
+    def table_name(self) -> str:
+        """Return the table name from the selected-region binding."""
+        return self.binding.table_name
+
+    @property
+    def labels_name(self) -> str:
+        """Return the labels name from the selected-region binding."""
+        return self.binding.labels_name
 
 
 @dataclass(frozen=True)
 class CanonicalCacheUpdatePayload:
     """Calculated centers and identity prepared for a cache update."""
 
-    table_name: str
     binding: CanonicalRegionBinding
     centers: NDArray[np.float64] = field(repr=False, compare=False)
     source_signature: CanonicalSourceSignature
 
     def __post_init__(self) -> None:
-        if not self.table_name:
-            raise ValueError("Canonical payload table name must not be empty.")
         if not isinstance(self.binding, CanonicalRegionBinding):
             raise TypeError("Canonical payload binding must be a CanonicalRegionBinding.")
-        if self.source_signature.labels_name != self.binding.labels_name:
-            raise ValueError("Canonical payload source signature labels name does not match.")
-        try:
-            centers = np.asarray(self.centers)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Canonical payload centers must be a dense numeric array.") from exc
-        if centers.shape != (len(self.binding.instance_ids), 3):
-            raise ValueError("Canonical payload centers must have shape (n_instances, 3) in z, y, x order.")
-        if centers.dtype.kind not in "fiu":
-            raise ValueError("Canonical payload centers must have a numeric dtype.")
-        normalized_centers = _readonly_array(centers, dtype=np.float64)
-        if not np.isfinite(normalized_centers).all():
-            raise ValueError("Canonical payload centers must contain only finite values.")
-        if self.source_signature.dims == ("y", "x") and np.any(normalized_centers[:, 0] != 0.0):
-            raise ValueError("Canonical payload centers for a 2D labels source must use z=0.")
-        object.__setattr__(self, "centers", normalized_centers)
+        object.__setattr__(
+            self,
+            "centers",
+            _normalize_canonical_centers(
+                self.centers,
+                self.binding,
+                self.source_signature,
+                owner="Canonical cache-update payload",
+            ),
+        )
+
+    @property
+    def table_name(self) -> str:
+        """Return the table name from the calculation-time binding."""
+        return self.binding.table_name
+
+    @property
+    def labels_name(self) -> str:
+        """Return the labels name from the calculation-time binding."""
+        return self.binding.labels_name
 
 
 @dataclass(frozen=True)
 class CanonicalCacheUpdateResult:
     """Summary of a successfully applied canonical-cache update."""
 
-    table_name: str
-    labels_name: str
     action: CanonicalCacheUpdateAction
-    previous_state: CanonicalCacheState
-    n_updated_rows: int
     mismatches: tuple[CanonicalCacheMismatch, ...]
-    changed_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CanonicalCentersResult:
+    """Selected-region canonical centers ready for immediate use."""
+
+    source_signature: CanonicalSourceSignature
+    binding: CanonicalRegionBinding
+    centers: NDArray[np.float64] = field(repr=False, compare=False)
+    cache_update: CanonicalCacheUpdateResult | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, CanonicalRegionBinding):
+            raise TypeError("Canonical centers result binding must be a CanonicalRegionBinding.")
+        centers = _normalize_canonical_centers(
+            self.centers,
+            self.binding,
+            self.source_signature,
+            owner="Canonical centers result",
+        )
+        if self.cache_update is not None and not isinstance(self.cache_update, CanonicalCacheUpdateResult):
+            raise TypeError("Canonical centers cache update must be a CanonicalCacheUpdateResult or None.")
+        object.__setattr__(self, "centers", centers)
+
+    @property
+    def table_name(self) -> str:
+        """Return the table name from the selected-region binding."""
+        return self.binding.table_name
+
+    @property
+    def labels_name(self) -> str:
+        """Return the selected labels region name."""
+        return self.binding.labels_name
+
+    @property
+    def n_obs(self) -> int:
+        """Return the number of selected-region centers."""
+        return self.binding.n_obs
+
+    @property
+    def reused(self) -> bool:
+        """Return whether an existing valid cache was reused."""
+        return self.cache_update is None
 
 
 def _readonly_array(value: object, *, dtype: np.dtype | type[np.generic]) -> np.ndarray:
     array = np.array(value, dtype=dtype, copy=True)
     array.flags.writeable = False
     return array
+
+
+def _normalize_canonical_centers(
+    value: object,
+    binding: CanonicalRegionBinding,
+    source_signature: CanonicalSourceSignature,
+    *,
+    owner: str,
+) -> NDArray[np.float64]:
+    if not isinstance(source_signature, CanonicalSourceSignature):
+        raise TypeError(f"{owner} source signature must be a CanonicalSourceSignature.")
+    if source_signature.labels_name != binding.labels_name:
+        raise ValueError(f"{owner} source signature labels name does not match.")
+    try:
+        centers = np.asarray(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{owner} centers must be a dense numeric array.") from exc
+    if centers.shape != (binding.n_obs, 3):
+        raise ValueError(f"{owner} centers must have shape (n_instances, 3) in z, y, x order.")
+    if centers.dtype.kind not in "fiu":
+        raise ValueError(f"{owner} centers must have a numeric dtype.")
+    normalized = _readonly_array(centers, dtype=np.float64)
+    if not np.isfinite(normalized).all():
+        raise ValueError(f"{owner} centers must contain only finite values.")
+    if source_signature.dims == ("y", "x") and np.any(normalized[:, 0] != 0.0):
+        raise ValueError(f"{owner} centers for a 2D labels source must use z=0.")
+    return normalized
 
 
 def _readonly_integer_ids(value: object) -> np.ndarray:
