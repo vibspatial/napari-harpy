@@ -18,18 +18,18 @@ from napari_harpy.core.spatial_query import (
     SPATIAL_COORDINATES_KEY,
     CanonicalCacheMismatch,
     CanonicalCacheState,
-    CanonicalInstallAction,
+    CanonicalCacheUpdateAction,
     CanonicalMismatchCode,
     CanonicalRegionMetadata,
     CanonicalSourceSignature,
-    build_canonical_installation_payload,
+    apply_canonical_cache_update,
+    build_canonical_cache_update_payload,
     build_canonical_metadata,
     build_canonical_region_binding,
     build_canonical_source_signature,
     build_instance_set_digest,
     canonical_metadata_to_storage,
     inspect_canonical_cache,
-    install_canonical_cache,
     parse_canonical_metadata,
 )
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata
@@ -208,7 +208,7 @@ def test_inspector_classifies_all_regions_invalid_states(
     mutation,
     expected_code: CanonicalMismatchCode,
 ) -> None:
-    _install_selected(sdata_blobs, "blobs_labels")
+    _apply_selected_cache_update(sdata_blobs, "blobs_labels")
     table = sdata_blobs.tables["table"]
     storage = table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]
     mutation(table, storage)
@@ -221,7 +221,7 @@ def test_inspector_classifies_all_regions_invalid_states(
 
 
 def test_inspector_classifies_partial_valid_and_region_staleness(sdata_blobs: SpatialData) -> None:
-    _install_selected(sdata_blobs, "blobs_labels")
+    _apply_selected_cache_update(sdata_blobs, "blobs_labels")
     table = sdata_blobs.tables["table"]
     baseline_storage = deepcopy(table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY])
     baseline_matrix = table.obsm[CANONICAL_OBSM_KEY].copy()
@@ -269,13 +269,13 @@ def test_inspector_classifies_partial_valid_and_region_staleness(sdata_blobs: Sp
         assert _codes(coordinates_stale) == [CanonicalMismatchCode.REGION_COORDINATES_INVALID]
 
 
-def test_installer_creates_then_refreshes_and_reports_changed_paths(sdata_blobs: SpatialData) -> None:
-    first = _install_selected(sdata_blobs, "blobs_labels", offset=0.0)
-    second = _install_selected(sdata_blobs, "blobs_labels", offset=100.0)
+def test_cache_update_creates_then_refreshes_and_reports_changed_paths(sdata_blobs: SpatialData) -> None:
+    first = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=0.0)
+    second = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=100.0)
     centers = sdata_blobs.tables["table"].obsm[CANONICAL_OBSM_KEY]
 
-    assert first.action is CanonicalInstallAction.CREATE
-    assert second.action is CanonicalInstallAction.REFRESH
+    assert first.action is CanonicalCacheUpdateAction.CREATE
+    assert second.action is CanonicalCacheUpdateAction.REFRESH
     assert first.changed_paths == CANONICAL_CHANGED_PATHS
     assert centers.shape == (sdata_blobs.tables["table"].n_obs, 3)
     assert np.all(centers[:, 0] == 0.0)
@@ -291,7 +291,7 @@ def test_payload_rejects_nonzero_z_for_2d_source(sdata_blobs: SpatialData) -> No
     centers[:, 0] = 1.0
 
     with pytest.raises(ValueError, match="z=0"):
-        build_canonical_installation_payload(
+        build_canonical_cache_update_payload(
             table_name="table",
             binding=report.binding,
             centers=centers,
@@ -299,20 +299,20 @@ def test_payload_rejects_nonzero_z_for_2d_source(sdata_blobs: SpatialData) -> No
         )
 
 
-def test_installer_extends_then_refreshes_and_preserves_other_region_byte_for_byte(
+def test_cache_update_extends_then_refreshes_and_preserves_other_region_byte_for_byte(
     sdata_blobs: SpatialData,
 ) -> None:
     _make_two_region_table(sdata_blobs)
-    first = _install_selected(sdata_blobs, "blobs_labels", offset=10.0)
+    first = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=10.0)
     table = sdata_blobs.tables["table"]
     first_rows = np.flatnonzero(np.asarray(table.obs["region"] == "blobs_labels"))
     first_values = table.obsm[CANONICAL_OBSM_KEY][first_rows].copy()
     first_metadata = deepcopy(table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_labels"])
 
-    second = _install_selected(sdata_blobs, "blobs_multiscale_labels", offset=100.0)
+    second = _apply_selected_cache_update(sdata_blobs, "blobs_multiscale_labels", offset=100.0)
 
-    assert first.action is CanonicalInstallAction.CREATE
-    assert second.action is CanonicalInstallAction.EXTEND
+    assert first.action is CanonicalCacheUpdateAction.CREATE
+    assert second.action is CanonicalCacheUpdateAction.EXTEND
     np.testing.assert_array_equal(table.obsm[CANONICAL_OBSM_KEY][first_rows], first_values)
     assert table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_labels"] == first_metadata
 
@@ -322,9 +322,9 @@ def test_installer_extends_then_refreshes_and_preserves_other_region_byte_for_by
         table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]["blobs_multiscale_labels"]
     )
 
-    refreshed = _install_selected(sdata_blobs, "blobs_labels", offset=200.0)
+    refreshed = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=200.0)
 
-    assert refreshed.action is CanonicalInstallAction.REFRESH
+    assert refreshed.action is CanonicalCacheUpdateAction.REFRESH
     assert not np.array_equal(table.obsm[CANONICAL_OBSM_KEY][first_rows], first_values)
     np.testing.assert_array_equal(table.obsm[CANONICAL_OBSM_KEY][second_rows], second_values)
     assert (
@@ -333,43 +333,43 @@ def test_installer_extends_then_refreshes_and_preserves_other_region_byte_for_by
     )
 
 
-def test_all_regions_invalid_install_rebuilds_selected_region_only(sdata_blobs: SpatialData) -> None:
+def test_all_regions_invalid_cache_update_rebuilds_selected_region_only(sdata_blobs: SpatialData) -> None:
     _make_two_region_table(sdata_blobs)
-    _install_selected(sdata_blobs, "blobs_labels")
-    _install_selected(sdata_blobs, "blobs_multiscale_labels")
+    _apply_selected_cache_update(sdata_blobs, "blobs_labels")
+    _apply_selected_cache_update(sdata_blobs, "blobs_multiscale_labels")
     table = sdata_blobs.tables["table"]
     table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["axes"] = ["y", "x"]
 
-    result = _install_selected(sdata_blobs, "blobs_labels", offset=200.0)
+    result = _apply_selected_cache_update(sdata_blobs, "blobs_labels", offset=200.0)
 
     regions = table.uns[SPATIAL_COORDINATES_KEY][CANONICAL_OBSM_KEY]["regions"]
     other_rows = np.flatnonzero(np.asarray(table.obs["region"] == "blobs_multiscale_labels"))
-    assert result.action is CanonicalInstallAction.REBUILD
+    assert result.action is CanonicalCacheUpdateAction.REBUILD
     assert set(regions) == {"blobs_labels"}
     assert np.isnan(table.obsm[CANONICAL_OBSM_KEY][other_rows]).all()
 
 
-def test_installer_rejects_changed_table_without_mutation(sdata_blobs: SpatialData) -> None:
+def test_cache_update_rejects_changed_table_without_mutation(sdata_blobs: SpatialData) -> None:
     report = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
     payload = _payload_from_report(report, "table")
     table = sdata_blobs.tables["table"]
     table.obs.iloc[0, table.obs.columns.get_loc("instance_id")] = 999
 
     with pytest.raises(ValueError, match="changed"):
-        install_canonical_cache(sdata_blobs, payload)
+        apply_canonical_cache_update(sdata_blobs, payload)
 
     assert CANONICAL_OBSM_KEY not in table.obsm
     assert SPATIAL_COORDINATES_KEY not in table.uns
 
 
-def test_installer_rolls_back_both_paths_when_second_assignment_fails(sdata_blobs: SpatialData) -> None:
+def test_cache_update_rolls_back_both_paths_when_second_assignment_fails(sdata_blobs: SpatialData) -> None:
     report = inspect_canonical_cache(sdata_blobs, table_name="table", labels_name="blobs_labels")
     payload = _payload_from_report(report, "table")
     table = sdata_blobs.tables["table"]
     table.uns = _FailOnceSpatialCoordinatesDict(table.uns)
 
     with pytest.raises(RuntimeError, match="injected assignment failure"):
-        install_canonical_cache(sdata_blobs, payload)
+        apply_canonical_cache_update(sdata_blobs, payload)
 
     assert CANONICAL_OBSM_KEY not in table.obsm
     assert SPATIAL_COORDINATES_KEY not in table.uns
@@ -439,7 +439,7 @@ def _metadata_for(labels_name: str, instance_ids: list[int]):
 def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
     centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
     centers[:, 1:] = np.arange(report.binding.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
-    return build_canonical_installation_payload(
+    return build_canonical_cache_update_payload(
         table_name=table_name,
         binding=report.binding,
         centers=centers,
@@ -447,9 +447,9 @@ def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
     )
 
 
-def _install_selected(sdata: SpatialData, labels_name: str, *, offset: float = 0.0):
+def _apply_selected_cache_update(sdata: SpatialData, labels_name: str, *, offset: float = 0.0):
     report = inspect_canonical_cache(sdata, table_name="table", labels_name=labels_name)
-    return install_canonical_cache(sdata, _payload_from_report(report, "table", offset=offset))
+    return apply_canonical_cache_update(sdata, _payload_from_report(report, "table", offset=offset))
 
 
 def _make_two_region_table(sdata: SpatialData) -> None:

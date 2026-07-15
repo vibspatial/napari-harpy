@@ -288,8 +288,8 @@ the same row order as AnnData.
 If a requested table instance has no pixels in the selected labels element, its
 aggregate count is zero and its temporary center is non-finite. This is a
 table/labels binding inconsistency. The adapter validates the complete requested
-result before installation and reports the missing-ID count plus a bounded
-preview of IDs. Cache installation and the spatial query fail; a non-finite
+result before the cache update and reports the missing-ID count plus a bounded
+preview of IDs. The cache update and spatial query fail; a non-finite
 center for a covered region row is never committed.
 
 Labels values that are absent from the selected table region are intentionally
@@ -323,7 +323,7 @@ centers still scans all scale0 chunks lazily.
 - reloading the current table state from zarr with dirty-state protection;
 - undo of the most recently applied spatial annotation while its source
   binding remains valid;
-- cross-widget refresh after cache installation, annotation mutation, write,
+- cross-widget refresh after a cache update, annotation mutation, write,
   reload, or Shapes element write.
 
 ### Non-goals
@@ -573,7 +573,7 @@ The cache inspector returns one of these typed states for the selected region:
 Run behavior:
 
 - valid: reuse immediately;
-- absent or partial: calculate the selected region, install it atomically, then
+- absent or partial: calculate the selected region, apply the cache update atomically, then
   query;
 - stale: recalculate and atomically replace only the selected region, then
   query;
@@ -587,7 +587,7 @@ Run behavior:
 The widget shows the current state before Run, including First query will
 calculate centroids when appropriate.
 
-### Atomic cache installation
+### Atomic cache update
 
 Center calculation occurs off the Qt main thread against immutable request
 inputs. The worker returns a compact result keyed by instance ID; it never
@@ -595,10 +595,10 @@ mutates AnnData.
 
 After worker completion, the main-thread controller revalidates the request,
 table identity, linkage, row coverage, labels structural signature, and cache
-generation. It then installs or updates the matrix and metadata as one
+generation. It then applies the matrix and metadata update as one
 all-or-nothing table mutation.
 
-If validation or installation fails:
+If validation or the cache update fails:
 
 - restore the complete prior obsm value and metadata registry;
 - emit no accepted mutation event;
@@ -729,7 +729,7 @@ On activation:
    status, and report completion.
 
 If calculation is cancelled, fails, produces a missing/non-finite requested ID,
-or becomes stale before installation, the previous obsm/uns state is preserved
+or becomes stale before the cache update, the previous obsm/uns state is preserved
 exactly, no mutation event is emitted, and dirty state is unchanged. An
 all-regions invalid matrix/metadata state follows the existing rebuild rules,
 but is not replaced until a complete valid calculation result is available.
@@ -751,11 +751,11 @@ but is not replaced until a complete valid calculation result is available.
 6. The worker evaluates the transformed annotation against either the validated
    cached coordinates or the newly calculated coordinates.
 7. The worker returns instance IDs, diagnostics, and, when needed, a cache
-   installation payload. It never mutates SpatialData, AnnData, or Qt state.
+   cache-update payload. It never mutates SpatialData, AnnData, or Qt state.
 8. The controller revalidates all captured identities and structural
-   signatures. If a cache payload exists, installation re-resolves the selected
+   signatures. If a cache payload exists, applying the update re-resolves the selected
    rows and calculates its instance-set digest a second time.
-9. If that signature still matches, install the payload atomically on the main
+9. If that signature still matches, apply the cache-update payload atomically on the main
    thread and mark the table dirty before accepting the query result; otherwise
    discard it without mutation.
 10. Resolve returned IDs to current table rows using region_key and
@@ -764,8 +764,8 @@ but is not replaced until a complete valid calculation result is available.
     annotation and make no annotation-column changes.
 12. Otherwise open the Apply Spatial Annotation dialog.
 
-Cancellation before cache installation makes no changes. Cancellation of the
-Apply dialog after a newly calculated cache was installed leaves that cache in
+Cancellation before the cache update makes no changes. Cancellation of the
+Apply dialog after a newly calculated cache was applied leaves that cache in
 memory and leaves the table dirty.
 
 ### Apply Spatial Annotation dialog
@@ -795,7 +795,7 @@ non-missing values will be replaced, the dialog shows a prominent mandatory
 warning and uses explicit action text such as Overwrite 12 and apply to 35.
 
 Cancel closes the dialog without creating or changing the annotation column.
-It does not undo a canonical-center cache installed earlier in the Run flow.
+It does not undo a canonical-center cache updated earlier in the Run flow.
 
 Immediately before Apply, revalidate:
 
@@ -923,7 +923,7 @@ The arrays are compact and eager only after Dask completes. They contain one
 row per table instance, not one row per label pixel.
 
 The worker must not receive Qt or napari layer objects and must not mutate table
-state. Main-thread installation is a separate domain operation.
+state. Applying the cache update on the main thread is a separate domain operation.
 
 ### Performance and cancellation
 
@@ -934,7 +934,7 @@ state. Main-thread installation is a separate domain operation.
 - Bound local Dask concurrency against a documented memory budget.
 - Use scheduler diagnostics for progress where feasible; otherwise show
   indeterminate progress with the current phase.
-- Cancellation immediately prevents cache installation, result dialogs, and
+- Cancellation immediately prevents the cache update, result dialogs, and
   table mutation. Already scheduled local chunk reads may finish in the
   background; the UI must not claim hard I/O cancellation.
 - Errors become actionable UI feedback and structured logs, with controls
@@ -970,7 +970,7 @@ Use typed, UI-independent contracts, for example:
         generation
 
 The exact Python types may differ. The separation is normative: center
-calculation and geometry querying return immutable data; cache installation,
+calculation and geometry querying return immutable data; cache updates,
 row preparation, and annotation mutation are distinct operations.
 
 ### Query algorithm
@@ -1042,11 +1042,11 @@ identities/structural signatures. Discard all worker output if, while it runs:
 - a relevant Shapes/labels transformation changes;
 - the labels element is replaced or its structural signature changes;
 - the table is reloaded/replaced or linkage/row coverage changes;
-- spatial_canonical is installed, rebuilt, or modified by another operation;
+- spatial_canonical is created, rebuilt, or modified by another operation;
 - a newer query starts;
 - the widget closes.
 
-For simplicity and predictable side effects, a stale Run installs neither its
+For simplicity and predictable side effects, a stale Run applies neither its
 cache payload nor its query result, even when center calculation itself would
 still be reusable. A later Run may recalculate.
 
@@ -1130,11 +1130,11 @@ dirty truth.
 | Query using valid centers | No | Unchanged |
 | Cancel center calculation | No accepted mutation | Unchanged |
 | Center calculation fails | No accepted mutation | Unchanged |
-| Install/extend/refresh/rebuild centers | obsm and uns | Dirty |
+| Create/extend/refresh/rebuild centers | obsm and uns | Dirty |
 | Successful Recalculate centroids | selected-region obsm and uns | Dirty |
 | Failed/cancelled Recalculate centroids | No accepted mutation | Unchanged |
-| Query returns no matching centers after cache install | No further mutation | Remains dirty |
-| Cancel Apply after cache install | No further mutation | Remains dirty |
+| Query returns no matching centers after cache update | No further mutation | Remains dirty |
+| Cancel Apply after cache update | No further mutation | Remains dirty |
 | Apply annotation is a no-op | No | Unchanged from current state |
 | Apply creates/changes annotation column | obs | Dirty |
 | Undo annotation | obs | Clean only if complete table equals persisted baseline |
@@ -1146,7 +1146,7 @@ dirty truth.
 
 Dirty status belongs to the entire table. Changes from Object Classification,
 canonical-center generation, Spatial Query annotation, and other widgets
-coexist and are written together. Installing or updating
+coexist and are written together. Creating or updating
 obsm["spatial_canonical"] and its required metadata is an accepted AnnData table
 mutation and therefore always records both component paths as dirty. Merely
 computing a worker result, reusing an existing cache, or rejecting a result does
@@ -1234,7 +1234,7 @@ After success:
 - clear dirty state;
 - show the source path and outcome.
 
-Late worker results created before reload must never install a cache, open a
+Late worker results created before reload must never update a cache, open a
 dialog, or mutate the reloaded table.
 
 ### Leaving a dirty dataset
@@ -1321,7 +1321,7 @@ one large module per concern:
                 spatial_canonical metadata schema/parser/validator
                 cache-state inspection and coverage/source fingerprints
                 RasterAggregator adapter
-                atomic cache installation and rollback payloads
+                atomic cache updates and rollback support
 
             engine.py
                 Shapes validation and union
@@ -1353,7 +1353,7 @@ The corresponding widget package is:
                 binding/cache validation
                 worker lifecycle and generations
                 stale-result handling
-                cache install, apply, and undo orchestration
+                cache update, apply, and undo orchestration
 
             widget.py
                 selectors, cache status, progress, persistence actions
@@ -1418,7 +1418,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - instance-set digest and finite-coordinate validation;
 - a valid Run calculates one selected-region digest and never hashes unrelated
   registered regions;
-- installation rechecks the selected-region digest and hashes other regions
+- applying a cache update rechecks the selected-region digest and hashes other regions
   only when deciding whether to preserve them;
 - multi-region incremental fill preserves other valid regions;
 - an all-regions mismatch rebuilds the managed matrix and metadata only after recalculation
@@ -1427,7 +1427,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   and preserves all other valid regions;
 - failed, cancelled, or stale forced recalculation preserves the prior pair
   exactly;
-- cache installation rollback restores matrix/metadata exactly;
+- cache-update rollback restores matrix/metadata exactly;
 - cache create/extend/refresh/rebuild marks shared dirty once;
 - cache parser never mutates during inspection.
 
@@ -1444,7 +1444,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - absent label ID, duplicate result, NaN, and inf rejected;
 - no NumPy/full-array labels fallback;
 - only scale0 is read;
-- cancellation/stale completion cannot install;
+- cancellation/stale completion cannot update the cache;
 - memory and concurrency remain within the declared budget.
 
 ### Geometry/query tests
@@ -1485,13 +1485,13 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 ### Controller and async tests
 
 - valid cache follows query-only phase;
-- absent/partial/stale cache follows calculate-install-query phases;
+- absent/partial/stale cache follows calculate-update-query phases;
 - worker never mutates AnnData or Qt;
-- cache payload installs only after main-thread revalidation;
+- cache-update payload is applied only after main-thread revalidation;
 - result accepted only for unchanged request;
 - every selection/source-signature invalidation drops late results;
 - older run cannot supersede newer run;
-- cancellation prevents installation/dialog/mutation;
+- cancellation prevents cache update/dialog/mutation;
 - reload freezes and invalidates pending work;
 - worker errors restore usable controls and give feedback;
 - cleanup disconnects workers/signals when widget closes.
@@ -1512,7 +1512,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - live conflict recount and value validation;
 - mandatory overwrite warning and explicit action text;
 - no-result flow does not change annotation column;
-- cancel after cache install leaves cache dirty state visible;
+- cancel after cache update leaves cache dirty state visible;
 - apply/undo states and summaries;
 - shared dirty indicator across widgets;
 - write enabled only for backed dirty table;
@@ -1522,7 +1522,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 
 ### Backed-zarr integration tests
 
-- first Run calculates centers lazily and installs them in memory;
+- first Run calculates centers lazily and applies the cache update in memory;
 - first Run reads scale0 but not lower-resolution levels;
 - second Run with valid cache reads no label chunks;
 - cache is not on disk until Write Table State;
@@ -1572,7 +1572,7 @@ Log structured diagnostic context for:
 - center calculation start/cancel/stale-drop/success/failure;
 - source scale0 dimensions, shape, dtype, chunks, requested instance count,
   Dask task count, elapsed time, and peak/concurrency diagnostics;
-- cache installation action, covered region/count, schema/algorithm version;
+- cache-update action, covered region/count, schema/algorithm version;
 - query start/cancel/stale-drop/success/failure;
 - coordinate system, transform identities, annotation bounds, eligible and
   bounding-box candidate counts, matched count, and elapsed time;
@@ -1596,7 +1596,7 @@ or read labels chunks.
 Deliverables:
 
 - typed cache state, mismatch report, metadata, source signature,
-  selected-region binding, installation payload, and installation-result
+  selected-region binding, cache-update payload, and cache-update-result
   contracts;
 - spatial_coordinates/spatial_canonical schema version 1 using values supported
   by AnnData's zarr encoding;
@@ -1617,7 +1617,7 @@ Deliverables:
   registered-region coordinates, 2D z=0.0, and multi-region coverage;
 - deterministic absent, partial, valid, stale, and invalid cache-state
   classification with structured mismatch reasons;
-- synthetic installation payload construction and an atomic installer that:
+- synthetic cache-update payload construction and an atomic update operation that:
   - creates an n_obs by 3 NaN-initialized matrix when absent;
   - fills or replaces only the selected region's current row positions;
   - preserves every other still-valid region and its metadata;
@@ -1625,7 +1625,7 @@ Deliverables:
     entries after an all-regions matrix/top-level mismatch;
   - restores the complete previous obsm/uns pair if validation or assignment
     fails;
-- installation results that report the exact changed component paths
+- cache-update results that report the exact changed component paths
   obsm/spatial_canonical and
   uns/spatial_coordinates/spatial_canonical for later shared dirty-state
   integration;
@@ -1635,15 +1635,15 @@ Deliverables:
 #### Slice 1a typed API
 
 The public contracts live in `core/spatial_query/models.py`, and the operations
-that build, parse, inspect, and install them live in
+that build, parse, inspect, and apply them live in
 `core/spatial_query/canonical.py`. Stable consumers import the intentional
 exports from `napari_harpy.core.spatial_query` rather than either implementation
 module directly.
 
-Use string enums for cache state, installation action, and mismatch code:
+Use string enums for cache state, cache-update action, and mismatch code:
 
     CanonicalCacheState = absent | partial | valid | stale | invalid
-    CanonicalInstallAction = create | extend | refresh | rebuild
+    CanonicalCacheUpdateAction = create | extend | refresh | rebuild
     CanonicalMismatchCode:
         matrix_without_metadata
         metadata_without_matrix
@@ -1691,7 +1691,7 @@ Ordinary inspection does not calculate live source signatures, rebuild region
 bindings, or calculate instance-set digests for every other registered region. A stale but
 structurally interpretable entry for another region therefore does not downgrade
 an otherwise valid selected region and is evaluated only if a later
-installation proposes to preserve it. A malformed region entry discovered by
+cache update proposes to preserve it. A malformed region entry discovered by
 the strict metadata parser can still make the shared registry `invalid` for
 `all_regions`. Cache-report mismatch tuples are ordered deterministically with
 all-regions reasons first and selected-region reasons second, preserving
@@ -1744,18 +1744,18 @@ The immutable value contracts are conceptually:
         binding: CanonicalRegionBinding
         mismatches: tuple[CanonicalCacheMismatch, ...]
 
-    CanonicalInstallationPayload:
+    CanonicalCacheUpdatePayload:
         table_name
         binding: CanonicalRegionBinding
         centers with shape (n_instances, 3) in z, y, x order
         source_signature
 
-    CanonicalInstallationResult:
+    CanonicalCacheUpdateResult:
         table_name
         labels_name
-        action: CanonicalInstallAction
+        action: CanonicalCacheUpdateAction
         previous_state: CanonicalCacheState
-        n_installed_rows
+        n_updated_rows
         mismatches: tuple[CanonicalCacheMismatch, ...]
         changed_paths
 
@@ -1800,7 +1800,7 @@ belong to the metadata builder and parser.
 
 `CanonicalCacheReport` is both the non-mutating inspector result and the typed
 mismatch report; do not add a second inspection-result wrapper with the same
-information. `CanonicalRegionBinding` arrays and installation-payload arrays
+information. `CanonicalRegionBinding` arrays and cache-update-payload arrays
 are normalized eager NumPy arrays and are made read-only at the contract
 boundary. The metadata regions mapping is defensively copied and exposed as a
 read-only mapping rather than retaining a caller-owned mutable dictionary.
@@ -1936,20 +1936,20 @@ The normal valid-cache path is:
 4. when valid, reuse the selected rows of `spatial_canonical` and run the query
    without another digest calculation or any labels read.
 
-The calculation-and-installation path calculates the selected-region digest
+The calculation-and-cache-update path calculates the selected-region digest
 twice:
 
 1. initial inspection calculates it and captures the selected-region binding
    in the immutable calculation request;
-2. immediately before installation, the installer resolves the current
+2. immediately before applying the cache update, the update operation resolves the current
    selected-region bindings and calculates it again;
 3. a changed instance set rejects the stale payload without mutation;
-4. an unchanged set lets the installer map calculated centers by instance ID
-   onto the current row positions and install atomically.
+4. an unchanged set lets the update operation map calculated centers by instance ID
+   onto the current row positions and apply the update atomically.
 
 Other registered regions are not hashed during an ordinary selected-region
 query. When an extend or region-local refresh proposes to preserve existing
-other-region coordinates, the installer validates the source signature, table
+other-region coordinates, the update operation validates the source signature, table
 signature, digest, and finite coverage of each preservation candidate at that
 time. Regions that are not fully validated are dropped from the candidate
 metadata. A conservative selected-region-only rebuild need not hash regions it
@@ -1962,7 +1962,7 @@ for a later Run: Run performs its own fresh selected-region inspection. If an
 annotation result remains open before Apply, apply-time table/cache
 revalidation performs another selected-region digest unless the operation has
 an equivalent authoritative fresh signature from the same guarded generation.
-No status, Run, installation, or Apply path hashes every table region by
+No status, Run, cache-update, or Apply path hashes every table region by
 default.
 
 Schema-v1 constants are not configurable dataclass fields. `obsm_key`, axes,
@@ -1996,11 +1996,11 @@ The public operation surface is:
     inspect_canonical_cache(sdata, *, table_name, labels_name)
         -> CanonicalCacheReport
 
-    build_canonical_installation_payload(...)
-        -> CanonicalInstallationPayload
+    build_canonical_cache_update_payload(...)
+        -> CanonicalCacheUpdatePayload
 
-    install_canonical_cache(sdata, payload)
-        -> CanonicalInstallationResult
+    apply_canonical_cache_update(sdata, payload)
+        -> CanonicalCacheUpdateResult
 
 The exact builder keyword layout may evolve during implementation, but these
 operation boundaries and return contracts are stable. Parsing and inspection
@@ -2008,31 +2008,32 @@ must not mutate AnnData, SpatialData, or stored metadata. In particular, the
 inspector must not call an existing helper through a code path that normalizes
 SpatialData table attrs in place.
 
-`CanonicalInstallationPayload` deliberately carries the calculation-time
+`CanonicalCacheUpdatePayload` deliberately carries the calculation-time
 `CanonicalRegionBinding`, whose instance IDs are authoritative but whose row
-positions are not. Immediately before installation, the installer rebuilds the
+positions are not. Immediately before applying the cache update, the update
+operation rebuilds the
 current region binding, verifies the source signature and binding identity, and
 maps the payload binding's instance IDs onto current row positions. A normal
 AnnData row reorder can therefore complete safely. A changed instance set
 rejects the payload; a same-set row reassignment is remapped safely during
-installation but requires semantic invalidation to prevent reuse of an older
-already-installed cache.
+cache update but requires semantic invalidation to prevent reuse of an older
+cache.
 
-The installer derives its action from a fresh inspection rather than trusting
+The cache-update operation derives its action from a fresh inspection rather than trusting
 the state observed before calculation:
 
 - absent produces create;
 - partial produces extend;
 - stale produces refresh;
 - invalid produces rebuild;
-- valid is reused by the caller and normally does not reach installation;
+- valid is reused by the caller and normally does not reach the cache-update operation;
   forced recalculation of a valid region produces refresh.
 
-Before the first assignment, the installer constructs and validates the
+Before the first assignment, the cache-update operation constructs and validates the
 complete candidate matrix and metadata registry in local values. An internal,
 non-public pair snapshot records whether each managed path existed and its
 complete prior value. If either assignment fails, rollback restores both exact
-prior path states, including absence. Only a successful installation returns
+prior path states, including absence. Only a successful cache update returns
 the two changed component paths.
 
 Reuse existing core types only where their contracts match. In particular,
@@ -2061,7 +2062,7 @@ Exit criteria:
 - NaN occurs only in rows for regions without valid coverage metadata;
 - region-local refresh preserves other valid regions, while an all-regions rebuild
   never preserves metadata that no longer describes the shared matrix;
-- no installation failure leaves partially replaced obsm/uns state;
+- no cache-update failure leaves partially replaced obsm/uns state;
 - the structural-validation limitation for undetectable same-signature pixel
   edits is documented;
 - no SpatialData-level Harpy revision attributes or affine snapshots are
@@ -2102,14 +2103,14 @@ Deliverables:
       calculate_canonical_centers(
           sdata: SpatialData,
           report: CanonicalCacheReport,
-      ) -> CanonicalInstallationPayload
+      ) -> CanonicalCacheUpdatePayload
 
   The operation consumes the calculation-time source signature and selected-region
   binding already captured by `inspect_canonical_cache()`. It calculates and
   validates centers for exactly that binding, then returns the existing Slice 1a
-  installation payload carrying the same calculation-time identity. It does not
-  mutate the table or install the cache; installation remains the responsibility
-  of `install_canonical_cache()`;
+  cache-update payload carrying the same calculation-time identity. It does not
+  mutate the table or update the cache; applying the update remains the responsibility
+  of `apply_canonical_cache_update()`;
 - an immutable canonical-centers result with this concrete shape:
 
       @dataclass(frozen=True)
@@ -2121,7 +2122,7 @@ Deliverables:
               repr=False,
               compare=False,
           )
-          installation: CanonicalInstallationResult | None
+          cache_update: CanonicalCacheUpdateResult | None
 
           @property
           def labels_name(self) -> str:
@@ -2133,7 +2134,7 @@ Deliverables:
 
           @property
           def reused(self) -> bool:
-              return self.installation is None
+              return self.cache_update is None
 
   `centers` is a read-only float64 array with shape `(binding.n_obs, 3)` and
   fixed z, y, x column order. Row `i` belongs to
@@ -2153,15 +2154,15 @@ Deliverables:
 
   The operation:
   - reuses a structurally valid selected-region cache without reading labels;
-  - calculates and installs spatial_canonical plus metadata when absent;
+  - calculates spatial_canonical plus metadata and applies the cache update when absent;
   - accepts an explicit forced-recalculation mode that bypasses valid reuse;
   - treats a selected region's instance-set digest mismatch as stale and
     recalculates that complete region;
-  - delegates every table mutation and rollback to the Slice 1a installer;
+  - delegates every table mutation and rollback to the Slice 1a cache-update operation;
   - returns selected-region centers rather than the complete table matrix;
-  - sets `installation` to `None` when it reuses a valid cache, otherwise to
-    the `CanonicalInstallationResult` returned by `install_canonical_cache()`.
-    Installation action, previous state, mismatches, and changed paths are not
+  - sets `cache_update` to `None` when it reuses a valid cache, otherwise to
+    the `CanonicalCacheUpdateResult` returned by `apply_canonical_cache_update()`.
+    Cache-update action, previous state, mismatches, and changed paths are not
     duplicated on `CanonicalCentersResult`;
 - representative zarr-backed Dask fixtures and integration tests, including
   labels spanning chunks and requested IDs absent from the raster.
@@ -2171,7 +2172,7 @@ Exit criteria:
 - one UI-independent blocking operation can ensure valid canonical centers for
   a selected labels/table region;
 - its forced mode recalculates a valid selected-region cache instead of reusing
-  it and retains Slice 1a's validation and atomic-installation guarantees;
+  it and retains Slice 1a's validation and atomic cache-update guarantees;
 - a valid cache is reused with zero labels-chunk reads;
 - missing or mismatched cache data is calculated from Dask-backed scale0
   without loading the labels raster into RAM;
@@ -2184,7 +2185,7 @@ Exit criteria:
 - instance IDs outside the labels dtype range fail before Dask work;
 - count precision is verified beyond the float32 exact-integer boundary without
   requiring a production-sized raster fixture;
-- no calculation failure reaches the Slice 1a installer or changes obsm/uns;
+- no calculation failure reaches the Slice 1a cache-update operation or changes obsm/uns;
 - domain modules have no Qt dependency.
 
 ### Slice 2: Canonical calculation performance and async hardening
@@ -2221,7 +2222,7 @@ Deliverables:
 
 Exit criteria:
 
-- successful install is dirty and round-trips through zarr;
+- a successful cache update is dirty and round-trips through zarr;
 - a centroid-only write touches only the two canonical element paths and never
   serializes the complete AnnData table;
 - the table is not marked clean when either half of the canonical pair fails to
@@ -2295,10 +2296,10 @@ Deliverables:
 
 - worker orchestration with generation tokens and two execution phases;
 - standalone Recalculate centroids orchestration through the forced ensure
-  mode, ending after cache installation rather than continuing into query or
+  mode, ending after the cache update rather than continuing into query or
   annotation review;
 - progress, cancellation, cleanup, and error routing;
-- main-thread cache installation/revalidation;
+- main-thread cache update/revalidation;
 - no-result outcome;
 - Apply dialog with live counts and mandatory overwrite warning;
 - main-thread annotation apply and undo UI;
@@ -2307,10 +2308,10 @@ Deliverables:
 Exit criteria:
 
 - napari remains responsive during global aggregation;
-- cancel/stale/error paths cannot install, open late dialogs, or annotate;
-- successful Recalculate centroids installs only the refreshed cache, marks the
+- cancel/stale/error paths cannot update the cache, open late dialogs, or annotate;
+- successful Recalculate centroids applies only the refreshed cache update, marks the
   shared table dirty, and opens no query/result dialog;
-- cache installation and annotation application are visibly distinct state
+- cache update and annotation application are visibly distinct state
   changes;
 - users always see affected and overwrite counts before annotation mutation.
 
@@ -2384,11 +2385,11 @@ Completion additionally requires:
 - query membership is canonical-center containment, never silently pixel
   overlap;
 - no annotation mutation occurs before explicit Apply;
-- cache installation is atomic and visibly marks the shared table dirty;
-- installing or refreshing spatial_canonical records both its obsm path and
-  metadata path as dirty, while calculation without installation does not;
+- cache update is atomic and visibly marks the shared table dirty;
+- creating or refreshing spatial_canonical records both its obsm path and
+  metadata path as dirty, while calculation without a cache update does not;
 - overwrite is never silent;
-- no stale/cancelled worker installs data, opens a dialog, or mutates a table;
+- no stale/cancelled worker updates the cache, opens a dialog, or mutates a table;
 - spatial instance identity always uses region_key and instance_key; obs_names
   do not participate in canonical cache identity;
 - table rows with no source label are rejected as binding inconsistencies;
@@ -2418,7 +2419,7 @@ On Run:
       reuse centers             calculate centers
             |                 lazily from scale0
             |                         |
-            |                 atomically install
+            |                 atomically apply cache update
             |                   and mark dirty
             +------------+------------+
                          |

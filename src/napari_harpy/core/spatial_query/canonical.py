@@ -12,9 +12,9 @@ from napari_harpy.core.spatial_query.models import (
     CanonicalCacheMismatch,
     CanonicalCacheReport,
     CanonicalCacheState,
-    CanonicalInstallAction,
-    CanonicalInstallationPayload,
-    CanonicalInstallationResult,
+    CanonicalCacheUpdateAction,
+    CanonicalCacheUpdatePayload,
+    CanonicalCacheUpdateResult,
     CanonicalMetadata,
     CanonicalMismatchCode,
     CanonicalRegionBinding,
@@ -377,15 +377,15 @@ def inspect_canonical_cache(
     )
 
 
-def build_canonical_installation_payload(
+def build_canonical_cache_update_payload(
     *,
     table_name: str,
     binding: CanonicalRegionBinding,
     centers: object,
     source_signature: CanonicalSourceSignature,
-) -> CanonicalInstallationPayload:
-    """Validate calculated centers and capture them in an immutable payload."""
-    return CanonicalInstallationPayload(
+) -> CanonicalCacheUpdatePayload:
+    """Validate calculated centers and capture an immutable cache-update payload."""
+    return CanonicalCacheUpdatePayload(
         table_name=table_name,
         binding=binding,
         centers=centers,
@@ -393,8 +393,11 @@ def build_canonical_installation_payload(
     )
 
 
-def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPayload) -> CanonicalInstallationResult:
-    """Atomically install already-calculated coordinates after fresh validation.
+def apply_canonical_cache_update(
+    sdata: SpatialData,
+    payload: CanonicalCacheUpdatePayload,
+) -> CanonicalCacheUpdateResult:
+    """Atomically apply already-calculated coordinates after fresh validation.
 
     This function never calculates centroids. The intended orchestration flow is::
 
@@ -406,24 +409,24 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
             ↓ otherwise
         calculate centroids
             ↓
-        build_canonical_installation_payload() # validate/capture result
+        build_canonical_cache_update_payload() # validate/capture result
             ↓
-        install_canonical_cache()
+        apply_canonical_cache_update()
 
-    Installation inspects the cache again because the labels source or table
+    Applying the update inspects the cache again because the labels source or table
     binding may have changed while centroids were being calculated. This
     fresh inspection rejects an outdated payload and determines the safe
     create, extend, refresh, or rebuild action before mutating the cache.
 
-    To prevent installing outdated results when the labels source or table
-    binding changed while centroids were being calculated, the installation
+    To prevent applying outdated results when the labels source or table
+    binding changed while centroids were being calculated, the cache-update
     guard compares::
 
         payload
             → What was true when calculation started?
 
         fresh report
-            → What is true immediately before installation?
+            → What is true immediately before applying the update?
 
     When preserving other regions, the distinction is::
 
@@ -443,10 +446,10 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
         labels_name=labels_name,
     )
     if payload.source_signature != report.source_signature:
-        raise ValueError("Labels source changed after canonical centers were calculated; installation was rejected.")
+        raise ValueError("Labels source changed after canonical centers were calculated; cache update was rejected.")
     if payload.binding != report.binding:
         raise ValueError(
-            "Table region binding changed after canonical centers were calculated; installation was rejected."
+            "Table region binding changed after canonical centers were calculated; cache update was rejected."
         )
 
     table = sdata.tables[payload.table_name]
@@ -455,21 +458,21 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
     candidate_matrix = np.full((table.n_obs, 3), np.nan, dtype=np.float64)
     preserved_regions: dict[str, CanonicalRegionMetadata] = {}
 
-    # Cache installation flow by CanonicalCacheState:
+    # Cache update flow by CanonicalCacheState:
     #
     # ABSENT
     #     → start with NaNs
-    #     → install selected region
+    #     → apply selected region
     #
     # INVALID
     #     → start with NaNs
     #     → trust no existing region
-    #     → install selected region
+    #     → apply selected region
     #
     # PARTIAL / STALE / VALID
     #     → start with NaNs
     #     → copy every independently revalidated other region
-    #     → install or replace selected region
+    #     → apply or replace selected region
     if report.state in (CanonicalCacheState.PARTIAL, CanonicalCacheState.STALE, CanonicalCacheState.VALID):
         assert report.metadata is not None
         assert existing_matrix is not None
@@ -510,19 +513,19 @@ def install_canonical_cache(sdata: SpatialData, payload: CanonicalInstallationPa
     parse_canonical_metadata(candidate_storage)
 
     action = {
-        CanonicalCacheState.ABSENT: CanonicalInstallAction.CREATE,
-        CanonicalCacheState.PARTIAL: CanonicalInstallAction.EXTEND,
-        CanonicalCacheState.STALE: CanonicalInstallAction.REFRESH,
-        CanonicalCacheState.INVALID: CanonicalInstallAction.REBUILD,
-        CanonicalCacheState.VALID: CanonicalInstallAction.REFRESH,
+        CanonicalCacheState.ABSENT: CanonicalCacheUpdateAction.CREATE,
+        CanonicalCacheState.PARTIAL: CanonicalCacheUpdateAction.EXTEND,
+        CanonicalCacheState.STALE: CanonicalCacheUpdateAction.REFRESH,
+        CanonicalCacheState.INVALID: CanonicalCacheUpdateAction.REBUILD,
+        CanonicalCacheState.VALID: CanonicalCacheUpdateAction.REFRESH,
     }[report.state]
     _assign_canonical_matrix_and_metadata_atomically(table, candidate_matrix, candidate_storage)
-    return CanonicalInstallationResult(
+    return CanonicalCacheUpdateResult(
         table_name=payload.table_name,
         labels_name=labels_name,
         action=action,
         previous_state=report.state,
-        n_installed_rows=len(payload.binding.instance_ids),
+        n_updated_rows=len(payload.binding.instance_ids),
         mismatches=report.mismatches,
         changed_paths=CANONICAL_CHANGED_PATHS,
     )

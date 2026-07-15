@@ -26,8 +26,8 @@ class CanonicalCacheState(StrEnum):
     INVALID = "invalid"
 
 
-class CanonicalInstallAction(StrEnum):
-    """Mutation performed while installing canonical coordinates."""
+class CanonicalCacheUpdateAction(StrEnum):
+    """Mutation performed while applying a canonical-cache update."""
 
     CREATE = "create"
     EXTEND = "extend"
@@ -234,8 +234,8 @@ class CanonicalCacheReport:
 
 
 @dataclass(frozen=True)
-class CanonicalInstallationPayload:
-    """Calculated centers and the identity used to calculate them."""
+class CanonicalCacheUpdatePayload:
+    """Calculated centers and identity prepared for a cache update."""
 
     table_name: str
     binding: CanonicalRegionBinding
@@ -266,14 +266,14 @@ class CanonicalInstallationPayload:
 
 
 @dataclass(frozen=True)
-class CanonicalInstallationResult:
-    """Summary of a successful canonical-cache mutation."""
+class CanonicalCacheUpdateResult:
+    """Summary of a successfully applied canonical-cache update."""
 
     table_name: str
     labels_name: str
-    action: CanonicalInstallAction
+    action: CanonicalCacheUpdateAction
     previous_state: CanonicalCacheState
-    n_installed_rows: int
+    n_updated_rows: int
     mismatches: tuple[CanonicalCacheMismatch, ...]
     changed_paths: tuple[str, ...]
 
