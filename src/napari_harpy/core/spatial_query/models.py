@@ -100,25 +100,7 @@ class CanonicalSourceSignature:
 
 
 @dataclass(frozen=True)
-class CanonicalTableSignature:
-    """Identity of one table region's instance membership."""
-
-    labels_name: str
-    region_key: str
-    instance_key: str
-    n_obs: int
-    instance_set_digest: str
-
-    def __post_init__(self) -> None:
-        if not self.labels_name or not self.region_key or not self.instance_key:
-            raise ValueError("Table signature names and linkage keys must not be empty.")
-        if isinstance(self.n_obs, bool) or not isinstance(self.n_obs, int) or self.n_obs <= 0:
-            raise ValueError("Table signature n_obs must be a positive integer.")
-        _validate_digest(self.instance_set_digest)
-
-
-@dataclass(frozen=True)
-class CanonicalRegionBindings:
+class CanonicalRegionBinding:
     """Current table rows and normalized instance IDs for one region."""
 
     labels_name: str
@@ -129,15 +111,9 @@ class CanonicalRegionBindings:
     instance_set_digest: str = field(init=False)
 
     @property
-    def signature(self) -> CanonicalTableSignature:
-        """Return the table signature derived from these bindings."""
-        return CanonicalTableSignature(
-            labels_name=self.labels_name,
-            region_key=self.region_key,
-            instance_key=self.instance_key,
-            n_obs=len(self.instance_ids),
-            instance_set_digest=self.instance_set_digest,
-        )
+    def n_obs(self) -> int:
+        """Return the number of table rows bound to this region."""
+        return len(self.instance_ids)
 
     def __post_init__(self) -> None:
         if not self.labels_name or not self.region_key or not self.instance_key:
@@ -163,15 +139,17 @@ class CanonicalRegionMetadata:
     """Persisted calculation identity for one labels region."""
 
     source_signature: CanonicalSourceSignature
-    table_signature: CanonicalTableSignature
+    n_obs: int
+    instance_set_digest: str
     algorithm_version: int
     generated_by_package: str | None = None
     generated_by_version: str | None = None
     generated_at: str | None = None
 
     def __post_init__(self) -> None:
-        if self.source_signature.labels_name != self.table_signature.labels_name:
-            raise ValueError("Canonical source and table signatures must identify the same labels element.")
+        if isinstance(self.n_obs, bool) or not isinstance(self.n_obs, int) or self.n_obs <= 0:
+            raise ValueError("Canonical region metadata n_obs must be a positive integer.")
+        _validate_digest(self.instance_set_digest)
         if (
             isinstance(self.algorithm_version, bool)
             or not isinstance(self.algorithm_version, int)
@@ -209,10 +187,6 @@ class CanonicalMetadata:
                 raise TypeError("Canonical regions must contain CanonicalRegionMetadata values.")
             if metadata.source_signature.labels_name != region:
                 raise ValueError("Canonical region keys must match their source labels names.")
-            if metadata.table_signature.region_key != self.region_key:
-                raise ValueError("Canonical region metadata must use the registry region key.")
-            if metadata.table_signature.instance_key != self.instance_key:
-                raise ValueError("Canonical region metadata must use the registry instance key.")
             copied[region] = metadata
         object.__setattr__(self, "regions", MappingProxyType(copied))
 
@@ -250,7 +224,7 @@ class CanonicalCacheReport:
     selected_region: str
     metadata: CanonicalMetadata | None
     source_signature: CanonicalSourceSignature
-    bindings: CanonicalRegionBindings
+    binding: CanonicalRegionBinding
     mismatches: tuple[CanonicalCacheMismatch, ...] = ()
 
 
@@ -259,22 +233,22 @@ class CanonicalInstallationPayload:
     """Calculated centers paired with the identity used to calculate them."""
 
     table_name: str
-    bindings: CanonicalRegionBindings
+    binding: CanonicalRegionBinding
     centers_xy: NDArray[np.float64] = field(repr=False, compare=False)
     source_signature: CanonicalSourceSignature
 
     def __post_init__(self) -> None:
         if not self.table_name:
             raise ValueError("Canonical payload table name must not be empty.")
-        if not isinstance(self.bindings, CanonicalRegionBindings):
-            raise TypeError("Canonical payload bindings must be CanonicalRegionBindings.")
-        if self.source_signature.labels_name != self.bindings.labels_name:
+        if not isinstance(self.binding, CanonicalRegionBinding):
+            raise TypeError("Canonical payload binding must be a CanonicalRegionBinding.")
+        if self.source_signature.labels_name != self.binding.labels_name:
             raise ValueError("Canonical payload source signature labels name does not match.")
         try:
             centers = np.asarray(self.centers_xy)
         except (TypeError, ValueError) as exc:
             raise ValueError("Canonical payload centers must be a dense numeric array.") from exc
-        if centers.shape != (len(self.bindings.instance_ids), 2):
+        if centers.shape != (len(self.binding.instance_ids), 2):
             raise ValueError("Canonical payload centers must have shape (n_instances, 2).")
         if centers.dtype.kind not in "fiu":
             raise ValueError("Canonical payload centers must have a numeric dtype.")

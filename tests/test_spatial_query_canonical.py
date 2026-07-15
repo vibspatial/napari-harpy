@@ -24,7 +24,7 @@ from napari_harpy.core.spatial_query import (
     CanonicalSourceSignature,
     build_canonical_installation_payload,
     build_canonical_metadata,
-    build_canonical_region_bindings,
+    build_canonical_region_binding,
     build_canonical_source_signature,
     build_instance_set_digest,
     canonical_metadata_to_storage,
@@ -94,7 +94,8 @@ def test_source_signature_is_dimension_independent_but_schema_v1_builder_is_2d()
             regions={
                 "volume": CanonicalRegionMetadata(
                     source_signature=signature,
-                    table_signature=_table_signature_for("volume", [1]),
+                    n_obs=1,
+                    instance_set_digest=build_instance_set_digest("volume", [1]),
                     algorithm_version=1,
                 )
             },
@@ -114,36 +115,37 @@ def test_source_signature_reads_dataarray_metadata_only() -> None:
     )
 
 
-def test_region_bindings_are_strict_and_read_only() -> None:
+def test_region_binding_is_strict_and_read_only() -> None:
     table = _simple_table(instance_ids=[2, 1])
     metadata = _table_metadata()
 
-    bindings = build_canonical_region_bindings(table, metadata, "nuclei")
+    binding = build_canonical_region_binding(table, metadata, "nuclei")
 
-    assert bindings.instance_ids.tolist() == [2, 1]
-    assert bindings.signature.instance_set_digest == build_instance_set_digest("nuclei", [1, 2])
-    assert not bindings.instance_ids.flags.writeable
-    assert not bindings.row_positions.flags.writeable
+    assert binding.instance_ids.tolist() == [2, 1]
+    assert binding.n_obs == 2
+    assert binding.instance_set_digest == build_instance_set_digest("nuclei", [1, 2])
+    assert not binding.instance_ids.flags.writeable
+    assert not binding.row_positions.flags.writeable
 
 
-def test_table_signature_ignores_obs_names_row_order_and_same_set_reassignment() -> None:
+def test_region_binding_identity_ignores_obs_names_row_order_and_same_set_reassignment() -> None:
     table = _simple_table(instance_ids=[1, 2])
     metadata = _table_metadata()
-    original = build_canonical_region_bindings(table, metadata, "nuclei").signature
+    original = build_canonical_region_binding(table, metadata, "nuclei")
 
     table.obs_names = ["renamed-a", "renamed-b"]
-    renamed = build_canonical_region_bindings(table, metadata, "nuclei").signature
-    reordered = build_canonical_region_bindings(table[[1, 0]].copy(), metadata, "nuclei").signature
+    renamed = build_canonical_region_binding(table, metadata, "nuclei")
+    reordered = build_canonical_region_binding(table[[1, 0]].copy(), metadata, "nuclei")
     table.obs["instance_id"] = [2, 1]
-    reassigned = build_canonical_region_bindings(table, metadata, "nuclei").signature
+    reassigned = build_canonical_region_binding(table, metadata, "nuclei")
 
     assert renamed == reordered == reassigned == original
 
 
 @pytest.mark.parametrize("instance_ids", [[1, 1], [True, 2], ["1", 2], [1.5, 2], [0, 2], [np.nan, 2]])
-def test_region_bindings_reject_invalid_selected_ids(instance_ids: list[object]) -> None:
+def test_region_binding_rejects_invalid_selected_ids(instance_ids: list[object]) -> None:
     with pytest.raises((TypeError, ValueError)):
-        build_canonical_region_bindings(_simple_table(instance_ids=instance_ids), _table_metadata(), "nuclei")
+        build_canonical_region_binding(_simple_table(instance_ids=instance_ids), _table_metadata(), "nuclei")
 
 
 def test_metadata_round_trip_is_strict_and_regions_are_read_only() -> None:
@@ -390,18 +392,6 @@ def _table_metadata() -> SpatialDataTableMetadata:
     )
 
 
-def _table_signature_for(labels_name: str, instance_ids: list[int]):
-    from napari_harpy.core.spatial_query import CanonicalTableSignature
-
-    return CanonicalTableSignature(
-        labels_name=labels_name,
-        region_key="region",
-        instance_key="instance_id",
-        n_obs=len(instance_ids),
-        instance_set_digest=build_instance_set_digest(labels_name, instance_ids),
-    )
-
-
 def _metadata_for(labels_name: str, instance_ids: list[int]):
     source = CanonicalSourceSignature(
         labels_name=labels_name,
@@ -416,7 +406,8 @@ def _metadata_for(labels_name: str, instance_ids: list[int]):
         regions={
             labels_name: CanonicalRegionMetadata(
                 source_signature=source,
-                table_signature=_table_signature_for(labels_name, instance_ids),
+                n_obs=len(instance_ids),
+                instance_set_digest=build_instance_set_digest(labels_name, instance_ids),
                 algorithm_version=1,
                 generated_by_package="napari-harpy",
                 generated_by_version="0.1.1",
@@ -427,10 +418,10 @@ def _metadata_for(labels_name: str, instance_ids: list[int]):
 
 
 def _payload_from_report(report, table_name: str, *, offset: float = 0.0):
-    centers = np.arange(report.bindings.signature.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
+    centers = np.arange(report.binding.n_obs * 2, dtype=np.float64).reshape(-1, 2) + offset
     return build_canonical_installation_payload(
         table_name=table_name,
-        bindings=report.bindings,
+        binding=report.binding,
         centers_xy=centers,
         source_signature=report.source_signature,
     )
