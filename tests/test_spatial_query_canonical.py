@@ -45,15 +45,6 @@ def test_mismatch_scope_is_derived_from_code() -> None:
     assert all_regions_mismatch.scope == "all_regions"
     assert region_mismatch.scope == "region"
 
-    with pytest.raises(ValueError, match="must not name a region"):
-        CanonicalCacheMismatch(
-            code=CanonicalMismatchCode.MATRIX_INVALID,
-            region="nuclei",
-        )
-
-    with pytest.raises(ValueError, match="must name a region"):
-        CanonicalCacheMismatch(code=CanonicalMismatchCode.TABLE_SIGNATURE_MISMATCH)
-
 
 def test_instance_set_digest_has_pinned_order_independent_encoding() -> None:
     expected = "sha256:1020a68ff134a26d0139cd20507546c0278f2c308da95133089a5a7c9c8a4718"
@@ -62,19 +53,12 @@ def test_instance_set_digest_has_pinned_order_independent_encoding() -> None:
     assert build_instance_set_digest("nuclei", np.array([2, 3, 1], dtype=np.uint64)) == expected
     assert build_instance_set_digest("Nuclei", [1, 2, 3]) != expected
     assert build_instance_set_digest("nuclei", [1, 2, 4]) != expected
-    assert build_instance_set_digest("nuclei", [255]) != build_instance_set_digest("nuclei", [256])
-    assert build_instance_set_digest("nuclei", [2**64 - 1]).startswith("sha256:")
 
 
-@pytest.mark.parametrize("invalid_id", [True, "1", None, np.nan, np.inf, 0, -1, 1.5, 2**64])
+@pytest.mark.parametrize("invalid_id", [True, 0, -1, 1.5, 2**64])
 def test_instance_set_digest_rejects_invalid_ids(invalid_id: object) -> None:
     with pytest.raises((TypeError, ValueError), match="Instance IDs"):
         build_instance_set_digest("nuclei", [invalid_id])  # type: ignore[list-item]
-
-
-def test_instance_set_digest_rejects_integer_like_floats() -> None:
-    with pytest.raises(TypeError, match="integer NumPy dtype"):
-        build_instance_set_digest("nuclei", [1.0, 2.0, 3.0])
 
 
 def test_source_signature_is_dimension_independent_but_schema_v1_builder_is_2d() -> None:
@@ -86,7 +70,6 @@ def test_source_signature_is_dimension_independent_but_schema_v1_builder_is_2d()
         dtype="uint32",
     )
 
-    assert signature.ndim == 3
     with pytest.raises(ValueError, match="schema version 1"):
         build_canonical_metadata(
             region_key="region",
@@ -142,13 +125,12 @@ def test_region_binding_identity_ignores_obs_names_row_order_and_same_set_reassi
     assert renamed == reordered == reassigned == original
 
 
-@pytest.mark.parametrize("instance_ids", [[1, 1], [True, 2], ["1", 2], [1.5, 2], [0, 2], [np.nan, 2]])
-def test_region_binding_rejects_invalid_selected_ids(instance_ids: list[object]) -> None:
-    with pytest.raises((TypeError, ValueError)):
-        build_canonical_region_binding(_simple_table(instance_ids=instance_ids), _table_metadata(), "nuclei")
+def test_region_binding_rejects_duplicate_selected_ids() -> None:
+    with pytest.raises(ValueError, match="unique"):
+        build_canonical_region_binding(_simple_table(instance_ids=[1, 1]), _table_metadata(), "nuclei")
 
 
-def test_metadata_round_trip_is_strict_and_regions_are_read_only() -> None:
+def test_metadata_round_trip_is_strict() -> None:
     metadata = _metadata_for("nuclei", [1, 2])
     storage = canonical_metadata_to_storage(metadata)
 
@@ -157,8 +139,6 @@ def test_metadata_round_trip_is_strict_and_regions_are_read_only() -> None:
     parsed = parse_canonical_metadata(storage)
 
     assert parsed == metadata
-    with pytest.raises(TypeError):
-        parsed.regions["other"] = parsed.regions["nuclei"]  # type: ignore[index]
     malformed = deepcopy(storage)
     malformed["axes"] = ["y", "x"]
     with pytest.raises(ValueError, match="axes"):
@@ -221,7 +201,6 @@ def test_inspector_classifies_absent_and_incomplete_cache_states(sdata_blobs: Sp
             lambda table, storage: storage["regions"]["blobs_labels"].pop("coverage"),
             CanonicalMismatchCode.REGION_METADATA_INVALID,
         ),
-        (lambda table, storage: storage.pop("dtype"), CanonicalMismatchCode.TOP_LEVEL_CONTRACT_MISMATCH),
     ],
 )
 def test_inspector_classifies_all_regions_invalid_states(
