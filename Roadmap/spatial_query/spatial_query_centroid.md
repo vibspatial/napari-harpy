@@ -2121,7 +2121,7 @@ Deliverables:
               repr=False,
               compare=False,
           )
-          installation: CanonicalInstallationResult | None = None
+          installation: CanonicalInstallationResult | None
 
           @property
           def labels_name(self) -> str:
