@@ -224,7 +224,28 @@ class CanonicalCacheMismatch:
 
 @dataclass(frozen=True)
 class CanonicalCacheReport:
-    """Non-mutating cache inspection result for one selected region."""
+    """Non-mutating cache inspection result for one selected region.
+
+    Parameters
+    ----------
+    stored_metadata
+        Parsed metadata claimed by the existing cache, or ``None`` when no
+        readable cache metadata is available.
+    source_signature
+        Structural snapshot of the current labels raster.
+    binding
+        Snapshot of the current linked table rows and instance IDs.
+    mismatches
+        Deterministically ordered differences between the stored cache claim
+        and the current source or table binding.
+
+    Notes
+    -----
+    ``source_signature`` and ``binding`` describe independent sides of the
+    labels-table relationship. Their shared invariant is that both refer to the
+    selected ``labels_name``. Stored metadata is compared with each snapshot
+    separately to detect source changes and table-binding changes.
+    """
 
     stored_metadata: CanonicalMetadata | None
     source_signature: CanonicalSourceSignature
