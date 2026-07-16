@@ -230,10 +230,13 @@ The manifest should record enough information to reject incompatible caches:
 - source image element zarr path resolved through SpatialData metadata;
 - coordinate system;
 - selected channels and channel names;
-- highest-resolution source shape, axes, dtype, and physical Zarr/Dask chunk layout;
-- requested logical tile layout, actual post-overlap-rechunk core/expanded layouts, and final regular cache layout;
+- highest-resolution source shape, axes, dtype, and the complete physical Zarr/Dask chunk tuple for every axis,
+  including the smaller terminal chunks;
+- ConvNeXt common output stride, required context, stride-rounded halo, transient right/bottom padding, actual
+  post-overlap core/expanded layouts, and final regular cache layout;
 - normalization settings;
-- feature extractor name, weights, package versions, layers, and tile settings;
+- feature extractor name, weights, package versions, layers, common stride, context halo, padding, and dense-upsampling
+  settings;
 - projection algorithm, parameters, implementation version, matrix identity, and output dimension (`K = 64`);
 - raw feature schema id;
 - projection id;
@@ -282,7 +285,8 @@ Use three levels of identity:
 
 - `raw_feature_schema_id`: hash of fields that define the unreduced deep-feature stream and normalized marker planes,
   excluding target-specific source identity. This includes selected channel names and order, normalization settings,
-  feature extractor name/weights/layers, tile settings, raw deep-feature plane order, and raw deep-feature dimension.
+  feature extractor name/weights/layers, stride/halo/padding/upsampling contract, raw deep-feature plane order, and raw
+  deep-feature dimension.
 - `projection_id`: hash of the deterministic projection contract and generated matrix. The same raw feature schema must
   produce the same projection id on every target and in every process.
 - `final_feature_schema_id`: hash of `raw_feature_schema_id`, `projection_id`, final feature plane order, final dtype
@@ -299,8 +303,9 @@ Exact `raw_feature_schema_id` inputs:
 - marker normalization policy, parameters, and whether fitted normalization state is per-target or shared;
 - raw marker plane order;
 - feature extractor backend name, implementation version, model name, weights name or digest, selected layers, scale
-  pyramid settings, input channel handling, RGB replication strategy, pretrained input mean/std, padding policy, tile
-  size/overlap, preprocessing, Dask overlap/trim contract version, and output raw feature plane order;
+  pyramid settings, input channel handling, RGB replication strategy, pretrained input mean/std, padding policy,
+  common output stride, required context, stride-rounded halo, dense-upsampling mode and coordinate convention,
+  preprocessing, Dask overlap/trim contract version, and output raw feature plane order;
 - raw deep-feature dimension before projection;
 - projection input dtype/precision policy;
 - relevant package versions for feature generation.
@@ -335,6 +340,7 @@ Target-specific `cache_id` should still include source identity:
 - coordinate system;
 - compute scale, for Phase 1 `scale0` / highest resolution;
 - highest-resolution shape and axes;
+- complete source Dask/Zarr chunk tuples for every axis, including terminal chunks;
 - selected channel names and order as resolved in this target;
 - target-specific fitted normalization state, if the selected normalization policy is per-target;
 - feature array shape, chunks, dtype, compressor/store policy, and cache schema version.
@@ -614,19 +620,84 @@ values within the declared tolerance.
 
 **Dask-to-PyTorch execution contract**
 
-Keep three units separate:
+Use the physical source chunk layout as the Phase 1 inference layout. Do not add an independently configurable spatial
+tile planner. Keep these units separate:
 
 ```text
-physical Zarr chunk    storage and decompression unit
-logical Dask block     spatial ConvNeXt inference tile, before halo expansion
+physical Zarr chunk    storage unit and initial spatial ConvNeXt inference core
+expanded Dask block    one inference core plus the context halo
 Torch marker batch     number of marker planes sent through ConvNeXt together
 ```
 
-The source image remains a lazy Dask array. Select the requested markers, lazily rechunk the marker axis to one block
-and the spatial axes to the chosen inference-tile shape, apply marker clipping/scaling lazily from the already computed
-percentile statistics, add the required spatial halo, map the PyTorch extractor over those blocks, trim the halo, and
-regularize the resulting feature chunks for direct storage in the target cache Zarr. Build this complete graph before
-executing it.
+The source image remains a lazy Dask array. Select the requested markers, lazily combine only the marker axis into one
+block, preserve the source spatial chunks, apply marker clipping/scaling lazily from the already computed percentile
+statistics, add the required spatial halo, map the PyTorch extractor over those blocks, trim the halo and transient
+edge padding, and regularize the resulting feature chunks for direct storage in the target cache Zarr. Build this
+complete graph before executing it.
+
+ConvNeXt contains strided operations. If two inference cores begin on different phases of that stride lattice, the
+same source pixel can be grouped with different neighbours and acquire different features. Halo overlap supplies
+neighbourhood context, but it cannot repair a shifted stride lattice. Define `stride` as the least common multiple of
+the output strides of every selected ConvNeXt feature layer. For the usual power-of-two ConvNeXt stages this is simply
+the largest selected output stride. Before graph construction, require every internal source-chunk boundary on both
+spatial axes to lie on that common lattice:
+
+```python
+from itertools import accumulate
+
+
+def internal_chunk_boundaries(chunks: tuple[int, ...]) -> tuple[int, ...]:
+    return tuple(accumulate(chunks[:-1]))
+
+
+assert all(
+    boundary % stride == 0
+    for chunks in source_markers.chunks[-2:]
+    for boundary in internal_chunk_boundaries(chunks)
+)
+```
+
+For a regular source layout, this normally means that the non-terminal chunk size is a multiple of `stride`. The
+naturally smaller terminal chunk need not itself have the original nominal size: its start is what matters. If an
+internal boundary is not aligned, reject cache construction before model execution with a message that reports the
+source layout, required stride, and offending boundary. Merely recording a misaligned layout would make the result
+reproducible, but would not remove chunk-boundary seams.
+
+The padded image dimensions must also be divisible by `stride`, otherwise local dense upsampling at the right or
+bottom edge can use a different scale from a whole-image extraction. Add only the necessary `0 .. stride - 1`
+right/bottom pixels, lazily and transiently, using zero in normalized-marker space:
+
+```python
+height, width = normalized.shape[-2:]
+pad_bottom = (-height) % stride
+pad_right = (-width) % stride
+
+padded = da.pad(
+    normalized,
+    ((0, 0), (0, pad_bottom), (0, pad_right)),
+    mode="constant",
+    constant_values=0,
+)
+
+# da.pad may represent the new edge as a separate tiny Dask block. Fold that
+# block into the terminal source core so the original, possibly unaligned
+# image edge does not become a new internal inference boundary.
+padded_chunks = (
+    (C,),
+    normalized.chunks[1][:-1]
+    + (normalized.chunks[1][-1] + pad_bottom,),
+    normalized.chunks[2][:-1]
+    + (normalized.chunks[2][-1] + pad_right,),
+)
+padded = padded.rechunk(padded_chunks)
+```
+
+This is a lazy in-memory graph operation; it does not pad or rechunk the source Zarr on disk. The resulting terminal
+core has a size divisible by `stride` because both its start and the padded image end are stride-aligned. Round the
+required model context up to the same lattice, `halo = ceil(required_context / stride) * stride`. Consequently, a
+stride-aligned core start plus a stride-aligned halo also gives a stride-aligned expanded-block start. Run tiled and
+canonical reference extraction with the same right/bottom padding and fixed dense-upsampling convention, then crop the
+feature result back to the original `(height, width)` before storage.
 
 Because block inference changes the leading axis from selected markers to `(C + 64)` cache planes, prefer explicit
 overlap, block mapping, and trimming stages rather than relying on automatic output-shape inference:
@@ -636,25 +707,29 @@ import dask.array as da
 import numpy as np
 
 
-# source_markers is Zarr-backed and remains lazy: (C, Y, X).
-logical_tiles = source_markers.rechunk((C, tile_y, tile_x))
-normalized = normalize_dask(logical_tiles, percentile_statistics)
+# source_markers is Zarr-backed and remains lazy: (C, Y, X). Rechunk only the
+# marker axis; its spatial chunks remain the source Zarr chunks.
+source_markers = source_markers.rechunk({0: C})
+normalized = normalize_dask(source_markers, percentile_statistics)
+
+# Validate internal source boundaries and create `padded` as specified above.
+# halo_y and halo_x are required-context values rounded up to `stride`.
 
 # An axis held in one block has no internal block boundary and needs no Dask
 # overlap. ConvNeXt still applies its normal model-boundary behavior there.
 depth = {
     0: 0,
-    1: 0 if normalized.numblocks[1] == 1 else halo_y,
-    2: 0 if normalized.numblocks[2] == 1 else halo_x,
+    1: 0 if padded.numblocks[1] == 1 else halo_y,
+    2: 0 if padded.numblocks[2] == 1 else halo_x,
 }
-boundary = {0: "none", 1: padding_policy, 2: padding_policy}
+boundary = {0: "none", 1: "none", 2: "none"}
 
 overlapped = da.overlap.overlap(
-    normalized,
+    padded,
     depth=depth,
     boundary=boundary,
-    # Dask may merge/redistribute short chunks, including a small final chunk,
-    # so that every core chunk can support the requested overlap.
+    # A short terminal source core may need to be merged/redistributed so it
+    # can support the halo. Validate the resulting core lattice below.
     allow_rechunk=True,
 )
 
@@ -662,7 +737,7 @@ overlapped = da.overlap.overlap(
 # (C + 64, block_y, block_x). Supplying meta prevents Dask from invoking
 # PyTorch on synthetic 0-dimensional inputs during graph construction. Derive
 # spatial output metadata from the actual post-rechunk overlap array, never
-# from the originally requested tile shape.
+# from the original source chunk shape.
 actual_pretrim_chunks = (
     (C + 64,),
     overlapped.chunks[1],
@@ -675,16 +750,20 @@ mapped = overlapped.map_blocks(
     meta=np.empty((0, 0, 0), dtype=np.float16),
 )
 
-features = da.overlap.trim_internal(
+features_padded = da.overlap.trim_internal(
     mapped,
     depth,
     boundary=boundary,
 )
 
+# Remove only the transient right/bottom padding. Cache and annotation shapes
+# remain exactly aligned with the original highest-resolution image.
+features = features_padded[:, :height, :width]
+
 # Automatic overlap rechunking may leave irregular inference-core chunks.
 # Rechunk only the projected C + 64 output to the fixed cache layout; this does
 # not rewrite the source or rerun ConvNeXt.
-actual_inference_chunks = features.chunks
+actual_inference_chunks = features_padded.chunks
 cache_chunks = (C + 64, cache_chunk_y, cache_chunk_x)
 features_for_store = features.rechunk(cache_chunks)
 
@@ -705,13 +784,14 @@ The final `write_job.compute(...)` is not an eager full-array conversion: it exe
 output block at a time. A separate preliminary Dask reduction may compute the small set of full-image percentile
 statistics once. The prohibited pattern is repeated spatial-tile `.compute()` calls.
 
-`allow_rechunk=True` is required for valid short-edge cases. For example, with core chunks `(512, 512, 100)` and
-overlap depth `300`, `allow_rechunk=False` raises because the final chunk is too small. Dask may instead choose core
-chunks such as `(512, 312, 300)`, which then produce a different expanded-block layout. It may also change the number
-of blocks. Treat `overlapped.chunks` and the chunks obtained after `trim_internal` as authoritative and inspect them
-before execution.
+`allow_rechunk=True` remains necessary for a terminal source core that is smaller than the halo. Dask may merge or
+redistribute that edge core and may change the number of blocks. Because the source internal boundaries, padded total
+shape, and halo are all multiples of `stride`, the resulting cores are expected to remain on the common lattice, but
+do not rely on that as an undocumented Dask guarantee. Treat `overlapped.chunks` and the chunks obtained after
+`trim_internal` as authoritative and reject the plan before model execution if any resulting padded-core size or
+internal boundary is not divisible by `stride`.
 
-Do not pass output chunks predicted from the requested tile layout into `da.map_overlap`. When automatic rechunking
+Do not pass output chunks predicted from the original source layout into `da.map_overlap`. When automatic rechunking
 changes the block grid, stale `chunks=` metadata can fail graph construction or describe different boundaries from the
 arrays returned at runtime, making downstream region writes unsafe. For this shape-changing operation from `(C, ...)`
 to `(C + 64, ...)`, the explicit public sequence `overlap(..., allow_rechunk=True) -> map_blocks(chunks derived from
@@ -722,34 +802,29 @@ Before execution, validate the actual plan rather than the requested plan:
 
 - the largest expanded block, including all selected markers and transient Torch activations, fits the CPU/GPU memory
   budget;
-- the trimmed shape is exactly `(C + 64, Y, X)`;
-- actual core boundaries satisfy the separately defined ConvNeXt stride-grid contract;
+- every source internal spatial chunk boundary is divisible by the common ConvNeXt stride;
+- the halo, padded image dimensions, actual padded-core sizes, and actual padded-core boundaries are divisible by that
+  stride;
+- `features_padded` has shape `(C + 64, padded_Y, padded_X)` and cropping restores exactly `(C + 64, Y, X)`;
 - `features_for_store` has regular chunks matching the fixed Zarr cache chunks.
 
-Use this minimal chunk-compatibility policy for each spatial axis, ignoring the naturally smaller edge chunk:
+The complete source chunk tuple is part of the target-specific cache manifest and cache identity. Compare the current
+layout with the persisted tuple whenever opening or reusing a cache. Any difference invalidates that target's cache and
+the UI should say that it is being recalculated because the source chunk layout changed. Record the actual
+post-overlap core/expanded layout as well for diagnostics. The source layout is deliberately not part of the shared
+`raw_feature_schema_id` or `final_feature_schema_id`: targets with different but valid stride-aligned source layouts
+must still be poolable for classifier training. Cache invalidation is conservative even though the equivalence tests
+below require valid aligned layouts to produce the same interior feature values.
 
-```text
-preferred       inference tile is an integer multiple of the physical Zarr chunk
-acceptable      physical Zarr chunk is an integer multiple of the inference tile
-fallback        neither divides the other: lazily rechunk and show an inefficiency warning
-```
-
-The preferred direction lets one model tile combine complete storage chunks. The acceptable direction lazily splits a
-larger storage chunk, but Zarr must still read/decompress that physical chunk. The fallback may add slicing and data
-movement to the Dask graph; it is allowed in Phase 1 so small or unusually chunked datasets remain usable. Tile size is
-an internal default, not a normal user setting. Let overlap construction lazily repair any chunk smaller than the halo,
-then expose, validate, and record the actual resulting core and expanded chunk layouts. If the overlap depth is larger
-than an entire multi-block spatial axis or the resulting expanded block exceeds the memory budget, fail before model
-execution with an actionable tile/halo error rather than relying on an unbounded rechunk.
-
-Do not physically rechunk or rewrite the source image in Phase 1. Calling `rechunk(...)` above only changes the lazy
-Dask graph. An on-disk staging/rechunk cache would require a full source read, duplicate storage, another progress and
-invalidation workflow, and is outside this phase. Also do not introduce a PyTorch `DataLoader` for dense cache
-generation: Dask already owns block scheduling, overlap, shared reads, and chunk-wise Zarr output. A DataLoader remains
-an option for future independent-sample training workflows. The final `features.rechunk(cache_chunks)` is also lazy and
-operates only on the already projected `(C + 64)` output so the Zarr cache has one regular physical chunk shape.
-Pre-create `target_cache_zarr` with that exact shape/dtype/chunk layout and use `da.store`; do not ask `to_zarr` to
-select another automatic write layout after this explicit regularization.
+Do not physically rechunk or rewrite the source image in Phase 1. The marker-axis combine, terminal padding fold, any
+short-edge repair required by Dask overlap, and final output regularization are lazy graph operations. An on-disk
+staging/rechunk cache would require a full source read, duplicate storage, another progress and invalidation workflow,
+and is outside this phase. Also do not introduce a PyTorch `DataLoader` for dense cache generation: Dask already owns
+block scheduling, overlap, shared reads, and chunk-wise Zarr output. A DataLoader remains an option for future
+independent-sample training workflows. The final `features.rechunk(cache_chunks)` is also lazy and operates only on the
+already projected `(C + 64)` output so the Zarr cache has one regular physical chunk shape. Pre-create
+`target_cache_zarr` with that exact shape/dtype/chunk layout and use `da.store`; do not ask `to_zarr` to select another
+automatic write layout after this explicit regularization.
 
 Acceptance criteria:
 
@@ -763,14 +838,21 @@ Acceptance criteria:
 - cache building constructs one lazy Dask graph and does not call `.compute()` per spatial tile or on the full source
   or feature array;
 - Dask overlap supplies the declared halo, block inference returns the expanded spatial shape, and trimming restores
-  the exact highest-resolution source shape without seams in the tested valid region;
+  the padded shape without seams in the tested valid region; removing transient right/bottom padding then restores the
+  exact highest-resolution source shape;
+- every source internal spatial chunk boundary is stride-aligned, the halo is rounded up to the common extractor
+  stride, and only `0 .. stride - 1` transient right/bottom pixels are added;
+- `da.pad` edge blocks are folded into the terminal source cores so the original image edge does not become a new
+  internal inference boundary;
 - overlap may lazily rechunk short core chunks; block-output metadata is derived from the actual post-rechunk
-  `overlapped.chunks`, never from the originally requested tile layout;
+  `overlapped.chunks`, never from the original source layout;
 - the actual expanded/core layouts pass memory, output-shape, and stride-grid validation before execution;
 - irregular trimmed inference chunks are lazily rechunked only after projection to a regular `(C + 64, y, x)` cache
   layout matching the target Zarr chunks;
-- compatible storage/inference chunk layouts proceed normally; incompatible layouts use lazy rechunking, emit one
-  clear inefficiency warning, and never create an on-disk rechunked source copy;
+- a source with a non-stride-aligned internal boundary is rejected with the offending boundary and required stride;
+- the complete source chunk tuple is stored in the target cache manifest, and changing it makes that cache stale and
+  produces a clear UI explanation before recalculation;
+- source padding and any short-edge overlap repair remain lazy and never create an on-disk rechunked source copy;
 - the initial local execution path keeps a single frozen ConvNeXt instance and at most one GPU inference task active;
 - projection generation is deterministic and independent of target data, annotations, and cache-build order;
 - independently built compatible target caches resolve to the same projection id and final feature schema id;
@@ -965,13 +1047,19 @@ Add focused tests before broadening UI behavior:
 - a Zarr-backed Dask source reaches a Zarr feature target through one overlap/map/trim/store graph without per-block
   `.compute()` calls or full-array materialization;
 - fake block inference is not invoked during graph construction when explicit `meta` is supplied;
-- overlap/trim preserves exact image shape and matches untiled reference output in valid regions, including edge chunks;
+- internal source-chunk boundaries divisible by the common extractor stride are accepted, while a deliberately
+  misaligned boundary is rejected before the extractor runs with an actionable error;
+- arbitrary source image dimensions are lazily padded on the right/bottom to the next stride multiple, the padding
+  block is folded into the terminal source core, and the stored feature array is cropped back to the exact source
+  shape;
+- padded/overlap/trim extraction matches a canonical equally padded whole-image reference for multiple valid physical
+  source chunk layouts, including edge chunks;
+- changing any entry in the complete source chunk tuple changes the target `cache_id`, marks the previous cache stale,
+  and does not change the shared `final_feature_schema_id`;
 - a final core chunk smaller than the halo is automatically rechunked without error, and both same-block-count and
-  changed-block-count cases expose correct pre-trim and trimmed chunk metadata;
+  changed-block-count cases expose stride-aligned pre-trim and trimmed chunk metadata;
 - shape-changing block inference derives `chunks=` from the actual overlapped array; deliberately stale metadata is
   rejected by validation rather than reaching Zarr storage;
-- preferred and acceptable source/tile divisibility cases avoid warnings, while a non-divisible case lazily rechunks,
-  warns once, and produces the same feature values without creating an on-disk staging array;
 - irregular inference-core chunks are lazily regularized after projection, output Zarr chunks match that regular layout,
   and partial/failed graph execution remains identifiable;
 - MLP training/prediction on small synthetic data, including deterministic seeds and persisted input standardization;
