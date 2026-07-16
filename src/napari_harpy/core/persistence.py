@@ -191,6 +191,8 @@ def reload_table_components(
         table.obs = previous_obs
         table.obsm = previous_obsm
         table.uns = previous_uns
+        # Propagate the original reload failure after rollback so the calling
+        # widget can turn expected errors into user-facing feedback.
         raise
 
     reloaded_paths = set(normalized_paths)
