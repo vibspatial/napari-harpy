@@ -79,6 +79,10 @@ def write_table_components(
         if key in table.obsm:
             ad.io.write_elem(table_group["obsm"], key, table.obsm[key])
         elif key in table_group["obsm"]:
+            # A controller can remove an obsm entry and record its path as
+            # dirty. The later dirty snapshot still selects that path for
+            # writing, so synchronize its in-memory absence by deleting the
+            # persisted entry from the zarr store.
             del table_group["obsm"][key]
 
     for path in uns_paths:
