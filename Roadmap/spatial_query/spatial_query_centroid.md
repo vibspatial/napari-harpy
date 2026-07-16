@@ -2623,27 +2623,83 @@ Core canonical operations remain independent from Qt and HarpyAppState.
 
 Deliverables:
 
-- a Spatial Query controller callback that publishes a
-  `TableStateChangedEvent` only after an accepted main-thread canonical cache
-  update; synchronous core callers remain responsible for publishing an app
-  event when used inside a shared UI session;
+- the existing Spatial Query controller accepted-result callback as the
+  canonical mutation boundary: its consumer publishes a
+  `TableStateChangedEvent` only after `apply_canonical_cache_update()` succeeds
+  on the main thread; synchronous core callers remain responsible for
+  publishing the same event when used inside a shared UI session;
 - one accepted cache event containing both
   `TableComponentPath("obsm", ("spatial_canonical",))` and
   `TableComponentPath(
       "uns",
       ("spatial_coordinates", "spatial_canonical"),
-  )`, with the cache action and affected region represented by event change
-  kind/source/regions;
-- one canonical persistence unit that writes both paths through AnnData element
-  encodings, preserves unrelated table elements and sibling metadata, and
-  restores or preserves the prior on-disk pair after a handled partial failure;
-- canonical metadata parsing and structural validation before accepting a disk
-  reload or reusing a reopened cache;
+  )`; the event reports the selected labels region, uses a canonical-cache
+  source, and maps create, extend/refresh, and rebuild actions to `created`,
+  `updated`, and `rebuilt`, respectively;
+- one canonical consistency unit containing those two paths. Persistence writes
+  both through AnnData element encodings and preserves unrelated table elements
+  and sibling metadata;
+- acknowledge-both-or-neither persistence semantics: the shared dirty manifest
+  clears both canonical paths only after both element writes and zarr metadata
+  consolidation succeed. A failure acknowledges neither path, even if zarr was
+  partially changed before the failure;
+- no claim of a transactional multi-element zarr rollback. A partial on-disk
+  cache remains dirty in the current session and is classified as `INVALID` by
+  canonical inspection after reload or reopen, so it is never reused and is
+  rebuilt conservatively;
+- canonical metadata parsing and structural validation through
+  `inspect_canonical_cache()` after reload or reopen and before any cache reuse.
+  The generic `PersistenceController` remains unaware of canonical metadata;
 - an explicit UI-independent affected-region invalidation operation for
   supported region-key, instance-key, or obs replacement events, including
   same-set instance reassignment that the instance-set digest cannot detect;
+- supported linkage-change producers report the union of previously and
+  currently affected regions. Invalidation mistrusts those regions regardless
+  of digest equality, preserves only independently revalidated unaffected
+  regions, and removes the complete canonical cache when nothing remains
+  trustworthy;
+- invalidation publishes a second canonical table mutation only when stored
+  canonical state actually changed. An updated partial cache uses `updated`; a
+  removed cache uses `removed`; both carry the explicitly affected regions and
+  a canonical-invalidation source;
 - clear mismatch/recalculation data for later controller and widget consumers;
 - canonical cache lifecycle and backed-zarr tests.
+
+The accepted cache-update flow is:
+
+    worker
+        calculate_canonical_centers()
+            ↓
+    main thread
+        reject cancelled or outdated result
+        apply_canonical_cache_update()
+            ↓ success only
+        record one table mutation for both canonical paths
+
+Cache reuse, cancellation, worker failure, or a rejected payload does not emit
+a table mutation event and does not change shared dirty state.
+
+The persistence boundary is:
+
+    write both canonical paths
+        ↓
+    consolidate zarr metadata
+        ↓
+    success → acknowledge both paths
+    failure → acknowledge neither path
+
+The reload and reopen boundary is:
+
+    reload or reopen table state
+        ↓
+    inspect_canonical_cache()
+        ↓
+    VALID → reuse
+    otherwise → recalculate when canonical centers are next required
+
+An invalid canonical cache does not make an otherwise valid full-table reload
+fail. It is accepted as non-reusable stored state and handled by the existing
+inspection and conservative-rebuild lifecycle.
 
 Direct arbitrary AnnData edits that bypass napari-harpy semantic mutation APIs
 remain undetectable. Supported producers must publish linkage changes with
@@ -2657,10 +2713,14 @@ Exit criteria:
 - a centroid-only write touches only the two canonical element paths and never
   serializes the complete AnnData table;
 - the table is not marked clean when either half of the canonical persistence
-  unit fails or rollback cannot substantiate a consistent pair;
+  unit or zarr metadata consolidation fails; a later reload/reopen classifies
+  any resulting partial disk state as non-reusable;
 - reload/reopen reuses only structurally valid canonical metadata;
 - a supported linkage mutation invalidates every affected region before cache
-  reuse even when its instance set is unchanged;
+  reuse even when its instance set is unchanged, while independently validated
+  unaffected regions remain reusable;
+- a supported linkage event that does not change stored canonical state emits
+  no canonical mutation event;
 - calculating, cancelling, rejecting, or reusing centers without an accepted
   cache mutation records no dirty path and emits no table-state mutation event.
 
