@@ -153,13 +153,24 @@ class CoordinateSystemChangedEvent:
 
 
 def _path_covers(parent: TableComponentPath, child: TableComponentPath) -> bool:
+    """Return whether one synchronized path also restores a dirty path.
+
+    ``parent`` is a path accepted as persisted or reloaded; ``child`` is a
+    dirty path being considered for removal from the dirty manifest. Coverage
+    follows the persistence granularity of each AnnData component: any
+    ``obs`` path covers the complete dataframe, an ``obsm`` path covers only
+    the same named entry, and an ``uns`` path covers itself and its nested
+    descendants. Paths belonging to different components never overlap.
+    """
     if parent.component != child.component:
         return False
     if parent.component == "obs":
         return True
     if parent.component == "obsm":
         return parent == child
-    return child.keys[: len(parent.keys)] == parent.keys
+    if parent.component == "uns":
+        return child.keys[: len(parent.keys)] == parent.keys
+    raise AssertionError(f"Unsupported table component: {parent.component!r}.")
 
 
 class HarpyAppState(QObject):
