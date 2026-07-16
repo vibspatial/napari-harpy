@@ -8,15 +8,22 @@ from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
 import napari_harpy.widgets.spatial_query.controller as controller_module
+from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
 from napari_harpy.core.spatial_query import (
+    CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     SPATIAL_COORDINATES_KEY,
     CanonicalCacheReport,
     CanonicalCacheUpdateAction,
     CanonicalCacheUpdatePayload,
+    CanonicalCentersResult,
     apply_canonical_cache_update,
     build_canonical_cache_update_payload,
     inspect_canonical_cache,
+)
+from napari_harpy.widgets.spatial_query.cache_state import (
+    CANONICAL_CACHE_UPDATE_SOURCE,
+    record_canonical_cache_update,
 )
 from napari_harpy.widgets.spatial_query.controller import (
     SpatialQueryController,
@@ -92,6 +99,9 @@ def test_controller_calculates_off_thread_and_applies_current_payload_on_main_th
     calculation_threads: list[int] = []
     application_threads: list[int] = []
     accepted_results = []
+    app_state = HarpyAppState()
+    emitted_events: list[TableStateChangedEvent] = []
+    app_state.table_state_changed.connect(emitted_events.append)
     real_apply = apply_canonical_cache_update
 
     def calculate(sdata: SpatialData, current_report: CanonicalCacheReport) -> CanonicalCacheUpdatePayload:
@@ -106,7 +116,12 @@ def test_controller_calculates_off_thread_and_applies_current_payload_on_main_th
 
     monkeypatch.setattr(controller_module, "calculate_canonical_centers", calculate)
     monkeypatch.setattr(controller_module, "apply_canonical_cache_update", apply)
-    controller = SpatialQueryController(on_centers_ready=accepted_results.append)
+
+    def accept(result) -> None:
+        accepted_results.append(result)
+        record_canonical_cache_update(app_state, sdata_blobs, result)
+
+    controller = SpatialQueryController(on_centers_ready=accept)
 
     assert controller.start_canonical_centers_calculation(sdata_blobs, report)
     assert controller.is_running
@@ -123,6 +138,21 @@ def test_controller_calculates_off_thread_and_applies_current_payload_on_main_th
     assert controller.status_kind == "success"
     assert CANONICAL_OBSM_KEY in table.obsm
     assert SPATIAL_COORDINATES_KEY in table.uns
+    assert len(emitted_events) == 1
+    assert emitted_events[0].paths == CANONICAL_CACHE_PATHS
+    assert emitted_events[0].regions == ("blobs_labels",)
+    assert emitted_events[0].change_kind == "created"
+    assert emitted_events[0].source == CANONICAL_CACHE_UPDATE_SOURCE
+    assert app_state.snapshot_table_dirty_state(sdata_blobs, "table").paths == CANONICAL_CACHE_PATHS
+
+    reused_result = CanonicalCentersResult(
+        source_signature=payload.source_signature,
+        binding=payload.binding,
+        centers=payload.centers,
+        cache_update=None,
+    )
+    assert record_canonical_cache_update(app_state, sdata_blobs, reused_result) is None
+    assert len(emitted_events) == 1
 
 
 def test_controller_ignores_cancelled_worker_signals_and_accepts_new_operation(

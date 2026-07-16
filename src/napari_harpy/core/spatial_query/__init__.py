@@ -3,6 +3,7 @@
 from napari_harpy.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
     CANONICAL_AXES,
+    CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     CANONICAL_SCHEMA_VERSION,
     SPATIAL_COORDINATES_KEY,
@@ -39,6 +40,7 @@ from napari_harpy.core.spatial_query.models import (
 __all__ = [
     "CANONICAL_ALGORITHM_VERSION",
     "CANONICAL_AXES",
+    "CANONICAL_CACHE_PATHS",
     "CANONICAL_OBSM_KEY",
     "CANONICAL_SCHEMA_VERSION",
     "SPATIAL_COORDINATES_KEY",

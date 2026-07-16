@@ -9,11 +9,21 @@ from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
+import napari_harpy.core.persistence as persistence_module
 from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
 from napari_harpy._persistence import PersistenceController
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND, register_feature_matrix_metadata
 from napari_harpy.core.persistence import TableComponentPath
+from napari_harpy.core.spatial_query import (
+    CANONICAL_CACHE_PATHS,
+    CANONICAL_OBSM_KEY,
+    CanonicalCacheState,
+    CanonicalCentersResult,
+    apply_canonical_cache_update,
+    build_canonical_cache_update_payload,
+    inspect_canonical_cache,
+)
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
@@ -21,6 +31,7 @@ from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
+from napari_harpy.widgets.spatial_query.cache_state import record_canonical_cache_update
 
 
 def _record_mutation(
@@ -46,12 +57,93 @@ def _record_mutation(
     )
 
 
+def _apply_canonical_cache(sdata: SpatialData) -> CanonicalCentersResult:
+    report = inspect_canonical_cache(sdata, table_name="table", labels_name="blobs_labels")
+    centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
+    centers[:, 1:] = np.arange(report.binding.n_obs * 2, dtype=np.float64).reshape(-1, 2)
+    payload = build_canonical_cache_update_payload(
+        binding=report.binding,
+        centers=centers,
+        source_signature=report.source_signature,
+    )
+    cache_update = apply_canonical_cache_update(sdata, payload)
+    return CanonicalCentersResult(
+        source_signature=payload.source_signature,
+        binding=payload.binding,
+        centers=payload.centers,
+        cache_update=cache_update,
+    )
+
+
 def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: SpatialData) -> None:
     controller = PersistenceController()
     controller.bind(sdata_blobs, "table")
 
     with pytest.raises(ValueError, match="not backed by zarr"):
         controller.write_table_state()
+
+
+def test_canonical_cache_update_round_trips_as_one_dirty_consistency_unit(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    result = _apply_canonical_cache(backed_sdata_blobs)
+
+    event = record_canonical_cache_update(app_state, backed_sdata_blobs, result)
+
+    assert event is not None
+    assert app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table").paths == CANONICAL_CACHE_PATHS
+
+    controller.write_table_state()
+    reopened = read_zarr(backed_sdata_blobs.path)
+
+    assert controller.is_dirty is False
+    assert (
+        inspect_canonical_cache(reopened, table_name="table", labels_name="blobs_labels").state
+        is CanonicalCacheState.VALID
+    )
+
+
+def test_failed_second_canonical_write_acknowledges_neither_path(
+    backed_sdata_blobs: SpatialData,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+    result = _apply_canonical_cache(backed_sdata_blobs)
+    record_canonical_cache_update(app_state, backed_sdata_blobs, result)
+    real_write_elem = persistence_module.ad.io.write_elem
+    canonical_write_count = 0
+
+    def fail_second_canonical_write(group, key, value, *args, **kwargs):
+        nonlocal canonical_write_count
+        if key == CANONICAL_OBSM_KEY:
+            canonical_write_count += 1
+            if canonical_write_count == 2:
+                raise RuntimeError("injected canonical metadata write failure")
+        return real_write_elem(group, key, value, *args, **kwargs)
+
+    monkeypatch.setattr(persistence_module.ad.io, "write_elem", fail_second_canonical_write)
+
+    with pytest.raises(RuntimeError, match="injected canonical metadata write failure"):
+        controller.write_table_state()
+
+    assert app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table").paths == CANONICAL_CACHE_PATHS
+
+    controller.reload_table_state()
+
+    assert controller.is_dirty is False
+    assert (
+        inspect_canonical_cache(
+            backed_sdata_blobs,
+            table_name="table",
+            labels_name="blobs_labels",
+        ).state
+        is CanonicalCacheState.INVALID
+    )
 
 
 def test_persistence_controller_tracks_dirty_state_per_selected_table(

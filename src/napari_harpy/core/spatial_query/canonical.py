@@ -8,6 +8,7 @@ import numpy as np
 from scipy.sparse import issparse
 from xarray import DataArray
 
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatial_query.models import (
     CanonicalCacheMismatch,
     CanonicalCacheReport,
@@ -32,6 +33,12 @@ SPATIAL_COORDINATES_KEY = "spatial_coordinates"
 CANONICAL_SCHEMA_VERSION = 1
 CANONICAL_ALGORITHM_VERSION = 1
 CANONICAL_AXES = ("z", "y", "x")
+CANONICAL_CACHE_PATHS = frozenset(
+    {
+        TableComponentPath("obsm", (CANONICAL_OBSM_KEY,)),
+        TableComponentPath("uns", (SPATIAL_COORDINATES_KEY, CANONICAL_OBSM_KEY)),
+    }
+)
 
 _TOP_LEVEL_KEYS = {
     "schema_version",

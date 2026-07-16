@@ -520,19 +520,17 @@ mutations that break AnnData's alignment guarantees are outside the contract.
 
 An unordered instance-set digest cannot detect a reassignment that preserves
 the complete per-region instance set, such as swapping two instance-key values
-between existing rows. Supported mutations to obs, region_key, or instance_key
-must therefore emit semantic table events that invalidate every affected region
-entry before the cache can be reused, even when the resulting instance sets are
-unchanged. An out-of-band same-set reassignment that bypasses those events is an
-explicit structural-validation limitation, like an out-of-band labels-pixel
-edit that preserves the labels structural signature. Forced recalculation is
-the recovery path.
+between existing rows. No operation currently planned in this roadmap changes
+the row-to-region or row-to-instance association. An out-of-band same-set
+reassignment is therefore an explicit structural-validation limitation, like
+an out-of-band labels-pixel edit that preserves the labels structural
+signature. Forced recalculation is the recovery path.
 
-Subsetting a table, changing linkage values, replacing obs, or changing
-region/instance-key metadata must cause coverage revalidation. Semantic table
-events must invalidate affected region entries immediately rather than waiting
-until Run; this is required for same-set linkage reassignments that structural
-inspection cannot detect.
+Any future supported producer that changes row-to-region or row-to-instance
+linkage must define its cache lifecycle as part of that feature. It must either
+invalidate every previous and current affected region before reuse, or eagerly
+force recalculation of the complete affected set. The invalidation API should
+be introduced with that concrete producer rather than maintained speculatively.
 
 ### Structural cache validity
 
@@ -2285,8 +2283,10 @@ current region binding, verifies the source signature and binding identity, and
 maps the payload binding's instance IDs onto current row positions. A normal
 AnnData row reorder can therefore complete safely. A changed instance set
 rejects the payload; a same-set row reassignment is remapped safely during
-cache update but requires semantic invalidation to prevent reuse of an older
-cache.
+cache update but remains structurally undetectable when considering an older
+cache for reuse. No current roadmap operation performs such a reassignment; a
+future producer must introduce invalidation or eager affected-region
+recalculation as part of its own contract.
 
 The cache-update operation derives its action from a fresh inspection rather than trusting
 the state observed before calculation:
@@ -2326,9 +2326,9 @@ Exit criteria:
   obs-name changes preserve it, while a region's instance membership change
   invalidates it;
 - same-set instance-key reassignment is pinned as an explicitly undetectable
-  structural case, and the contract requires later semantic-event integration
-  to invalidate affected region entries before reuse for supported obs/linkage
-  mutations;
+  structural case; no current roadmap operation performs it, and any future
+  producer must introduce invalidation or eager affected-region recalculation
+  before reuse;
 - a valid shared matrix refresh changes only the selected region's current row
   positions and metadata, leaving other valid regions byte-for-byte unchanged;
 - NaN occurs only in rows for regions without valid coverage metadata;
@@ -2616,7 +2616,9 @@ Exit criteria:
 - no path calls `AnnData.write_zarr()` or introduces a competing widget-local
   dirty truth.
 
-### Slice 3b: Canonical cache state, invalidation, and persistence
+### Slice 3b: Canonical cache state and persistence
+
+**Implementation status: Implemented.**
 
 This slice wires the canonical cache into the shared foundation from Slice 3a.
 Core canonical operations remain independent from Qt and HarpyAppState.
@@ -2650,20 +2652,18 @@ Deliverables:
 - canonical metadata parsing and structural validation through
   `inspect_canonical_cache()` after reload or reopen and before any cache reuse.
   The generic `PersistenceController` remains unaware of canonical metadata;
-- an explicit UI-independent affected-region invalidation operation for
-  supported region-key, instance-key, or obs replacement events, including
-  same-set instance reassignment that the instance-set digest cannot detect;
-- supported linkage-change producers report the union of previously and
-  currently affected regions. Invalidation mistrusts those regions regardless
-  of digest equality, preserves only independently revalidated unaffected
-  regions, and removes the complete canonical cache when nothing remains
-  trustworthy;
-- invalidation publishes a second canonical table mutation only when stored
-  canonical state actually changed. An updated partial cache uses `updated`; a
-  removed cache uses `removed`; both carry the explicitly affected regions and
-  a canonical-invalidation source;
 - clear mismatch/recalculation data for later controller and widget consumers;
 - canonical cache lifecycle and backed-zarr tests.
+
+The implemented public contracts are:
+
+    CANONICAL_CACHE_PATHS
+        # obsm/spatial_canonical plus its nested uns metadata path
+
+    record_canonical_cache_update(app_state, sdata, result)
+        # accepted controller-result consumer; reuse returns None
+
+The shared-state integration function lives outside the Qt-independent core.
 
 The accepted cache-update flow is:
 
@@ -2701,10 +2701,11 @@ An invalid canonical cache does not make an otherwise valid full-table reload
 fail. It is accepted as non-reusable stored state and handled by the existing
 inspection and conservative-rebuild lifecycle.
 
-Direct arbitrary AnnData edits that bypass napari-harpy semantic mutation APIs
-remain undetectable. Supported producers must publish linkage changes with
-sufficient affected-region context to invalidate every prior and current region
-whose row-to-instance association may have changed.
+Direct arbitrary AnnData edits that preserve the instance set while changing
+row-to-region or row-to-instance association remain undetectable. No current
+roadmap operation performs such a mutation. Any future supported producer must
+introduce explicit invalidation or eager affected-region recalculation as part
+of its implementation.
 
 Exit criteria:
 
@@ -2716,11 +2717,9 @@ Exit criteria:
   unit or zarr metadata consolidation fails; a later reload/reopen classifies
   any resulting partial disk state as non-reusable;
 - reload/reopen reuses only structurally valid canonical metadata;
-- a supported linkage mutation invalidates every affected region before cache
-  reuse even when its instance set is unchanged, while independently validated
-  unaffected regions remain reusable;
-- a supported linkage event that does not change stored canonical state emits
-  no canonical mutation event;
+- same-set linkage reassignment remains explicitly unsupported and
+  structurally undetectable; introducing a producer for it requires a new
+  invalidation or eager-recalculation contract;
 - calculating, cancelling, rejecting, or reusing centers without an accepted
   cache mutation records no dirty path and emits no table-state mutation event.
 
@@ -2793,6 +2792,16 @@ Deliverables:
   review;
 - textual busy status, cancellation, cleanup, and error routing;
 - main-thread cache update/revalidation;
+- widget-owned shared-state publication after an accepted cache update. The
+  controller returns `CanonicalCentersResult` through `on_centers_ready` and
+  remains unaware of `HarpyAppState`; the Spatial Query widget translates an
+  actual `result.cache_update` into one `TableStateChangedEvent` for
+  `CANONICAL_CACHE_PATHS` and calls
+  `self._app_state.record_table_mutation(event)`;
+- move the temporary `record_canonical_cache_update()` adapter into the Spatial
+  Query widget's accepted-centers callback and remove `cache_state.py` once the
+  widget owns this behavior, matching the Object Classification
+  controller-to-widget event boundary;
 - no-result outcome;
 - Apply dialog with live counts and mandatory overwrite warning;
 - main-thread annotation apply and undo UI;
@@ -2803,10 +2812,18 @@ The centroid-calculation phase is:
     worker: calculate_canonical_centers()
         ↓
     main thread: accept and apply cache payload
+        ↓ success
+    SpatialQueryWidget._on_canonical_centers_ready(result)
+        ↓ result.cache_update is not None
+    record one TableStateChangedEvent for both canonical paths
+        ↓
+    HarpyAppState marks the canonical consistency unit dirty
 
 It is skipped when the selected-region cache is already valid. Standalone
 Recalculate centroids performs this phase with valid reuse bypassed and ends
-after the main-thread cache update.
+after the main-thread cache update and widget-owned table-state publication.
+Valid cache reuse, cancellation, worker failure, or rejected payloads never
+publish a canonical table mutation event.
 
 The spatial-query phase is:
 
@@ -2825,6 +2842,8 @@ Exit criteria:
 - cancel/stale/error paths cannot update the cache, open late dialogs, or annotate;
 - successful Recalculate centroids applies only the refreshed cache update, marks the
   shared table dirty, and opens no query/result dialog;
+- the Spatial Query widget, not `SpatialQueryController`, owns construction and
+  publication of the accepted canonical `TableStateChangedEvent`;
 - cache update and annotation application are visibly distinct state
   changes;
 - users always see affected and overwrite counts before annotation mutation.
