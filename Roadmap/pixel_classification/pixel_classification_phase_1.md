@@ -17,7 +17,7 @@ Included:
 - create/manage a high-resolution napari `Labels` annotation layer;
 - train from annotated pixels only, with `0 = unlabeled` and `1..N = classes`;
 - extract tile-wise pixel features from selected channels as an internal cache-building step;
-- append normalized marker intensities to reduced deep features;
+- concatenate normalized marker intensities with 64 deterministically projected deep-feature planes;
 - write/reuse/delete a manifest-keyed sidecar zarr feature cache;
 - train one pooled classifier and predict class labels for the active viewer target;
 - display predicted labels as a high-resolution napari labels layer;
@@ -167,7 +167,7 @@ src/napari_harpy/core/pixel_classification/
   manifest.py
   normalization.py
   prediction.py
-  reducer.py
+  projection.py
 
 src/napari_harpy/widgets/pixel_classification/
   __init__.py
@@ -219,7 +219,7 @@ execution, validating coordinate-system availability, and returning channel-awar
 The Phase 1 resolution contract is simple:
 
 - annotation shape equals highest-resolution image shape;
-- feature cache shape is `(C + F_reduced, y, x)` at highest resolution;
+- feature cache shape is `(C + 64, y, x)` at highest resolution, where `C` is the number of selected marker channels;
 - predicted class labels shape equals highest-resolution image shape;
 - saved `sdata.labels[...]` shape equals highest-resolution image shape.
 
@@ -233,9 +233,9 @@ The manifest should record enough information to reject incompatible caches:
 - highest-resolution source shape, axes, and dtype;
 - normalization settings;
 - feature extractor name, weights, package versions, layers, and tile settings;
-- reducer type, parameters, fitted state identity, and output dimension;
+- projection algorithm, parameters, implementation version, matrix identity, and output dimension (`K = 64`);
 - raw feature schema id;
-- reducer id;
+- projection id;
 - final feature schema id;
 - feature cache dtype, shape, chunks, and schema version.
 
@@ -251,24 +251,39 @@ All ids should use a versioned canonical hash contract:
   napari layer names, UI labels, and other fields that do not change feature values or compatibility;
 - included version fields: cache schema version and package/model/library versions that can change feature values.
 
-**Shared Reducer and Cache Compatibility**
+**Deterministic Projection and Cache Compatibility**
 Feature caches should be physically separate per target card / sample / coordinate system, but pooled classifier
 training requires a shared final feature schema.
 
-This is especially important for PCA. Two PCA reducers fitted independently on two samples are not compatible, even if
-both output the same number of components. Component `pca_0` in one cache may represent a different axis than `pca_0`
-in another cache. For pooled training, PCA must be fitted once across the selected training samples and then reused to
-transform every target cache that participates in that classifier.
+Phase 1 should use one deterministic fixed random projection for the deep-feature axis. It must not fit PCA or another
+data-dependent reducer. Given the same raw feature schema, every target independently obtains the same projection
+matrix and final feature-plane semantics. Consequently, users can build caches one target at a time, add another target
+later, and reuse existing compatible caches without a reducer-refit workflow or a reducer control in the UI.
+
+Use a dense Rademacher projection as the Phase 1 default. For raw deep-feature dimension `D` and output dimension
+`K = 64`, generate a matrix `R` with shape `(K, D)` whose entries are deterministically sampled from
+`{-1 / sqrt(K), +1 / sqrt(K)}`. For a raw per-pixel feature vector `x`, compute `z = R @ x`. The generator algorithm,
+seed-derivation rule, matrix orientation, scaling, input/output dtype policy, and implementation version are part of the
+persisted projection contract. Generation must not depend on cache-build order, target data, annotations, training
+scope, process-global random state, or hardware.
+
+For the initial projection contract, derive the seed by hashing a versioned projection namespace together with the
+`raw_feature_schema_id`, then convert a specified digest prefix to an unsigned integer with specified byte order. Use a
+named, versioned pseudo-random generator rather than a library-global RNG. This makes matrix reproduction an explicit
+algorithm rather than an accidental consequence of whichever process generated the first cache.
+
+`K = 64` is a fixed Phase 1 product default, not a theorem-derived optimum or a user-facing setting. Later phases may
+change it based on ablation results. Such a change creates a new `projection_id` and `final_feature_schema_id`; it does
+not mutate an existing cache schema.
 
 Use three levels of identity:
 
 - `raw_feature_schema_id`: hash of fields that define the unreduced deep-feature stream and normalized marker planes,
   excluding target-specific source identity. This includes selected channel names and order, normalization settings,
   feature extractor name/weights/layers, tile settings, raw deep-feature plane order, and raw deep-feature dimension.
-- `reducer_id`: hash of the fitted reducer artifact. For PCA/IncrementalPCA, this must include reducer type and params,
-  `components`, `mean`, explained variance/ratio when available, number of components, number of raw features, fit
-  sample policy, fit target ids, package versions, and array hashes for the fitted state.
-- `final_feature_schema_id`: hash of `raw_feature_schema_id`, `reducer_id`, final feature plane order, final dtype
+- `projection_id`: hash of the deterministic projection contract and generated matrix. The same raw feature schema must
+  produce the same projection id on every target and in every process.
+- `final_feature_schema_id`: hash of `raw_feature_schema_id`, `projection_id`, final feature plane order, final dtype
   policy, and cache schema version.
 
 Exact `raw_feature_schema_id` inputs:
@@ -284,38 +299,25 @@ Exact `raw_feature_schema_id` inputs:
 - feature extractor backend name, implementation version, model name, weights name or digest, selected layers, scale
   pyramid settings, input channel handling, padding policy, tile size/overlap, preprocessing, and output raw feature
   plane order;
-- raw deep-feature dimension before reduction;
-- reducer input dtype/precision policy;
+- raw deep-feature dimension before projection;
+- projection input dtype/precision policy;
 - relevant package versions for feature generation.
 
-Exact `reducer_id` inputs for PCA/IncrementalPCA:
+Exact `projection_id` inputs:
 
-- hash kind and reducer hash schema version;
-- `raw_feature_schema_id`;
-- reducer implementation, reducer type, and package version;
-- reducer parameters, including `n_components`, whitening, batch size, random state, centering policy, and dtype policy;
-- reducer-fit cohort target ids, sorted canonically;
-- raw-feature sampling policy, including pixels per target, balancing policy, sampling seed, mask policy, and tile/batch
-  ordering;
-- fitted reducer attributes needed for transformation and audit, including `components`, `mean`, number of raw
-  features, number of samples seen, explained variance, explained variance ratio, and singular values when available;
-- array hashes for every fitted numeric array used by the reducer.
-
-Exact `reducer_id` inputs for a fixed random projection:
-
-- hash kind and reducer hash schema version;
+- hash kind and projection hash schema version;
 - `raw_feature_schema_id`;
 - projection implementation and package version;
-- projection parameters, including output dimension, random state, distribution, density, dtype policy, and input
-  dimension;
+- projection parameters, including input dimension, output dimension `K = 64`, Rademacher distribution and scaling,
+  generator algorithm, seed-derivation rule, matrix orientation, and input/output dtype policy;
 - projection matrix array hash.
 
 Exact `final_feature_schema_id` inputs:
 
 - hash kind and final schema hash version;
 - `raw_feature_schema_id`;
-- `reducer_id`;
-- final feature plane order: selected marker planes first, then reduced deep-feature planes;
+- `projection_id`;
+- final feature plane order: selected normalized marker planes first, then projected deep-feature planes;
 - final feature names or deterministic plane labels;
 - final feature count;
 - final feature dtype policy;
@@ -343,48 +345,39 @@ sample.harpy-cache.zarr/
     feature_schemas/
       <final_feature_schema_id>/
         raw_feature_manifest
-        reducer/
-          <reducer_id>/
+        projection/
+          <projection_id>/
             manifest
-            components
-            mean
-            explained_variance
-            explained_variance_ratio
+            matrix
     feature_caches/
       <target_cache_id>/
         features
-        manifest              # points to raw_feature_schema_id, reducer_id, final_feature_schema_id
+        manifest              # points to raw_feature_schema_id, projection_id, final_feature_schema_id
 ```
 
-For a PCA-backed schema, cache building should be a two-stage operation:
+Cache building is independent per target:
 
-1. Fit the shared reducer.
-   - Gather raw deep-feature samples from all target cards in the intended reducer-fit cohort.
-   - Use deterministic sampling per target card, with the sampling policy recorded in the reducer manifest.
-   - Prefer balanced sampling by target card so a very large image does not dominate the PCA fit by default.
-   - Fit one reducer from the combined sampled raw features. For large data, stream batches through `IncrementalPCA`
-     rather than materializing all sampled features at once.
-2. Write per-target caches.
-   - Stream raw deep features tile-wise for each target card.
-   - Transform deep features with the shared reducer.
-   - Append normalized marker-intensity planes.
-   - Write a separate feature cache folder per target card, each pointing to the same `reducer_id` and
-     `final_feature_schema_id`.
+1. Resolve the raw feature schema and deterministically generate or load its projection artifact.
+2. Stream raw deep features tile-wise for the target card.
+3. Apply the projection only along the deep-feature axis, for example as a fixed `1 x 1` linear operation.
+4. Concatenate selected normalized marker planes followed by the 64 projected deep-feature planes.
+5. Write a separate target cache pointing to the shared `projection_id` and `final_feature_schema_id`.
+
+The raw high-dimensional deep features should not be persisted. Building a new target cache neither reads nor changes
+other targets' data or caches.
 
 Training-scope validation:
 
 - all selected training target caches must have the same `final_feature_schema_id`;
-- all selected training target caches must point to the same `reducer_id`;
-- the reducer-fit cohort should contain every target used for classifier training when the reducer type is PCA;
-- same reducer type, same number of components, or same feature count is not sufficient;
+- all selected training target caches must point to the same `projection_id`;
+- same projection type or same output count alone is not sufficient; the complete projection identity must match;
 - per-target source fields may differ, but schema fields must match exactly;
-- if a new target card is added to a PCA-backed training scope after the reducer was fitted, Harpy should require a
-  shared reducer refit and rebuild the affected final caches before that target can contribute to pooled training.
+- adding a target with a compatible raw feature schema must not invalidate or rebuild existing target caches.
 
 Prediction validation:
 
 - an active prediction target must use the same `final_feature_schema_id` as the trained classifier;
-- if the active target cache has a different reducer, even with the same number of components, prediction must be
+- if the active target cache has a different projection, even with the same output dimension, prediction must be
   blocked with a clear rebuild/reuse action.
 
 **Implementation Slices**
@@ -530,25 +523,40 @@ Acceptance criteria:
 
 4. Normalization and feature schema
 
-Implement `normalization.py`, `features.py`, and `reducer.py`. Normalize selected marker channels before caching, extract
-deep features tile-wise, reduce only the deep-feature axis, then append normalized marker planes unchanged. In the UI,
-this work is presented as building or rebuilding a feature cache, not as producing a user-facing feature matrix.
+Implement `normalization.py`, `features.py`, and `projection.py`. Normalize selected marker channels before caching,
+extract deep features tile-wise, project only the deep-feature axis to 64 planes, then append those planes after the
+normalized marker planes. In the UI, this work is presented as building or rebuilding a feature cache, not as producing
+a user-facing feature matrix. The projection has no fit action or user-facing configuration.
+
+The two feature groups are intentionally complementary:
+
+```text
+normalized marker planes       direct biological intensity at the pixel
+projected CNN feature planes   morphology and local-neighbourhood context
+```
+
+Keeping the marker planes is a feature-level skip connection around the pretrained CNN and projection. It preserves
+simple marker rules and exact high-resolution intensities that may otherwise be transformed, spatially smoothed, or
+mixed across projected coordinates. This matters because ConvNeXt was pretrained on natural RGB images, its nonlinear
+and strided operations do not preserve every original marker value, and a 64-dimensional projection is deliberately
+lossy. Marker normalization must be deterministic and recorded, but aggressive per-target normalization should be
+avoided or explicitly evaluated because it can erase meaningful cross-target intensity differences.
 
 Recommended Phase 1 defaults:
 
 - selected channels: user-selected subset, with a product warning for very large selections;
 - marker normalization: deterministic channel-wise clipping/scaling recorded in the manifest;
 - deep feature backend: ConvNeXt-Tiny early-layer features behind the optional `torch` dependency group;
-- reducer: shared fitted PCA/IncrementalPCA across the intended training targets, or a deterministic fixed projection,
-  recorded as a reusable reducer artifact;
+- projection: deterministic dense Rademacher projection to `K = 64`, recorded as a reusable projection artifact;
 - persistent feature dtype: `float16` unless validation shows it harms classifier quality.
 
 Acceptance criteria:
 
-- feature cache planes are ordered as selected normalized marker planes followed by reduced deep feature planes;
+- feature cache planes are ordered as selected normalized marker planes followed by 64 projected deep-feature planes;
 - raw high-dimensional deep features are streamed tile-wise and are not persisted blindly;
-- PCA-backed caches are written only after fitting one shared reducer for the selected reducer-fit cohort;
-- per-target caches reference the shared reducer id and final feature schema id;
+- projection generation is deterministic and independent of target data, annotations, and cache-build order;
+- independently built compatible target caches resolve to the same projection id and final feature schema id;
+- adding a compatible target does not invalidate or rebuild existing caches;
 - tests can run with a fake feature extractor so CI does not require downloading model weights;
 - missing optional torch dependencies produce a clear install/action message.
 
@@ -562,11 +570,10 @@ sample.harpy-cache.zarr/
     feature_schemas/
       <final_feature_schema_id>/
         raw_feature_manifest
-        reducer/
-          <reducer_id>/
+        projection/
+          <projection_id>/
             manifest
-            components
-            mean
+            matrix
     feature_caches/
       <cache_id>/
         features
@@ -589,7 +596,8 @@ Acceptance criteria:
 - cache status is reported per target card as missing, found, building, ready, stale, or invalid/partial;
 - pooled-training cache compatibility is validated through `final_feature_schema_id`, not through target-specific
   `cache_id`;
-- caches with independently fitted PCA reducers are rejected even when component counts match;
+- caches with different projection ids are rejected even when both contain 64 projected planes;
+- adding a target with a compatible schema reuses the existing projection identity without rebuilding other caches;
 - cache creation is atomic enough that interrupted writes do not look valid;
 - stale/partial caches are reported and can be deleted from the UI.
 
@@ -601,11 +609,28 @@ and return a high-resolution predicted label map for that target.
 
 Recommended Phase 1 classifier:
 
-- `RandomForestClassifier` with deterministic `random_state`;
+- a small per-pixel multilayer perceptron (MLP) implemented behind the optional `torch` dependency group;
+- input width `C + 64`, one hidden `Linear(C + 64, 64)` layer, `GELU`, `Dropout(p=0.1)`, and a final
+  `Linear(64, N_classes)` layer;
+- no batch normalization; fit a per-feature mean and standard deviation on the sampled training rows, persist that
+  state with the classifier, and apply it unchanged during prediction;
+- deterministic class- and target-balanced training-row sampling, a fixed training seed, `float32` training, and
+  bounded epochs with validation-based early stopping where a valid spatial holdout can be formed;
 - class labels are integer label IDs from the annotation layer;
 - one fitted classifier is trained from pooled annotated pixels across the selected training scope;
-- confidence is max predicted probability;
+- confidence is the maximum softmax score, presented as an uncalibrated model confidence rather than a calibrated
+  probability;
 - prediction writes should not modify the annotation layer.
+
+The MLP is a fixed Phase 1 product choice, not another expert configuration surface. The UI should expose a single
+training action and useful progress/error status, not hidden-layer, optimizer, dropout, epoch, projection, or seed
+controls. Exact defaults must be versioned and recorded in classifier metadata.
+
+This classifier matches the hybrid cache representation: explicit marker planes retain direct per-pixel biological
+signals, projected CNN planes provide neighbourhood and morphology context, and the dense first layer can learn
+arbitrary combinations across both groups. The fixed projection is lossy, so the roadmap should retain ablation tests
+for marker-only, projected-CNN-only, and combined inputs; the neural network cannot recover information discarded by
+the projection.
 
 Training scope:
 
@@ -623,13 +648,20 @@ Prediction scope:
 
 Acceptance criteria:
 
-- training rejects empty/unbalanced/one-class selected training scopes with clear messages;
+- training rejects empty, one-class, or otherwise insufficient selected training scopes with clear messages;
 - the fitted classifier records the target cards and cache ids used for training;
-- training rejects target-cache selections whose `final_feature_schema_id` or `reducer_id` differ;
+- training rejects target-cache selections whose `final_feature_schema_id` or `projection_id` differ;
+- training-row sampling prevents a large target or heavily annotated class from dominating by default and records the
+  sampled counts per target and class;
+- classifier input-standardization state, integer-class/output-index mapping, architecture version, optimizer and
+  stopping parameters, and deterministic seed are persisted and reused for prediction;
+- validation rows are separated by target or spatial block where practical rather than randomly interleaving adjacent
+  pixels between training and validation;
 - prediction is tile-wise and does not require flattening the whole image into memory at once;
 - predicted class labels have the active target's highest-resolution image shape;
-- classifier metadata records training cache ids, training scope, training class counts, training time, and classifier
-  parameters.
+- classifier metadata records the final feature schema and projection ids, training cache ids, training scope, training
+  class counts, training time, classifier architecture/parameters, fitted input-standardization state, class-index
+  mapping, and model-state identity.
 
 7. Widget workflow and background jobs
 
@@ -682,7 +714,7 @@ Save behavior:
 - default output name should be generated from source image and classifier context;
 - existing labels element names require explicit overwrite or a new name;
 - saved labels include coordinate-system metadata compatible with the source image;
-- prediction metadata records cache id, selected channels, normalization, feature extractor, reducer, classifier
+- prediction metadata records cache id, selected channels, normalization, feature extractor, projection, classifier
   parameters, training scope, active prediction target, class labels, and created timestamp.
 
 Acceptance criteria:
@@ -698,9 +730,10 @@ Add focused tests before broadening UI behavior:
 
 - manifest canonicalization and `cache_id` stability;
 - cache compatibility/rejection;
-- shared reducer id and final feature schema id validation;
-- independently fitted PCA reducers with the same component count are rejected for pooled training;
-- PCA reducer refit is required when a new target is added to the PCA-backed training scope;
+- deterministic projection generation and matrix-hash stability;
+- projection id and final feature schema id validation;
+- caches with different projection identities are rejected even when their output dimensions match;
+- adding a compatible target preserves existing cache ids and does not rebuild other target caches;
 - coordinate-system selection creates target-card state;
 - image/channel target-card selection validates against coordinate-system availability;
 - per-channel overlay load reuses existing layers;
@@ -708,8 +741,11 @@ Add focused tests before broadening UI behavior:
 - annotation validation and class-count tracking;
 - training-scope selection pools eligible annotated target cards;
 - normalization and feature-plane ordering;
-- fake extractor plus reducer writes expected feature-cache shape;
-- classifier training/prediction on small synthetic data;
+- fake extractor plus projection writes the expected `(C + 64, y, x)` feature-cache shape;
+- MLP training/prediction on small synthetic data, including deterministic seeds and persisted input standardization;
+- class- and target-balanced sampling behavior;
+- integer class-id/output-index round trips for non-contiguous positive label ids;
+- marker-only, projected-CNN-only, and combined-representation ablation harnesses;
 - interactive prediction rejects non-active/batch target scopes;
 - tile-wise prediction shape/dtype;
 - widget state transitions with mocked workers;

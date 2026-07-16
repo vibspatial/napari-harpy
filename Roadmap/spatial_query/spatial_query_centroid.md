@@ -720,7 +720,7 @@ does not perform a spatial query, and never changes an annotation column.
 On activation:
 
 1. capture the selected labels/table-region identities, structural signatures,
-   instance-set digest, current cache generation, and a new operation token;
+   instance-set digest, current cache generation, and a new operation ID;
 2. bypass valid-cache reuse and calculate all requested table-region centroids
    lazily from scale0;
 3. validate that every requested table ID has exactly one finite result;
@@ -746,23 +746,23 @@ but is not replaced until a complete valid calculation result is available.
 3. Clicking Run performs a fresh selected-region cache inspection, including
    one instance-set digest, then captures an immutable request containing stable
    source identities, selected coordinate system, table linkage, target intent,
-   cache state, structural signatures, and one operation generation.
+   cache state, structural signatures, and one operation ID.
 4. A valid cache supplies the selected rows of `spatial_canonical` directly and
    skips centroid calculation. If the cache is absent, partial, stale, or
    rebuildable-invalid, a worker calculates centers for all rows of the selected
    table region from scale0 and returns a `CanonicalCacheUpdatePayload` without
    mutating the table.
 5. The main-thread controller accepts the payload only for the current operation
-   generation and applies it through `apply_canonical_cache_update()`. Its fresh
+   ID and applies it through `apply_canonical_cache_update()`. Its fresh
    source/binding validation re-resolves current rows and rejects outdated work.
 6. Once canonical centers are valid or the cache update has succeeded, a worker
    evaluates them against the transformed Shapes geometry. It returns matching
    instance IDs without mutating SpatialData, AnnData, or Qt state.
 7. Throughout either worker phase, the status card reports that calculation is
    busy without a progress bar or percentage. Selection changes invalidate the
-   operation generation.
+   operation ID.
 8. The main-thread controller accepts the query result only for the current
-   generation, revalidates the captured request, and resolves returned IDs to
+   operation ID, revalidates the captured request, and resolves returned IDs to
    current table rows using `region_key` and `instance_key`.
 9. If no centroids match, show No instance centroids found in the
    annotation and make no annotation-column changes.
@@ -928,10 +928,10 @@ main-thread domain operation.
 - Preserve the scale0 Dask representation; do not rechunk or eagerly load the
   labels raster as part of this feature.
 - Follow the existing Feature Extraction and Object Classification worker
-  lifecycle: assign a monotonically increasing operation generation, keep the
-  active worker and generation, call `worker.quit()` when invalidating it,
-  clear the active references, and ignore every late signal whose generation
-  is no longer current.
+  lifecycle: assign a monotonically increasing operation ID, keep the active
+  operation phase, call `worker.quit()` when invalidating it, clear the active
+  reference, and ignore every late signal whose operation ID is no longer
+  current.
 - `worker.quit()` is best-effort invalidation, not hard interruption of Harpy's
   synchronous calculation. The underlying calculation may finish, but its
   result cannot update the cache, open a later dialog, or mutate a table.
@@ -956,7 +956,7 @@ Use typed, UI-independent contracts, for example:
         predicate = "canonical_center_inside"
         cache_generation
         source_signature
-        generation
+        operation_id
 
     SpatialCenterQueryResult:
         shapes_name
@@ -968,7 +968,7 @@ Use typed, UI-independent contracts, for example:
         matched_instance_count
         cache_action
         cache_build_result or None
-        generation
+        operation_id
 
 The exact Python types may differ. The separation is normative: center
 calculation and geometry querying return immutable data; cache updates,
@@ -1034,7 +1034,7 @@ queries against the same labels/table region should be snappy.
 
 ### Stale-result protection
 
-Every Run has a monotonically increasing operation generation and captured
+Every Run has a monotonically increasing operation ID and captured
 source identities/structural signatures. Discard all worker output if, while it
 runs:
 
@@ -1353,7 +1353,7 @@ The corresponding widget package is:
 
             controller.py
                 binding/cache validation
-                worker lifecycle and generations
+                worker lifecycle and operation IDs
                 stale-result handling
                 cache update, apply, and undo orchestration
 
@@ -1396,7 +1396,7 @@ Reuse rather than copy:
 - PersistenceController write/reload behavior and the existing
   ad.io.write_elem-based selective persistence path;
 - active-coordinate-system selection patterns;
-- styles, status cards, worker cleanup, and generation-token patterns.
+- styles, status cards, worker cleanup, and operation-ID patterns.
 
 The widget must not depend on Object Classification internals. Shared
 persistence/reload UI belongs in a reusable component or service.
@@ -1559,7 +1559,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 
 - calculation runs through a worker and returns a cache-update payload without
   mutating AnnData;
-- only the current operation generation can apply a returned payload;
+- only the current operation ID can apply a returned payload;
 - invalidated, cancelled, and late worker signals are ignored;
 - accepted payloads are revalidated and applied on the main thread;
 - the status card reports a textual busy state without progress telemetry;
@@ -2226,6 +2226,8 @@ Exit criteria:
 
 ### Slice 2: Background canonical calculation boundary
 
+**Implementation status: Implemented.**
+
 The required mutation boundary is:
 
     main thread
@@ -2248,7 +2250,7 @@ Deliverables:
 - a thin worker wrapper that calls `calculate_canonical_centers()` and returns
   its `CanonicalCacheUpdatePayload` without calling
   `apply_canonical_cache_update()` or otherwise mutating AnnData;
-- the same monotonically increasing operation-generation, active-worker,
+- the same monotonically increasing operation ID, active-operation-phase,
   `worker.quit()`, and late-signal rejection pattern used by existing
   napari-harpy controllers;
 - an accepted-result boundary that applies the payload only on the main thread,
@@ -2264,7 +2266,7 @@ Exit criteria:
 - the worker returns the existing payload contract and never mutates AnnData;
 - cancellation or invalidation immediately prevents result acceptance even if
   the underlying Harpy call later completes;
-- only the current operation generation may reach
+- only the current operation ID may reach
   `apply_canonical_cache_update()` on the main thread;
 - napari-harpy does not override or regression-gate Harpy's Dask scheduling,
   concurrency, memory, or calculation performance.
@@ -2358,7 +2360,7 @@ Exit criteria:
 
 Deliverables:
 
-- worker orchestration with one monotonically increasing operation generation
+- worker orchestration with one monotonically increasing operation ID
   spanning an optional centroid-calculation phase and a spatial-query phase;
 - standalone Recalculate centroids orchestration that bypasses valid reuse,
   calculates a payload in the worker, and applies it on the main thread, ending
@@ -2387,10 +2389,10 @@ The spatial-query phase is:
         ↓
     main thread: accept result and open the review dialog
 
-The same operation generation governs both phases; do not introduce a separate
+The same operation ID governs both phases; do not introduce a separate
 job-ID concept. The controller also records which phase owns the active worker.
 Cancellation, selection changes, reload, a newer operation, or widget shutdown
-invalidate that generation, and every late signal from either phase is ignored.
+invalidate that operation ID, and every late signal from either phase is ignored.
 
 Exit criteria:
 
