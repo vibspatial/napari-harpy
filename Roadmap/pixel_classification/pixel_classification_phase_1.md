@@ -230,7 +230,8 @@ The manifest should record enough information to reject incompatible caches:
 - source image element zarr path resolved through SpatialData metadata;
 - coordinate system;
 - selected channels and channel names;
-- highest-resolution source shape, axes, and dtype;
+- highest-resolution source shape, axes, dtype, and physical Zarr/Dask chunk layout;
+- requested logical tile layout, actual post-overlap-rechunk core/expanded layouts, and final regular cache layout;
 - normalization settings;
 - feature extractor name, weights, package versions, layers, and tile settings;
 - projection algorithm, parameters, implementation version, matrix identity, and output dimension (`K = 64`);
@@ -248,7 +249,8 @@ All ids should use a versioned canonical hash contract:
 - array payloads: hash numeric arrays separately using canonical dtype, shape, memory order, and raw bytes, then include
   those array hashes in the JSON payload;
 - excluded runtime fields: creation time, last-used time, writer hostname, progress state, local cache-store path,
-  napari layer names, UI labels, and other fields that do not change feature values or compatibility;
+  napari layer names, UI labels, runtime marker-batch size, source-chunk compatibility classification, lazy-rechunk
+  diagnostics, and other fields that do not change feature values or compatibility;
 - included version fields: cache schema version and package/model/library versions that can change feature values.
 
 **Deterministic Projection and Cache Compatibility**
@@ -297,8 +299,8 @@ Exact `raw_feature_schema_id` inputs:
 - marker normalization policy, parameters, and whether fitted normalization state is per-target or shared;
 - raw marker plane order;
 - feature extractor backend name, implementation version, model name, weights name or digest, selected layers, scale
-  pyramid settings, input channel handling, padding policy, tile size/overlap, preprocessing, and output raw feature
-  plane order;
+  pyramid settings, input channel handling, RGB replication strategy, pretrained input mean/std, padding policy, tile
+  size/overlap, preprocessing, Dask overlap/trim contract version, and output raw feature plane order;
 - raw deep-feature dimension before projection;
 - projection input dtype/precision policy;
 - relevant package versions for feature generation.
@@ -526,7 +528,9 @@ Acceptance criteria:
 Implement `normalization.py`, `features.py`, and `projection.py`. Normalize selected marker channels before caching,
 extract deep features tile-wise, project only the deep-feature axis to 64 planes, then append those planes after the
 normalized marker planes. In the UI, this work is presented as building or rebuilding a feature cache, not as producing
-a user-facing feature matrix. The projection has no fit action or user-facing configuration.
+a user-facing feature matrix. The projection has no fit action or user-facing configuration. Tile-wise extraction must
+be expressed as one lazy Dask graph from the source Zarr-backed array to the sidecar feature-cache Zarr. Do not call
+`.compute()` once per spatial tile in a Python loop and do not materialize the complete source or feature array.
 
 The two feature groups are intentionally complementary:
 
@@ -547,13 +551,227 @@ Recommended Phase 1 defaults:
 - selected channels: user-selected subset, with a product warning for very large selections;
 - marker normalization: deterministic channel-wise clipping/scaling recorded in the manifest;
 - deep feature backend: ConvNeXt-Tiny early-layer features behind the optional `torch` dependency group;
+- ConvNeXt input handling: process each marker independently by transiently replicating it over RGB and applying only
+  the pretrained weights' fixed ImageNet mean/std normalization;
 - projection: deterministic dense Rademacher projection to `K = 64`, recorded as a reusable projection artifact;
 - persistent feature dtype: `float16` unless validation shows it harms classifier quality.
+
+For one concrete Dask block with `C` selected markers, reshape `(C, H, W)` to `(C, 1, H, W)` and treat marker identity
+as the Torch batch coordinate during feature extraction. Restore the marker coordinate afterward and emit raw features
+in a fixed marker-major order before projection. Replicate the marker batch over the three input channels, apply the
+pretrained weights' mean/std, and discard that RGB tensor as soon as its selected intermediate features have been
+extracted. The replicated tensor is a transient implementation detail: it must never be written to the feature cache.
+Marker passes may be split into smaller batches when device memory is constrained. This intentionally does not mix
+markers inside ConvNeXt; cross-marker combinations are learned later by the classifier from the projected features and
+appended marker planes.
+
+Use the following as the initial production batching pattern:
+
+```python
+import torch
+from torchvision.models import ConvNeXt_Tiny_Weights
+
+
+# marker_tile: Torch tensor (C, H, W), converted from one normalized Dask block
+C, H, W = marker_tile.shape
+marker_batch = marker_tile.reshape(C, 1, H, W)
+
+# expand is a view, but the normalized three-channel result is transiently
+# materialized. Bound the number of markers processed together.
+input_transform = ConvNeXt_Tiny_Weights.DEFAULT.transforms()
+mean = marker_batch.new_tensor(input_transform.mean).reshape(1, 3, 1, 1)
+std = marker_batch.new_tensor(input_transform.std).reshape(1, 3, 1, 1)
+max_marker_batch = 4
+feature_chunks: dict[str, list] = {}
+
+with torch.inference_mode():
+    for marker_chunk in marker_batch.split(max_marker_batch, dim=0):
+        rgb_chunk = (marker_chunk.expand(-1, 3, -1, -1) - mean) / std
+        chunk_features = intermediate_extractor(rgb_chunk)
+        del rgb_chunk
+        for name, values in chunk_features.items():
+            feature_chunks.setdefault(name, []).append(values)
+
+# The extractor returns selected intermediate ConvNeXt feature maps. Restore the
+# marker coordinate independently for every selected layer before spatial
+# alignment, concatenation and deterministic projection.
+layer_features = {
+    name: torch.cat(chunks, dim=0).reshape(C, *chunks[0].shape[1:])
+    for name, chunks in feature_chunks.items()
+}
+```
+
+This marker-batching code runs inside the Dask block-inference function. Dask supplies one concrete NumPy block,
+including its spatial halo; the block function converts that bounded block to Torch, runs the frozen extractor under
+`torch.inference_mode()`, returns a NumPy feature block, and releases its CPU/GPU intermediates. Construct the model
+once per execution worker, not once per Dask block.
+
+Do not call the complete TorchVision classification transform on dense tiles: its resize/crop operations would change
+the source grid. Use only the mean/std supplied by the selected weights. Persist the weights identifier, exact mean/std
+values, RGB replication policy, and preprocessing implementation version in the raw feature schema. Marker chunk size
+is a runtime memory control and is excluded from feature identity; tests must show that changing it preserves output
+values within the declared tolerance.
+
+**Dask-to-PyTorch execution contract**
+
+Keep three units separate:
+
+```text
+physical Zarr chunk    storage and decompression unit
+logical Dask block     spatial ConvNeXt inference tile, before halo expansion
+Torch marker batch     number of marker planes sent through ConvNeXt together
+```
+
+The source image remains a lazy Dask array. Select the requested markers, lazily rechunk the marker axis to one block
+and the spatial axes to the chosen inference-tile shape, apply marker clipping/scaling lazily from the already computed
+percentile statistics, add the required spatial halo, map the PyTorch extractor over those blocks, trim the halo, and
+regularize the resulting feature chunks for direct storage in the target cache Zarr. Build this complete graph before
+executing it.
+
+Because block inference changes the leading axis from selected markers to `(C + 64)` cache planes, prefer explicit
+overlap, block mapping, and trimming stages rather than relying on automatic output-shape inference:
+
+```python
+import dask.array as da
+import numpy as np
+
+
+# source_markers is Zarr-backed and remains lazy: (C, Y, X).
+logical_tiles = source_markers.rechunk((C, tile_y, tile_x))
+normalized = normalize_dask(logical_tiles, percentile_statistics)
+
+# An axis held in one block has no internal block boundary and needs no Dask
+# overlap. ConvNeXt still applies its normal model-boundary behavior there.
+depth = {
+    0: 0,
+    1: 0 if normalized.numblocks[1] == 1 else halo_y,
+    2: 0 if normalized.numblocks[2] == 1 else halo_x,
+}
+boundary = {0: "none", 1: padding_policy, 2: padding_policy}
+
+overlapped = da.overlap.overlap(
+    normalized,
+    depth=depth,
+    boundary=boundary,
+    # Dask may merge/redistribute short chunks, including a small final chunk,
+    # so that every core chunk can support the requested overlap.
+    allow_rechunk=True,
+)
+
+# infer_convnext_block receives one in-memory NumPy block and returns
+# (C + 64, block_y, block_x). Supplying meta prevents Dask from invoking
+# PyTorch on synthetic 0-dimensional inputs during graph construction. Derive
+# spatial output metadata from the actual post-rechunk overlap array, never
+# from the originally requested tile shape.
+actual_pretrim_chunks = (
+    (C + 64,),
+    overlapped.chunks[1],
+    overlapped.chunks[2],
+)
+mapped = overlapped.map_blocks(
+    infer_convnext_block,
+    dtype=np.float16,
+    chunks=actual_pretrim_chunks,
+    meta=np.empty((0, 0, 0), dtype=np.float16),
+)
+
+features = da.overlap.trim_internal(
+    mapped,
+    depth,
+    boundary=boundary,
+)
+
+# Automatic overlap rechunking may leave irregular inference-core chunks.
+# Rechunk only the projected C + 64 output to the fixed cache layout; this does
+# not rewrite the source or rerun ConvNeXt.
+actual_inference_chunks = features.chunks
+cache_chunks = (C + 64, cache_chunk_y, cache_chunk_x)
+features_for_store = features.rechunk(cache_chunks)
+
+# target_cache_zarr is created with cache_chunks. This creates a lazy write
+# graph; it does not load the complete feature array.
+write_job = da.store(
+    features_for_store,
+    target_cache_zarr,
+    compute=False,
+)
+
+# Execute exactly once in the existing background worker. The synchronous
+# scheduler keeps GPU inference concurrency at one for the initial local path.
+write_job.compute(scheduler="synchronous")
+```
+
+The final `write_job.compute(...)` is not an eager full-array conversion: it executes the store graph and writes one
+output block at a time. A separate preliminary Dask reduction may compute the small set of full-image percentile
+statistics once. The prohibited pattern is repeated spatial-tile `.compute()` calls.
+
+`allow_rechunk=True` is required for valid short-edge cases. For example, with core chunks `(512, 512, 100)` and
+overlap depth `300`, `allow_rechunk=False` raises because the final chunk is too small. Dask may instead choose core
+chunks such as `(512, 312, 300)`, which then produce a different expanded-block layout. It may also change the number
+of blocks. Treat `overlapped.chunks` and the chunks obtained after `trim_internal` as authoritative and inspect them
+before execution.
+
+Do not pass output chunks predicted from the requested tile layout into `da.map_overlap`. When automatic rechunking
+changes the block grid, stale `chunks=` metadata can fail graph construction or describe different boundaries from the
+arrays returned at runtime, making downstream region writes unsafe. For this shape-changing operation from `(C, ...)`
+to `(C + 64, ...)`, the explicit public sequence `overlap(..., allow_rechunk=True) -> map_blocks(chunks derived from
+overlapped.chunks) -> trim_internal(...)` is intentionally safer than the `da.map_overlap` convenience wrapper. It is
+the same overlap/map/trim algorithm while exposing the actual intermediate layout needed for correct output metadata.
+
+Before execution, validate the actual plan rather than the requested plan:
+
+- the largest expanded block, including all selected markers and transient Torch activations, fits the CPU/GPU memory
+  budget;
+- the trimmed shape is exactly `(C + 64, Y, X)`;
+- actual core boundaries satisfy the separately defined ConvNeXt stride-grid contract;
+- `features_for_store` has regular chunks matching the fixed Zarr cache chunks.
+
+Use this minimal chunk-compatibility policy for each spatial axis, ignoring the naturally smaller edge chunk:
+
+```text
+preferred       inference tile is an integer multiple of the physical Zarr chunk
+acceptable      physical Zarr chunk is an integer multiple of the inference tile
+fallback        neither divides the other: lazily rechunk and show an inefficiency warning
+```
+
+The preferred direction lets one model tile combine complete storage chunks. The acceptable direction lazily splits a
+larger storage chunk, but Zarr must still read/decompress that physical chunk. The fallback may add slicing and data
+movement to the Dask graph; it is allowed in Phase 1 so small or unusually chunked datasets remain usable. Tile size is
+an internal default, not a normal user setting. Let overlap construction lazily repair any chunk smaller than the halo,
+then expose, validate, and record the actual resulting core and expanded chunk layouts. If the overlap depth is larger
+than an entire multi-block spatial axis or the resulting expanded block exceeds the memory budget, fail before model
+execution with an actionable tile/halo error rather than relying on an unbounded rechunk.
+
+Do not physically rechunk or rewrite the source image in Phase 1. Calling `rechunk(...)` above only changes the lazy
+Dask graph. An on-disk staging/rechunk cache would require a full source read, duplicate storage, another progress and
+invalidation workflow, and is outside this phase. Also do not introduce a PyTorch `DataLoader` for dense cache
+generation: Dask already owns block scheduling, overlap, shared reads, and chunk-wise Zarr output. A DataLoader remains
+an option for future independent-sample training workflows. The final `features.rechunk(cache_chunks)` is also lazy and
+operates only on the already projected `(C + 64)` output so the Zarr cache has one regular physical chunk shape.
+Pre-create `target_cache_zarr` with that exact shape/dtype/chunk layout and use `da.store`; do not ask `to_zarr` to
+select another automatic write layout after this explicit regularization.
 
 Acceptance criteria:
 
 - feature cache planes are ordered as selected normalized marker planes followed by 64 projected deep-feature planes;
 - raw high-dimensional deep features are streamed tile-wise and are not persisted blindly;
+- production feature extraction replicates each marker transiently over RGB, applies the selected weights' mean/std,
+  and never writes replicated RGB planes to the cache;
+- marker batching can be reduced without changing feature-plane semantics when device memory is constrained;
+- multichannel extraction preserves the declared marker-major raw-feature order when flattening and restoring the
+  marker batch coordinate;
+- cache building constructs one lazy Dask graph and does not call `.compute()` per spatial tile or on the full source
+  or feature array;
+- Dask overlap supplies the declared halo, block inference returns the expanded spatial shape, and trimming restores
+  the exact highest-resolution source shape without seams in the tested valid region;
+- overlap may lazily rechunk short core chunks; block-output metadata is derived from the actual post-rechunk
+  `overlapped.chunks`, never from the originally requested tile layout;
+- the actual expanded/core layouts pass memory, output-shape, and stride-grid validation before execution;
+- irregular trimmed inference chunks are lazily rechunked only after projection to a regular `(C + 64, y, x)` cache
+  layout matching the target Zarr chunks;
+- compatible storage/inference chunk layouts proceed normally; incompatible layouts use lazy rechunking, emit one
+  clear inefficiency warning, and never create an on-disk rechunked source copy;
+- the initial local execution path keeps a single frozen ConvNeXt instance and at most one GPU inference task active;
 - projection generation is deterministic and independent of target data, annotations, and cache-build order;
 - independently built compatible target caches resolve to the same projection id and final feature schema id;
 - adding a compatible target does not invalidate or rebuild existing caches;
@@ -741,7 +959,21 @@ Add focused tests before broadening UI behavior:
 - annotation validation and class-count tracking;
 - training-scope selection pools eligible annotated target cards;
 - normalization and feature-plane ordering;
+- RGB replication applies the selected weights' exact mean/std without resize/crop and never writes RGB cache planes;
+- changing the marker batch/chunk size preserves marker-major feature ordering and feature values within tolerance;
 - fake extractor plus projection writes the expected `(C + 64, y, x)` feature-cache shape;
+- a Zarr-backed Dask source reaches a Zarr feature target through one overlap/map/trim/store graph without per-block
+  `.compute()` calls or full-array materialization;
+- fake block inference is not invoked during graph construction when explicit `meta` is supplied;
+- overlap/trim preserves exact image shape and matches untiled reference output in valid regions, including edge chunks;
+- a final core chunk smaller than the halo is automatically rechunked without error, and both same-block-count and
+  changed-block-count cases expose correct pre-trim and trimmed chunk metadata;
+- shape-changing block inference derives `chunks=` from the actual overlapped array; deliberately stale metadata is
+  rejected by validation rather than reaching Zarr storage;
+- preferred and acceptable source/tile divisibility cases avoid warnings, while a non-divisible case lazily rechunks,
+  warns once, and produces the same feature values without creating an on-disk staging array;
+- irregular inference-core chunks are lazily regularized after projection, output Zarr chunks match that regular layout,
+  and partial/failed graph execution remains identifiable;
 - MLP training/prediction on small synthetic data, including deterministic seeds and persisted input standardization;
 - class- and target-balanced sampling behavior;
 - integer class-id/output-index round trips for non-contiguous positive label ids;
@@ -761,6 +993,133 @@ Use the repository environment directly:
 Torch/TorchVision integration tests should be optional or skipped unless the optional dependency group and model weights
 are available. Core behavior should be testable without network access.
 
+10. Follow-up optimization: single-channel ConvNeXt stem
+
+After the standard RGB-replication feature path is implemented and validated, add an optimized backend that folds RGB
+replication and the pretrained weights' mean/std into a one-channel ConvNeXt stem. This is an implementation
+optimization, not a different feature model: for a single normalized marker `x`, it should reproduce the reference
+RGB stem within the declared numerical tolerance.
+
+For original RGB stem weights `W_r`, bias `b`, pretrained input means `mean_r`, and standard deviations `std_r`, use:
+
+```text
+W_single = sum_r(W_r / std_r)
+b_single = b - sum_r((mean_r / std_r) * sum_spatial(W_r))
+```
+
+The replacement is `Conv2d(1, stem_width, kernel_size=4, stride=4, padding=0)`. All subsequent pretrained ConvNeXt
+layers remain unchanged and frozen. Use the following as the canonical initial TorchVision implementation; retain the
+explicit structural checks so a future TorchVision layout change fails rather than silently converting the wrong
+layer.
+
+```python
+import torch
+from torch import nn
+
+
+def convert_convnext_stem_to_single_channel(
+    model: nn.Module,
+    *,
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
+) -> nn.Module:
+    """Fold replicated-marker ImageNet normalization into ConvNeXt's stem."""
+    try:
+        old_conv = model.features[0][0]
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise RuntimeError("Unsupported TorchVision ConvNeXt stem layout") from exc
+
+    if not isinstance(old_conv, nn.Conv2d):
+        raise RuntimeError("Expected model.features[0][0] to be Conv2d")
+    if old_conv.in_channels != 3 or old_conv.groups != 1:
+        raise RuntimeError("Expected an ungrouped three-channel ConvNeXt stem")
+    if old_conv.padding != (0, 0) or old_conv.padding_mode != "zeros":
+        raise RuntimeError("Exact stem conversion requires the unpadded ConvNeXt stem")
+    if old_conv.bias is None:
+        raise RuntimeError("Exact stem conversion requires a stem bias")
+
+    weight = old_conv.weight
+    mean_t = weight.new_tensor(mean).reshape(1, 3, 1, 1)
+    std_t = weight.new_tensor(std).reshape(1, 3, 1, 1)
+    if not torch.all(std_t > 0):
+        raise ValueError("ConvNeXt input standard deviations must be positive")
+
+    new_conv = nn.Conv2d(
+        in_channels=1,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        dilation=old_conv.dilation,
+        groups=1,
+        bias=True,
+        padding_mode=old_conv.padding_mode,
+        device=weight.device,
+        dtype=weight.dtype,
+    )
+
+    with torch.no_grad():
+        new_conv.weight.copy_((weight / std_t).sum(dim=1, keepdim=True))
+        normalization_offset = (weight * (mean_t / std_t)).sum(dim=(1, 2, 3))
+        new_conv.bias.copy_(old_conv.bias - normalization_offset)
+
+    model.features[0][0] = new_conv
+    return model
+```
+
+Construct and freeze the optimized extractor using the metadata attached to the selected pretrained weights:
+
+```python
+from torchvision.models import ConvNeXt_Tiny_Weights, convnext_tiny
+
+
+weights = ConvNeXt_Tiny_Weights.DEFAULT
+input_transform = weights.transforms()
+model = convnext_tiny(weights=weights)
+model = convert_convnext_stem_to_single_channel(
+    model,
+    mean=tuple(input_transform.mean),
+    std=tuple(input_transform.std),
+)
+model.requires_grad_(False).eval()
+```
+
+The optimized production path passes `(C, 1, H, W)` percentile-normalized marker batches from each Dask block directly
+to the converted model. It must not replicate RGB or additionally apply ImageNet normalization because both operations
+are already represented by the converted stem.
+
+Pros:
+
+- avoids materializing the transient normalized three-channel tensor;
+- reduces input bandwidth and the first stem convolution from three input channels to one;
+- retains independent per-marker processing and is mathematically equivalent to the reference preprocessing;
+- can reduce peak device memory when many markers or tiles are batched together.
+
+Cons:
+
+- mutates a standard pretrained architecture and depends on TorchVision's internal stem layout;
+- adds conversion code, compatibility checks, parameter hashing, and numerical-equivalence tests;
+- may complicate checkpoint inspection, model tooling, export, and future TorchVision upgrades;
+- floating-point summation order can produce small differences even though the operations are algebraically equivalent;
+- likely provides limited end-to-end speedup because most ConvNeXt compute and memory occur after the stem;
+- is unnecessary when RGB replication fits comfortably in memory with a suitably small marker batch.
+
+Treat input handling as part of the raw feature schema. Record `single_channel_fused_stem`, the conversion
+implementation version, original weights identifier/digest, exact mean/std, converted stem parameter hash, and numeric
+precision. Do not claim bitwise compatibility with RGB-built caches; changing from RGB replication to the optimized
+path creates a new `raw_feature_schema_id` unless a future cache-migration contract explicitly proves stronger
+compatibility.
+
+Slice 10 acceptance criteria:
+
+- a focused test compares the converted stem with RGB replication plus mean/std over multiple inputs and shapes using
+  `torch.testing.assert_close` with an explicit tolerance;
+- selected intermediate feature maps from the complete frozen extractor also match the reference path within tolerance;
+- the optimized production path accepts `(C, 1, H, W)` directly and does not create an RGB tensor;
+- structural validation rejects unsupported ConvNeXt/TorchVision stem layouts;
+- benchmarks report peak memory and end-to-end tile throughput for representative tile sizes and marker counts;
+- the optimization remains disabled when its maintenance cost or measured benefit does not justify activation.
+
 **Suggested Delivery Order**
 1. Package skeleton, manifest registration, and empty widget.
 2. Source resolution, target-card UX, per-channel overlays, and Phase 1 highest-resolution contract.
@@ -771,7 +1130,8 @@ are available. Core behavior should be testable without network access.
 7. Shared classifier training and viewer-bound tile-wise prediction.
 8. Viewer display and stale-state handling.
 9. Save predicted labels to SpatialData.
-10. Cache management UI, progress/cancel polish, and final test hardening.
+10. Optional single-channel ConvNeXt stem optimization with equivalence tests and benchmarks.
+11. Cache management UI, progress/cancel polish, and final test hardening.
 
 This order keeps each slice independently testable while building toward the real user workflow.
 
