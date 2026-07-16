@@ -324,7 +324,8 @@ centers still scans all scale0 chunks lazily.
 - selective AnnData element-level persistence of all supported dirty table
   components, including canonical centers and their metadata, without rewriting
   the complete AnnData table;
-- reloading the current table state from zarr with dirty-state protection;
+- selective reload of supported table components from zarr, plus a full-table
+  convenience reload, with dirty-state protection;
 - undo of the most recently applied spatial annotation while its source
   binding remains valid;
 - cross-widget refresh after a cache update, annotation mutation, write,
@@ -1124,19 +1125,26 @@ the paths are dirty. HarpyAppState exposes three explicit acceptance paths:
     record_table_mutation(event)
         # emit the event and assign a new dirty revision to every path
 
-    record_persisted_table_change(event)
-        # emit the event and establish its exact paths as already persisted
+    record_persisted_table_change(event, snapshot)
+        # emit the event and establish only unchanged captured path revisions
+        # as already persisted
 
     record_table_reload(event)
-        # emit a replacement event and establish the complete table as clean
+        # emit the event and clear only dirty paths covered by the accepted
+        # component reload
 
 Object Classification uses `record_table_mutation()` because it changes the
 in-memory table and relies on PersistenceController for the later write. Harpy
 Feature Extraction writes its feature matrix and metadata directly when
 SpatialData is backed and therefore uses `record_persisted_table_change()`
-after Harpy returns successfully. Unbacked Feature Extraction uses
-`record_table_mutation()`. Reload uses `record_table_reload()`. Producers do not
-invoke widgets directly.
+after Harpy returns successfully. It captures the table's dirty snapshot on the
+main thread immediately before launching Harpy and returns that immutable
+snapshot to the main-thread acceptance boundary with the worker result. A path
+is cleared only when its captured revision is still current; a same-path
+mutation accepted while Harpy was working remains dirty. A path absent from the
+pre-operation snapshot is not allowed to clear a newer dirty revision.
+Unbacked Feature Extraction uses `record_table_mutation()`. Reload uses
+`record_table_reload()`. Producers do not invoke widgets directly.
 
 `TableStateChangedEvent` is the single shared contract for AnnData table
 changes. HarpyAppState exposes one `table_state_changed` signal, and each of the
@@ -1153,6 +1161,14 @@ already explicit. Object Classification can therefore detect an overwritten
 selected feature matrix from the event's source, change kind, and obsm path;
 Viewer refreshes can filter the same event by its paths. This avoids duplicate
 signals and duplicate representations of one accepted table change.
+
+Reload events also carry explicit, non-empty component paths; a `None` or empty
+path set is not used as a full-table sentinel. For an obs reload, the event
+reports the complete old/new obs-column coverage because obs is replaced as one
+encoded dataframe. An uns parent path covers its complete subtree. Named obsm
+entries and nested uns entries otherwise remain exact paths. HarpyAppState
+clears only dirty paths covered by those accepted reload paths, so unrelated
+dirty components remain dirty.
 
 `ShapesElementWrittenEvent` remains separate because it describes a
 `SpatialData.shapes` change rather than an AnnData table component. Only the
@@ -1206,11 +1222,16 @@ The deferred-write flow is:
 
 An operation that already persisted its result uses the shorter flow:
 
+    main thread captures the current dirty snapshot
+        ↓
     producer completes its element writes and metadata consolidation
         ↓
-    record_persisted_table_change(TableStateChangedEvent)
+    main thread accepts the result
         ↓
-    HarpyAppState emits the event and establishes only those paths as persisted
+    record_persisted_table_change(TableStateChangedEvent, snapshot)
+        ↓
+    HarpyAppState emits the event and clears only event paths whose captured
+    revisions are still current
 
 The general event, component manifest, and persistence foundation are
 introduced before canonical-cache integration. Full Viewer, Object
@@ -1246,7 +1267,9 @@ persistence operations.
 | Successful write, no remaining/newer dirty components | Captured components persisted | Clean |
 | Successful write with remaining/newer dirty components | Captured components persisted | Remains dirty |
 | Failed write | No accepted persistence completion | Remains dirty |
-| Successful reload | Memory replaced from disk | Clean |
+| Successful component reload, no other dirty paths | Selected components replaced from disk | Clean |
+| Successful component reload with unrelated dirty paths | Selected components replaced from disk | Remains dirty |
+| Successful full-table reload | All supported table components replaced from disk | Clean |
 | Failed/cancelled reload | No accepted replacement | Unchanged |
 
 Dirty status belongs to the entire table. Changes from Object Classification,
@@ -1367,23 +1390,69 @@ Reuse the Object Classification dirty-reload decision:
 - Reload table state and discard local edits;
 - Cancel.
 
-Before replacement, invalidate active center calculations, queries, Apply
-dialogs, and undo. Reload performs the existing validated in-place replacement
-of obs, obsm, and uns.
+The Qt-independent reload operation accepts explicit
+`TableComponentPath` values and returns a `TableComponentReloadResult` with the
+resolved table path and exact logical path coverage restored from disk. Reload
+uses these physical AnnData units:
 
-The persistence-foundation slice retains this full validated table-state
-reload. It does not introduce selective per-path reload: independently
-replacing parts of obs, obsm, and uns could create a mixed in-memory state.
-Canonical metadata is parsed and validated from the disk snapshot before the
-later canonical integration accepts the replacement.
+- requesting any obs-column path reads, validates, and replaces the complete
+  encoded obs dataframe; the result covers the union of old and reloaded obs
+  columns, including locally created columns removed by the reload;
+- an obsm path reads and replaces only its named entry, or removes that
+  in-memory entry when it is absent on disk;
+- an uns path reads and replaces only its named top-level or nested entry, or
+  removes that in-memory entry when it is absent on disk;
+- an uns parent path explicitly covers and replaces its complete subtree.
+
+Selective uns reload is required. Replacing all of uns merely to restore one
+obsm companion would risk discarding unrelated classifier, feature, or
+canonical metadata changes. AnnData's element API supports reading named obsm
+entries and top-level or nested uns entries directly, so a complete uns
+replacement is not the default.
+
+Logical paths that form one consistency contract are expanded before reload and
+accepted together. In particular:
+
+    feature matrix unit
+        obsm[feature_key]
+        uns["feature_matrices"][feature_key]
+
+    canonical centers unit
+        obsm["spatial_canonical"]
+        uns["spatial_coordinates"]["spatial_canonical"]
+
+The persistence foundation supports grouped paths without embedding feature
+semantics in the generic reader. Feature Extraction supplies its pair; the
+canonical integration slice supplies the canonical pair. A caller must not
+reload only the obsm half of a registered consistency unit.
+
+`Reload Table State` remains a convenience operation. It expands to complete
+obs coverage, every in-memory, on-disk, or currently dirty obsm key, and every
+in-memory, on-disk, or currently dirty top-level uns path, then uses the same
+component reload operation. Including currently dirty paths ensures that a
+locally or externally removed entry is still explicitly covered. Selective
+workflows request only the consistency units they actually need. No special
+`None` path or table-wide wildcard is introduced.
+
+Before applying a reload, validate table identity, row count and order, region
+key, instance key, obsm leading dimensions, and any affected feature-specific
+metadata. In-memory replacement and `record_table_reload()` occur on the main
+thread. The emitted `TableStateChangedEvent` contains the reload result's
+explicit paths, and HarpyAppState clears only dirty paths covered by those
+paths. Unrelated dirty paths remain present. Before a full-table reload,
+invalidate active center calculations, queries, Apply dialogs, and undo.
+Canonical metadata is parsed and validated before the later canonical
+integration accepts a reloaded canonical consistency unit.
 
 After success:
 
 - re-inspect spatial_canonical and its metadata;
 - refresh table metadata and compatible target columns;
 - preserve a target selection only if still valid;
-- notify consumers through the semantic table replacement event;
-- clear dirty state;
+- notify consumers through `table_state_changed` with the paths actually
+  restored;
+- clear only dirty paths covered by the accepted reload; a full-table reload is
+  clean because it covers every supported component;
 - show the source path and outcome.
 
 Late worker results created before reload must never update a cache, open a
@@ -1700,6 +1769,14 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   in-memory cache usable;
 - a mutation accepted during persistence remains dirty after the older write
   completes;
+- reloading one obsm entry preserves unrelated obsm entries and reloads any
+  registered companion uns path in the same consistency unit;
+- reloading one nested uns path preserves unrelated uns siblings and unrelated
+  dirty paths;
+- requesting any obs path reloads the complete validated obs dataframe;
+- a full Reload Table State expands to complete obs and all in-memory, on-disk,
+  or currently dirty obsm and top-level uns paths through the same component
+  API;
 - reload validation failure preserves current table and dirty state;
 - canonical-center, spatial-annotation, and object-classification changes
   coexist in one write;
@@ -2445,16 +2522,29 @@ Deliverables:
 - explicit `record_table_mutation()`, `record_persisted_table_change()`, and
   `record_table_reload()` acceptance methods so publishing an event does not
   implicitly mean that its paths are dirty;
+- pre-operation dirty-snapshot capture for already-persisting producers such as
+  backed Feature Extraction, so their successful completion cannot clear a
+  same-path mutation accepted while their worker was running;
 - `TableDirtySnapshot`, `TableComponentWriteResult`, and acknowledgement
   operations implementing the documented snapshot/write/acknowledge boundary
   and clearing only successfully persisted path revisions that are still
   current;
 - a generalized `PersistenceController` coordinating selection, dirty
-  snapshots, full validated table-state reload, and Qt-independent core
-  persistence functions;
+  snapshots, selective and full validated table-state reload, and
+  Qt-independent core persistence functions;
 - component writers for encoded obs, individual obsm entries, and top-level or
   nested uns entries, including removal, unsupported-path preflight, and zarr
   metadata consolidation before successful acknowledgement;
+- a `TableComponentReloadResult` and component reader that reload the complete
+  obs dataframe for any obs request, one named obsm entry, or one top-level or
+  nested uns entry, including removal when a requested live entry is absent on
+  disk;
+- grouped reload of registered consistency units, initially including the
+  feature-matrix obsm/uns pair, while leaving canonical-pair registration to the
+  canonical integration slice;
+- a full Reload Table State convenience operation that expands in-memory,
+  on-disk, and currently dirty component paths and delegates to the same
+  selective reader;
 - migration of Object Classification as the first deferred-write consumer,
   declaring every logical path it changes and publishing one general table
   event;
@@ -2476,9 +2566,18 @@ Exit criteria:
   unrelated AnnData component;
 - writing an obsm or uns path touches only its supported encoded element and
   preserves unrelated siblings;
+- reloading any obs path replaces the complete validated obs dataframe, while
+  named obsm and uns reloads preserve unrelated entries;
+- component reload emits explicit restored paths, clears only covered dirty
+  paths, and requires all paths in a registered consistency unit;
+- a full-table reload delegates to the component API and leaves the table clean
+  without using an empty, `None`, or wildcard event path;
 - unsupported paths fail before any write and are never silently cleared;
 - a mutation accepted during persistence remains dirty when its captured older
   revision completes;
+- a backed Feature Extraction result acknowledges only matching revisions from
+  its pre-operation snapshot and cannot clear a path first dirtied after that
+  snapshot;
 - a write is acknowledged only after zarr metadata consolidation succeeds, and
   a normally reopened SpatialData sees created, updated, and removed elements;
 - a consolidation failure leaves every captured path dirty;
