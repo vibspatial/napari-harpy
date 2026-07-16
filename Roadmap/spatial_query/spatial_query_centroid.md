@@ -852,7 +852,7 @@ After an effective annotation mutation:
 Keep one in-memory undo record for the most recent successful spatial
 annotation. It contains exact affected row identities, prior values,
 dtype/category metadata, whether the column was created, relevant component
-revisions, and the table dirty state before annotation apply.
+mutation tokens, and the table dirty state before annotation apply.
 
 Undo:
 
@@ -1064,7 +1064,7 @@ Use a pure, testable preparation/apply boundary. Preparation contains:
 - current values at those positions;
 - missing/equal/overwrite counts for a candidate annotation value;
 - whether the target column will be created;
-- binding, cache, and relevant table-component revisions sufficient for
+- binding, cache, and relevant table-component mutation tokens sufficient for
   apply-time validation.
 
 Apply validates preparation against current state before mutating. If validation
@@ -1115,18 +1115,25 @@ The event has this conceptual shape:
         sdata
         table_name
         paths              # unique logical component paths
-        regions
+        regions            # explicit semantic scope of row-scoped changes
         change_kind        # created, updated, removed, rebuilt, reloaded
         source             # spatial_query, spatial_query_canonical, undo, ...
+
+`regions` is required on every event. It contains the table regions
+semantically targeted by any row-scoped change. `regions=()` means the event is
+genuinely metadata-only and never means that the affected regions are unknown.
+A producer that cannot prove a narrower row scope reports every region declared
+by the table. For a mixed row-data/companion-metadata event, `regions` describes
+the row-scoped part.
 
 The event describes what changed; emitting it does not by itself decide whether
 the paths are dirty. HarpyAppState exposes three explicit acceptance paths:
 
     record_table_mutation(event)
-        # emit the event and assign a new dirty revision to every path
+        # emit the event and assign one fresh mutation token to every path
 
     record_persisted_table_change(event, snapshot)
-        # emit the event and establish only unchanged captured path revisions
+        # emit the event and establish only unchanged captured path tokens
         # as already persisted
 
     record_table_reload(event)
@@ -1134,15 +1141,19 @@ the paths are dirty. HarpyAppState exposes three explicit acceptance paths:
         # component reload
 
 Object Classification uses `record_table_mutation()` because it changes the
-in-memory table and relies on PersistenceController for the later write. Harpy
-Feature Extraction writes its feature matrix and metadata directly when
+in-memory table and relies on PersistenceController for the later write. A user
+annotation reports only its selected labels region. Classifier inference
+reports the resolved prediction regions, which may contain every table region
+even when one segmentation is selected in the widget. A classifier
+metadata-only update reports `regions=()`. Harpy Feature Extraction writes its
+feature matrix and metadata directly when
 SpatialData is backed and therefore uses `record_persisted_table_change()`
 after Harpy returns successfully. It captures the table's dirty snapshot on the
 main thread immediately before launching Harpy and returns that immutable
 snapshot to the main-thread acceptance boundary with the worker result. A path
-is cleared only when its captured revision is still current; a same-path
+is cleared only when its captured mutation token is still current; a same-path
 mutation accepted while Harpy was working remains dirty. A path absent from the
-pre-operation snapshot is not allowed to clear a newer dirty revision.
+pre-operation snapshot is not allowed to clear a newer dirty mutation.
 Unbacked Feature Extraction uses `record_table_mutation()`. Reload uses
 `record_table_reload()`. Producers do not invoke widgets directly.
 
@@ -1176,14 +1187,14 @@ explicit HarpyAppState table acceptance method updates or clears the shared
 dirty-component manifest.
 
 Shared app state maintains, for each in-memory table, a mapping from dirty
-component path to its latest monotonic revision. The user-facing table dirty
+component path to its latest opaque mutation token. The user-facing table dirty
 boolean is derived from whether that mapping is non-empty. Every accepted
-mutation allocates one new table revision and assigns it to all paths in that
-event. A write captures the current `path -> revision` mapping and clears a path
-only when that exact revision was successfully persisted and is still current.
-A newer mutation of the same path therefore remains dirty. Separate mutation
-and persistence revision counters are not required. These session values are
-not stored in AnnData.
+mutation creates one fresh identity token and assigns it to all paths in that
+event. A write captures the current `path -> token` mapping and clears a path
+only when that exact token was successfully persisted and is still current.
+A newer mutation of the same path therefore remains dirty. Ordering is neither
+encoded nor needed, and no mutation or persistence counters are maintained.
+These session-only tokens are not stored in AnnData.
 
 The persistence handoff has one explicit snapshot/write/acknowledge boundary:
 
@@ -1199,12 +1210,13 @@ The persistence handoff has one explicit snapshot/write/acknowledge boundary:
     )
 
 `TableDirtySnapshot` captures the table identity and an immutable
-`TableComponentPath -> revision` mapping. `TableComponentWriteResult` reports
-the table store and exact logical paths that were successfully persisted. The
-Qt-independent writer receives paths, not HarpyAppState or revision state;
-HarpyAppState alone decides whether the captured revisions are still current
-and may be cleared. Unscoped `mark_table_dirty()` and `clear_table_dirty()`
-operations are therefore not primary mutation or persistence APIs.
+`TableComponentPath -> mutation token` mapping. `TableComponentWriteResult`
+reports the table store and exact logical paths that were successfully
+persisted. The Qt-independent writer receives paths, not HarpyAppState or
+mutation-token state; HarpyAppState alone decides whether the captured tokens
+are still current and may be cleared. Unscoped `mark_table_dirty()` and
+`clear_table_dirty()` operations are therefore not primary mutation or
+persistence APIs.
 
 The deferred-write flow is:
 
@@ -1212,13 +1224,13 @@ The deferred-write flow is:
         ↓
     record_table_mutation(TableStateChangedEvent)
         ↓
-    HarpyAppState records path revisions
+    HarpyAppState records path mutation tokens
         ↓
     PersistenceController captures a dirty snapshot
         ↓
     core persistence writes supported AnnData elements
         ↓
-    HarpyAppState clears only unchanged persisted revisions
+    HarpyAppState clears only unchanged persisted tokens
 
 An operation that already persisted its result uses the shorter flow:
 
@@ -1231,7 +1243,7 @@ An operation that already persisted its result uses the shorter flow:
     record_persisted_table_change(TableStateChangedEvent, snapshot)
         ↓
     HarpyAppState emits the event and clears only event paths whose captured
-    revisions are still current
+    mutation tokens are still current
 
 The general event, component manifest, and persistence foundation are
 introduced before canonical-cache integration. Full Viewer, Object
@@ -1316,7 +1328,7 @@ writer consolidates zarr metadata before returning a successful result. This is
 required because direct element writes may be readable through non-consolidated
 access while a normal reopened SpatialData still sees the old consolidated
 hierarchy. If element writing or metadata consolidation fails, no dirty
-revision is acknowledged; all captured paths remain dirty and retryable.
+mutation token is acknowledged; all captured paths remain dirty and retryable.
 
 Object Classification is the first deferred-write consumer of this generalized
 path. It records every obs column and uns configuration/color key it actually
@@ -1369,8 +1381,8 @@ The matrix and its spatial-coordinate metadata are one persistence unit. The
 service stages/backs up as needed, validates both encoded elements, and must not
 leave a newly written matrix paired with old or missing metadata after a handled
 failure. The table remains dirty unless every component in the captured write
-set succeeds. Captured component revisions are cleared only if they have not
-changed during the write; later mutations remain dirty.
+set succeeds. Captured component mutation tokens are cleared only if they have
+not changed during the write; later mutations remain dirty.
 
 The action and success message identify the table, resolved store path, and
 components written. A successful write makes newly generated centers reusable
@@ -1423,8 +1435,8 @@ accepted together. In particular:
 
 The persistence foundation supports grouped paths without embedding feature
 semantics in the generic reader. Feature Extraction supplies its pair; the
-canonical integration slice supplies the canonical pair. A caller must not
-reload only the obsm half of a registered consistency unit.
+canonical integration slice supplies the canonical pair. A caller must pass the
+complete domain-defined consistency unit rather than only its obsm half.
 
 `Reload Table State` remains a convenience operation. It expands to complete
 obs coverage, every in-memory, on-disk, or currently dirty obsm key, and every
@@ -1438,9 +1450,13 @@ Before applying a reload, validate table identity, row count and order, region
 key, instance key, obsm leading dimensions, and any affected feature-specific
 metadata. In-memory replacement and `record_table_reload()` occur on the main
 thread. The emitted `TableStateChangedEvent` contains the reload result's
-explicit paths, and HarpyAppState clears only dirty paths covered by those
-paths. Unrelated dirty paths remain present. Before a full-table reload,
-invalidate active center calculations, queries, Apply dialogs, and undo.
+explicit paths. A reload containing an obs or obsm path reports every current
+table region because the replaced AnnData element is row-aligned and the
+generic persistence layer cannot substantiate a narrower semantic scope. A
+known uns-only metadata reload reports `regions=()`. HarpyAppState clears only
+dirty paths covered by those paths. Unrelated dirty paths remain present.
+Before a full-table reload, invalidate active center calculations, queries,
+Apply dialogs, and undo.
 Canonical metadata is parsed and validated before the later canonical
 integration accepts a reloaded canonical consistency unit.
 
@@ -1593,7 +1609,7 @@ orchestrates the pure core operations with shared application services.
 General concerns stay outside the feature package:
 
 - shared table persistence and reload services;
-- shared application state and per-component revisions;
+- shared application state and per-component mutation tokens;
 - general cross-widget table events;
 - generic SpatialData/table-binding helpers;
 - Shapes Annotation's shared geometry-validity contract.
@@ -1757,7 +1773,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   categorical values/categories, and the dataframe index, without rewriting the
   full AnnData table;
 - a mixed dirty manifest writes obs plus the canonical pair and clears dirty
-  state only after all captured component revisions succeed;
+  state only after all captured component mutation tokens succeed;
 - an unknown dirty component blocks persistence and is never silently cleared;
 - no path calls AnnData.write_zarr or rewrites X, layers, var, varm, obsp, or
   unrelated obsm/uns entries;
@@ -2500,6 +2516,8 @@ Exit criteria:
 
 ### Slice 3a: General table-state events and component persistence
 
+**Implementation status: Implemented.**
+
 This slice generalizes the existing Object Classification-oriented persistence
 infrastructure before Spatial Query depends on it. It introduces no canonical
 cache behavior and no second persistence controller.
@@ -2509,7 +2527,8 @@ Deliverables:
 - the validated immutable `TableComponentPath` contract for obs columns,
   individual obsm entries, and top-level or nested uns entries;
 - `TableStateChangedEvent` carrying SpatialData/table identity, unique component
-  paths, affected regions, change kind, and source;
+  paths, required semantic row-scope regions, change kind, and source; an empty
+  region tuple means metadata-only and never unknown;
 - one HarpyAppState `table_state_changed` signal carrying that event;
 - migration of every `FeatureMatrixWrittenEvent` and
   `ClassificationTableWrittenEvent` producer and consumer to the general event,
@@ -2517,8 +2536,8 @@ Deliverables:
 - retention of `ShapesElementWrittenEvent` as the separate contract for
   non-table shapes changes;
 - a HarpyAppState per-table dirty manifest mapping each logical path to its
-  latest revision, with table-level `is_table_dirty()` derived from that
-  manifest;
+  latest opaque mutation token, with table-level `is_table_dirty()` derived
+  from that manifest;
 - explicit `record_table_mutation()`, `record_persisted_table_change()`, and
   `record_table_reload()` acceptance methods so publishing an event does not
   implicitly mean that its paths are dirty;
@@ -2527,7 +2546,7 @@ Deliverables:
   same-path mutation accepted while their worker was running;
 - `TableDirtySnapshot`, `TableComponentWriteResult`, and acknowledgement
   operations implementing the documented snapshot/write/acknowledge boundary
-  and clearing only successfully persisted path revisions that are still
+  and clearing only successfully persisted path mutation tokens that are still
   current;
 - a generalized `PersistenceController` coordinating selection, dirty
   snapshots, selective and full validated table-state reload, and
@@ -2539,9 +2558,10 @@ Deliverables:
   obs dataframe for any obs request, one named obsm entry, or one top-level or
   nested uns entry, including removal when a requested live entry is absent on
   disk;
-- grouped reload of registered consistency units, initially including the
-  feature-matrix obsm/uns pair, while leaving canonical-pair registration to the
-  canonical integration slice;
+- grouped reload of caller-expanded consistency units, with Feature Extraction
+  supplying its feature-matrix obsm/uns pair and the later canonical integration
+  supplying the canonical pair; the generic persistence layer has no global
+  feature-specific registry;
 - a full Reload Table State convenience operation that expands in-memory,
   on-disk, and currently dirty component paths and delegates to the same
   selective reader;
@@ -2559,8 +2579,9 @@ Deliverables:
 
 Exit criteria:
 
-- one event accepted through `record_table_mutation()` assigns one new revision
-  to all of its paths; publishing an event alone does not alter dirty state;
+- one event accepted through `record_table_mutation()` assigns one fresh
+  identity token to all of its paths; publishing an event alone does not alter
+  dirty state;
 - a table is dirty exactly when its component manifest is non-empty;
 - writing an obs-column path writes the complete encoded obs dataframe but no
   unrelated AnnData component;
@@ -2569,20 +2590,25 @@ Exit criteria:
 - reloading any obs path replaces the complete validated obs dataframe, while
   named obsm and uns reloads preserve unrelated entries;
 - component reload emits explicit restored paths, clears only covered dirty
-  paths, and requires all paths in a registered consistency unit;
+  paths, and accepts consistency units already expanded by domain code;
 - a full-table reload delegates to the component API and leaves the table clean
   without using an empty, `None`, or wildcard event path;
 - unsupported paths fail before any write and are never silently cleared;
 - a mutation accepted during persistence remains dirty when its captured older
-  revision completes;
-- a backed Feature Extraction result acknowledges only matching revisions from
-  its pre-operation snapshot and cannot clear a path first dirtied after that
-  snapshot;
+  mutation token completes;
+- a backed Feature Extraction result acknowledges only matching mutation tokens
+  from its pre-operation snapshot and cannot clear a path first dirtied after
+  that snapshot;
 - a write is acknowledged only after zarr metadata consolidation succeeds, and
   a normally reopened SpatialData sees created, updated, and removed elements;
 - a consolidation failure leaves every captured path dirty;
 - backed Feature Extraction remains clean for the exact paths Harpy already
   persisted, while unbacked Feature Extraction records those paths as dirty;
+- Feature Extraction reports its extraction regions, user annotation reports
+  its selected region, classifier inference reports its resolved prediction
+  regions, and classifier metadata-only changes report an empty region tuple;
+- row-aligned reload events report every table region, while known uns-only
+  metadata reloads report an empty region tuple;
 - Object Classification, Feature Extraction, and Viewer retain their current
   targeted refresh and invalidation behavior through `table_state_changed`;
 - one accepted table change emits one table event rather than parallel general
@@ -2761,7 +2787,7 @@ Exit criteria:
 - canonical centers and annotation columns persist/reload together;
 - Write Table State persists the union of supported dirty components through
   AnnData element encodings and clears only successfully written unchanged
-  component revisions;
+  component mutation tokens;
 - no full-AnnData rewrite occurs;
 - no event loop or unrelated classifier invalidation;
 - no late task affects a reloaded/replaced table;
