@@ -25,7 +25,7 @@ import napari_harpy.widgets.object_classification.annotation_controller as annot
 import napari_harpy.widgets.object_classification.controller as classifier_module
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import ClassificationTableWrittenEvent, FeatureMatrixWrittenEvent, get_or_create_app_state
+from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
 from napari_harpy.core.annotation import UNLABELED_COLOR, USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
@@ -34,6 +34,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     register_feature_matrix_metadata,
 )
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
 from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.controller import (
@@ -47,6 +48,28 @@ from napari_harpy.widgets.object_classification.widget import (
 )
 from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.widget import ViewerWidget
+
+
+def _feature_table_event(
+    sdata: SpatialData,
+    *,
+    table_name: str,
+    feature_key: str,
+    change_kind: str = "created",
+) -> TableStateChangedEvent:
+    return TableStateChangedEvent(
+        sdata=sdata,
+        table_name=table_name,
+        paths=frozenset(
+            {
+                TableComponentPath("obsm", (feature_key,)),
+                TableComponentPath("uns", ("feature_matrices", feature_key)),
+            }
+        ),
+        regions=("blobs_labels",),
+        change_kind=change_kind,
+        source="feature_extraction",
+    )
 
 
 class DummyEventEmitter:
@@ -1058,6 +1081,8 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
         "mark_dirty",
         lambda *, reason=None: mark_dirty_reasons.append(reason),
     )
+    emitted_events: list[object] = []
+    widget.app_state.table_state_changed.connect(emitted_events.append)
 
     assert widget.register_feature_matrix_button.isEnabled()
     assert widget.retrain_button.isEnabled() is False
@@ -1074,6 +1099,10 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     assert widget._persistence_controller.is_dirty is True
     assert widget.sync_button.isEnabled()
     assert mark_dirty_reasons == ["feature matrix metadata registered"]
+    assert len(emitted_events) == 1
+    assert isinstance(emitted_events[0], TableStateChangedEvent)
+    assert emitted_events[0].regions == ()
+    assert emitted_events[0].source == "object_classification_feature_metadata"
 
 
 def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_effects(
@@ -1457,12 +1486,11 @@ def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbo
     assert widget._persistence_controller.is_dirty is False
 
     table.obsm["features_new"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1527,9 +1555,9 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     assert widget._classifier_controller.is_training is True
 
     table.obsm["features_1"] = np.arange(table.n_obs * 2, dtype=np.float64).reshape(table.n_obs, 2)
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="table",
             feature_key="features_1",
             change_kind="updated",
@@ -1555,12 +1583,11 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ]
 
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="other_table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1581,7 +1608,7 @@ def test_widget_ignores_non_feature_matrix_write_events(qtbot, sdata_blobs: Spat
     previous_table_items = _combo_texts(widget.table_combo)
     previous_feature_items = _combo_texts(widget.feature_matrix_combo)
 
-    widget._on_feature_matrix_written(object())
+    widget._on_table_state_changed(object())
 
     assert _combo_texts(widget.table_combo) == previous_table_items
     assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
@@ -1604,12 +1631,11 @@ def test_widget_ignores_feature_matrix_writes_for_other_sdata(
     previous_table_items = _combo_texts(widget.table_combo)
     previous_feature_items = _combo_texts(widget.feature_matrix_combo)
 
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs_multi_region,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs_multi_region,
             table_name="table_multi",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1638,12 +1664,11 @@ def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_sel
         feature_key="features_new",
     )
 
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="new_table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1682,12 +1707,11 @@ def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_availabl
         labels_name="blobs_multiscale_labels",
         feature_key="features_new",
     )
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="new_table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1886,7 +1910,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
-    widget.app_state.classification_table_written.connect(emitted_events.append)
+    widget.app_state.table_state_changed.connect(emitted_events.append)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -1904,17 +1928,20 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert "adata" not in layer.metadata
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
-    assert emitted_events == [
-        ClassificationTableWrittenEvent(
-            sdata=sdata_blobs,
-            table_name="table",
-            columns=(USER_CLASS_COLUMN,),
-            source="object_classification_widget",
-        )
-    ]
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
+    assert isinstance(event, TableStateChangedEvent)
+    assert event.paths == frozenset(
+        {
+            TableComponentPath("obs", (USER_CLASS_COLUMN,)),
+            TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)),
+        }
+    )
+    assert event.regions == ("blobs_labels",)
+    assert event.change_kind == "created"
 
 
-def test_widget_does_not_emit_table_written_when_user_class_is_already_color_source(
+def test_widget_emits_updated_table_event_when_user_class_is_already_color_source(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1927,7 +1954,7 @@ def test_widget_does_not_emit_table_written_when_user_class_is_already_color_sou
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
-    widget.app_state.classification_table_written.connect(emitted_events.append)
+    widget.app_state.table_state_changed.connect(emitted_events.append)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -1936,7 +1963,10 @@ def test_widget_does_not_emit_table_written_when_user_class_is_already_color_sou
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert emitted_events == []
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
+    assert isinstance(event, TableStateChangedEvent)
+    assert event.change_kind == "updated"
 
 
 def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
@@ -2197,7 +2227,9 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
             "refresh_user_class_colormap_and_feature",
             record_color_refresh,
         )
-        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh)
+        monkeypatch.setattr(
+            widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh
+        )
         monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
         layer.selected_label = 5
@@ -2954,7 +2986,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
-    widget.app_state.classification_table_written.connect(emitted_events.append)
+    widget.app_state.table_state_changed.connect(emitted_events.append)
     widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
@@ -2968,8 +3000,9 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
     qtbot.waitUntil(
         lambda: any(
-            isinstance(event, ClassificationTableWrittenEvent)
-            and event.columns == (PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN)
+            isinstance(event, TableStateChangedEvent)
+            and TableComponentPath("obs", (PRED_CLASS_COLUMN,)) in event.paths
+            and TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)) in event.paths
             for event in emitted_events
         ),
         timeout=5000,
@@ -2984,12 +3017,13 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     assert "adata" not in layer.metadata
     assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
-    assert ClassificationTableWrittenEvent(
-        sdata=sdata_blobs,
-        table_name="table",
-        columns=(PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN),
-        source="object_classification_widget",
-    ) in emitted_events
+    assert any(
+        isinstance(event, TableStateChangedEvent)
+        and event.source == "object_classification_inference"
+        and event.regions == ("blobs_labels",)
+        and TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)) in event.paths
+        for event in emitted_events
+    )
 
 
 def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(qtbot, sdata_blobs: SpatialData) -> None:

@@ -10,13 +10,13 @@ import napari_harpy._interactive as interactive_module
 import napari_harpy.widgets.object_classification.widget as object_widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
-    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
-    FeatureMatrixWrittenEvent,
     HarpyAppState,
     ShapesElementWrittenEvent,
+    TableStateChangedEvent,
     get_or_create_app_state,
 )
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
 from napari_harpy.widgets.object_classification.widget import ObjectClassificationWidget
 from napari_harpy.widgets.viewer.widget import ViewerWidget
@@ -145,24 +145,36 @@ def test_harpy_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
     assert removed_sdata_calls == []
 
 
-def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+def test_harpy_app_state_records_component_tokens_and_emits_one_event(qtbot, sdata_blobs) -> None:
     state = HarpyAppState()
-    event = FeatureMatrixWrittenEvent(
+    paths = frozenset(
+        {
+            TableComponentPath("obsm", ("features_new",)),
+            TableComponentPath("uns", ("feature_matrices", "features_new")),
+        }
+    )
+    event = TableStateChangedEvent(
         sdata=sdata_blobs,
         table_name="table",
-        feature_key="features_new",
+        paths=paths,
+        regions=("blobs_labels",),
         change_kind="created",
+        source="test",
     )
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
 
-    with qtbot.waitSignal(state.feature_matrix_written) as blocker:
-        state.emit_feature_matrix_written(event)
+    with qtbot.waitSignal(state.table_state_changed) as blocker:
+        state.record_table_mutation(event)
 
     assert blocker.args == [event]
     assert state.is_table_dirty(sdata_blobs, "table") is True
+    snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    assert snapshot.paths == paths
+    tokens = tuple(token for _path, token in snapshot.captured_path_tokens)
+    assert all(token is tokens[0] for token in tokens)
 
-    state.clear_table_dirty(sdata_blobs, "table")
+    state.acknowledge_table_write(snapshot, persisted_paths=paths)
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
 
@@ -181,21 +193,53 @@ def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> Non
     assert blocker.args == [event]
 
 
-def test_harpy_app_state_emits_classification_table_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+def test_harpy_app_state_does_not_clear_a_newer_same_path_token(sdata_blobs) -> None:
     state = HarpyAppState()
-    event = ClassificationTableWrittenEvent(
+    event = TableStateChangedEvent(
         sdata=sdata_blobs,
         table_name="table",
-        columns=("user_class",),
+        paths=frozenset({TableComponentPath("obs", ("user_class",))}),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source="test",
+    )
+    state.record_table_mutation(event)
+    snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    state.record_table_mutation(event)
+
+    state.record_persisted_table_change(event, snapshot)
+
+    assert state.is_table_dirty(sdata_blobs, "table") is True
+
+
+def test_harpy_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
+    state = HarpyAppState()
+    obs_path = TableComponentPath("obs", ("user_class",))
+    feature_metadata_path = TableComponentPath("uns", ("feature_matrices", "features_1"))
+    state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            paths=frozenset({obs_path, feature_metadata_path}),
+            regions=("blobs_labels",),
+            change_kind="updated",
+            source="test",
+        )
     )
 
-    assert state.is_table_dirty(sdata_blobs, "table") is False
+    state.record_table_reload(
+        TableStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            paths=frozenset({TableComponentPath("uns", ("feature_matrices",))}),
+            regions=(),
+            change_kind="reloaded",
+            source="test",
+        )
+    )
 
-    with qtbot.waitSignal(state.classification_table_written) as blocker:
-        state.emit_classification_table_written(event)
-
-    assert blocker.args == [event]
     assert state.is_table_dirty(sdata_blobs, "table") is True
+    assert state.snapshot_table_dirty_state(sdata_blobs, "table").paths == frozenset({obs_path})
 
 
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:

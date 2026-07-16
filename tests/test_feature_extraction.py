@@ -8,7 +8,6 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
-from napari_harpy._app_state import FeatureMatrixWrittenEvent
 from napari_harpy.widgets.feature_extraction.controller import (
     FEATURE_EXTRACTION_IDLE_STATUS,
     FeatureExtractionBindingState,
@@ -642,25 +641,24 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     assert (
         controller.status_message
         == 'Feature extraction: wrote "feature_matrix_1" into table "table" as ".obsm[\'feature_matrix_1\']" '
-        'with metadata in ".uns[\'feature_matrices\'][\'feature_matrix_1\']".'
+        "with metadata in \".uns['feature_matrices']['feature_matrix_1']\"."
     )
     assert controller.is_running is False
 
 
-def test_feature_extraction_controller_notifies_feature_matrix_written_on_success(sdata_blobs: SpatialData) -> None:
-    written_events: list[FeatureMatrixWrittenEvent] = []
-    deferred_worker = _DeferredWorker(
-        FeatureExtractionResult(
-            job_id=1,
-            labels_names=("blobs_labels",),
-            table_name="table",
-            feature_key="feature_matrix_1",
-            change_kind="created",
-        )
+def test_feature_extraction_controller_notifies_feature_matrix_change_on_success(sdata_blobs: SpatialData) -> None:
+    changed_results: list[FeatureExtractionResult] = []
+    result = FeatureExtractionResult(
+        job_id=1,
+        labels_names=("blobs_labels",),
+        table_name="table",
+        feature_key="feature_matrix_1",
+        change_kind="created",
     )
+    deferred_worker = _DeferredWorker(result)
 
     controller = FeatureExtractionController(
-        on_feature_matrix_written=lambda event: written_events.append(event),
+        on_feature_matrix_changed=changed_results.append,
     )
     controller.bind(
         sdata_blobs,
@@ -679,14 +677,7 @@ def test_feature_extraction_controller_notifies_feature_matrix_written_on_succes
 
     deferred_worker.emit_returned()
 
-    assert written_events == [
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
-            table_name="table",
-            feature_key="feature_matrix_1",
-            change_kind="created",
-        )
-    ]
+    assert changed_results == [result]
 
 
 def test_feature_extraction_controller_calculate_accepts_one_shot_overwrite_override(
@@ -1010,7 +1001,7 @@ def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: Spa
     assert controller.is_running is False
 
 
-def test_feature_extraction_controller_notifies_table_state_before_feature_matrix_written(
+def test_feature_extraction_controller_notifies_table_state_before_feature_matrix_change(
     sdata_blobs: SpatialData,
 ) -> None:
     notification_order: list[str] = []
@@ -1024,10 +1015,10 @@ def test_feature_extraction_controller_notifies_table_state_before_feature_matri
     deferred_worker = _DeferredWorker(result)
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda table_result: notification_order.append(
-            f"table:{table_result.table_name}"
+        on_table_state_changed=lambda table_result: notification_order.append(f"table:{table_result.table_name}"),
+        on_feature_matrix_changed=lambda changed_result: notification_order.append(
+            f"event:{changed_result.table_name}"
         ),
-        on_feature_matrix_written=lambda event: notification_order.append(f"event:{event.table_name}"),
     )
     controller.bind(
         sdata_blobs,

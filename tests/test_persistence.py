@@ -9,17 +9,41 @@ from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
-from napari_harpy._app_state import HarpyAppState
+from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
 from napari_harpy._persistence import PersistenceController
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND, register_feature_matrix_metadata
-from napari_harpy.core.spatialdata import get_table
+from napari_harpy.core.persistence import TableComponentPath
+from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
+
+
+def _record_mutation(
+    app_state: HarpyAppState,
+    sdata: SpatialData,
+    *paths: TableComponentPath,
+    table_name: str = "table",
+) -> None:
+    regions = (
+        get_table_metadata(sdata, table_name).regions
+        if any(path.component in ("obs", "obsm") for path in paths)
+        else ()
+    )
+    app_state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=sdata,
+            table_name=table_name,
+            paths=frozenset(paths),
+            regions=regions,
+            change_kind="updated",
+            source="test",
+        )
+    )
 
 
 def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: SpatialData) -> None:
@@ -34,12 +58,13 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
     sdata_blobs: SpatialData,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
     assert controller.is_dirty is False
 
-    controller.mark_dirty()
+    _record_mutation(app_state, sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
     assert controller.is_dirty is True
 
@@ -59,7 +84,7 @@ def test_persistence_controller_reads_dirty_state_from_shared_app_state(sdata_bl
 
     assert controller.is_dirty is False
 
-    app_state.mark_table_dirty(sdata_blobs, "table")
+    _record_mutation(app_state, sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
     assert controller.is_dirty is True
 
@@ -68,7 +93,8 @@ def test_persistence_controller_can_write_table_state_requires_backed_dirty_tabl
     sdata_blobs: SpatialData,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
     assert controller.can_sync is False
@@ -80,19 +106,21 @@ def test_persistence_controller_can_write_table_state_requires_backed_dirty_tabl
     assert controller.is_dirty is False
     assert controller.can_write_table_state is False
 
-    controller.mark_dirty()
+    _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
     assert controller.can_sync is True
     assert controller.is_dirty is True
     assert controller.can_write_table_state is True
 
-    controller.clear_dirty()
+    snapshot = app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table")
+    app_state.acknowledge_table_write(snapshot, persisted_paths=snapshot.paths)
 
     assert controller.can_write_table_state is False
 
 
 def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backed_sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     index = backed_sdata_blobs["table"].obs.index
 
@@ -131,6 +159,16 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
         "prediction_regions": ["blobs_labels"],
         "n_predicted_rows": backed_sdata_blobs["table"].n_obs,
     }
+    _record_mutation(
+        app_state,
+        backed_sdata_blobs,
+        TableComponentPath("obs", (USER_CLASS_COLUMN,)),
+        TableComponentPath("obs", (PRED_CLASS_COLUMN,)),
+        TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)),
+        TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)),
+        TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)),
+        TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+    )
 
     table_path = controller.write_table_state()
     reread = read_zarr(backed_sdata_blobs.path)
@@ -154,7 +192,8 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
 def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     table = backed_sdata_blobs["table"]
     feature_key = "features_1"
@@ -165,7 +204,11 @@ def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
         feature_columns=feature_columns,
         overwrite=True,
     )
-    controller.mark_dirty()
+    _record_mutation(
+        app_state,
+        backed_sdata_blobs,
+        TableComponentPath("uns", (_FEATURE_MATRICES_KEY, feature_key)),
+    )
 
     assert controller.is_dirty is True
 
@@ -179,10 +222,33 @@ def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
     assert controller.is_dirty is False
 
 
+def test_persistence_controller_creates_and_removes_nested_uns_entry(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
+    controller.bind(backed_sdata_blobs, "table")
+    table = backed_sdata_blobs["table"]
+    path = TableComponentPath("uns", ("extension_metadata", "result"))
+    table.uns["extension_metadata"] = {"result": {"version": 1}}
+    _record_mutation(app_state, backed_sdata_blobs, path)
+
+    controller.write_table_state()
+
+    assert read_zarr(backed_sdata_blobs.path)["table"].uns["extension_metadata"]["result"]["version"] == 1
+
+    del table.uns["extension_metadata"]["result"]
+    _record_mutation(app_state, backed_sdata_blobs, path)
+    controller.write_table_state()
+
+    assert "result" not in read_zarr(backed_sdata_blobs.path)["table"].uns["extension_metadata"]
+
+
 def test_persistence_controller_reloads_registered_custom_feature_matrix_metadata(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     table = backed_sdata_blobs["table"]
     feature_key = "features_1"
@@ -193,24 +259,52 @@ def test_persistence_controller_reloads_registered_custom_feature_matrix_metadat
         feature_columns=feature_columns,
         overwrite=True,
     )
+    _record_mutation(
+        app_state,
+        backed_sdata_blobs,
+        TableComponentPath("uns", (_FEATURE_MATRICES_KEY, feature_key)),
+    )
     controller.write_table_state()
 
-    # Deliberately corrupt only the in-memory metadata so reload must prove it
-    # restores the valid custom metadata that was already written to zarr.
+    disk_features = np.asarray(table.obsm[feature_key]).copy()
+    table.obsm[feature_key] = np.zeros_like(disk_features)
     table.uns[_FEATURE_MATRICES_KEY][feature_key] = {"source_kind": "stale_in_memory"}
+    _record_mutation(
+        app_state,
+        backed_sdata_blobs,
+        TableComponentPath("obsm", (feature_key,)),
+        TableComponentPath("uns", (_FEATURE_MATRICES_KEY, feature_key)),
+        TableComponentPath("obs", (USER_CLASS_COLUMN,)),
+    )
 
-    table_path = controller.reload_table_state()
+    emitted_events: list[TableStateChangedEvent] = []
+    app_state.table_state_changed.connect(emitted_events.append)
+    result = controller.reload_table_components(
+        frozenset(
+            {
+                TableComponentPath("obsm", (feature_key,)),
+                TableComponentPath("uns", (_FEATURE_MATRICES_KEY, feature_key)),
+            }
+        )
+    )
     metadata = table.uns[_FEATURE_MATRICES_KEY][feature_key]
 
-    assert table_path == "tables/table"
+    assert result.table_path == "tables/table"
+    assert np.array_equal(table.obsm[feature_key], disk_features)
     assert metadata["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
     assert list(metadata["feature_columns"]) == feature_columns
+    assert len(emitted_events) == 1
+    assert emitted_events[0].regions == get_table_metadata(backed_sdata_blobs, "table").regions
+    assert app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table").paths == frozenset(
+        {TableComponentPath("obs", (USER_CLASS_COLUMN,))}
+    )
 
 
 def test_persistence_controller_syncs_multi_region_classifier_config_fields(
     backed_sdata_blobs_multi_region: SpatialData,
 ) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs_multi_region, "table_multi")
     table = backed_sdata_blobs_multi_region["table_multi"]
     index = table.obs.index
@@ -243,6 +337,17 @@ def test_persistence_controller_syncs_multi_region_classifier_config_fields(
         "prediction_regions": regions,
         "n_predicted_rows": int(table.n_obs),
     }
+    _record_mutation(
+        app_state,
+        backed_sdata_blobs_multi_region,
+        TableComponentPath("obs", (USER_CLASS_COLUMN,)),
+        TableComponentPath("obs", (PRED_CLASS_COLUMN,)),
+        TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)),
+        TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)),
+        TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)),
+        TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+        table_name="table_multi",
+    )
 
     table_path = controller.write_table_state()
     reread = read_zarr(backed_sdata_blobs_multi_region.path)
@@ -257,8 +362,12 @@ def test_persistence_controller_syncs_multi_region_classifier_config_fields(
     assert config["prediction_scope"] == "all"
     assert list(config["prediction_regions"]) == regions
     assert config["n_predicted_rows"] == table.n_obs
-    assert reread["table_multi"].obs[PRED_CLASS_COLUMN].tolist().count(1) == int((region_values == "blobs_labels").sum())
-    assert reread["table_multi"].obs[PRED_CLASS_COLUMN].tolist().count(2) == int((region_values == "blobs_labels_2").sum())
+    assert reread["table_multi"].obs[PRED_CLASS_COLUMN].tolist().count(1) == int(
+        (region_values == "blobs_labels").sum()
+    )
+    assert reread["table_multi"].obs[PRED_CLASS_COLUMN].tolist().count(2) == int(
+        (region_values == "blobs_labels_2").sum()
+    )
 
 
 def _write_disk_snapshot_payload(
@@ -292,26 +401,6 @@ def _write_disk_snapshot_state(
     ad.io.write_elem(table_group, "uns", uns)
 
 
-def test_persistence_controller_reads_selected_table_snapshot_from_backed_store(
-    backed_sdata_blobs: SpatialData,
-) -> None:
-    controller = PersistenceController()
-    controller.bind(backed_sdata_blobs, "table")
-    disk_obs, disk_obsm, disk_uns = _write_disk_snapshot_payload(backed_sdata_blobs)
-
-    snapshot = controller.read_table_snapshot_from_disk()
-
-    assert snapshot.table_name == "table"
-    assert snapshot.table_path == "tables/table"
-    assert snapshot.obs.equals(disk_obs)
-    assert sorted(snapshot.obsm.keys()) == sorted(disk_obsm.keys())
-    assert np.array_equal(snapshot.obsm["disk_features"], disk_obsm["disk_features"])
-    assert snapshot.uns["disk_flag"] == disk_uns["disk_flag"]
-    assert "disk_user_class" not in backed_sdata_blobs["table"].obs
-    assert "disk_features" not in backed_sdata_blobs["table"].obsm
-    assert "disk_flag" not in backed_sdata_blobs["table"].uns
-
-
 def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     backed_sdata_blobs: SpatialData,
 ) -> None:
@@ -333,9 +422,10 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
 
 
 def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
-    controller.mark_dirty()
+    _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
     assert controller.is_dirty is True
 
@@ -345,10 +435,11 @@ def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs
 
 
 def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blobs: SpatialData) -> None:
-    controller = PersistenceController()
+    app_state = HarpyAppState()
+    controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     _write_disk_snapshot_payload(backed_sdata_blobs)
-    controller.mark_dirty()
+    _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
     assert controller.is_dirty is True
 

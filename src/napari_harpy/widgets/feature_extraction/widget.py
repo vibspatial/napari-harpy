@@ -24,8 +24,14 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import FeatureMatrixWrittenEvent, HarpyAppState, get_or_create_app_state
+from napari_harpy._app_state import (
+    HarpyAppState,
+    TableDirtySnapshot,
+    TableStateChangedEvent,
+    get_or_create_app_state,
+)
 from napari_harpy._resources import get_logo_path
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
@@ -187,6 +193,12 @@ class _FeatureExtractionTableComboData:
     @classmethod
     def create_table(cls) -> _FeatureExtractionTableComboData:
         return cls(_FeatureExtractionTableComboMode.CREATE_TABLE)
+
+
+@dataclass(frozen=True)
+class _ActiveFeatureExtractionSnapshot:
+    job_id: int
+    dirty_snapshot: TableDirtySnapshot
 
 
 @dataclass(frozen=True)
@@ -392,8 +404,9 @@ class FeatureExtractionWidget(QWidget):
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
             on_table_state_changed=self._on_controller_table_state_changed,
-            on_feature_matrix_written=self._on_controller_feature_matrix_written,
+            on_feature_matrix_changed=self._on_controller_feature_matrix_changed,
         )
+        self._active_feature_extraction_snapshot: _ActiveFeatureExtractionSnapshot | None = None
 
         self._label_options: list[SpatialDataLabelsOption] = []
         self._selected_label_option: SpatialDataLabelsOption | None = None
@@ -2079,7 +2092,20 @@ class FeatureExtractionWidget(QWidget):
                 if overwrite_feature_key is None:
                     return
 
-        self._feature_extraction_controller.calculate(overwrite_feature_key=overwrite_feature_key)
+        sdata = self.selected_spatialdata
+        table_name = self._table_target_state.bound_table_name
+        snapshot = (
+            None
+            if sdata is None or table_name is None
+            else self._app_state.snapshot_table_dirty_state(sdata, table_name)
+        )
+        launched = self._feature_extraction_controller.calculate(overwrite_feature_key=overwrite_feature_key)
+        job_id = self._feature_extraction_controller.active_job_id
+        if launched and job_id is not None and snapshot is not None:
+            self._active_feature_extraction_snapshot = _ActiveFeatureExtractionSnapshot(
+                job_id=job_id,
+                dirty_snapshot=snapshot,
+            )
 
     def _prompt_overwrite_feature_key_confirmation(
         self,
@@ -2450,6 +2476,8 @@ class FeatureExtractionWidget(QWidget):
         self._set_tooltip(self.calculate_button, blocking_reason)
 
     def _on_controller_state_changed(self) -> None:
+        if not self._feature_extraction_controller.is_running:
+            self._active_feature_extraction_snapshot = None
         self._update_feature_extraction_feedback()
         self._update_calculate_controls()
 
@@ -2457,5 +2485,40 @@ class FeatureExtractionWidget(QWidget):
         self._refresh_table_names(preferred_existing_table_name=result.table_name)
         self._bind_current_selection()
 
-    def _on_controller_feature_matrix_written(self, event: FeatureMatrixWrittenEvent) -> None:
-        self._app_state.emit_feature_matrix_written(event)
+    def _on_controller_feature_matrix_changed(self, result: FeatureExtractionResult) -> None:
+        sdata = self.selected_spatialdata
+        if sdata is None:
+            return
+
+        event = TableStateChangedEvent(
+            sdata=sdata,
+            table_name=result.table_name,
+            paths=frozenset(
+                {
+                    TableComponentPath("obsm", (result.feature_key,)),
+                    TableComponentPath("uns", ("feature_matrices", result.feature_key)),
+                }
+            ),
+            regions=result.labels_names,
+            change_kind=result.change_kind,
+            source="feature_extraction",
+        )
+        if sdata.is_backed():
+            active_snapshot = self._active_feature_extraction_snapshot
+            snapshot = (
+                active_snapshot.dirty_snapshot
+                if active_snapshot is not None and active_snapshot.job_id == result.job_id
+                else TableDirtySnapshot(sdata=sdata, table_name=result.table_name, captured_path_tokens=())
+            )
+            if active_snapshot is not None and active_snapshot.job_id == result.job_id:
+                self._active_feature_extraction_snapshot = None
+            # Contract: for backed SpatialData, `hp.tb.add_feature_matrix()`
+            # has already persisted both the feature-matrix obsm entry and its
+            # companion uns metadata before this success callback runs. This
+            # call only reconciles shared dirty state and publishes the event.
+            self._app_state.record_persisted_table_change(event, snapshot)
+        else:
+            active_snapshot = self._active_feature_extraction_snapshot
+            if active_snapshot is not None and active_snapshot.job_id == result.job_id:
+                self._active_feature_extraction_snapshot = None
+            self._app_state.record_table_mutation(event)

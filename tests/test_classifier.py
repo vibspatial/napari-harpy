@@ -157,7 +157,7 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
 
     controller = ClassifierController(
         debounce_interval_ms=0,
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=lambda _change: table_state_changes.append("changed"),
         on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -502,8 +502,12 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
     table = sdata_blobs_multi_region["table_multi"]
     table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
+    table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
 
-    controller = ClassifierController(debounce_interval_ms=0)
+    controller = ClassifierController(
+        debounce_interval_ms=0,
+        on_table_state_changed=table_state_changes.append,
+    )
     controller.bind(
         sdata_blobs_multi_region,
         "blobs_labels",
@@ -535,6 +539,9 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
     assert table.uns[CLASSIFIER_CONFIG_KEY]["n_predicted_rows"] == int(valid_rows.sum())
     assert table.uns[CLASSIFIER_CONFIG_KEY]["training_scope"] == "all"
     assert table.uns[CLASSIFIER_CONFIG_KEY]["n_training_rows"] == int(valid_rows.sum())
+    assert len(table_state_changes) == 1
+    assert table_state_changes[0].regions == ("blobs_labels", "blobs_labels_2")
+    assert table_state_changes[0].source == "object_classification_inference"
 
 
 def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_unchanged(
@@ -664,12 +671,12 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1})
-    table_state_changes: list[str] = []
+    table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
     prediction_state_changes: list[str] = []
 
     controller = ClassifierController(
         debounce_interval_ms=0,
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=table_state_changes.append,
         on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -684,7 +691,9 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     assert table.uns[CLASSIFIER_CONFIG_KEY]["eligible"] is False
     assert "two labeled classes" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
-    assert table_state_changes == ["changed"]
+    assert len(table_state_changes) == 1
+    assert table_state_changes[0].regions == ("blobs_labels",)
+    assert table_state_changes[0].source == "object_classification_inference"
     assert prediction_state_changes == ["changed"]
 
 
@@ -766,7 +775,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
 
     call_log: list[int] = []
-    table_state_changes: list[str] = []
+    table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
     prediction_state_changes: list[str] = []
 
     def fake_fit(job):
@@ -787,7 +796,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
 
     controller = ClassifierController(
         debounce_interval_ms=0,
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=table_state_changes.append,
         on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     context_changed = controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -807,7 +816,9 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     controller.retrain_now()
     qtbot.waitUntil(lambda: call_log == [1], timeout=5000)
     assert controller.is_dirty is False
-    assert table_state_changes == ["changed"]
+    assert len(table_state_changes) == 1
+    assert table_state_changes[0].regions == ("blobs_labels",)
+    assert table_state_changes[0].source == "object_classification_inference"
     assert prediction_state_changes == ["changed"]
 
 
@@ -817,7 +828,7 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
-    table_state_changes: list[str] = []
+    table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
     prediction_state_changes: list[str] = []
 
     def raise_fit_error(job):
@@ -828,7 +839,7 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
 
     controller = ClassifierController(
         debounce_interval_ms=0,
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=table_state_changes.append,
         on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
@@ -836,7 +847,9 @@ def test_classifier_controller_notifies_table_state_change_when_training_errors(
 
     qtbot.waitUntil(lambda: controller.status_kind == "error", timeout=5000)
 
-    assert table_state_changes == ["changed"]
+    assert len(table_state_changes) == 1
+    assert table_state_changes[0].regions == ()
+    assert table_state_changes[0].source == "object_classification_metadata"
     assert prediction_state_changes == []
     assert sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["trained"] is False
     assert "boom" in sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY]["reason"]
@@ -939,7 +952,7 @@ def test_classifier_controller_shutdown_quits_worker_and_ignores_late_signals(
     controller = ClassifierController(
         debounce_interval_ms=0,
         on_state_changed=lambda: state_changes.append("changed"),
-        on_table_state_changed=lambda: table_state_changes.append("changed"),
+        on_table_state_changed=lambda _change: table_state_changes.append("changed"),
         on_prediction_state_changed=lambda: prediction_state_changes.append("changed"),
     )
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")

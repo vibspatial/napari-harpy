@@ -31,6 +31,7 @@ from weakref import WeakKeyDictionary
 
 from qtpy.QtCore import QObject, Signal
 
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
 from napari_harpy.viewer.adapter import LayerBindingRegistry, ViewerAdapter
 
@@ -39,18 +40,96 @@ if TYPE_CHECKING:
 
 
 _VIEWER_APP_STATES: WeakKeyDictionary[object, HarpyAppState] = WeakKeyDictionary()
-FeatureMatrixWriteChangeKind = Literal["created", "updated"]
+TableChangeKind = Literal["created", "updated", "removed", "rebuilt", "reloaded"]
 
 
 @dataclass(frozen=True)
-class FeatureMatrixWrittenEvent:
-    """Describe a feature-matrix write into an in-memory table `.obsm` mapping."""
+class TableStateChangedEvent:
+    """Describe one accepted change to explicit components of an AnnData table.
+
+    ``regions`` is the producer-declared semantic scope of any row-scoped
+    change. An empty tuple means the event is genuinely metadata-only and never
+    means that the affected regions are unknown. A producer that cannot prove a
+    narrower row scope must report every region declared by the table.
+    """
 
     sdata: SpatialData
     table_name: str
-    feature_key: str
-    change_kind: FeatureMatrixWriteChangeKind
-    source: str = "feature_extraction"
+    paths: frozenset[TableComponentPath]
+    regions: tuple[str, ...]
+    change_kind: TableChangeKind
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.table_name, str) or not self.table_name:
+            raise ValueError("Table-state events require a non-empty table name.")
+        paths = frozenset(self.paths)
+        if not paths:
+            raise ValueError("Table-state events require at least one component path.")
+        object.__setattr__(self, "paths", paths)
+        if self.change_kind not in ("created", "updated", "removed", "rebuilt", "reloaded"):
+            raise ValueError(f"Unsupported table change kind: {self.change_kind!r}.")
+        if not isinstance(self.source, str) or not self.source:
+            raise ValueError("Table-state events require a non-empty source.")
+        regions = tuple(self.regions)
+        if any(not isinstance(region, str) or not region for region in regions):
+            raise ValueError("Table-state event regions must be non-empty strings.")
+        if len(set(regions)) != len(regions):
+            raise ValueError("Table-state event regions must be unique.")
+        object.__setattr__(self, "regions", regions)
+
+
+class _TableMutationToken:
+    """Opaque identity token for one accepted in-memory table mutation."""
+
+    __slots__ = ()
+
+
+@dataclass(frozen=True)
+class TableDirtySnapshot:
+    """Capture one table's dirty component state before an operation starts.
+
+    The snapshot preserves the mutation token associated with every component
+    path that was dirty at capture time. Persistence acknowledgement later
+    compares these captured tokens with the current dirty manifest. A path is
+    eligible to become clean only when it was successfully persisted and its
+    current token is still the captured token.
+
+    The snapshot is session-only state. It does not copy the table and is never
+    stored in AnnData or zarr.
+
+    Parameters
+    ----------
+    sdata
+        SpatialData object containing the affected table. Object identity is
+        used to ensure that acknowledgement targets the same dataset.
+    table_name
+        Name of the affected AnnData table.
+    captured_path_tokens
+        Immutable pairs of dirty component paths and the mutation tokens
+        captured for them. The token objects are retained by identity rather
+        than copied.
+    """
+
+    sdata: SpatialData
+    table_name: str
+    captured_path_tokens: tuple[tuple[TableComponentPath, _TableMutationToken], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.table_name, str) or not self.table_name:
+            raise ValueError("Dirty snapshots require a non-empty table name.")
+        normalized = tuple(sorted(self.captured_path_tokens, key=lambda item: item[0]))
+        paths = tuple(path for path, _token in normalized)
+        if len(set(paths)) != len(paths):
+            raise ValueError("Dirty snapshots cannot contain duplicate component paths.")
+        if any(not isinstance(token, _TableMutationToken) for _, token in normalized):
+            raise ValueError("Dirty snapshots require a mutation token for every component path.")
+        object.__setattr__(self, "captured_path_tokens", normalized)
+
+    @property
+    def paths(self) -> frozenset[TableComponentPath]:
+        """Return the component paths captured by this snapshot."""
+        return frozenset(path for path, _token in self.captured_path_tokens)
 
 
 @dataclass(frozen=True)
@@ -64,16 +143,6 @@ class ShapesElementWrittenEvent:
 
 
 @dataclass(frozen=True)
-class ClassificationTableWrittenEvent:
-    """Describe an in-place write to classification columns in a shared table."""
-
-    sdata: SpatialData
-    table_name: str
-    columns: tuple[str, ...]
-    source: str = "object_classification_widget"
-
-
-@dataclass(frozen=True)
 class CoordinateSystemChangedEvent:
     """Describe a shared active coordinate-system change for one viewer session."""
 
@@ -83,32 +152,50 @@ class CoordinateSystemChangedEvent:
     source: str | None = None
 
 
+def _path_covers(parent: TableComponentPath, child: TableComponentPath) -> bool:
+    if parent.component != child.component:
+        return False
+    if parent.component == "obs":
+        return True
+    if parent.component == "obsm":
+        return parent == child
+    return child.keys[: len(parent.keys)] == parent.keys
+
+
 class HarpyAppState(QObject):
     """Shared Harpy state bound to a napari viewer.
 
     This object is the per-viewer event and state hub that Harpy widgets use
     to stay synchronized without depending on each other directly.
 
-    In particular, cross-widget updates that do not replace the loaded
-    ``SpatialData`` object are published here as semantic app-state events. For
-    example, ``FeatureExtractionWidget`` forwards successful feature-matrix
-    writes into ``feature_matrix_written``, ``ShapesAnnotation`` forwards
-    shapes element writes into ``shapes_element_written``,
-    ``ObjectClassificationWidget`` forwards classification table writes into
-    ``classification_table_written``, and consuming widgets listen to those
-    semantic signals to refresh only the state they own. The producing widget
-    therefore does not need to know which other widgets are consuming the
-    update.
+    Cross-widget table updates are published through ``table_state_changed``
+    with explicit AnnData component paths. Shapes writes retain their separate
+    event because they do not mutate an AnnData table. Producing widgets do not
+    need to know which other widgets consume either update.
 
     ``HarpyAppState`` also owns shared session-level dirty-table tracking, so
     in-memory table divergence from disk is modeled as shared viewer state
     rather than as widget-local state.
+
+    A dirty table component can become clean only through one of three
+    accepted transitions:
+
+    1. ``acknowledge_table_write()`` clears a component after the generic
+       persistence service successfully writes it and its captured mutation
+       token is still current.
+    2. ``record_persisted_table_change()`` clears a component that an operation
+       already persisted itself, again only when its captured token is still
+       current.
+    3. ``record_table_reload()`` clears a component whose in-memory state was
+       deliberately replaced with the persisted state.
+
+    Publishing a table-state event alone never clears dirty state, and an
+    unrelated or outdated operation cannot clear a component.
     """
 
     sdata_changed = Signal(object)
-    feature_matrix_written = Signal(object)
+    table_state_changed = Signal(object)
     shapes_element_written = Signal(object)
-    classification_table_written = Signal(object)
     coordinate_system_changed = Signal(object)
 
     def __init__(self, viewer: object | None = None) -> None:
@@ -118,7 +205,7 @@ class HarpyAppState(QObject):
         self.coordinate_system: str | None = None
         self.layer_bindings = LayerBindingRegistry()
         self.viewer_adapter = ViewerAdapter(viewer=viewer, layer_bindings=self.layer_bindings)
-        self._dirty_table_keys: set[tuple[int, str]] = set()
+        self._dirty_table_tokens: dict[tuple[int, str], dict[TableComponentPath, _TableMutationToken]] = {}
 
     def set_sdata(self, sdata: SpatialData | None) -> None:
         """Set the loaded SpatialData object and notify listeners."""
@@ -162,40 +249,112 @@ class HarpyAppState(QObject):
         """Clear the shared active coordinate system."""
         return self.set_coordinate_system(None, source=source)
 
-    def emit_feature_matrix_written(self, event: FeatureMatrixWrittenEvent) -> None:
-        """Broadcast that a feature matrix was written into a shared in-memory table."""
-        self.mark_table_dirty(event.sdata, event.table_name)
-        self.feature_matrix_written.emit(event)
-
     def emit_shapes_element_written(self, event: ShapesElementWrittenEvent) -> None:
         """Broadcast that a shapes element was written into the shared SpatialData."""
         self.shapes_element_written.emit(event)
 
-    def emit_classification_table_written(self, event: ClassificationTableWrittenEvent) -> None:
-        """Broadcast that classification columns changed in a shared table."""
-        self.mark_table_dirty(event.sdata, event.table_name)
-        self.classification_table_written.emit(event)
+    def record_table_mutation(self, event: TableStateChangedEvent) -> None:
+        """Record an accepted in-memory mutation and publish its table event."""
+        selection_key = self._selection_key(event.sdata, event.table_name)
+        if selection_key is None:  # pragma: no cover - event validation makes this unreachable.
+            return
+
+        mutation_token = _TableMutationToken()
+        manifest = self._dirty_table_tokens.setdefault(selection_key, {})
+        for path in event.paths:
+            manifest[path] = mutation_token
+        self.table_state_changed.emit(event)
+
+    def record_persisted_table_change(
+        self,
+        event: TableStateChangedEvent,
+        snapshot: TableDirtySnapshot,
+    ) -> None:
+        """Publish an already-persisted change without clearing newer mutations."""
+        self._validate_snapshot_identity(snapshot, event.sdata, event.table_name)
+        self.acknowledge_table_write(snapshot, persisted_paths=event.paths)
+        self.table_state_changed.emit(event)
+
+    def record_table_reload(self, event: TableStateChangedEvent) -> None:
+        """Publish a component reload and clear only dirty paths it restored."""
+        if event.change_kind != "reloaded":
+            raise ValueError("Table reload events must use change_kind='reloaded'.")
+        selection_key = self._selection_key(event.sdata, event.table_name)
+        if selection_key is None:  # pragma: no cover - event validation makes this unreachable.
+            return
+        manifest = self._dirty_table_tokens.get(selection_key)
+        if manifest is not None:
+            for dirty_path in tuple(manifest):
+                if any(_path_covers(reloaded_path, dirty_path) for reloaded_path in event.paths):
+                    del manifest[dirty_path]
+            self._drop_empty_manifest(selection_key)
+        self.table_state_changed.emit(event)
 
     def is_table_dirty(self, sdata: SpatialData | None, table_name: str | None) -> bool:
         """Return whether a selected in-memory table has unsynced local changes."""
         selection_key = self._selection_key(sdata, table_name)
-        return selection_key is not None and selection_key in self._dirty_table_keys
+        return selection_key is not None and bool(self._dirty_table_tokens.get(selection_key))
 
-    def mark_table_dirty(self, sdata: SpatialData | None, table_name: str | None) -> None:
-        """Mark a selected in-memory table as diverged from its on-disk backed state."""
+    def snapshot_table_dirty_state(
+        self,
+        sdata: SpatialData,
+        table_name: str,
+    ) -> TableDirtySnapshot:
+        """Capture the current component mutation tokens for a table."""
         selection_key = self._selection_key(sdata, table_name)
-        if selection_key is None:
+        if selection_key is None:  # pragma: no cover - concrete arguments make this unreachable.
+            raise ValueError("Dirty snapshots require a SpatialData object and table name.")
+        manifest = self._dirty_table_tokens.get(selection_key, {})
+        return TableDirtySnapshot(
+            sdata=sdata,
+            table_name=table_name,
+            captured_path_tokens=tuple(manifest.items()),
+        )
+
+    def acknowledge_table_write(
+        self,
+        snapshot: TableDirtySnapshot,
+        *,
+        persisted_paths: frozenset[TableComponentPath],
+    ) -> None:
+        """Mark successfully persisted component paths clean when still current.
+
+        Each dirty component path carries the identity token of its latest
+        accepted mutation. The snapshot captures those tokens before
+        persistence starts.
+
+        A persisted path is cleared only when its current token is the same
+        object as the captured token. If the path changed while persistence was
+        in progress, it has received a fresh token and remains dirty. This
+        prevents completion of an older write from marking a newer in-memory
+        mutation as persisted.
+        """
+        selection_key = self._selection_key(snapshot.sdata, snapshot.table_name)
+        if selection_key is None:  # pragma: no cover - snapshot validation makes this unreachable.
+            return
+        manifest = self._dirty_table_tokens.get(selection_key)
+        if manifest is None:
             return
 
-        self._dirty_table_keys.add(selection_key)
+        for path, captured_token in snapshot.captured_path_tokens:
+            if not any(_path_covers(persisted_path, path) for persisted_path in persisted_paths):
+                continue
+            if manifest.get(path) is captured_token:
+                del manifest[path]
+        self._drop_empty_manifest(selection_key)
 
-    def clear_table_dirty(self, sdata: SpatialData | None, table_name: str | None) -> None:
-        """Clear the dirty marker for a selected in-memory table."""
-        selection_key = self._selection_key(sdata, table_name)
-        if selection_key is None:
-            return
+    def _drop_empty_manifest(self, selection_key: tuple[int, str]) -> None:
+        if not self._dirty_table_tokens.get(selection_key):
+            self._dirty_table_tokens.pop(selection_key, None)
 
-        self._dirty_table_keys.discard(selection_key)
+    @staticmethod
+    def _validate_snapshot_identity(
+        snapshot: TableDirtySnapshot,
+        sdata: SpatialData,
+        table_name: str,
+    ) -> None:
+        if snapshot.sdata is not sdata or snapshot.table_name != table_name:
+            raise ValueError("Dirty snapshot does not belong to the changed table.")
 
     @staticmethod
     def _selection_key(sdata: SpatialData | None, table_name: str | None) -> tuple[int, str] | None:

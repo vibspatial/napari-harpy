@@ -35,6 +35,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     normalize_feature_matrix,
     normalize_feature_matrix_source_kind,
 )
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 
@@ -71,8 +72,29 @@ RANDOM_FOREST_PARAMS = {
 }
 
 ClassifierScopeMode = Literal["selected_segmentation_only", "all"]
+ClassifierTableStateChangeSource = Literal[
+    "object_classification_inference",
+    "object_classification_metadata",
+]
 DEFAULT_TRAINING_SCOPE: ClassifierScopeMode = "all"
 DEFAULT_PREDICTION_SCOPE: ClassifierScopeMode = "selected_segmentation_only"
+
+
+@dataclass(frozen=True)
+class ClassifierTableStateChange:
+    """Carry an accepted classifier table change to the widget.
+
+    The classifier controller knows the authoritative paths, affected regions,
+    and source of a mutation. In particular, inference may affect every region
+    in the resolved prediction scope rather than only the segmentation
+    currently selected in the widget. This callback payload preserves that
+    context so the widget can publish an accurate ``TableStateChangedEvent``
+    without reconstructing or guessing the classifier's mutation scope.
+    """
+
+    paths: frozenset[TableComponentPath]
+    regions: tuple[str, ...]
+    source: ClassifierTableStateChangeSource
 
 
 @dataclass(frozen=True)
@@ -255,7 +277,7 @@ class ClassifierController:
         *,
         debounce_interval_ms: int = DEFAULT_RETRAIN_DEBOUNCE_MS,
         on_state_changed: Callable[[], None] | None = None,
-        on_table_state_changed: Callable[[], None] | None = None,
+        on_table_state_changed: Callable[[ClassifierTableStateChange], None] | None = None,
         on_prediction_state_changed: Callable[[], None] | None = None,
         # In the widget, pass the widget as parent so Qt destroys the debounce
         # timer with the UI. Tests and non-widget callers can leave this as None.
@@ -854,7 +876,7 @@ class ClassifierController:
             trained_at=None,
         )
         self._clear_model_snapshot("the latest classifier inputs are not trainable")
-        self._notify_prediction_table_state_changed()
+        self._notify_prediction_table_state_changed(job.prediction_scope.regions)
         self._is_dirty = True
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
 
@@ -889,7 +911,7 @@ class ClassifierController:
         )
         table.uns[CLASSIFIER_CONFIG_KEY] = classifier_config
         self._store_model_snapshot(table, result, classifier_config)
-        self._notify_prediction_table_state_changed()
+        self._notify_prediction_table_state_changed(result.prediction_scope.regions)
         self._is_dirty = False
         self._set_status(
             f"Classifier: model is up to date. Updated predictions for {apply_result.n_predicted_rows} objects.",
@@ -925,7 +947,11 @@ class ClassifierController:
                 trained=False,
                 trained_at=None,
             )
-            self._notify_table_state_changed()
+            self._notify_table_state_changed(
+                frozenset({TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,))}),
+                regions=(),
+                source="object_classification_metadata",
+            )
         self._is_dirty = True
         self._clear_model_snapshot("classifier training failed")
         self._set_status(f"Classifier: training failed: {error}", kind="error")
@@ -1108,18 +1134,41 @@ class ClassifierController:
         if self._on_state_changed is not None:
             self._on_state_changed()
 
-    def _notify_table_state_changed(self) -> None:
+    def _notify_table_state_changed(
+        self,
+        paths: frozenset[TableComponentPath],
+        *,
+        regions: tuple[str, ...],
+        source: ClassifierTableStateChangeSource,
+    ) -> None:
         if self._is_shutdown:
             return
 
         if self._on_table_state_changed is not None:
-            self._on_table_state_changed()
+            self._on_table_state_changed(
+                ClassifierTableStateChange(
+                    paths=paths,
+                    regions=regions,
+                    source=source,
+                )
+            )
 
-    def _notify_prediction_table_state_changed(self) -> None:
+    def _notify_prediction_table_state_changed(self, regions: tuple[str, ...]) -> None:
         if self._is_shutdown:
             return
 
-        self._notify_table_state_changed()
+        self._notify_table_state_changed(
+            frozenset(
+                {
+                    TableComponentPath("obs", (PRED_CLASS_COLUMN,)),
+                    TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)),
+                    TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)),
+                    TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+                }
+            ),
+            regions=regions,
+            source="object_classification_inference",
+        )
         if self._on_prediction_state_changed is not None:
             self._on_prediction_state_changed()
 

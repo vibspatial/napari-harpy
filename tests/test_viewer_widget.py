@@ -22,12 +22,12 @@ import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
-    ClassificationTableWrittenEvent,
-    FeatureMatrixWrittenEvent,
     ShapesElementWrittenEvent,
+    TableStateChangedEvent,
 )
 from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.viewer.adapter import PointsLayerIdentity
 from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
 from napari_harpy.widgets.overlay_color_button import OverlayColorButton
@@ -40,6 +40,22 @@ from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _E
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
+
+
+def _table_event(
+    sdata: object,
+    *paths: TableComponentPath,
+    table_name: str = "table",
+    source: str = "test",
+) -> TableStateChangedEvent:
+    return TableStateChangedEvent(
+        sdata=sdata,
+        table_name=table_name,
+        paths=frozenset(paths),
+        regions=(),
+        change_kind="updated",
+        source=source,
+    )
 
 
 class DummyEventEmitter:
@@ -858,7 +874,7 @@ def test_viewer_widget_ignores_non_feature_matrix_write_events(qtbot, monkeypatc
     card = widget.labels_cards[0]
     table_names_by_label["labels"] = ["table", "new_table"]
 
-    widget._on_feature_matrix_written(object())
+    widget._on_table_state_changed(object())
 
     assert _combo_texts(card.linked_table_combo) == ["table"]
     assert card.selected_table_name == "table"
@@ -886,12 +902,12 @@ def test_viewer_widget_ignores_feature_matrix_writes_for_other_sdata(qtbot, monk
     card = widget.labels_cards[0]
     table_names_by_label["labels"] = ["table", "new_table"]
 
-    widget.app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=other_sdata,
+    widget.app_state.record_table_mutation(
+        _table_event(
+            other_sdata,
+            TableComponentPath("obsm", ("features",)),
             table_name="new_table",
-            feature_key="features",
-            change_kind="created",
+            source="feature_extraction",
         )
     )
 
@@ -922,12 +938,12 @@ def test_viewer_widget_refreshes_labels_card_linked_tables_from_feature_matrix_e
     row.set_expanded(True)
     table_names_by_label["labels"] = ["new_table", "table"]
 
-    widget.app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=fake_sdata,
+    widget.app_state.record_table_mutation(
+        _table_event(
+            fake_sdata,
+            TableComponentPath("obsm", ("features",)),
             table_name="new_table",
-            feature_key="features",
-            change_kind="created",
+            source="feature_extraction",
         )
     )
 
@@ -974,12 +990,12 @@ def test_viewer_widget_selects_first_linked_table_when_event_creates_first_table
             value_kind="categorical",
         )
     ]
-    widget.app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=fake_sdata,
+    widget.app_state.record_table_mutation(
+        _table_event(
+            fake_sdata,
+            TableComponentPath("obsm", ("features",)),
             table_name="new_table",
-            feature_key="features",
-            change_kind="created",
+            source="feature_extraction",
         )
     )
 
@@ -1035,12 +1051,12 @@ def test_viewer_widget_preserves_labels_card_color_source_selection_after_event(
             value_kind="categorical",
         )
     ]
-    widget.app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=fake_sdata,
+    widget.app_state.record_table_mutation(
+        _table_event(
+            fake_sdata,
+            TableComponentPath("obsm", ("features",)),
             table_name="new_table",
-            feature_key="features",
-            change_kind="created",
+            source="feature_extraction",
         )
     )
 
@@ -1099,11 +1115,12 @@ def test_viewer_widget_refreshes_table_color_sources_from_classification_table_e
         ),
     ]
 
-    widget.app_state.emit_classification_table_written(
-        ClassificationTableWrittenEvent(
-            sdata=fake_sdata,
-            table_name="table",
-            columns=("user_class", "pred_class"),
+    widget.app_state.record_table_mutation(
+        _table_event(
+            fake_sdata,
+            TableComponentPath("obs", ("user_class",)),
+            TableComponentPath("obs", ("pred_class",)),
+            source="object_classification",
         )
     )
 
@@ -1155,11 +1172,11 @@ def test_viewer_widget_ignores_classification_table_events_for_other_sdata(qtbot
         ),
     ]
 
-    widget.app_state.emit_classification_table_written(
-        ClassificationTableWrittenEvent(
-            sdata=other_sdata,
-            table_name="table",
-            columns=("user_class",),
+    widget.app_state.record_table_mutation(
+        _table_event(
+            other_sdata,
+            TableComponentPath("obs", ("user_class",)),
+            source="object_classification",
         )
     )
 

@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
 from qtpy.QtCore import QSignalBlocker, Qt
@@ -26,21 +26,25 @@ from qtpy.QtWidgets import (
 )
 
 from napari_harpy._app_state import (
-    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
-    FeatureMatrixWrittenEvent,
     HarpyAppState,
+    TableStateChangedEvent,
     get_or_create_app_state,
 )
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
-from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
+from napari_harpy.core.annotation import (
+    UNLABELED_CLASS,
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+)
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
     inspect_feature_matrix_metadata,
     register_feature_matrix_metadata,
 )
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
@@ -59,10 +63,9 @@ from napari_harpy.widgets.object_classification.annotation_controller import (
 from napari_harpy.widgets.object_classification.controller import (
     DEFAULT_PREDICTION_SCOPE,
     DEFAULT_TRAINING_SCOPE,
-    PRED_CLASS_COLUMN,
-    PRED_CONFIDENCE_COLUMN,
     ClassifierController,
     ClassifierScopeMode,
+    ClassifierTableStateChange,
 )
 from napari_harpy.widgets.object_classification.feature_matrix_registration import (
     _build_feature_matrix_registration_button_state,
@@ -443,7 +446,7 @@ class ObjectClassificationWidget(QWidget):
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
         self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
-        self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
+        self._app_state.table_state_changed.connect(self._on_table_state_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -570,10 +573,16 @@ class ObjectClassificationWidget(QWidget):
         finally:
             self._is_handling_coordinate_system_change = False
 
-    def _on_feature_matrix_written(self, event: object) -> None:
-        if not isinstance(event, FeatureMatrixWrittenEvent):
+    def _on_table_state_changed(self, event: object) -> None:
+        if not isinstance(event, TableStateChangedEvent):
             return
         if event.sdata is not self.selected_spatialdata:
+            return
+        if event.source != "feature_extraction":
+            return
+
+        feature_keys = tuple(path.keys[0] for path in event.paths if path.component == "obsm")
+        if not feature_keys:
             return
 
         previous_effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
@@ -583,9 +592,7 @@ class ObjectClassificationWidget(QWidget):
         self._set_persistence_feedback("")
         # Prefer the event table only when the widget had no table context yet;
         # otherwise a newly created table must not steal an existing selection.
-        preferred_table_name = (
-            event.table_name if previous_table_name is None and not previous_table_names else None
-        )
+        preferred_table_name = event.table_name if previous_table_name is None and not previous_table_names else None
         self._refresh_table_names(preferred_table_name=preferred_table_name)
 
         next_table_binding_error = self._validate_selected_table_binding()
@@ -601,9 +608,9 @@ class ObjectClassificationWidget(QWidget):
         if (
             event.table_name == previous_table_name
             and event.change_kind == "updated"
-            and previous_feature_key == event.feature_key
+            and previous_feature_key in feature_keys
         ):
-            self._classifier_controller.invalidate_for_feature_matrix_overwrite(event.feature_key)
+            self._classifier_controller.invalidate_for_feature_matrix_overwrite(previous_feature_key)
 
         self._update_selection_status()
 
@@ -1129,7 +1136,18 @@ class ObjectClassificationWidget(QWidget):
             )
             return
 
-        self._mark_persistence_dirty()
+        self._record_table_mutation(
+            frozenset(
+                {
+                    TableComponentPath(
+                        "uns",
+                        ("feature_matrices", self.selected_feature_key),
+                    )
+                }
+            ),
+            regions=(),
+            source="object_classification_feature_metadata",
+        )
         self._classifier_controller.mark_dirty(reason="feature matrix metadata registered")
         self._update_selection_status()
 
@@ -1636,13 +1654,17 @@ class ObjectClassificationWidget(QWidget):
         self._update_annotation_controls()
 
     def _on_annotation_changed(self, change: UserClassAnnotationChange) -> None:
-        self._mark_persistence_dirty()
-        # Only notify the Viewer when this annotation made `user_class`
-        # available as a new color source. Later edits only change values, and
-        # the row-scoped refresh below keeps the active labels layer in sync
-        # without rebuilding Viewer labels cards for each add/remove edit.
-        if not change.user_class_was_available_as_color_source:
-            self._emit_classification_table_written(columns=(USER_CLASS_COLUMN,))
+        self._record_table_mutation(
+            frozenset(
+                {
+                    TableComponentPath("obs", (USER_CLASS_COLUMN,)),
+                    TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)),
+                }
+            ),
+            regions=() if self.selected_segmentation_name is None else (self.selected_segmentation_name,),
+            change_kind=("updated" if change.user_class_was_available_as_color_source else "created"),
+            source="object_classification_annotation",
+        )
         self._refresh_after_user_class_annotation(change)
         # `mark_dirty(...)` and auto-train scheduling emit classifier status
         # callbacks. Let feedback update immediately, but avoid multiple
@@ -1653,17 +1675,21 @@ class ObjectClassificationWidget(QWidget):
                 self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
-    def _on_classifier_table_state_changed(self) -> None:
-        # A prediction change is also a table-state change, but not every
-        # table-state change affects labels-layer styling. This callback is for
-        # persistence/export state.
-        self._mark_persistence_dirty()
+    def _on_classifier_table_state_changed(self, change: ClassifierTableStateChange) -> None:
+        # Record every classifier-owned table mutation for persistence and
+        # shared table-state notification. Prediction-specific labels-layer
+        # styling is refreshed separately through
+        # `_on_classifier_prediction_state_changed()`.
+        self._record_table_mutation(
+            change.paths,
+            regions=change.regions,
+            source=change.source,
+        )
         self._update_persistence_controls()
 
     def _on_classifier_prediction_state_changed(self) -> None:
         # Prediction changes are the classifier-owned table changes that affect
         # labels-layer coloring/features.
-        self._emit_classification_table_written(columns=(PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN))
         self._refresh_layer_styling()
 
     def _on_classifier_state_changed(self) -> None:
@@ -1801,22 +1827,32 @@ class ObjectClassificationWidget(QWidget):
 
         self._set_tooltip(self.auto_train_checkbox, tooltip)
 
-    def _mark_persistence_dirty(self) -> None:
-        self._persistence_controller.mark_dirty()
-        self._set_persistence_feedback("")
-
-    def _emit_classification_table_written(self, *, columns: tuple[str, ...]) -> None:
-        if self.selected_spatialdata is None or self.selected_table_name is None or self._table_binding_error is not None:
+    def _record_table_mutation(
+        self,
+        paths: frozenset[TableComponentPath],
+        *,
+        regions: tuple[str, ...],
+        change_kind: Literal["created", "updated", "removed", "rebuilt"] = "updated",
+        source: str,
+    ) -> None:
+        if (
+            self.selected_spatialdata is None
+            or self.selected_table_name is None
+            or self._table_binding_error is not None
+        ):
             return
 
-        self._app_state.emit_classification_table_written(
-            ClassificationTableWrittenEvent(
+        self._app_state.record_table_mutation(
+            TableStateChangedEvent(
                 sdata=self.selected_spatialdata,
                 table_name=self.selected_table_name,
-                columns=columns,
-                source="object_classification_widget",
+                paths=paths,
+                regions=regions,
+                change_kind=change_kind,
+                source=source,
             )
         )
+        self._set_persistence_feedback("")
 
     def _selected_table_store_destination(self) -> Path | str | None:
         table_store_path = self._persistence_controller.selected_table_store_path

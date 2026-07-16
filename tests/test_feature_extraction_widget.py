@@ -10,7 +10,8 @@ from qtpy.QtWidgets import QCheckBox, QComboBox, QLineEdit, QScrollArea
 from spatialdata import SpatialData
 
 import napari_harpy.widgets.feature_extraction.widget as feature_extraction_widget_module
-from napari_harpy._app_state import FeatureMatrixWrittenEvent, get_or_create_app_state
+from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import (
     SpatialDataFeatureExtractionImageDiscovery,
     SpatialDataFeatureExtractionLabelDiscovery,
@@ -1482,9 +1483,7 @@ def test_feature_extraction_widget_blocks_create_table_mode_for_table_name_colli
     assert widget.calculate_button.isEnabled() is False
     assert "Table Not Ready" in widget.selection_status.text()
     assert 'Table "table" already exists. Choose a different table name.' in widget.selection_status.text()
-    assert 'Table "table" already exists. Choose a different table name.' in unescape(
-        widget.calculate_button.toolTip()
-    )
+    assert 'Table "table" already exists. Choose a different table name.' in unescape(widget.calculate_button.toolTip())
     assert widget._feature_extraction_controller.binding_state.triplets == ()
 
     widget.new_table_name_line_edit.setText("TABLE")
@@ -1492,9 +1491,7 @@ def test_feature_extraction_widget_blocks_create_table_mode_for_table_name_colli
     assert widget.calculate_button.isEnabled() is False
     assert "Table Not Ready" in widget.selection_status.text()
     assert 'Table "TABLE" already exists. Choose a different table name.' in widget.selection_status.text()
-    assert 'Table "TABLE" already exists. Choose a different table name.' in unescape(
-        widget.calculate_button.toolTip()
-    )
+    assert 'Table "TABLE" already exists. Choose a different table name.' in unescape(widget.calculate_button.toolTip())
     assert widget._feature_extraction_controller.binding_state.triplets == ()
 
 
@@ -2058,7 +2055,7 @@ def test_feature_extraction_widget_uses_existing_overwrite_prompt_after_created_
     assert overwrite_calls == [True]
 
 
-def test_feature_extraction_widget_reemits_feature_matrix_writes_to_shared_app_state(
+def test_feature_extraction_widget_records_feature_matrix_change_in_shared_app_state(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -2068,18 +2065,56 @@ def test_feature_extraction_widget_reemits_feature_matrix_writes_to_shared_app_s
 
     qtbot.addWidget(widget)
 
-    event = FeatureMatrixWrittenEvent(
-        sdata=sdata_blobs,
+    result = FeatureExtractionResult(
+        job_id=1,
+        labels_names=("blobs_labels",),
         table_name="table",
         feature_key="features_new",
         change_kind="created",
     )
 
-    with qtbot.waitSignal(app_state.feature_matrix_written) as blocker:
-        widget._on_controller_feature_matrix_written(event)
+    with qtbot.waitSignal(app_state.table_state_changed) as blocker:
+        widget._on_controller_feature_matrix_changed(result)
 
-    assert blocker.args == [event]
+    event = blocker.args[0]
+    assert isinstance(event, TableStateChangedEvent)
+    assert event.paths == frozenset(
+        {
+            TableComponentPath("obsm", ("features_new",)),
+            TableComponentPath("uns", ("feature_matrices", "features_new")),
+        }
+    )
+    assert event.regions == ("blobs_labels",)
     assert app_state.is_table_dirty(sdata_blobs, "table") is True
+
+
+def test_feature_extraction_widget_keeps_backed_harpy_write_clean(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(backed_sdata_blobs)
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+    result = FeatureExtractionResult(
+        job_id=1,
+        labels_names=("blobs_labels",),
+        table_name="table",
+        feature_key="features_new",
+        change_kind="created",
+    )
+    widget._active_feature_extraction_snapshot = feature_extraction_widget_module._ActiveFeatureExtractionSnapshot(
+        job_id=result.job_id,
+        dirty_snapshot=app_state.snapshot_table_dirty_state(
+            backed_sdata_blobs,
+            "table",
+        ),
+    )
+
+    with qtbot.waitSignal(app_state.table_state_changed):
+        widget._on_controller_feature_matrix_changed(result)
+
+    assert app_state.is_table_dirty(backed_sdata_blobs, "table") is False
 
 
 def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
