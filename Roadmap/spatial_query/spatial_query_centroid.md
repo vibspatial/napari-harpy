@@ -1138,12 +1138,25 @@ after Harpy returns successfully. Unbacked Feature Extraction uses
 `record_table_mutation()`. Reload uses `record_table_reload()`. Producers do not
 invoke widgets directly.
 
-`TableStateChangedEvent` is the shared persistence and low-level table-state
-contract. Existing domain events such as `FeatureMatrixWrittenEvent` and
-`ClassificationTableWrittenEvent` remain available because they carry useful
-feature-specific meaning for consumers. A producer may therefore publish its
-domain event and one table-state event for the same accepted change. Only the
-explicit HarpyAppState acceptance method updates or clears the shared
+`TableStateChangedEvent` is the single shared contract for AnnData table
+changes. HarpyAppState exposes one `table_state_changed` signal, and each of the
+three explicit acceptance methods emits exactly one event through that signal
+while applying its corresponding dirty-state transition. Producers do not emit
+a second feature-specific table event.
+
+`FeatureMatrixWrittenEvent` and `ClassificationTableWrittenEvent` are removed
+after their existing consumers have migrated to `TableStateChangedEvent`. They
+do not contain information that is absent from the general event: a feature key
+is the key of its changed obsm path, classification columns are the keys of its
+changed obs paths, and change kind, source, SpatialData, and table identity are
+already explicit. Object Classification can therefore detect an overwritten
+selected feature matrix from the event's source, change kind, and obsm path;
+Viewer refreshes can filter the same event by its paths. This avoids duplicate
+signals and duplicate representations of one accepted table change.
+
+`ShapesElementWrittenEvent` remains separate because it describes a
+`SpatialData.shapes` change rather than an AnnData table component. Only the
+explicit HarpyAppState table acceptance method updates or clears the shared
 dirty-component manifest.
 
 Shared app state maintains, for each in-memory table, a mapping from dirty
@@ -1294,8 +1307,8 @@ metadata before returning. Feature Extraction must not write those elements a
 second time through PersistenceController; it calls
 `record_persisted_table_change()` after Harpy succeeds. For unbacked
 SpatialData, the same logical paths are in-memory changes and are passed to
-`record_table_mutation()`. Existing semantic events remain available to
-domain-specific consumers in both cases.
+`record_table_mutation()`. Both cases publish their one
+`TableStateChangedEvent` through `table_state_changed`.
 
 spatial_canonical is an obsm entry, not an obs column. Its persisted pair is:
 
@@ -1529,7 +1542,7 @@ Reuse rather than copy:
 - annotating-table discovery and table/linkage metadata helpers;
 - Shapes Annotation geometry validity helpers and write events;
 - Harpy RasterAggregator;
-- HarpyAppState dirty tracking and semantic events;
+- HarpyAppState dirty tracking and the shared `table_state_changed` event;
 - the generalized PersistenceController and Qt-independent
   ad.io.write_elem-based component persistence path;
 - active-coordinate-system selection patterns;
@@ -2420,9 +2433,12 @@ Deliverables:
   individual obsm entries, and top-level or nested uns entries;
 - `TableStateChangedEvent` carrying SpatialData/table identity, unique component
   paths, affected regions, change kind, and source;
-- coexistence with existing domain events such as
-  `FeatureMatrixWrittenEvent` and `ClassificationTableWrittenEvent`, which
-  remain available for feature-specific consumers;
+- one HarpyAppState `table_state_changed` signal carrying that event;
+- migration of every `FeatureMatrixWrittenEvent` and
+  `ClassificationTableWrittenEvent` producer and consumer to the general event,
+  followed by removal of those two redundant event classes and signals;
+- retention of `ShapesElementWrittenEvent` as the separate contract for
+  non-table shapes changes;
 - a HarpyAppState per-table dirty manifest mapping each logical path to its
   latest revision, with table-level `is_table_dirty()` derived from that
   manifest;
@@ -2440,7 +2456,7 @@ Deliverables:
   nested uns entries, including removal, unsupported-path preflight, and zarr
   metadata consolidation before successful acknowledgement;
 - migration of Object Classification as the first deferred-write consumer,
-  declaring every logical path it changes while retaining its semantic domain
+  declaring every logical path it changes and publishing one general table
   event;
 - publication of Feature Extraction's backed Harpy writes through
   `record_persisted_table_change()`, without routing those already-persisted
@@ -2468,8 +2484,10 @@ Exit criteria:
 - a consolidation failure leaves every captured path dirty;
 - backed Feature Extraction remains clean for the exact paths Harpy already
   persisted, while unbacked Feature Extraction records those paths as dirty;
-- existing Object Classification and Feature Extraction behavior and semantic
-  events remain valid;
+- Object Classification, Feature Extraction, and Viewer retain their current
+  targeted refresh and invalidation behavior through `table_state_changed`;
+- one accepted table change emits one table event rather than parallel general
+  and feature-specific events;
 - no path calls `AnnData.write_zarr()` or introduces a competing widget-local
   dirty truth.
 
@@ -2631,8 +2649,7 @@ Exit criteria:
 Deliverables:
 
 - Spatial Query, Viewer, and Object Classification targeted refresh behavior
-  consuming the shared table-state and existing domain events without feedback
-  loops;
+  consuming `table_state_changed` without feedback loops;
 - reusable Write Table State and Reload Table from zarr UI components backed by
   the generalized PersistenceController;
 - dirty reload write/discard/cancel behavior;
