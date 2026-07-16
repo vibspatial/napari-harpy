@@ -850,8 +850,8 @@ After an effective annotation mutation:
 
 Keep one in-memory undo record for the most recent successful spatial
 annotation. It contains exact affected row identities, prior values,
-dtype/category metadata, whether the column was created, table mutation and
-persistence revisions, and the table dirty state before annotation apply.
+dtype/category metadata, whether the column was created, relevant component
+revisions, and the table dirty state before annotation apply.
 
 Undo:
 
@@ -1063,7 +1063,7 @@ Use a pure, testable preparation/apply boundary. Preparation contains:
 - current values at those positions;
 - missing/equal/overwrite counts for a candidate annotation value;
 - whether the target column will be created;
-- binding, cache, table-mutation, and persistence revisions sufficient for
+- binding, cache, and relevant table-component revisions sufficient for
   apply-time validation.
 
 Apply validates preparation against current state before mutating. If validation
@@ -1075,56 +1075,77 @@ instance-ID list.
 
 ## Shared State and Cross-Widget Events
 
-Because this feature mutates obs, obsm, and uns, an event named only
-TableObsWrittenEvent is too narrow. Introduce or generalize to a semantic event
-such as TableStateChangedEvent with payload including:
+Because table mutations can affect obs, obsm, and nested uns state, introduce a
+general `TableStateChangedEvent`. A logical table-component path is an immutable
+tuple whose first segment is `"obs"`, `"obsm"`, or `"uns"`; remaining segments
+identify the changed column, array, or nested metadata key. Examples are:
 
-    sdata
-    table_name
-    components       # obs, obsm, uns
-    keys              # changed columns/array/registry keys
-    regions
-    change_kind       # created, updated, removed, rebuilt, reloaded
-    source            # spatial_query, spatial_query_canonical, undo, ...
+    ("obs", "spatial_annotation")
+    ("obsm", "spatial_canonical")
+    ("uns", "spatial_coordinates", "spatial_canonical")
 
-Accepted mutation events mark their exact component paths dirty. At minimum,
-Spatial Query emits obs column keys for annotation changes and the paired paths
-obsm/spatial_canonical and uns/spatial_coordinates/spatial_canonical for cache
-changes. Reload is a state replacement event or an explicitly non-dirty event.
-Producers do not invoke widgets directly.
+The event has this conceptual shape:
 
-Shared app state maintains a per-table dirty-component manifest plus monotonic
-mutation and persistence revisions. The user-facing table dirty boolean is true
-when that manifest is non-empty. Every accepted in-memory table mutation records
-its component/key paths and increments the mutation revision. Successful writes
-clear only the captured component generations that were actually persisted;
-reload establishes a new accepted baseline and clears the manifest. These
-session values are not stored in AnnData.
+    TableStateChangedEvent:
+        sdata
+        table_name
+        paths              # unique logical component paths
+        regions
+        change_kind        # created, updated, removed, rebuilt, reloaded
+        source             # spatial_query, spatial_query_canonical, undo, ...
 
-Component generations prevent a write that started from clearing a newer edit
-to the same component. A table becomes clean only after every supported dirty
-component has been persisted and no newer accepted mutation remains. This is a
-shared cross-widget contract, not Spatial Query-local bookkeeping.
+Accepted in-memory mutation events record their exact paths as dirty. Reload is
+a separately accepted state replacement: it emits table-state notification but
+establishes a clean baseline rather than recording dirty paths. Producers do
+not invoke widgets directly.
 
-Expected consumers:
+`TableStateChangedEvent` is the shared persistence and low-level table-state
+contract. Existing domain events such as `FeatureMatrixWrittenEvent` and
+`ClassificationTableWrittenEvent` remain available because they carry useful
+feature-specific meaning for consumers. A producer may therefore publish its
+domain event and one table-state event for the same accepted mutation; only the
+table-state event updates the shared dirty-component manifest.
 
-- Spatial Query refreshes cache/column state and invalidates unsafe dialogs or
-  undo;
-- Viewer refreshes linked table column/color-source choices while preserving
-  valid selections;
-- Object Classification refreshes only state affected by the changed
-  components/keys;
-- future table widgets consume the same general event.
+Shared app state maintains, for each in-memory table, a mapping from dirty
+component path to its latest monotonic revision. The user-facing table dirty
+boolean is derived from whether that mapping is non-empty. Every accepted
+mutation allocates one new table revision and assigns it to all paths in that
+event. A write captures the current `path -> revision` mapping and clears a path
+only when that exact revision was successfully persisted and is still current.
+A newer mutation of the same path therefore remains dirty. Separate mutation
+and persistence revision counters are not required. These session values are
+not stored in AnnData.
 
-Handlers guard against feedback loops using event source and object identity.
+The shared flow is:
+
+    widget/controller accepts a table mutation
+        ↓
+    publish TableStateChangedEvent
+        ↓
+    HarpyAppState records path revisions
+        ↓
+    PersistenceController captures a dirty snapshot
+        ↓
+    core persistence writes supported AnnData elements
+        ↓
+    HarpyAppState clears only unchanged persisted revisions
+
+The general event, component manifest, and persistence foundation are
+introduced before canonical-cache integration. Full Viewer, Object
+Classification, and Spatial Query refresh behavior, feedback-loop guards, and
+shared persistence UI are completed in the later cross-widget integration
+slice.
 
 ## Clean/Dirty and Persistence Semantics
 
 ### Shared dirty state
 
-Extend HarpyAppState's per-table dirty tracking and PersistenceController with
-the shared component manifest described above. Do not introduce a widget-local
-dirty truth.
+Generalize HarpyAppState's per-table dirty tracking and the existing
+`PersistenceController` with the shared component manifest described above. Do
+not create a Spatial Query-specific persistence controller or a widget-local
+dirty truth. Multiple widgets may own selection-aware controller instances, but
+they coordinate through the same HarpyAppState manifest and generic core
+persistence operations.
 
 | Action | Table mutation | Dirty-state result |
 | --- | --- | --- |
@@ -1166,6 +1187,31 @@ Preflight must resolve every dirty path to a supported element writer. An
 unknown or unsupported dirty path blocks the operation with an actionable error;
 it is never silently skipped, and the table remains dirty.
 
+The current `PersistenceController` is generalized rather than duplicated. Its
+selection, reload, and user-facing coordination remain in the application
+layer; path resolution and AnnData element writing live in Qt-independent core
+persistence functions. The existing `write_table_prediction_state()` may
+remain temporarily as a compatibility wrapper that delegates to the generic
+writer with explicit Object Classification paths.
+
+Logical paths map to physical AnnData write units as follows:
+
+- any dirty obs-column path writes the complete encoded `obs` dataframe,
+  because its index, column order, missing values, and categorical encodings
+  form one AnnData element;
+- an obsm path writes only the named obsm entry;
+- an uns path writes only the named top-level or nested metadata entry while
+  preserving unrelated siblings;
+- a removed live path deletes only its corresponding encoded element;
+- multiple logical paths that belong to one consistency contract may be
+  grouped into one persistence unit.
+
+Feature Extraction records, at minimum,
+`("obsm", feature_key)` and
+`("uns", "feature_matrices", feature_key)`. Object Classification records
+every obs column and uns configuration/color key it actually changes. Their
+existing semantic events remain available to domain-specific consumers.
+
 spatial_canonical is an obsm entry, not an obs column. Its persisted pair is:
 
     adata.obsm["spatial_canonical"]
@@ -1202,7 +1248,7 @@ The matrix and its spatial-coordinate metadata are one persistence unit. The
 service stages/backs up as needed, validates both encoded elements, and must not
 leave a newly written matrix paired with old or missing metadata after a handled
 failure. The table remains dirty unless every component in the captured write
-set succeeds. Captured component generations are cleared only if they have not
+set succeeds. Captured component revisions are cleared only if they have not
 changed during the write; later mutations remain dirty.
 
 The action and success message identify the table, resolved store path, and
@@ -1226,6 +1272,12 @@ Reuse the Object Classification dirty-reload decision:
 Before replacement, invalidate active center calculations, queries, Apply
 dialogs, and undo. Reload performs the existing validated in-place replacement
 of obs, obsm, and uns.
+
+The persistence-foundation slice retains this full validated table-state
+reload. It does not introduce selective per-path reload: independently
+replacing parts of obs, obsm, and uns could create a mixed in-memory state.
+Canonical metadata is parsed and validated from the disk snapshot before the
+later canonical integration accepts the replacement.
 
 After success:
 
@@ -1374,7 +1426,7 @@ orchestrates the pure core operations with shared application services.
 General concerns stay outside the feature package:
 
 - shared table persistence and reload services;
-- shared application state and mutation/persistence revisions;
+- shared application state and per-component revisions;
 - general cross-widget table events;
 - generic SpatialData/table-binding helpers;
 - Shapes Annotation's shared geometry-validity contract.
@@ -1393,8 +1445,8 @@ Reuse rather than copy:
 - Shapes Annotation geometry validity helpers and write events;
 - Harpy RasterAggregator;
 - HarpyAppState dirty tracking and semantic events;
-- PersistenceController write/reload behavior and the existing
-  ad.io.write_elem-based selective persistence path;
+- the generalized PersistenceController and Qt-independent
+  ad.io.write_elem-based component persistence path;
 - active-coordinate-system selection patterns;
 - styles, status cards, worker cleanup, and operation-ID patterns.
 
@@ -1538,7 +1590,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   categorical values/categories, and the dataframe index, without rewriting the
   full AnnData table;
 - a mixed dirty manifest writes obs plus the canonical pair and clears dirty
-  state only after all captured component generations succeed;
+  state only after all captured component revisions succeed;
 - an unknown dirty component blocks persistence and is never silently cleared;
 - no path calls AnnData.write_zarr or rewrites X, layers, var, varm, obsp, or
   unrelated obsm/uns entries;
@@ -2271,33 +2323,99 @@ Exit criteria:
 - napari-harpy does not override or regression-gate Harpy's Dask scheduling,
   concurrency, memory, or calculation performance.
 
-### Slice 3: Shared cache state, events, and persistence
+### Slice 3a: General table-state events and component persistence
+
+This slice generalizes the existing Object Classification-oriented persistence
+infrastructure before Spatial Query depends on it. It introduces no canonical
+cache behavior and no second persistence controller.
 
 Deliverables:
 
-- shared dirty-state and semantic table-state event integration for cache
-  creation/refresh/rebuild, plus mandatory affected-region invalidation for
-  supported obs/linkage mutations, including same-set instance reassignment;
-- component-level dirty paths for obsm/spatial_canonical and
-  uns/spatial_coordinates/spatial_canonical;
-- selective ad.io.write_elem persistence and reload support for the canonical
-  pair, including pair-consistency failure handling and preservation of
-  unrelated table elements;
-- mismatch/recalculation feedback for controller and widget consumers;
-- cache lifecycle and backed-zarr tests.
+- an immutable logical table-component path contract for obs columns,
+  individual obsm entries, and top-level or nested uns entries;
+- `TableStateChangedEvent` carrying SpatialData/table identity, unique component
+  paths, affected regions, change kind, and source;
+- coexistence with existing domain events such as
+  `FeatureMatrixWrittenEvent` and `ClassificationTableWrittenEvent`, which
+  remain available for feature-specific consumers;
+- a HarpyAppState per-table dirty manifest mapping each logical path to its
+  latest revision, with table-level `is_table_dirty()` derived from that
+  manifest;
+- dirty snapshot and acknowledgement operations that clear only successfully
+  persisted path revisions that are still current;
+- a generalized `PersistenceController` coordinating selection, dirty
+  snapshots, full validated table-state reload, and Qt-independent core
+  persistence functions;
+- component writers for encoded obs, individual obsm entries, and top-level or
+  nested uns entries, including removal and unsupported-path preflight;
+- migration of Object Classification and Feature Extraction mutations to
+  declare every logical table path they change while retaining their semantic
+  domain events;
+- a temporary compatibility path for `write_table_prediction_state()` if
+  needed by existing headless callers;
+- focused app-state, persistence, Object Classification, and Feature Extraction
+  regression tests.
 
 Exit criteria:
 
-- a successful cache update is dirty and round-trips through zarr;
+- one accepted table-state event assigns one new revision to all of its paths;
+- a table is dirty exactly when its component manifest is non-empty;
+- writing an obs-column path writes the complete encoded obs dataframe but no
+  unrelated AnnData component;
+- writing an obsm or uns path touches only its supported encoded element and
+  preserves unrelated siblings;
+- unsupported paths fail before any write and are never silently cleared;
+- a mutation accepted during persistence remains dirty when its captured older
+  revision completes;
+- existing Object Classification and Feature Extraction behavior, semantic
+  events, write, and reload workflows remain valid;
+- no path calls `AnnData.write_zarr()` or introduces a competing widget-local
+  dirty truth.
+
+### Slice 3b: Canonical cache state, invalidation, and persistence
+
+This slice wires the canonical cache into the shared foundation from Slice 3a.
+Core canonical operations remain independent from Qt and HarpyAppState.
+
+Deliverables:
+
+- a Spatial Query controller callback that publishes a
+  `TableStateChangedEvent` only after an accepted main-thread canonical cache
+  update; synchronous core callers remain responsible for publishing an app
+  event when used inside a shared UI session;
+- one accepted cache event containing both
+  `("obsm", "spatial_canonical")` and
+  `("uns", "spatial_coordinates", "spatial_canonical")`, with the cache action
+  and affected region represented by event change kind/source/regions;
+- one canonical persistence unit that writes both paths through AnnData element
+  encodings, preserves unrelated table elements and sibling metadata, and
+  restores or preserves the prior on-disk pair after a handled partial failure;
+- canonical metadata parsing and structural validation before accepting a disk
+  reload or reusing a reopened cache;
+- an explicit UI-independent affected-region invalidation operation for
+  supported region-key, instance-key, or obs replacement events, including
+  same-set instance reassignment that the instance-set digest cannot detect;
+- clear mismatch/recalculation data for later controller and widget consumers;
+- canonical cache lifecycle and backed-zarr tests.
+
+Direct arbitrary AnnData edits that bypass napari-harpy semantic mutation APIs
+remain undetectable. Supported producers must publish linkage changes with
+sufficient affected-region context to invalidate every prior and current region
+whose row-to-instance association may have changed.
+
+Exit criteria:
+
+- a successful cache update records both canonical paths as dirty in one shared
+  table-state event and round-trips through zarr;
 - a centroid-only write touches only the two canonical element paths and never
   serializes the complete AnnData table;
-- the table is not marked clean when either half of the canonical pair fails to
-  persist;
-- reload/reopen reuses only structurally valid metadata;
-- a supported region-key, instance-key, or obs replacement event invalidates
-  every affected region before cache reuse even when its instance set is
-  unchanged;
-- all widgets observe the same current canonical table state.
+- the table is not marked clean when either half of the canonical persistence
+  unit fails or rollback cannot substantiate a consistent pair;
+- reload/reopen reuses only structurally valid canonical metadata;
+- a supported linkage mutation invalidates every affected region before cache
+  reuse even when its instance set is unchanged;
+- calculating, cancelling, rejecting, or reusing centers without an accepted
+  cache mutation records no dirty path and emits no table-state mutation event.
 
 ### Slice 4: Vectorized centroid-containment query
 
@@ -2404,15 +2522,15 @@ Exit criteria:
   changes;
 - users always see affected and overwrite counts before annotation mutation.
 
-### Slice 8: Shared events, persistence UX, and cross-widget synchronization
+### Slice 8: Persistence UX and cross-widget synchronization
 
 Deliverables:
 
-- general table-state event supporting obs, obsm, and uns;
-- per-table dirty-component manifest and component-aware
-  mutation/persistence revisions;
-- Viewer and Object Classification targeted refresh behavior;
-- reusable Write Table State and Reload Table from zarr UI/service;
+- Spatial Query, Viewer, and Object Classification targeted refresh behavior
+  consuming the shared table-state and existing domain events without feedback
+  loops;
+- reusable Write Table State and Reload Table from zarr UI components backed by
+  the generalized PersistenceController;
 - dirty reload write/discard/cancel behavior;
 - dirty-dataset close/replacement guard;
 - multi-widget and backed-zarr integration tests.
@@ -2423,7 +2541,7 @@ Exit criteria:
 - canonical centers and annotation columns persist/reload together;
 - Write Table State persists the union of supported dirty components through
   AnnData element encodings and clears only successfully written unchanged
-  component generations;
+  component revisions;
 - no full-AnnData rewrite occurs;
 - no event loop or unrelated classifier invalidation;
 - no late task affects a reloaded/replaced table;
