@@ -689,15 +689,20 @@ composes a Shapes Annotation child and a Spatial Query child. Their visual
 language, status cards, spacing, and validation feedback follow the existing
 Harpy widget patterns.
 
-The parent owns controls and state shared by both children:
-
-1. Coordinate system selection.
-2. Annotation Shapes target/element selection.
-3. The current saved/clean/dirty Shapes context.
+The parent owns the coordinate-system and Shapes-target selectors and the
+committed annotation context shared with both children. Those selectors remain
+visible as common workflow inputs rather than belonging to either child.
 
 The Shapes Annotation child owns polygon creation, editing, hole creation,
-validation, save, and discard controls. The Spatial Query child consumes the
-parent's current saved Shapes context and owns this dependent control order:
+validation, save controls, dirty detection, and discard-confirmation behavior.
+Before the parent commits another coordinate system or Shapes target, it asks
+the Shapes child to resolve its current edit session. Cancellation restores the
+old selector and context; acceptance lets the child perform its own layer
+cleanup before the parent commits and publishes the new context. The parent
+never manipulates the child's private edit-session layer directly.
+
+The Spatial Query child consumes the parent's committed annotation context and
+owns this dependent control order:
 
 1. Labels element combo.
 2. Linked table combo.
@@ -719,9 +724,9 @@ selections survive refreshes.
 
 - Coordinate-system choices come from the shared HarpyAppState SpatialData and
   are selected once on the parent Annotation widget.
-- The parent's annotation choice includes Shapes elements available in the
-  selected coordinate system and valid under the Shapes Annotation contract,
-  plus the existing create-new workflow owned by the Shapes Annotation child.
+- The parent's Shapes-target choice includes Shapes elements available in the
+  selected coordinate system and valid under the Shapes Annotation edit
+  contract, plus the existing create-new workflow rendered by the Shapes child.
 - Spatial Query receives only a saved existing Shapes element. A create-new
   session becomes queryable after its first successful save, and any dirty edit
   session blocks Run until it is saved or discarded.
@@ -738,9 +743,11 @@ selections survive refreshes.
   an explanation.
 
 The parent's coordinate-system combo participates in the shared
-active-coordinate-system model. A change updates HarpyAppState, refreshes both
-children, invalidates active Spatial Query work, and follows the same layer
-cleanup behavior as other coordinate-aware widgets.
+active-coordinate-system model. The parent commits an in-widget change to
+HarpyAppState only after the Shapes child accepts the edit-session transition.
+The resulting committed context refreshes both children, invalidates active
+Spatial Query work, and follows the same layer cleanup behavior as other
+coordinate-aware widgets.
 
 ### Target column behavior
 
@@ -1727,16 +1734,20 @@ The corresponding widget composition is:
 
     widgets/
         annotation/
+            models.py
+                shared UI-only ShapesAnnotationTarget and AnnotationContext
+
             widget.py
                 registered parent AnnotationWidget
-                shared SpatialData, coordinate-system, and Shapes context
+                shared coordinate-system and Shapes-target selectors
+                committed AnnotationContext
                 child composition and cross-child cancellation/refresh
 
         shapes_annotation/
             widget.py
                 embedded ShapesAnnotation child
                 polygon create/edit/save/discard session
-                saved/clean/dirty Shapes context reported to the parent
+                dirty-session preflight, cleanup, and context adoption
 
         spatial_query/
             __init__.py
@@ -3598,20 +3609,146 @@ final dock hierarchy:
 
 The Spatial Query child is not introduced or integrated yet.
 
+Slice 6a establishes the final ownership model rather than temporarily wrapping
+the complete existing widget. The parent owns the shared selectors and
+committed selection; the child owns the edit session. The existing private
+Shapes target becomes a small shared UI model:
+
+```python
+@dataclass(frozen=True)
+class ShapesAnnotationTarget:
+    mode: Literal["create_new", "edit_existing"]
+    existing_shapes_name: str | None = None
+
+
+@dataclass(frozen=True)
+class AnnotationContext:
+    sdata: SpatialData | None
+    coordinate_system: str | None
+    shapes_target: ShapesAnnotationTarget | None
+    has_unsaved_shapes_changes: bool
+
+    @property
+    def saved_shapes_name(self) -> str | None:
+        target = self.shapes_target
+        if target is None or target.mode != "edit_existing":
+            return None
+        return target.existing_shapes_name
+```
+
+`saved_shapes_name` is the selected Shapes element that currently exists in
+`sdata.shapes`. It is `None` for a proposed create-new name before its first
+successful save. An existing selected Shapes element remains identified while
+it is being edited; in that case `has_unsaved_shapes_changes=True` tells
+downstream consumers that the saved geometry must not currently be queried.
+
+`has_unsaved_shapes_changes` is derived from the Shapes child's existing
+clean-layer snapshot contract. This context is local parent/child UI state, not
+a general HarpyAppState event and not another dirty-token registry. The shared
+UI-only models live in `widgets/annotation/models.py`; they do not belong in the
+UI-independent core spatial-query package.
+
+The parent exposes the committed read/notification boundary:
+
+```python
+class AnnotationWidget(QWidget):
+    annotation_context_changed = Signal(object)
+
+    @property
+    def annotation_context(self) -> AnnotationContext: ...
+```
+
+The Shapes child exposes a narrow transition boundary instead of its private
+session, layer, and snapshot state:
+
+```python
+class ShapesAnnotation(QWidget):
+    edit_session_dirty_changed = Signal(bool)
+
+    @property
+    def has_unsaved_changes(self) -> bool: ...
+
+    def try_release_edit_session(self) -> bool:
+        """End the edit session, prompting before discarding unsaved changes."""
+
+    def apply_annotation_context(self, context: AnnotationContext) -> None:
+        """Adopt a context already committed by the parent."""
+```
+
+`try_release_edit_session()` returns `True` when there is no active session or
+after it has successfully released a clean session or an accepted discard. It
+returns `False` when the user cancels, leaving the session unchanged. It owns
+dirty confirmation and any accepted discard/close cleanup, but must not commit
+selector or HarpyAppState state.
+`apply_annotation_context()` must not prompt or alter the parent selection; it
+prepares or opens the Shapes edit workflow for the already committed context.
+The child also reports successful first save and compatible active-primary-
+Shapes adoption to the parent, so those changes pass through the same parent
+selection path rather than mutating a child-owned combo.
+
+The ownership and publication flow is:
+
+    AnnotationWidget
+        user requests another coordinate system or Shapes target
+        ↓
+    ShapesAnnotation.try_release_edit_session()
+        ├── cancelled
+        │       ↓
+        │   parent restores the old selector and context
+        └── accepted
+                ↓ child completes its own layer cleanup
+    AnnotationWidget commits selectors, HarpyAppState, and AnnotationContext
+        ↓
+    ShapesAnnotation.apply_annotation_context(context)
+        ↓ parent publishes one final accepted context
+        ↓ later the same committed context is supplied to
+    SpatialQuery
+
+The parent suppresses intermediate dirty/session notifications while an
+accepted transition is in progress. Siblings observe either the old context
+after cancellation or one final new context after acceptance, never a
+transient clean version of the old target created during layer cleanup.
+
 Deliverables:
 
-- replace the existing registered Shapes Annotation contribution with one
-  registered parent `AnnotationWidget` while retaining the existing Annotation
-  manifest entry and adding no new dock contribution;
-- embed the existing Shapes Annotation workflow as a child instead of adding
-  Spatial Query logic to its already substantial implementation;
-- establish the parent-owned boundary for the current SpatialData,
-  coordinate-system, selected-Shapes, and saved/clean/dirty context that a
-  second child can consume later;
+- add `widgets/annotation/widget.py` containing the registered parent
+  `AnnotationWidget`;
+- add `widgets/annotation/models.py` containing `ShapesAnnotationTarget` and
+  `AnnotationContext`;
+- change only the existing Annotation command's Python target from
+  `ShapesAnnotation` to `AnnotationWidget`; retain the command ID
+  `napari-harpy.shapes_annotation`, the Annotation display name, and
+  `Interactive(..., widgets="shapes_annotation")` compatibility, and add no
+  new dock contribution;
+- move the coordinate-system and Shapes-target selectors, their option
+  discovery, and their committed selection state into the parent;
+- let the parent own the outer dock surface, logo, scroll area, shared selector
+  form, and immutable `AnnotationContext` publication;
+- embed the remaining Shapes Annotation edit workflow as a child without a
+  duplicate logo, scroll area, coordinate-system selector, or Shapes-target
+  selector;
+- keep `ShapesAnnotation` independently constructible and publicly importable
+  as an embeddable edit-session component that accepts an explicit context;
+- implement the two-phase parent/child context transition: child-owned
+  dirty-session preflight and cleanup, followed by parent-owned commit, child
+  adoption, and one final parent publication;
+- route compatible active-primary-Shapes adoption and successful first save
+  back through the parent so its selector and committed context remain the
+  single source of truth;
+- publish an updated `AnnotationContext` after accepted SpatialData,
+  coordinate-system, or Shapes-target changes; layer dirty/clean transitions;
+  successful first save or discard; and annotation-layer removal. Emit only
+  when the final committed context changes;
+- use the existing exact clean-snapshot comparison rather than introducing a
+  parallel dirty-state representation;
 - preserve the existing polygon create/edit/hole/validate/save/discard
   behavior, status feedback, table events, and persistence behavior;
-- focused tests for widget construction, manifest registration, context
-  propagation, and preservation of existing Shapes Annotation behavior.
+- update the lazy widget exports to expose `AnnotationWidget` while retaining
+  `ShapesAnnotation`;
+- focused tests for parent construction, manifest registration, compatibility,
+  accepted/cancelled context transitions, dirty-state publication, first save,
+  active-layer adoption, and representative existing Shapes Annotation
+  behavior.
 
 Exit criteria:
 
@@ -3619,6 +3756,18 @@ Exit criteria:
 - the visible Shapes Annotation workflow behaves as before the refactor;
 - the parent is the single boundary through which shared annotation context is
   exposed, even though Shapes Annotation is initially its only child;
+- a proposed unsaved create-new name is never exposed as
+  `saved_shapes_name`;
+- cancellation preserves the old selectors, edit session, HarpyAppState
+  coordinate system, and published context;
+- acceptance lets the child finish cleanup before the parent commits and emits
+  exactly one final context notification;
+- clean existing, dirty existing, successful first save, discard, active-layer
+  adoption, layer removal, coordinate-system change, and SpatialData
+  replacement produce the expected immutable context without duplicate or
+  intermediate notifications;
+- existing direct `ShapesAnnotation` construction, the historical plugin
+  command ID, and the historical `Interactive` widget selector remain valid;
 - the refactor introduces no canonical-center, spatial-query, or table
   annotation behavior.
 
@@ -3662,9 +3811,8 @@ Annotation widget.
 
 Deliverables:
 
-- an unregistered Spatial Query child accepting parent-supplied SpatialData,
-  coordinate-system, selected-Shapes, and saved/clean/dirty context through an
-  explicit boundary rather than owning duplicate coordinate-system or Shapes
+- an unregistered Spatial Query child accepting the parent-supplied
+  `AnnotationContext` rather than owning duplicate coordinate-system or Shapes
   selectors;
 - child controls for labels, linked table, and target-column intent;
 - a shared core discovery helper for compatible categorical string annotation
@@ -3712,8 +3860,7 @@ Deliverables:
 - embed the Spatial Query child in the existing parent Annotation widget while
   retaining one Annotation manifest entry and adding no separate Spatial Query
   dock contribution;
-- one parent-owned source of truth for SpatialData, coordinate-system,
-  selected-Shapes, and saved/clean/dirty context shared with both children;
+- one parent-owned and published `AnnotationContext` shared with both children;
 - direct parent-to-Spatial-Query dirty-session blocking: unsaved edits to the
   selected Shapes element disable Run, invalidate current query intent, and
   explain that the user must save or discard; no general cross-widget Shapes
@@ -3728,8 +3875,8 @@ Exit criteria:
 
 - napari exposes one Annotation dock containing both child workflows and no
   separate Spatial Query dock;
-- coordinate-system and Shapes selection have one source of truth shared by
-  both children;
+- coordinate-system and Shapes-target selection have one parent-owned source
+  of truth published to both children;
 - dirty selected Shapes geometry blocks Run, while a successful save refreshes
   the Spatial Query child and makes the saved in-memory geometry eligible;
 - parent context changes consistently refresh or invalidate dependent Spatial
