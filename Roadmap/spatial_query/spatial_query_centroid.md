@@ -3067,6 +3067,104 @@ distinct operations.
 - multi-region coordinate frames never mix;
 - valid cached queries read no labels chunks.
 
+### Slice 4b: Stable categorical palette foundation
+
+#### Responsibility boundary
+
+Slice 4b is a small UI-independent infrastructure slice completed before
+annotation mutation. It establishes one shared, append-stable categorical
+palette contract for current Labels/Shapes color sources, the later Spatial
+Query styling controller, and future categorical color panels. It does not
+implement a color panel or Spatial Query widget and never mutates `.obs`,
+`.uns`, dirty state, or persisted data.
+
+The current generic palette fallback lives in `viewer/_styling.py` and derives
+all colors from `default_categorical_colors(len(categories))`. Its palette
+family can change as the category count crosses a threshold. Slice 5 must not
+import that viewer implementation or duplicate it in the UI-independent
+annotation domain.
+
+#### Shared core palette contract
+
+Keep the implementation in the existing `core/class_palette.py`; do not create
+a Spatial Query-specific palette module. Refactor the generic default palette
+so category position is stable:
+
+    def default_categorical_colors(length: int) -> list[str]:
+        return [
+            default_labeled_class_color(position + 1)
+            for position in range(length)
+        ]
+
+Break the current internal call cycle by having
+`default_labeled_class_color()` select directly from the private base-palette
+resolver rather than calling `default_categorical_colors()`. The color returned
+for every existing positive Object Classification class ID must remain
+unchanged.
+
+Move the pure standard AnnData categorical-palette inspection from
+`viewer/_styling.py` into the core palette API. Its source classification
+remains explicit:
+
+    CategoricalPaletteSource = Literal[
+        "stored",
+        "default_missing",
+        "default_invalid",
+    ]
+
+The shared resolver:
+
+- reads `<column>_colors` without mutating the table;
+- returns a valid stored palette unchanged when it has exactly one valid color
+  per category;
+- returns the complete append-stable default palette when stored metadata is
+  absent or invalid;
+- reports which of the three sources produced the result so viewers can warn
+  without changing table state.
+
+Provide one pure palette-extension helper. Given a valid existing palette and a
+larger target category count, it preserves every existing color value and order
+and appends `default_labeled_class_color(position + 1)` for only the new
+positions. It rejects shrinking, invalid input colors, and a palette/category
+length mismatch. It performs no AnnData assignment.
+
+Labels and Shapes categorical styling consume this shared core resolver and
+source type. Plain string/object viewer coercion, where still supported outside
+Spatial Query, uses the same append-stable default palette. Object
+Classification retains its specialized integer-class categories, unlabeled
+class, stored `user_class_colors`/`pred_class_colors`, and strict canonical
+palette validation; this slice changes none of those semantics.
+
+Persistence requires no preparatory change: `write_table_components()` already
+supports explicit top-level uns paths. Creating, repairing, extending, rolling
+back, publishing, and persisting `<column>_colors` remain Slice 5 and later
+widget responsibilities.
+
+#### Deliverables
+
+- append-stable generic defaults in `core/class_palette.py`;
+- core palette source type, validation, non-mutating resolver, and pure
+  extension helper;
+- Labels and Shapes styling migrated from viewer-local palette resolution to
+  the shared core API;
+- removal of duplicated viewer-local generic palette policy;
+- focused palette and affected viewer-styling tests.
+
+#### Exit criteria
+
+- appending categories across the Matplotlib-cycle, 20, 28, and 102 category
+  thresholds never changes any existing position's color;
+- valid stored palettes and their order are returned unchanged;
+- missing and invalid palettes resolve deterministically without mutating the
+  table;
+- extending a palette appends only the required stable colors and rejects
+  invalid input;
+- Labels and Shapes styling use the same resolver and source classification;
+- Object Classification class-color behavior and stored palette contracts are
+  unchanged;
+- the slice emits no table event, records no dirty path, and performs no zarr
+  write.
+
 ### Slice 5: Atomic annotation preparation and apply
 
 #### Responsibility boundary
@@ -3082,6 +3180,11 @@ the current selected table region and canonical cache. It uses concrete source,
 binding, metadata, and center snapshots rather than introducing an abstract
 cache-generation counter. The later controller additionally rejects a result
 when its Shapes selection, coordinate system, or operation identity changed.
+
+Slice 5 consumes the stable core palette resolver and extension helper from
+Slice 4b. It owns when a resolved palette becomes an accepted `.uns` mutation,
+but it does not redefine default colors, stored-palette validity, or extension
+semantics.
 
 #### Typed contracts
 
