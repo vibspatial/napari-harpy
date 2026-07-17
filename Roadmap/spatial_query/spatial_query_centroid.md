@@ -3223,6 +3223,8 @@ events, dirty tracking, or widget orchestration in this slice.
 
 ### Slice 5: Atomic annotation preparation and apply
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 Slice 5 is a UI-independent table-domain slice. It owns exact row resolution,
