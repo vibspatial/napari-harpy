@@ -40,7 +40,7 @@ Let a user bulk-annotate segmented objects by selecting an existing polygon
 annotation:
 
 1. select one Shapes element created by, or valid for, the Shapes Annotation
-   widget;
+   child;
 2. treat all polygons in that Shapes element as one annotation region;
 3. select a labels element in the same SpatialData object and selected
    coordinate system;
@@ -60,6 +60,21 @@ annotation:
     refresh that visualization after an effective annotation change;
 12. explicitly write or reload the shared table state when working with the
     backed zarr store.
+
+This workflow lives in one registered parent `AnnotationWidget`. The parent
+composes two children with separate responsibilities:
+
+    AnnotationWidget
+        ├── ShapesAnnotation
+        │     create, edit, validate, save, and discard polygon annotations
+        └── SpatialQuery
+              select labels/table/target, query centers, review, apply, and
+              visualize table annotations
+
+The parent owns the shared SpatialData, coordinate-system, and selected-Shapes
+context. The children remain separate implementation components with their own
+controllers and status logic; integrating the workflow must not merge their
+domain responsibilities into one large widget class.
 
 The workflow targets zarr-backed SpatialData. The highest-resolution labels
 level, scale0, is always used and is always expected to be backed by a lazy Dask
@@ -108,8 +123,8 @@ An annotation is one selected SpatialData Shapes element. Every geometry row in
 the element contributes to the same annotation region. This workflow does not
 offer per-polygon row selection.
 
-The Shapes element must satisfy the existing Shapes Annotation edit-validity
-contract:
+The Shapes element must satisfy the existing Shapes Annotation child's
+edit-validity contract:
 
 - it is a GeoDataFrame with an active geometry column;
 - it contains at least one geometry row;
@@ -127,7 +142,7 @@ Spatial Query must reuse the complete existing Shapes Annotation edit-validity
 contract and its implementation rather than maintaining a second validator.
 The selected Shapes element must be accepted by
 `validate_existing_shapes_source_geodataframe()` and therefore be eligible for
-editing by the Shapes Annotation widget, including its active-geometry,
+editing by the Shapes Annotation child, including its active-geometry,
 GeoDataFrame-index, and Polygon requirements. A Shapes element rejected for
 editing must also be rejected by Spatial Query. If the shared edit-validity
 contract is extended in the future, both workflows inherit that change through
@@ -217,11 +232,13 @@ The query reads the selected Shapes element and labels/table binding from the
 current in-memory SpatialData object, not arbitrary similarly named napari
 layers.
 
-If Shapes Annotation has an open dirty edit session for the selected Shapes
-element, Spatial Query must not query the last stored geometry silently. Run is
-blocked with guidance to save or discard the shape edits. After a successful
-Shapes Annotation save, the Spatial Query selections refresh and the new
-in-memory geometry becomes queryable.
+If the Shapes Annotation child has an open dirty edit session for the selected
+Shapes element, the parent must not let the Spatial Query child silently query
+the last saved geometry. Run is blocked with guidance to save or discard the
+shape edits. Because both children belong to the same parent, this is a direct
+parent-to-child context contract rather than cross-widget dirty-session state.
+After a successful Shapes Annotation save, the parent refreshes the Spatial
+Query child and the new in-memory geometry becomes queryable.
 
 The current AnnData object is authoritative for spatial_canonical and its
 metadata. Persisted zarr state becomes authoritative again only after an
@@ -373,12 +390,14 @@ centers still scans all scale0 chunks lazily.
   the complete AnnData table;
 - selective reload of supported table components from zarr, plus a full-table
   convenience reload, with dirty-state protection;
-- cross-widget refresh after a cache update, annotation mutation, write,
-  reload, or Shapes element write.
+- refresh of the Annotation children and other widgets after a cache update,
+  annotation mutation, write, reload, or Shapes element write.
 
 ### Non-goals
 
-- modifying labels pixels or Shapes geometry;
+- modifying labels pixels, or modifying Shapes geometry from the Spatial Query
+  child; Shapes geometry editing remains owned by the sibling Shapes Annotation
+  child;
 - querying NumPy-backed labels or lower-resolution pyramid levels;
 - creating missing table rows or a new linked table;
 - returning labels instances that have no linked table row;
@@ -662,33 +681,50 @@ persist.
 
 ## User Experience
 
-### Dock widget
+### Unified Annotation dock widget
 
-Add a Spatial Query dock widget with the visual language and status-card
-patterns used by existing Harpy widgets.
+Extend the existing registered Annotation dock into one parent
+`AnnotationWidget`; do not register a second Spatial Query dock. The parent
+composes a Shapes Annotation child and a Spatial Query child. Their visual
+language, status cards, spacing, and validation feedback follow the existing
+Harpy widget patterns.
 
-Recommended control order:
+The parent owns controls and state shared by both children:
 
-1. Coordinate system combo.
-2. Annotation shapes combo.
-3. Labels element combo.
-4. Linked table combo.
-5. Target column mode: Existing column or New column.
-6. Existing-column combo or new-column line edit.
-7. Centroid cache status and Recalculate centroids button.
-8. Run Spatial Query button.
-9. Query/action status card that reports when calculation is busy.
-10. Write Table State and Reload Table from zarr buttons.
-11. Persistent shared clean/dirty table-state status.
+1. Coordinate system selection.
+2. Annotation Shapes target/element selection.
+3. The current saved/clean/dirty Shapes context.
 
-The target controls use stable identities rather than display strings so valid
+The Shapes Annotation child owns polygon creation, editing, hole creation,
+validation, save, and discard controls. The Spatial Query child consumes the
+parent's current saved Shapes context and owns this dependent control order:
+
+1. Labels element combo.
+2. Linked table combo.
+3. Target column mode: Existing column or New column.
+4. Existing-column combo or new-column line edit.
+5. Centroid cache status and Recalculate centroids button.
+6. Run Spatial Query button.
+7. Query/action status card that reports when calculation is busy.
+8. Write Table State and Reload Table from zarr buttons.
+9. Persistent shared clean/dirty table-state status.
+
+The parent coordinates child context changes and cancellation, but each child
+retains its own controller and status-building modules. Spatial Query logic must
+not be added directly to the already substantial Shapes Annotation child.
+Target controls use stable identities rather than display strings so valid
 selections survive refreshes.
 
 ### Selection dependencies
 
-- Coordinate-system choices come from the shared HarpyAppState SpatialData.
-- Annotation choices include only Shapes elements available in the selected
-  coordinate system and valid under the Shapes Annotation contract.
+- Coordinate-system choices come from the shared HarpyAppState SpatialData and
+  are selected once on the parent Annotation widget.
+- The parent's annotation choice includes Shapes elements available in the
+  selected coordinate system and valid under the Shapes Annotation contract,
+  plus the existing create-new workflow owned by the Shapes Annotation child.
+- Spatial Query receives only a saved existing Shapes element. A create-new
+  session becomes queryable after its first successful save, and any dirty edit
+  session blocks Run until it is saved or discarded.
 - Labels choices include only supported 2D labels elements available in that
   coordinate system.
 - Table choices include only tables whose SpatialData TableModel metadata
@@ -701,9 +737,10 @@ selections survive refreshes.
   Otherwise choose the first valid option or show a disabled placeholder with
   an explanation.
 
-The coordinate-system combo participates in the shared active-coordinate-system
-model. A change here updates HarpyAppState and follows the same layer cleanup
-and refresh behavior as other coordinate-aware widgets.
+The parent's coordinate-system combo participates in the shared
+active-coordinate-system model. A change updates HarpyAppState, refreshes both
+children, invalidates active Spatial Query work, and follows the same layer
+cleanup behavior as other coordinate-aware widgets.
 
 ### Target column behavior
 
@@ -743,11 +780,14 @@ would create no useful state.
 
 The selected labels element is loaded and activated as the primary labels
 layer through `ViewerAdapter.ensure_labels_loaded()`, following the same layer
-selection and activation behavior as Object Classification. Spatial Query must
-reuse that primary layer; it must not create a second styled-labels overlay for
-the annotation.
+selection and activation behavior as Object Classification. The Spatial Query
+child must reuse that primary layer; it must not create a second styled-labels
+overlay for the annotation. Activating the labels layer switches napari's
+active editing target away from the Shapes layer without discarding the sibling
+Shapes Annotation session.
 
-The selected annotation target column is also the Spatial Query color source:
+The selected annotation target column is also the Spatial Query child's color
+source:
 
 - selecting a compatible existing target column applies its current values to
   the primary labels layer immediately;
@@ -795,20 +835,20 @@ palette, or append the new-category entry to a valid palette. Remove never
 prunes categories or colors.
 
 An effective annotation Apply publishes the ordinary
-`TableStateChangedEvent` for the changed `obs/<column>` path. Spatial Query
-refreshes table-backed coloring only when the event refers to the current
+`TableStateChangedEvent` for the changed `obs/<column>` path. The Spatial Query
+child refreshes table-backed coloring only when the event refers to the current
 SpatialData object and table, covers the currently displayed annotation
 column, and either includes the selected labels region or is explicitly
 table-wide. Unrelated obs, obsm, uns, table, or region changes must not repaint
 the layer. A relevant reload or a mutation published by another widget follows
 the same targeted refresh rule.
 
-Because Object Classification and Spatial Query can both style the same
-primary labels layer, the most recent explicit user coloring action owns its
-presentation. Selecting a Spatial Query target column or successfully applying
-that annotation is such an action. A later Object Classification color choice
-may replace it, and vice versa. Shared presentation state must retain the
-currently applied primary-layer color-source identity so background table
+Because Object Classification and the Spatial Query child can both style the
+same primary labels layer, the most recent explicit user coloring action owns
+its presentation. Selecting a Spatial Query target column or successfully
+applying that annotation is such an action. A later Object Classification color
+choice may replace it, and vice versa. Shared presentation state must retain
+the currently applied primary-layer color-source identity so background table
 events refresh that source only; a widget must not reclaim layer styling merely
 because it received an unrelated refresh callback.
 
@@ -1338,9 +1378,9 @@ An operation that already persisted its result uses the shorter flow:
 
 The general event, component manifest, and persistence foundation are
 introduced before canonical-cache integration. Full Viewer, Object
-Classification, and Spatial Query refresh behavior, feedback-loop guards, and
-shared persistence UI are completed in the later cross-widget integration
-slice.
+Classification, and parent Annotation widget refresh behavior, including its
+Spatial Query child, feedback-loop guards, and shared persistence UI are
+completed in the later cross-widget integration slice.
 
 ## Clean/Dirty and Persistence Semantics
 
@@ -1573,9 +1613,9 @@ dialog, or mutate the reloaded table.
 
 Changing table selection may leave each table's shared dirty marker intact.
 Before replacing or closing a SpatialData object with dirty tables, the shared
-application lifecycle warns and offers write/discard/cancel behavior. A
-Spatial Query-only warning is insufficient because other widgets can also
-replace the dataset.
+application lifecycle warns and offers write/discard/cancel behavior. A warning
+owned only by the Spatial Query child is insufficient because other widgets can
+also replace the dataset.
 
 ## Validation and Error States
 
@@ -1683,25 +1723,39 @@ directly. The __init__.py facade must remain small and explicit; it must not use
 wildcard exports. This lets internal modules be reorganized later without
 changing controllers or other consumers.
 
-The corresponding widget package is:
+The corresponding widget composition is:
 
     widgets/
+        annotation/
+            widget.py
+                registered parent AnnotationWidget
+                shared SpatialData, coordinate-system, and Shapes context
+                child composition and cross-child cancellation/refresh
+
+        shapes_annotation/
+            widget.py
+                embedded ShapesAnnotation child
+                polygon create/edit/save/discard session
+                saved/clean/dirty Shapes context reported to the parent
+
         spatial_query/
             __init__.py
-            controller.py
             widget.py
+            controller.py
             viewer_styling.py
             dialogs.py
             status_card.py
+
+            widget.py
+                embedded SpatialQuery child
+                labels/table/target selectors, cache status, busy state,
+                and persistence actions
 
             controller.py
                 binding/cache validation
                 worker lifecycle and operation IDs
                 stale-result handling
                 cache update and annotation apply orchestration
-
-            widget.py
-                selectors, cache status, busy state, persistence actions
 
             viewer_styling.py
                 thin primary-layer binding and generic annotation-column
@@ -1714,9 +1768,15 @@ The corresponding widget package is:
             status_card.py
                 pure status-card specification builders
 
+The exact extraction of the current `ShapesAnnotation` root widget into an
+embedded child is an implementation refactor, not a domain merge. The existing
+Annotation plugin command is retained and points to the new parent; no second
+Spatial Query command or dock contribution is added.
+
 The core spatial_query package must remain UI independent. It must not import
-Qt, napari widgets, HarpyAppState, or widget controllers. The widget controller
-orchestrates the pure core operations with shared application services.
+Qt, napari widgets, HarpyAppState, or widget controllers. The Spatial Query
+child and its controller orchestrate the pure core operations with services
+supplied by the parent Annotation widget and shared application state.
 
 General concerns stay outside the feature package:
 
@@ -1724,7 +1784,7 @@ General concerns stay outside the feature package:
 - shared application state and per-component mutation tokens;
 - general cross-widget table events;
 - generic SpatialData/table-binding helpers;
-- Shapes Annotation's shared geometry-validity contract.
+- the Shapes Annotation child's shared geometry-validity contract.
 
 These dependencies are consumed by Spatial Query; they are not reimplemented
 inside it.
@@ -1737,7 +1797,7 @@ work adopts the package structure without introducing unrelated import churn.
 Reuse rather than copy:
 
 - annotating-table discovery and table/linkage metadata helpers;
-- Shapes Annotation geometry validity helpers and write events;
+- Shapes Annotation child geometry-validity helpers and write events;
 - Harpy RasterAggregator;
 - HarpyAppState dirty tracking and the shared `table_state_changed` event;
 - the generalized PersistenceController and Qt-independent
@@ -3076,8 +3136,8 @@ distinct operations.
 Slice 4b is a small UI-independent infrastructure slice completed before
 annotation mutation. It establishes one shared, append-stable categorical
 palette contract for current Labels/Shapes color sources, the later Spatial
-Query styling controller, and future categorical color panels. It does not
-implement a color panel or Spatial Query widget and never mutates `.obs`,
+Query child styling controller, and future categorical color panels. It does
+not implement a color panel or Spatial Query child and never mutates `.obs`,
 `.uns`, dirty state, or persisted data.
 
 The current generic palette fallback lives in `viewer/_styling.py` and derives
@@ -3528,34 +3588,161 @@ canonical cache.
 - focused tests cover set/remove, new/existing, valid/missing/invalid palette,
   stable palette extension, no-op, rollback, and outdated preparation paths.
 
-### Slice 6: Widget selection and validation shell
+### Slice 6a: Parent Annotation widget foundation
+
+This slice performs only the architectural refactor needed to establish the
+final dock hierarchy:
+
+    AnnotationWidget
+        └── ShapesAnnotation
+
+The Spatial Query child is not introduced or integrated yet.
 
 Deliverables:
 
-- registered Spatial Query dock widget and plugin manifest entry;
-- coordinate system, Shapes, labels, table, target-column controls;
-- primary labels-layer load/activation and annotation-column coloring through a
-  thin Spatial Query styling controller over the generic table-backed labels
-  styling API with valid stored-palette preservation and stable
-  position-derived defaults when the palette is missing or invalid;
-- centroid cache status and explicit Recalculate centroids action;
-- dependent filtering with stable identity preservation;
-- default spatial_annotation behavior;
-- Shapes Annotation dirty-session blocker;
-- status cards, tooltips, accessible names, and selector-state tests.
+- replace the existing registered Shapes Annotation contribution with one
+  registered parent `AnnotationWidget` while retaining the existing Annotation
+  manifest entry and adding no new dock contribution;
+- embed the existing Shapes Annotation workflow as a child instead of adding
+  Spatial Query logic to its already substantial implementation;
+- establish the parent-owned boundary for the current SpatialData,
+  coordinate-system, selected-Shapes, and saved/clean/dirty context that a
+  second child can consume later;
+- preserve the existing polygon create/edit/hole/validate/save/discard
+  behavior, status feedback, table events, and persistence behavior;
+- focused tests for widget construction, manifest registration, context
+  propagation, and preservation of existing Shapes Annotation behavior.
 
 Exit criteria:
 
-- Run is enabled only for a complete valid/rebuild-authorized request;
+- napari still exposes exactly one Annotation dock and no Spatial Query dock;
+- the visible Shapes Annotation workflow behaves as before the refactor;
+- the parent is the single boundary through which shared annotation context is
+  exposed, even though Shapes Annotation is initially its only child;
+- the refactor introduces no canonical-center, spatial-query, or table
+  annotation behavior.
+
+### Slice 6b: Spatial annotation viewer-styling foundation
+
+This slice isolates the small amount of primary-label layer orchestration that
+is specific to spatial annotation. It must build on the existing generic
+table-backed labels styling API rather than reproduce palette resolution or
+Object Classification semantics.
+
+Deliverables:
+
+- a thin `widgets/spatial_query/viewer_styling.py` boundary for loading or
+  reusing the selected labels element as the primary labels layer, activating
+  it, and applying one selected annotation column as its color source;
+- valid stored `<column>_colors` palette preservation and stable
+  position-derived display defaults when that palette is missing or invalid,
+  through the shared styling and palette APIs;
+- missing annotation values rendered through the shared missing/unlabelled
+  color;
+- no table, palette, dirty-state, canonical-cache, or persisted-data mutation
+  during layer loading or styling;
+- focused tests for primary-layer reuse, coloring, invalid or missing palette
+  fallback, missing values, and no-mutation behavior.
+
+Exit criteria:
+
+- the styling boundary contains only spatial-annotation layer orchestration;
+- it does not introduce a second labels overlay, classifier-specific class
+  semantics, a color-source ownership policy, or a widget controller;
+- all palette selection remains delegated to the shared core/viewer contracts;
+- if inspection shows that an operation is already fully expressed by an
+  existing helper, the spatial-query boundary delegates to that helper instead
+  of wrapping it with additional state.
+
+### Slice 6c: Spatial Query child widget shell
+
+Build the Spatial Query child as an independently testable, embeddable widget.
+It is not registered as a napari dock and is not yet composed into the parent
+Annotation widget.
+
+Deliverables:
+
+- an unregistered Spatial Query child accepting parent-supplied SpatialData,
+  coordinate-system, selected-Shapes, and saved/clean/dirty context through an
+  explicit boundary rather than owning duplicate coordinate-system or Shapes
+  selectors;
+- child controls for labels, linked table, and target-column intent;
+- a shared core discovery helper for compatible categorical string annotation
+  columns, excluding `region_key` and `instance_key`, so Qt code does not
+  duplicate the Slice 5 target rules;
+- dependent filtering with stable identity preservation and default
+  `spatial_annotation` new-column behavior;
+- centroid-cache inspection status and explicit Run and Recalculate centroids
+  action intents;
+- primary labels-layer load/activation and existing-column visualization
+  through the Slice 6b styling boundary;
+- status cards, tooltips, accessible names, and focused selector/state tests.
+
+The action controls in this shell validate state and emit intent only. They do
+not calculate centers, run a query, open a review dialog, mutate a table, or
+publish dirty state; those execution paths belong to Slice 7.
+
+Exit criteria:
+
+- Run is enabled only for a complete valid or rebuild-authorized request;
 - first-run cost and cache reuse state are clear before execution;
 - Recalculate centroids is available from a valid labels/table selection even
   when Shapes or annotation-target inputs are incomplete;
 - a compatible existing annotation column can be visualized without mutating
   the table, and a configured New column is not treated as available before
   its first effective Apply;
-- selection/inspection never mutates or dirties a table.
+- selection, inspection, and styling never mutate or dirty a table;
+- focused tests can drive the child with supplied context without constructing
+  the parent widget.
+
+### Slice 6d: Annotation parent/child integration
+
+Compose the two independently established children into the final dock
+hierarchy:
+
+    AnnotationWidget
+        ├── ShapesAnnotation
+        └── SpatialQuery
+
+This slice wires shared selection and dirty-session context only. It does not
+yet implement asynchronous calculate-query-review-apply execution.
+
+Deliverables:
+
+- embed the Spatial Query child in the existing parent Annotation widget while
+  retaining one Annotation manifest entry and adding no separate Spatial Query
+  dock contribution;
+- one parent-owned source of truth for SpatialData, coordinate-system,
+  selected-Shapes, and saved/clean/dirty context shared with both children;
+- direct parent-to-Spatial-Query dirty-session blocking: unsaved edits to the
+  selected Shapes element disable Run, invalidate current query intent, and
+  explain that the user must save or discard; no general cross-widget Shapes
+  dirty-state registry is introduced;
+- refresh the Spatial Query child after a successful Shapes save or discard so
+  it observes the current saved in-memory geometry;
+- preserve the Shapes edit session when the Spatial Query child activates the
+  primary labels layer;
+- focused parent/child context, dirty-session, refresh, and regression tests.
+
+Exit criteria:
+
+- napari exposes one Annotation dock containing both child workflows and no
+  separate Spatial Query dock;
+- coordinate-system and Shapes selection have one source of truth shared by
+  both children;
+- dirty selected Shapes geometry blocks Run, while a successful save refreshes
+  the Spatial Query child and makes the saved in-memory geometry eligible;
+- parent context changes consistently refresh or invalidate dependent Spatial
+  Query selections and intent;
+- the existing Shapes Annotation workflow remains behaviorally unchanged;
+- integration itself does not calculate centers, run a query, apply an
+  annotation, or dirty a table.
 
 ### Slice 7: Async calculate-query-review-apply flow
+
+This slice connects the validated action intents exposed by the integrated
+Spatial Query child in Slice 6d to the existing core calculation, query, and
+annotation APIs.
 
 Deliverables:
 
@@ -3567,22 +3754,22 @@ Deliverables:
   review;
 - textual busy status, cancellation, cleanup, and error routing;
 - main-thread cache update/revalidation;
-- widget-owned shared-state publication after an accepted cache update. The
-  controller returns `CanonicalCentersResult` through `on_centers_ready` and
-  remains unaware of `HarpyAppState`; the Spatial Query widget translates an
-  actual `result.cache_update` into one `TableStateChangedEvent` for
-  `CANONICAL_CACHE_PATHS` and calls
-  `self._app_state.record_table_mutation(event)`;
+- Spatial Query child-owned shared-state publication after an accepted cache
+  update. The controller returns `CanonicalCentersResult` through
+  `on_centers_ready` and remains unaware of `HarpyAppState`; the child uses the
+  parent Annotation widget's shared app state to translate an actual
+  `result.cache_update` into one `TableStateChangedEvent` for
+  `CANONICAL_CACHE_PATHS` and calls `record_table_mutation(event)`;
 - move the temporary `record_canonical_cache_update()` adapter into the Spatial
-  Query widget's accepted-centers callback and remove `cache_state.py` once the
-  widget owns this behavior, matching the Object Classification
+  Query child's accepted-centers callback and remove `cache_state.py` once the
+  child owns this behavior, matching the Object Classification
   controller-to-widget event boundary;
 - no-result outcome;
 - Apply dialog with explicit Set annotation and Remove annotation modes, live
   mode-specific counts, and mandatory overwrite/removal warnings;
 - main-thread atomic annotation Apply;
-- widget-owned publication of the obs path and the palette uns path indicated
-  by `SpatialAnnotationApplyResult`;
+- Spatial Query child-owned publication of the obs path and the palette uns
+  path indicated by `SpatialAnnotationApplyResult`;
 - targeted primary labels-layer refresh after an effective annotation Apply,
   with missing values rendered through the shared missing/unlabelled color;
 - controller/dialog async tests.
@@ -3593,7 +3780,9 @@ The centroid-calculation phase is:
         ↓
     main thread: accept and apply cache payload
         ↓ success
-    SpatialQueryWidget._on_canonical_centers_ready(result)
+    AnnotationWidget
+        ↓ delegates accepted result to embedded child
+    SpatialQuery._on_canonical_centers_ready(result)
         ↓ result.cache_update is not None
     record one TableStateChangedEvent for both canonical paths
         ↓
@@ -3601,9 +3790,9 @@ The centroid-calculation phase is:
 
 It is skipped when the selected-region cache is already valid. Standalone
 Recalculate centroids performs this phase with valid reuse bypassed and ends
-after the main-thread cache update and widget-owned table-state publication.
-Valid cache reuse, cancellation, worker failure, or rejected payloads never
-publish a canonical table mutation event.
+after the main-thread cache update and Spatial Query child-owned table-state
+publication. Valid cache reuse, cancellation, worker failure, or rejected
+payloads never publish a canonical table mutation event.
 
 The spatial-query phase is:
 
@@ -3613,8 +3802,10 @@ The spatial-query phase is:
 
 The same operation ID governs both phases; do not introduce a separate
 job-ID concept. The controller also records which phase owns the active worker.
-Cancellation, selection changes, reload, a newer operation, or widget shutdown
-invalidate that operation ID, and every late signal from either phase is ignored.
+Cancellation, selection changes, reload, a newer operation, or parent/child
+shutdown invalidate that operation ID, and every late signal from either phase
+is ignored. A parent context change or the selected Shapes session becoming
+dirty has the same invalidating effect.
 
 Exit criteria:
 
@@ -3622,8 +3813,9 @@ Exit criteria:
 - cancel/stale/error paths cannot update the cache, open late dialogs, or annotate;
 - successful Recalculate centroids applies only the refreshed cache update, marks the
   shared table dirty, and opens no query/result dialog;
-- the Spatial Query widget, not `SpatialQueryController`, owns construction and
-  publication of the accepted canonical `TableStateChangedEvent`;
+- the Spatial Query child, not `SpatialQueryController`, owns construction and
+  publication of the accepted canonical `TableStateChangedEvent` through the
+  parent Annotation widget's shared app state;
 - cache update and annotation application are visibly distinct state
   changes;
 - users always see affected and overwrite counts before annotation mutation.
@@ -3632,8 +3824,9 @@ Exit criteria:
 
 Deliverables:
 
-- Spatial Query, Viewer, and Object Classification targeted refresh behavior
-  consuming `table_state_changed` without feedback loops;
+- the parent Annotation widget, including its Spatial Query child, Viewer, and
+  Object Classification targeted refresh behavior consuming
+  `table_state_changed` without feedback loops;
 - shared primary-label color-source ownership implementing the rule that the
   most recent explicit coloring action controls the layer, so later unrelated
   table events cannot let another widget silently reclaim its styling;
@@ -3678,14 +3871,15 @@ Exit criteria:
 
 ## Definition of Done
 
-The feature is complete when a user can select a valid stored polygon
-annotation, 2D labels element, and linked table; transparently create or reuse
-validated canonical centers; run a responsive center-containment query; review
-affected rows; set a string annotation in a compatible existing or new obs
-column or remove annotations from an existing compatible column; visualize the
-selected annotation on the shared primary labels layer; and safely write/reload
-all supported dirty table components from zarr without rewriting the complete
-AnnData object.
+The feature is complete when one registered parent Annotation widget lets a
+user create, edit, save, and select a polygon annotation through its Shapes
+Annotation child, then select a 2D labels element and linked table through its
+Spatial Query child; transparently create or reuse validated canonical centers;
+run a responsive center-containment query; review affected rows; set a string
+annotation in a compatible existing or new obs column or remove annotations
+from an existing compatible column; visualize the selected annotation on the
+shared primary labels layer; and safely write/reload all supported dirty table
+components from zarr without rewriting the complete AnnData object.
 
 Completion additionally requires:
 
@@ -3717,8 +3911,9 @@ Completion additionally requires:
 - missing or invalid `<column>_colors` state is not mutated merely for viewer
   display, but is stored or repaired with the next effective annotation Apply
   and recorded through the corresponding dirty uns path;
-- the latest explicit primary-label coloring action wins across Spatial Query
-  and Object Classification, and unrelated table events do not override it;
+- the latest explicit primary-label coloring action wins across the parent
+  Annotation widget's Spatial Query child and Object Classification, and
+  unrelated table events do not override it;
 - shared cross-widget dirty state and general table events work for obs, obsm,
   and uns;
 - canonical cache, annotation columns, and their changed companion palettes
