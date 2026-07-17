@@ -307,17 +307,39 @@ RandomForestClassifier(
 ```
 
 These are versioned product defaults, not expert controls in the initial UI.
-Training converts sampled values to `float32` and excludes annotated pixels for
-which any selected channel is non-finite, reporting the excluded count.
 
-Training requires at least two nonempty classes. To keep training bounded and
-retain diverse examples, training samples each class independently with a fixed
-seed and a first-release cap of 50,000 valid pixels per class. Classes with fewer
-pixels contribute all valid annotated pixels. Do not reduce every class to the
-size of the smallest class, because a small foreground annotation should not
-force the classifier to discard useful background diversity. The cap is a
-versioned product default, not a main-UI control; later benchmarks may justify
-changing that default in a subsequent version.
+Sampling and extraction follow an explicit bounded contract:
+
+1. Use the selected-scale annotation raster already loaded in memory for napari
+   editing. If persisted annotations were reloaded, complete that reload into
+   the editable Labels layer before training. Scan this entire `uint8` raster to
+   calculate the exact number of annotated pixels for every nonzero class ID;
+   this step must not read any marker-image data.
+2. From the annotation raster alone, produce deterministic bounded batches of
+   candidate positions for each class using a fixed seed. Do not construct a
+   complete coordinate array or `sparse.COO` representation for a large densely
+   painted class merely to select at most 50,000 samples. Bounded
+   reservoir/batch sampling or deterministic rank-based multi-pass selection
+   are acceptable implementation strategies.
+3. Only after candidate positions have been selected, group them by source-image
+   chunk and read the selected marker channels from chunks containing those
+   positions. Do not read every marker over the complete selected-scale image,
+   and avoid one independent Dask random-indexing task per position or channel.
+4. Convert gathered rows to `float32` with shape `samples x channels` and retain
+   a row only when every selected channel value is finite.
+5. When a candidate is excluded because it contains `NaN`, `+inf`, or `-inf`,
+   continue with deterministic replacement candidates until 50,000 valid rows
+   have been collected or every annotated candidate for that class has been
+   exhausted.
+
+Training requires at least two classes with at least one valid row after
+extraction. To keep training bounded and retain diverse examples, every class
+contributes at most 50,000 valid pixels. Classes with fewer valid pixels
+contribute all of them. Do not reduce every class to the size of the smallest
+class, because a small foreground annotation should not force the classifier to
+discard useful background diversity. The cap is a versioned product default,
+not a main-UI control; later benchmarks may justify changing that default in a
+subsequent version.
 
 The remaining imbalance after capping is handled by
 `class_weight="balanced_subsample"`. Each Random Forest tree calculates
@@ -326,16 +348,31 @@ large painted Background region does not dominate split decisions merely due to
 its area. This weighting compensates for annotation imbalance; it does not make
 limited or homogeneous annotations representative.
 
-The UI status card reports available and used valid-pixel counts for every class
-after sampling. Classes above 50,000 are visibly marked as capped, for example:
-`Tumor (class 2): using 50,000 of 127,842 valid annotated pixels (capped)`.
-Classes at or below the cap show equal available and used counts without the
-capped marker. This is informational and does not block training. Non-finite
-pixel exclusions remain a separate reported count.
+The immutable extraction result and UI status card report, per class:
 
-Training reads only the selected source chunks required by the sampled pixel
-positions. It must not materialize the complete multiplex image merely to gather
-training rows.
+- exact annotated-pixel count;
+- number of candidate pixels examined;
+- valid samples used;
+- non-finite candidates excluded among those examined;
+- whether the valid-sample cap was reached;
+- whether all annotated candidates were exhausted.
+
+For a capped class, do not report an exact total number of valid annotated
+pixels unless all candidates were actually examined. Early stopping knows the
+exact annotated count, but only the finite/non-finite status of examined
+candidates. A suitable status is:
+`Background (class 1): 50,000 used from 812,430 annotated pixels (capped); 37
+examined candidates excluded as non-finite`.
+
+When a class is exhausted below the cap, its complete valid and non-finite
+counts are known and may be reported as such. These counts are informational;
+training is blocked only when fewer than two classes retain a valid sample.
+
+Training therefore performs a complete scan of the small editable annotation
+raster, followed by bounded reads from the much larger multiplex source. It
+reads only the selected marker channels and source chunks required by candidate
+pixel positions. It must not materialize the complete multiplex image merely to
+gather training rows.
 
 ### 6. Predict
 
@@ -345,10 +382,13 @@ shape, then compute prediction in chunks or tiles:
 
 1. read a bounded block of selected raw channels;
 2. reshape it from `(C, block_y, block_x)` to `(pixels, C)`;
-3. predict integer class IDs;
-4. reshape to `(block_y, block_x)`;
-5. write into the selected-scale output array;
-6. report progress and honor cancellation between blocks.
+3. calculate a row mask for which every selected channel is finite;
+4. initialize the output rows to class ID `0` and predict integer class IDs only
+   for finite rows;
+5. reshape to `(block_y, block_x)`;
+6. write into the selected-scale output array;
+7. report progress, the number of non-finite pixels left as `0`, and honor
+   cancellation between blocks.
 
 The complete multiplex source and a full `pixels x channels` feature matrix
 must never be held in memory simultaneously. Tile-wise execution bounds source
@@ -561,6 +601,12 @@ Excluded:
 
 Keep pixel classification separate from object classification, but reuse shared
 SpatialData, validation, styling, palette, and viewer-adapter helpers.
+Reuse the current core-classifier semantics for ordered input columns,
+finite-row masking, class ID `0` for rows that cannot be classified, and
+structured result summaries. Implement pixel sampling and block reshaping as
+explicit, testable functions; do not introduce a generic N-dimensional sklearn
+wrapper or copy the exploratory `NDSparseClassifier`/`NDDaskClassifier`
+abstractions from `ilastik-napari`.
 
 Proposed package direction:
 
@@ -706,14 +752,18 @@ Implement training independently of prediction.
 
 Deliver:
 
-- collect nonzero annotation coordinates;
-- validate at least two trainable classes;
-- deterministically sample up to the configured cap per class;
-- report every class's available-versus-used pixel counts in the UI status card
-  and visibly mark capped classes;
-- read only the selected marker values needed for sampled positions;
+- scan the complete in-memory annotation raster and count annotations per class
+  without reading marker data or constructing unbounded coordinate arrays;
+- deterministically generate bounded candidate positions per class from that
+  annotation raster;
+- only then group candidate positions by source chunk and read the selected
+  marker values needed for those positions;
 - construct a bounded `samples x channels` float32 matrix;
-- exclude and report non-finite rows;
+- exclude non-finite rows and deterministically refill from remaining candidates
+  until the valid-sample cap is reached or the class is exhausted;
+- validate at least two classes with valid training rows;
+- report per-class annotated, examined, used, non-finite-excluded, capped, and
+  exhausted fields in the UI status card;
 - train the fixed Random Forest with `class_weight="balanced_subsample"` in a
   background worker;
 - retain class mapping, channel order, sample counts, parameters, versions, and
@@ -726,10 +776,18 @@ Acceptance criteria:
 - the training matrix contains raw selected intensities only;
 - selected channel order equals model input-column order;
 - deterministic inputs produce deterministic sampling and predictions;
-- a class above the cap contributes exactly 50,000 valid pixels and is named in
-  the status card with its uncapped valid count and a capped marker;
-- classes at or below the cap show their equal available and used counts without
-  a capped marker;
+- a class with at least 50,000 valid examined candidates contributes exactly
+  50,000 valid pixels and is marked as capped;
+- a capped class reports its exact annotated count but does not claim an exact
+  total valid count when extraction stopped early;
+- a class exhausted below the cap reports its complete valid and non-finite
+  counts and is not marked as capped;
+- densely painted classes do not require a complete coordinate array or sparse
+  label copy;
+- annotation counting and initial position sampling do not trigger marker-image
+  reads;
+- sampled source reads are grouped by chunk rather than expressed as one Dask
+  random-indexing task per position or channel;
 - imbalanced sampled counts receive inverse-frequency per-tree class weights;
 - a large painted class does not dominate a small class merely because of
   annotation area;
@@ -743,7 +801,9 @@ Deliver:
 - plan bounded prediction blocks from the selected scale's Dask/Zarr layout;
 - allocate one in-memory selected-scale `uint8` prediction array;
 - read selected channels block-wise;
-- predict every selected-scale pixel;
+- finite-mask every `pixels x channels` block and predict only finite rows;
+- leave rows containing any `NaN`, `+inf`, or `-inf` as class ID `0` and report
+  their count;
 - fill the in-memory output with predicted class IDs;
 - show progress and permit cancellation between blocks;
 - add or update one read-only prediction Labels layer with the same transform
@@ -758,6 +818,8 @@ Acceptance criteria:
 - output is one in-memory `uint8` array, not a temporary Zarr store or lazy Dask
   layer;
 - output contains declared `uint8` class IDs and no classifier-output indices;
+- non-finite input rows are consistently represented by class ID `0` and are
+  never passed to the classifier;
 - prediction aligns with annotation and source image;
 - a changed annotation or channel selection marks prediction stale;
 - cancellation cannot produce a persistable apparently complete result;
@@ -980,7 +1042,11 @@ Rules:
 The simpler model does not remove the need for bounded execution.
 
 - Annotation memory is one byte per selected-scale pixel.
+- Training may scan the complete in-memory annotation raster before accessing
+  the multiplex source.
 - Training memory is bounded by sampled pixels times selected channels.
+- Annotation counting and candidate selection do not construct an unbounded
+  coordinate array for densely annotated classes.
 - Prediction input memory is bounded by one source block times selected
   channels.
 - Prediction output is one in-memory `uint8` array and uses one byte per
@@ -1012,10 +1078,14 @@ Core tests:
 - exclusion of unlabeled `0` pixels and inclusion of an explicit Background
   class;
 - deterministic per-class capped sampling;
+- annotation counting and position sampling without marker-source reads;
 - `balanced_subsample` Random Forest weighting for imbalanced sampled counts;
-- all-class status-card reporting with available and used pixel counts plus
-  capped-class highlighting;
-- non-finite input handling;
+- all-class status-card reporting with annotated, examined, used,
+  non-finite-excluded, capped, and exhausted fields;
+- no false exact-valid-total claim for a capped class that stopped early;
+- bounded candidate selection for densely painted classes;
+- deterministic replacement sampling after non-finite training candidates;
+- non-finite training and prediction handling, including prediction class `0`;
 - Random Forest class-ID round trip;
 - block prediction equivalence with whole-array prediction on small data;
 - cancellation/partial prediction state;
@@ -1037,7 +1107,8 @@ Widget tests:
 - scale summary and recommendation heuristic;
 - annotation creation and layer reuse;
 - class creation, selection, coloring, and counts;
-- all-class training counts and capped highlighting in the status card;
+- all-class annotated, examined, used, non-finite-excluded, capped, and exhausted
+  training fields in the status card;
 - non-blocking cross-image relative-spacing mismatch warning;
 - dirty Labels-state prompts for reload and target changes;
 - worker result revision guards;
