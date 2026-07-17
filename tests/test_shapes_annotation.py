@@ -20,6 +20,7 @@ from napari_harpy.core.shapes_annotation import (
     create_shapes_element_from_napari_shapes_layer,
     edit_shapes_element_from_napari_shapes_layer,
     napari_shapes_layer_to_geodataframe,
+    validate_existing_shapes_source_geodataframe,
 )
 from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
 
@@ -147,6 +148,13 @@ def test_napari_shapes_layer_to_geodataframe_rejects_empty_layers() -> None:
 
     with pytest.raises(ValueError, match="Draw at least one supported shape"):
         napari_shapes_layer_to_geodataframe(layer)
+
+
+def test_existing_shapes_validator_rejects_empty_geodataframe() -> None:
+    geodataframe = gpd.GeoDataFrame(geometry=[], index=pd.Index([], name="instance_id"))
+
+    with pytest.raises(ValueError, match="at least one Polygon"):
+        validate_existing_shapes_source_geodataframe(geodataframe)
 
 
 def test_napari_shapes_layer_to_geodataframe_rejects_non_finite_coordinates() -> None:

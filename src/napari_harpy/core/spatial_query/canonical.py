@@ -9,7 +9,7 @@ from scipy.sparse import issparse
 from xarray import DataArray
 
 from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatial_query.models import (
+from napari_harpy.core.spatial_query.canonical_models import (
     CanonicalCacheMismatch,
     CanonicalCacheReport,
     CanonicalCacheState,

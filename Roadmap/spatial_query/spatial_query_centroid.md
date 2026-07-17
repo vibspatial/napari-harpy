@@ -1529,24 +1529,36 @@ one large module per concern:
     core/
         spatial_query/
             __init__.py
-            models.py
+            canonical_models.py
             canonical.py
-            engine.py
+            centroids.py
+            query_models.py
+            query.py
             annotation.py
 
             __init__.py
                 intentional, stable public exports for the feature domain
 
-            models.py
-                immutable request/result/preparation types
+            canonical_models.py
                 cache-state and metadata value types
-                shared spatial-query enums and literals
+                canonical-center request/result types
+                canonical cache enums and literals
+
+            query_models.py
+                immutable containment-query request/result types
 
             canonical.py
                 spatial_canonical metadata schema/parser/validator
                 cache-state inspection and coverage/source fingerprints
-                RasterAggregator adapter
                 atomic cache updates and rollback support
+
+            centroids.py
+                RasterAggregator adapter
+                canonical-center calculation and cache ensure
+
+            query.py
+                validated Shapes and transformation snapshot construction
+                vectorized canonical-center containment
 
             engine.py
                 Shapes validation and union
@@ -1866,11 +1878,12 @@ Deliverables:
 
 #### Slice 1a typed API
 
-The public contracts live in `core/spatial_query/models.py`, and the operations
-that build, parse, inspect, and apply them live in
-`core/spatial_query/canonical.py`. Stable consumers import the intentional
-exports from `napari_harpy.core.spatial_query` rather than either implementation
-module directly.
+The public canonical contracts live in
+`core/spatial_query/canonical_models.py`, and the operations that build, parse,
+inspect, and apply them live in `core/spatial_query/canonical.py`. Query-only
+contracts live in `core/spatial_query/query_models.py`. Stable consumers import
+the intentional exports from `napari_harpy.core.spatial_query` rather than the
+implementation modules directly.
 
 Use string enums for cache state, cache-update action, and mismatch code:
 
@@ -2715,6 +2728,8 @@ Exit criteria:
 
 ### Slice 4: Vectorized centroid-containment query
 
+**Implementation status: Implemented.**
+
 #### Public contracts
 
 Cache reuse and fresh calculation converge before the containment query:
@@ -2734,11 +2749,9 @@ Build a self-contained immutable request on the main thread:
 
     @dataclass(frozen=True)
     class CanonicalCenterQueryRequest:
-        shapes_name: str
-        coordinate_system: str
         canonical_centers: CanonicalCentersResult
         polygons: tuple[Polygon, ...]
-        shapes_to_labels_affine: NDArray[np.float64]
+        polygons_to_labels_affine: NDArray[np.float64]
 
         @property
         def table_name(self) -> str:
@@ -2800,7 +2813,7 @@ polygons, and asks SpatialData for the element-to-element transformation:
 
 It converts the returned `BaseTransformation` with
 `to_affine_matrix(input_axes=("x", "y"), output_axes=("x", "y"))` and snapshots
-the result as `shapes_to_labels_affine`. The affine is a finite 3 x 3
+the result as `polygons_to_labels_affine`. The affine is a finite 3 x 3
 homogeneous matrix using explicit x, y axes. SpatialData owns graph traversal,
 path selection, inversion, and composition. The request stores only the
 resulting matrix because the evaluator needs the exact coordinate relationship
@@ -2835,10 +2848,11 @@ The thread boundary is:
             -> return sorted matching instance IDs
             -> no SpatialData access or mutation
 
-The request deliberately does not store `sdata`, duplicate `table_name` or
-`labels_name`, or carry cache state, cache action, or an operation ID. Table and
-labels names derive from `canonical_centers`; cache handling has already
-finished; and operation identity belongs to the controller.
+The request deliberately does not store `sdata`, `shapes_name`,
+`coordinate_system`, duplicate `table_name` or `labels_name`, or carry cache
+state, cache action, or an operation ID. Table and labels names derive from
+`canonical_centers`; cache handling has already finished; and selection plus
+operation identity belongs to the controller.
 
 #### Query algorithm
 

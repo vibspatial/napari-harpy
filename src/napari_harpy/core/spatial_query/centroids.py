@@ -16,7 +16,7 @@ from napari_harpy.core.spatial_query.canonical import (
     build_canonical_source_signature,
     inspect_canonical_cache,
 )
-from napari_harpy.core.spatial_query.models import (
+from napari_harpy.core.spatial_query.canonical_models import (
     CanonicalCacheReport,
     CanonicalCacheState,
     CanonicalCacheUpdatePayload,
