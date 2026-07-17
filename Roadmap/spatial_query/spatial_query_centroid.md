@@ -3668,7 +3668,11 @@ class ShapesAnnotation(QWidget):
     @property
     def has_unsaved_changes(self) -> bool: ...
 
-    def try_release_edit_session(self) -> bool:
+    def try_release_edit_session(
+        self,
+        *,
+        reason: Literal["coordinate_system", "shapes_target"],
+    ) -> bool:
         """End the edit session, prompting before discarding unsaved changes."""
 
     def apply_annotation_context(self, context: AnnotationContext) -> None:
@@ -3677,37 +3681,148 @@ class ShapesAnnotation(QWidget):
 
 `try_release_edit_session()` returns `True` when there is no active session or
 after it has successfully released a clean session or an accepted discard. It
-returns `False` when the user cancels, leaving the session unchanged. It owns
-dirty confirmation and any accepted discard/close cleanup, but must not commit
-selector or HarpyAppState state.
+returns `False` when the user cancels, leaving the session unchanged. The
+`reason` preserves the existing specific warning for changing coordinate
+system versus switching Shapes target. The method owns dirty confirmation and
+any accepted discard/close cleanup, but must not commit selector or
+HarpyAppState state.
+
 `apply_annotation_context()` must not prompt or alter the parent selection; it
 prepares or opens the Shapes edit workflow for the already committed context.
 The child also reports successful first save and compatible active-primary-
 Shapes adoption to the parent, so those changes pass through the same parent
 selection path rather than mutating a child-owned combo.
 
+#### Shared coordinate-system pre-change guard
+
+The local parent handshake is not sufficient for coordinate-system changes:
+Viewer, Object Classification, or another widget can call
+`HarpyAppState.set_coordinate_system()` directly. The current app-state flow
+commits and emits the change before removing layers outside the new coordinate
+system, so an Annotation listener cannot safely veto the change after receiving
+`coordinate_system_changed`.
+
+Slice 6a therefore adds one optional synchronous pre-change guard to the
+per-viewer `HarpyAppState`:
+
+```python
+@dataclass(frozen=True)
+class CoordinateSystemChangeRequest:
+    sdata: SpatialData | None
+    previous_coordinate_system: str | None
+    coordinate_system: str | None
+    source: str | None
+
+
+type CoordinateSystemChangeGuard = Callable[
+    [CoordinateSystemChangeRequest],
+    bool,
+]
+
+
+class HarpyAppState:
+    def set_coordinate_system_change_guard(
+        self,
+        guard: CoordinateSystemChangeGuard | None,
+    ) -> None: ...
+```
+
+The registered Annotation parent owns this one guard for its viewer session and
+removes it when the parent is destroyed. This is intentionally one optional
+guard rather than a general mutable-guard registry: no other guarded dirty
+coordinate-system workflow exists in the current application.
+
+`set_coordinate_system()` validates and normalizes a genuinely new requested
+coordinate system, then invokes the guard before changing app-state fields,
+emitting `coordinate_system_changed`, or removing any layers. The Annotation
+guard delegates to:
+
+```python
+shapes_annotation.try_release_edit_session(
+    reason="coordinate_system",
+)
+```
+
+If the guard returns `False`, `set_coordinate_system()` returns `False` and the
+old coordinate system, edit session, selectors, context, events, and viewer
+layers remain unchanged. If it returns `True`, the existing app-state commit,
+event, and layer-cleanup flow proceeds. `clear_coordinate_system()` follows the
+same guarded path. When the rejected request originated from the parent combo,
+the parent resynchronizes that control to the unchanged app-state coordinate
+system. The parent must not call `try_release_edit_session()` a second time for
+a coordinate-system combo change; all coordinate-system sources use the
+app-state guard exactly once.
+
+SpatialData replacement remains outside this guard. `set_sdata()` already has
+broader dataset and layer lifecycle semantics; protection against replacing or
+closing a dataset with dirty state remains the shared lifecycle responsibility
+specified in Slice 8.
+
+#### Required guard documentation in the implementation
+
+The guard is a safety boundary against silent loss of unsaved Shapes geometry,
+not a generic callback convenience. Its purpose and ordering must remain
+visible in the implemented code:
+
+- `HarpyAppState.set_coordinate_system()` must document that the guard runs
+  before app-state mutation, `coordinate_system_changed` emission, and viewer
+  layer removal, and that rejection leaves all three untouched;
+- the guard installation API must document its single-owner contract and the
+  Annotation parent's responsibility to remove the guard during widget
+  teardown;
+- the Annotation parent's guard callback must document that coordinate-system
+  changes may originate in Viewer, Object Classification, or another widget,
+  while unsaved Shapes edits still exist only in the editable napari layer;
+- the guard invocation in `set_coordinate_system()` must have a concise inline
+  comment explaining why moving it after state mutation or layer removal would
+  permit silent loss of unsaved Shapes edits;
+- focused test names and assertions must serve as executable documentation:
+  rejection preserves the coordinate system, emits no event, removes no
+  layers, and keeps the edit session and geometry; acceptance invokes the guard
+  exactly once before the normal commit and cleanup flow.
+
+These explanations must describe the data-loss condition and ordering
+guarantee directly. A generic statement such as "run change guard" is not
+sufficient.
+
 The ownership and publication flow is:
 
-    AnnotationWidget
-        user requests another coordinate system or Shapes target
+    any widget requests another coordinate system through HarpyAppState
         ↓
-    ShapesAnnotation.try_release_edit_session()
+    AnnotationWidget coordinate-system guard
+        ↓
+    ShapesAnnotation.try_release_edit_session(reason="coordinate_system")
         ├── cancelled
-        │       ↓
-        │   parent restores the old selector and context
+        │       ↓ no app-state, selector, context, event, or layer change
         └── accepted
                 ↓ child completes its own layer cleanup
-    AnnotationWidget commits selectors, HarpyAppState, and AnnotationContext
+    HarpyAppState commits and emits the coordinate-system change
+        ↓
+    AnnotationWidget commits selectors and AnnotationContext
         ↓
     ShapesAnnotation.apply_annotation_context(context)
         ↓ parent publishes one final accepted context
         ↓ later the same committed context is supplied to
     SpatialQuery
 
+A Shapes-target change does not pass through HarpyAppState. The parent runs the
+same local sequence with
+`try_release_edit_session(reason="shapes_target")`, restores its selector when
+cancelled, and commits, applies, and publishes only after acceptance.
+
 The parent suppresses intermediate dirty/session notifications while an
 accepted transition is in progress. Siblings observe either the old context
 after cancellation or one final new context after acceptance, never a
 transient clean version of the old target created during layer cleanup.
+
+A successful first save is not a request to leave the edit session. The child
+has already converted its create-new session into the clean saved session. It
+reports that result to the parent, which refreshes the Shapes options, promotes
+the parent target from `create_new` to `edit_existing`, updates
+`AnnotationContext`, and publishes it without calling
+`try_release_edit_session()` or reopening the layer. Compatible active-primary-
+Shapes adoption is different: it requests an ordinary guarded parent
+Shapes-target transition and therefore cannot bypass dirty-session protection.
 
 Deliverables:
 
@@ -3732,9 +3847,16 @@ Deliverables:
 - implement the two-phase parent/child context transition: child-owned
   dirty-session preflight and cleanup, followed by parent-owned commit, child
   adoption, and one final parent publication;
+- add the single optional synchronous HarpyAppState coordinate-system
+  pre-change guard, install and remove it with the parent lifecycle, and route
+  parent and external coordinate-system requests through it exactly once;
+- add the required guard docstrings, safety-ordering inline comment, and
+  executable regression-test documentation described above;
 - route compatible active-primary-Shapes adoption and successful first save
   back through the parent so its selector and committed context remain the
-  single source of truth;
+  single source of truth; active adoption uses the guarded Shapes-target path,
+  while first save performs a direct create-to-existing promotion without
+  releasing the current session;
 - publish an updated `AnnotationContext` after accepted SpatialData,
   coordinate-system, or Shapes-target changes; layer dirty/clean transitions;
   successful first save or discard; and annotation-layer removal. Emit only
@@ -3747,7 +3869,8 @@ Deliverables:
   `ShapesAnnotation`;
 - focused tests for parent construction, manifest registration, compatibility,
   accepted/cancelled context transitions, dirty-state publication, first save,
-  active-layer adoption, and representative existing Shapes Annotation
+  active-layer adoption, parent-originated and external coordinate-system
+  changes, guard lifecycle, and representative existing Shapes Annotation
   behavior.
 
 Exit criteria:
@@ -3760,14 +3883,27 @@ Exit criteria:
   `saved_shapes_name`;
 - cancellation preserves the old selectors, edit session, HarpyAppState
   coordinate system, and published context;
+- a rejected coordinate-system request from any widget emits no
+  `coordinate_system_changed` event and removes no viewer layers;
+- an accepted coordinate-system request invokes the Annotation guard exactly
+  once before app-state mutation and layer removal;
 - acceptance lets the child finish cleanup before the parent commits and emits
   exactly one final context notification;
+- first save promotes the parent target to the saved existing Shapes element
+  without releasing or reopening the current clean session;
+- active-primary-Shapes adoption cannot replace a dirty session unless its
+  guarded target transition is accepted;
 - clean existing, dirty existing, successful first save, discard, active-layer
   adoption, layer removal, coordinate-system change, and SpatialData
   replacement produce the expected immutable context without duplicate or
   intermediate notifications;
 - existing direct `ShapesAnnotation` construction, the historical plugin
   command ID, and the historical `Interactive` widget selector remain valid;
+- closing or destroying the parent removes its app-state coordinate-system
+  guard;
+- the implemented docstrings and inline comment explicitly explain the
+  unsaved-Shapes data-loss condition and why the guard must run before state
+  mutation, event emission, and layer removal;
 - the refactor introduces no canonical-center, spatial-query, or table
   annotation behavior.
 
