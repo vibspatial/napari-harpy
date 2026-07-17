@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pandas as pd
 from loguru import logger
 from matplotlib import rcParams
+from matplotlib.colors import to_rgba
 from scanpy.plotting.palettes import default_20, default_28, default_102
 
 if TYPE_CHECKING:
@@ -14,6 +15,21 @@ if TYPE_CHECKING:
 
 DEFAULT_UNLABELED_CLASS = 0
 DEFAULT_UNLABELED_COLOR = "#80808099"
+CategoricalPaletteSource = Literal["stored", "default_missing", "default_invalid"]
+CATEGORICAL_PALETTE_SOURCES: tuple[CategoricalPaletteSource, ...] = (
+    "stored",
+    "default_missing",
+    "default_invalid",
+)
+
+
+def validate_categorical_palette_source(source: str) -> CategoricalPaletteSource:
+    """Return a validated categorical-palette source."""
+    if source not in CATEGORICAL_PALETTE_SOURCES:
+        allowed = ", ".join(repr(allowed_source) for allowed_source in CATEGORICAL_PALETTE_SOURCES)
+        raise ValueError(f"Invalid categorical palette source {source!r}. Expected one of: {allowed}.")
+
+    return cast(CategoricalPaletteSource, source)
 
 
 def normalize_class_values(
@@ -85,17 +101,26 @@ def default_class_colors(
 
 
 def default_categorical_colors(length: int) -> list[str]:
-    """Return the default generic categorical palette used for viewer overlays."""
+    """Return append-stable default colors for ordered categorical values."""
     if length <= 0:
         return []
-    return _default_labeled_class_colors(length)
+
+    color_cycle = rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = list(color_cycle[:length])
+    for base_palette in (default_20, default_28, default_102):
+        stop = min(length, len(base_palette))
+        if len(colors) < stop:
+            colors.extend(base_palette[len(colors) : stop])
+    if len(colors) < length:
+        colors.extend(["grey"] * (length - len(colors)))
+    return colors
 
 
 def default_labeled_class_color(class_id: int) -> str:
     """Return the deterministic default color for one positive class id."""
     palette_index = _class_palette_index(class_id)
-    palette = default_categorical_colors(palette_index + 1)
-    return palette[palette_index]
+    palette = _default_labeled_class_palette(palette_index + 1)
+    return "grey" if palette is None else palette[palette_index]
 
 
 def normalize_color_sequence(value: object) -> list[str] | None:
@@ -110,6 +135,45 @@ def normalize_color_sequence(value: object) -> list[str] | None:
         return [str(item) for item in value]
 
     return [str(value)]
+
+
+def resolve_table_categorical_palette(
+    *,
+    table: AnnData,
+    column_name: str,
+    categories: Sequence[object],
+) -> tuple[CategoricalPaletteSource, list[str]]:
+    """Resolve one standard AnnData categorical palette without mutation."""
+    stored_colors = normalize_color_sequence(table.uns.get(f"{column_name}_colors"))
+    if stored_colors is None:
+        return "default_missing", default_categorical_colors(len(categories))
+    if len(stored_colors) != len(categories) or not all(_is_valid_color(color) for color in stored_colors):
+        return "default_invalid", default_categorical_colors(len(categories))
+    return "stored", list(stored_colors)
+
+
+def extend_categorical_palette(
+    palette: Sequence[str],
+    *,
+    current_categories: Sequence[object],
+    next_categories: Sequence[object],
+) -> list[str]:
+    """Append stable colors for an append-only categorical transition."""
+    current = tuple(current_categories)
+    next_ = tuple(next_categories)
+    colors = list(palette)
+
+    if len(colors) != len(current):
+        raise ValueError("Palette length must match the current category count.")
+    if len(next_) < len(current):
+        raise ValueError("Categorical palette extension cannot remove categories.")
+    if next_[: len(current)] != current:
+        raise ValueError("Next categories must preserve the complete current category prefix.")
+    if any(not isinstance(color, str) or not _is_valid_color(color) for color in colors):
+        raise ValueError("Categorical palette colors must be valid color strings.")
+
+    colors.extend(default_labeled_class_color(position + 1) for position in range(len(current), len(next_)))
+    return colors
 
 
 def stored_palette_to_lookup(
@@ -257,18 +321,23 @@ def _class_palette_index(class_id: int) -> int:
     return class_id - 1
 
 
-def _default_labeled_class_colors(length: int) -> list[str]:
-    """Return the default categorical palette used by spatialdata-plot/scanpy."""
-    if len(rcParams["axes.prop_cycle"].by_key()["color"]) >= length:
-        color_cycle = rcParams["axes.prop_cycle"]()
-        palette = [next(color_cycle)["color"] for _ in range(length)]
-    elif length <= 20:
-        palette = list(default_20)
-    elif length <= 28:
-        palette = list(default_28)
-    elif length <= len(default_102):
-        palette = list(default_102)
-    else:
-        palette = ["grey" for _ in range(length)]
+def _is_valid_color(value: str) -> bool:
+    try:
+        to_rgba(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
-    return palette[:length]
+
+def _default_labeled_class_palette(length: int) -> Sequence[str] | None:
+    """Return the base palette containing the requested one-based position."""
+    color_cycle = rcParams["axes.prop_cycle"].by_key()["color"]
+    if len(color_cycle) >= length:
+        return color_cycle
+    if length <= 20:
+        return default_20
+    if length <= 28:
+        return default_28
+    if length <= len(default_102):
+        return default_102
+    return None

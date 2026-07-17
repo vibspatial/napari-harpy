@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -9,28 +9,13 @@ from loguru import logger
 from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 
-from napari_harpy.core.class_palette import default_categorical_colors, normalize_color_sequence
-
-if TYPE_CHECKING:
-    from anndata import AnnData
-
-StyledPaletteSource = Literal["stored", "default_missing", "default_invalid"]
-STYLED_PALETTE_SOURCES: tuple[StyledPaletteSource, ...] = ("stored", "default_missing", "default_invalid")
+from napari_harpy.core.class_palette import default_categorical_colors
 
 MISSING_CATEGORICAL_COLOR = "#80808099"
 MISSING_CONTINUOUS_COLOR = "#80808099"
 OVERLAY_CONTINUOUS_COLORMAP = "magma"
 STRING_CATEGORICAL_WARNING_MIN_UNIQUE_COUNT = 20
 STRING_CATEGORICAL_WARNING_ROW_COUNT_DIVISOR = 100
-
-
-def validate_styled_palette_source(source: str) -> StyledPaletteSource:
-    """Return a validated styled palette source."""
-    if source not in STYLED_PALETTE_SOURCES:
-        allowed = ", ".join(repr(allowed_source) for allowed_source in STYLED_PALETTE_SOURCES)
-        raise ValueError(f"Invalid styled palette source {source!r}. Expected one of: {allowed}.")
-
-    return cast(StyledPaletteSource, source)
 
 
 def build_string_categorical_values(
@@ -116,38 +101,6 @@ def normalize_category_value(value: object) -> object:
 
 def default_categorical_palette_for_categories(categories: Sequence[object]) -> list[str]:
     return default_categorical_colors(len(categories))
-
-
-def resolve_table_categorical_palette(
-    *,
-    table: AnnData,
-    column_name: str,
-    categories: Sequence[object],
-) -> tuple[StyledPaletteSource, list[str]]:
-    """Resolve a categorical palette stored in ``table.uns`` for viewer coloring."""
-    colors_key = f"{column_name}_colors"
-    stored_colors = normalize_color_sequence(table.uns.get(colors_key))
-    if stored_colors is None:
-        logger.info(
-            f"No stored `{colors_key}` palette found in `table.uns`; using the default categorical palette for viewer coloring."
-        )
-        return "default_missing", default_categorical_palette_for_categories(categories)
-
-    if len(stored_colors) != len(categories):
-        logger.warning(
-            f"Stored `{colors_key}` palette has {len(stored_colors)} colors for {len(categories)} categories; "
-            "using the default categorical palette."
-        )
-        return "default_invalid", default_categorical_palette_for_categories(categories)
-
-    if not all(is_valid_color(color) for color in stored_colors):
-        logger.warning(
-            f"Stored `{colors_key}` palette contains invalid color values; using the default categorical palette."
-        )
-        return "default_invalid", default_categorical_palette_for_categories(categories)
-
-    logger.info(f"Using stored `{colors_key}` palette from `table.uns` for viewer coloring.")
-    return "stored", list(stored_colors)
 
 
 def categorical_colors_for_values(
@@ -274,14 +227,6 @@ def continuous_rgba_for_values(
         normalized_values = np.clip((non_missing - min_value) / (max_value - min_value), 0.0, 1.0)
     rgba[present_values] = cmap(normalized_values)
     return rgba
-
-
-def is_valid_color(value: str) -> bool:
-    try:
-        to_rgba(value)
-    except (TypeError, ValueError):
-        return False
-    return True
 
 
 def _is_string_scalar(value: object) -> bool:

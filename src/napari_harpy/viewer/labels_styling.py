@@ -13,15 +13,17 @@ from napari_harpy.core._color_source import (
     TableColorValueKind,
     validate_table_color_value_kind,
 )
+from napari_harpy.core.class_palette import (
+    CategoricalPaletteSource,
+    resolve_table_categorical_palette,
+    validate_categorical_palette_source,
+)
 from napari_harpy.core.spatialdata import get_table, validate_table_binding
 from napari_harpy.viewer._styling import (
-    StyledPaletteSource,
     build_string_categorical_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
-    resolve_table_categorical_palette,
-    validate_styled_palette_source,
 )
 from napari_harpy.viewer.labels_colormap import (
     CompactLabelColormap,
@@ -39,14 +41,14 @@ class LabelsStyleResult:
     """Describe labels styling metadata, if styling was applied."""
 
     value_kind: TableColorValueKind | None
-    palette_source: StyledPaletteSource | None
+    palette_source: CategoricalPaletteSource | None
     coercion_applied: bool
 
     def __post_init__(self) -> None:
         if self.value_kind is not None:
             validate_table_color_value_kind(self.value_kind)
         if self.palette_source is not None:
-            validate_styled_palette_source(self.palette_source)
+            validate_categorical_palette_source(self.palette_source)
 
 
 @dataclass(frozen=True)

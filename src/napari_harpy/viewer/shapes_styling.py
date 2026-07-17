@@ -18,17 +18,19 @@ from napari_harpy.core._color_source import (
     TableColorSourceSpec,
     validate_shape_color_value_kind,
 )
+from napari_harpy.core.class_palette import (
+    CategoricalPaletteSource,
+    resolve_table_categorical_palette,
+    validate_categorical_palette_source,
+)
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 from napari_harpy.viewer._styling import (
-    StyledPaletteSource,
     build_string_categorical_values,
     categorical_rgba_for_values,
     continuous_rgba_for_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
-    resolve_table_categorical_palette,
-    validate_styled_palette_source,
 )
 
 if TYPE_CHECKING:
@@ -54,7 +56,7 @@ class ShapesStyleResult:
     """Describe shapes styling metadata, if styling was applied."""
 
     value_kind: ShapesStyleValueKind | None
-    palette_source: StyledPaletteSource | None
+    palette_source: CategoricalPaletteSource | None
     coercion_applied: bool
     unannotated_source_shape_count: int = 0
     unannotated_rendered_shape_count: int = 0
@@ -63,7 +65,7 @@ class ShapesStyleResult:
         if self.value_kind is not None and self.value_kind != "instance":
             validate_shape_color_value_kind(self.value_kind)
         if self.palette_source is not None:
-            validate_styled_palette_source(self.palette_source)
+            validate_categorical_palette_source(self.palette_source)
 
 
 @dataclass(frozen=True)
@@ -927,7 +929,7 @@ def _resolve_shape_categorical_palette(
     column_name: str,
     source_values: pd.Series,
     categories: Sequence[object],
-) -> tuple[StyledPaletteSource, list[Any]]:
+) -> tuple[CategoricalPaletteSource, list[Any]]:
     colors_column_name = f"{column_name}_colors"
     if colors_column_name not in shapes_element.columns:
         logger.info(f"No `{colors_column_name}` companion color column found; using the default categorical palette.")
