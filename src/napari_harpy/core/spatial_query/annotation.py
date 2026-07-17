@@ -88,7 +88,26 @@ class SpatialAnnotationPreparation:
 
 @dataclass(frozen=True)
 class SpatialAnnotationSummary:
-    """Reviewed effect of setting or removing one annotation value."""
+    """Reviewed effect of setting or removing one annotation value.
+
+    Parameters
+    ----------
+    annotation_value
+        Normalized string category for Set annotation. ``None`` is the domain
+        sentinel for Remove annotation: Apply clears the matched categorical
+        values with ``pd.NA``. ``None`` itself is not stored, and the strings
+        ``"None"`` and ``"nan"`` remain ordinary annotation categories.
+    matched_count
+        Total number of matched rows included in the review.
+    current_missing_count
+        Number of matched rows whose current annotation is missing.
+    current_equal_count
+        Number of matched rows already equal to a Set annotation value. This is
+        zero for Remove annotation.
+    current_other_count
+        Number of different non-missing values that Set would overwrite, or
+        existing non-missing annotations that Remove would clear.
+    """
 
     annotation_value: str | None
     matched_count: int

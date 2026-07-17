@@ -3240,9 +3240,11 @@ cache-generation counter. The later controller additionally rejects a result
 when its Shapes selection, coordinate system, or operation identity changed.
 
 Slice 5 consumes the stable core palette resolver and extension helper from
-Slice 4b. It owns when a resolved palette becomes an accepted `.uns` mutation,
-but it does not redefine default colors, stored-palette validity, or extension
-semantics.
+Slice 4b. For an effective annotation mutation, it decides whether the
+companion palette must be created, repaired, or extended and applies that
+`.uns` change atomically with the `.obs` column change. A no-op never changes
+the palette. Slice 5 does not redefine default colors, stored-palette validity,
+or extension semantics.
 
 #### Typed contracts
 
