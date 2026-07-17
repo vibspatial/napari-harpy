@@ -3084,6 +3084,15 @@ family can change as the category count crosses a threshold. Slice 5 must not
 import that viewer implementation or duplicate it in the UI-independent
 annotation domain.
 
+Introducing append-stable defaults has one intentional viewer compatibility
+effect: an existing generic Labels or Shapes visualization with no valid stored
+`<column>_colors` palette may receive different default colors after Slice 4b.
+This is a one-time, viewer-only migration effect and does not mutate the table.
+Valid stored palettes remain authoritative and unchanged, and Object
+Classification colors retain their existing specialized contract. After this
+transition, adding categories no longer changes colors assigned to existing
+category positions.
+
 #### Shared core palette contract
 
 Keep the implementation in the existing `core/class_palette.py`; do not create
@@ -3112,6 +3121,30 @@ remains explicit:
         "default_invalid",
     ]
 
+
+    def validate_categorical_palette_source(
+        source: str,
+    ) -> CategoricalPaletteSource:
+        ...
+
+
+    def resolve_table_categorical_palette(
+        *,
+        table: AnnData,
+        column_name: str,
+        categories: Sequence[object],
+    ) -> tuple[CategoricalPaletteSource, list[str]]:
+        ...
+
+
+    def extend_categorical_palette(
+        palette: Sequence[str],
+        *,
+        current_categories: Sequence[object],
+        next_categories: Sequence[object],
+    ) -> list[str]:
+        ...
+
 The shared resolver:
 
 - reads `<column>_colors` without mutating the table;
@@ -3122,11 +3155,13 @@ The shared resolver:
 - reports which of the three sources produced the result so viewers can warn
   without changing table state.
 
-Provide one pure palette-extension helper. Given a valid existing palette and a
-larger target category count, it preserves every existing color value and order
-and appends `default_labeled_class_color(position + 1)` for only the new
-positions. It rejects shrinking, invalid input colors, and a palette/category
-length mismatch. It performs no AnnData assignment.
+`extend_categorical_palette()` requires `next_categories` to start with the
+exact complete `current_categories` sequence. Given a valid existing palette
+aligned to that current sequence, it preserves every existing color value and
+order and appends `default_labeled_class_color(position + 1)` for only the new
+trailing positions. It rejects category removal, reordering, replacement,
+invalid input colors, and a palette/current-category length mismatch. It
+performs no AnnData assignment.
 
 Labels and Shapes categorical styling consume this shared core resolver and
 source type. Plain string/object viewer coercion, where still supported outside
@@ -3139,6 +3174,23 @@ Persistence requires no preparatory change: `write_table_components()` already
 supports explicit top-level uns paths. Creating, repairing, extending, rolling
 back, publishing, and persisting `<column>_colors` remain Slice 5 and later
 widget responsibilities.
+
+#### Implementation boundary
+
+The production changes are limited to:
+
+- `core/class_palette.py` for the shared type, validation, stable defaults,
+  non-mutating resolver, and extension helper;
+- `viewer/_styling.py` for removal of the viewer-local palette policy while
+  retaining unrelated color conversion and rendering helpers;
+- `viewer/labels_styling.py` and `viewer/shapes_styling.py` for consuming the
+  core resolver and source type;
+- focused `test_class_palette.py`, `test_styling.py`, Labels/Shapes styling,
+  and existing Object Classification palette tests affected by those imports
+  or defaults.
+
+Do not modify Spatial Query annotation code, component persistence, table-state
+events, dirty tracking, or widget orchestration in this slice.
 
 #### Deliverables
 
@@ -3158,8 +3210,10 @@ widget responsibilities.
 - missing and invalid palettes resolve deterministically without mutating the
   table;
 - extending a palette appends only the required stable colors and rejects
-  invalid input;
+  invalid input or any non-prefix category transition;
 - Labels and Shapes styling use the same resolver and source classification;
+- focused tests acknowledge the intentional one-time default-color change for
+  generic unstored palettes while proving that no table mutation occurs;
 - Object Classification class-color behavior and stored palette contracts are
   unchanged;
 - the slice emits no table event, records no dirty path, and performs no zarr
