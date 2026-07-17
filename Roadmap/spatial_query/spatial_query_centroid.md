@@ -361,6 +361,9 @@ centers still scans all scale0 chunks lazily.
 - removal of annotations from matching rows in one existing compatible column;
 - primary-label visualization of the selected annotation column with the shared
   categorical palette and missing-value styling;
+- creation, extension, and persistence of the standard
+  `AnnData.uns["<column>_colors"]` palette associated with an effectively
+  mutated spatial-annotation column;
 - mandatory overwrite/removal disclosure and confirmation;
 - asynchronous center calculation and query execution, cancellation, textual
   busy status, and stale-result protection;
@@ -387,7 +390,8 @@ centers still scans all scale0 chunks lazily.
 - any-pixel overlap, full-label containment, or percentage-overlap predicates;
 - boolean combinations selected interactively across Shapes elements;
 - automatically writing to zarr after every cache or annotation change;
-- persisting a new `<column>_colors` palette merely to support viewer display;
+- creating or changing `<column>_colors` merely because a column was selected
+  for viewer display, without an effective annotation mutation;
 - detecting out-of-band labels pixel changes when dimensions, shape, dtype, and
   table linkage all remain unchanged;
 - using an existing obsm["spatial"] array without verified canonical metadata.
@@ -689,8 +693,8 @@ selections survive refreshes.
   coordinate system.
 - Table choices include only tables whose SpatialData TableModel metadata
   declares the selected labels element as an annotated region.
-- Existing-column choices include only compatible text/categorical annotation
-  columns and exclude region_key and instance_key.
+- Existing-column choices include only pandas categorical annotation columns
+  whose categories are all strings, and exclude region_key and instance_key.
 - Changing an upstream selection refreshes downstream options, closes pending
   dialogs, and cancels or invalidates active work.
 - Preserve a downstream selection if its stable identity remains valid.
@@ -703,9 +707,12 @@ and refresh behavior as other coordinate-aware widgets.
 
 ### Target column behavior
 
-If spatial_annotation already exists and is compatible, default to Existing
-column and select it. Otherwise default to New column with spatial_annotation
-prefilled.
+If spatial_annotation already exists and is a compatible categorical target,
+default to Existing column and select it. If it is absent, default to New
+column with spatial_annotation prefilled. If it exists but is incompatible,
+exclude it from the Existing-column choices and explain that Spatial Query will
+neither convert nor overwrite it; the user must select another eligible
+categorical column or enter a different non-colliding New column name.
 
 A new column name:
 
@@ -715,15 +722,17 @@ A new column name:
 - must not collide with an existing obs column;
 - is not created until the user confirms Apply with at least one changed row.
 
-An existing target column is compatible when it is:
+An existing target column is compatible only when it uses
+`pd.CategoricalDtype` and all declared categories are strings. An empty
+categorical category set is valid. Missing row values are valid and mean that
+those rows are not annotated. Preserve the categorical `ordered` flag and
+category order.
 
-- pandas categorical with string categories;
-- pandas StringDtype;
-- object/string containing only strings and missing values;
-- an all-missing object/string column.
-
-Numeric, boolean, datetime, mixed-object, and non-string categorical columns
-are not writable and must never be converted implicitly.
+StringDtype, object/string, numeric, boolean, datetime, mixed-object, and
+non-string categorical columns are not writable and must never be converted
+implicitly. Spatial Query supports convenience creation through New column,
+but it does not normalize an existing user-owned column into its required
+categorical contract.
 
 Remove annotation is available only for an existing compatible target column.
 It clears the matching row values to the column's missing state; it never
@@ -758,13 +767,32 @@ the selected obs column. Do not reuse Object Classification's specialized
 confidence, integer class IDs, and classifier palette semantics that do not
 belong to arbitrary spatial-annotation strings.
 
-Categorical annotation values use the existing shared default categorical
-palette, which is backed by the same palette machinery as Object
-Classification. A valid existing `<column>_colors` palette in `table.uns` may be
-respected by the generic styling path; if none exists or it is invalid, use the
-default palette. Viewer coloring alone is read-only table presentation: it must
-not create or modify `<column>_colors`, emit a table-state event, or mark the
-table dirty.
+The annotation column and its standard `table.uns["<column>_colors"]` palette
+form one annotation consistency unit. Palette entries align positionally with
+the categorical column's category order. Resolve that palette as follows:
+
+- a valid stored palette has exactly one valid color per category and remains
+  authoritative; preserve every existing color value and its order;
+- when no stored palette exists, derive one viewer-only from category positions
+  using `default_labeled_class_color(position + 1)`;
+- when stored palette metadata is malformed or incompatible with the category
+  count, render with the same complete position-based default palette and show
+  a non-blocking warning rather than trusting ambiguous color alignment;
+- when Set appends a category to a valid stored palette, append exactly one
+  `default_labeled_class_color(new_position + 1)` entry and never regenerate
+  earlier entries;
+- when a New column is created, create its complete position-based default
+  palette at the same time.
+
+This per-position mapping uses the same underlying default color logic as
+Object Classification while guaranteeing that appending a category never
+changes colors assigned to existing categories. Merely selecting or displaying
+a column remains read-only: a missing or invalid palette is not written,
+repaired, announced as a table mutation, or marked dirty until an effective
+annotation Apply occurs. On such an Apply, store the derived palette when it was
+missing, replace invalid palette metadata with the displayed complete default
+palette, or append the new-category entry to a valid palette. Remove never
+prunes categories or colors.
 
 An effective annotation Apply publishes the ordinary
 `TableStateChangedEvent` for the changed `obs/<column>` path. Spatial Query
@@ -933,13 +961,19 @@ Applying is one main-thread, all-or-nothing obs mutation:
   ordered state;
 - when removing, assign the canonical in-memory missing scalar `pd.NA` and do
   not remove unused categories or reorder categorical metadata;
+- preserve a valid existing `<column>_colors` palette and append one stable
+  default color when Set adds a category;
+- create or repair `<column>_colors` from the stable position-based default
+  palette only as part of an effective annotation Apply;
 - represent unannotated values as actual missing values, never stringified
   missing values or an empty string;
 - preserve the compatible target dtype;
 - update each matching row at most once.
 
-A new target column is categorical. Non-target rows are missing and the applied
-string value is its first category. Removal never creates or deletes a column.
+A new target column is categorical. Non-target rows are missing, the applied
+string value is its first category, and `<column>_colors` contains its first
+stable default color. Removal never creates or deletes a column, category, or
+palette entry.
 
 If every matching row already has the requested string value, or every matching
 row is already missing during removal, report a no-op. Do not replace the
@@ -949,9 +983,10 @@ dirty state caused earlier by cache creation remains.
 After an effective annotation mutation:
 
 - mark the selected table dirty through shared HarpyAppState;
-- emit a semantic table-state event with the changed obs column, selected
-  labels region, source, and change kind; a new column uses `created`, while an
-  existing-column Set or Remove uses `updated`;
+- emit a semantic table-state event with the changed obs column and, only when
+  it was created, repaired, or extended, the associated palette uns path;
+  include the selected labels region, source, and change kind; a new column
+  uses `created`, while an existing-column Set or Remove uses `updated`;
 - refresh this widget and table-column/color-source consumers;
 - show updated, overwritten, and unchanged counts.
 
@@ -1122,8 +1157,9 @@ mutation tokens remain widget/app-state orchestration data and are not embedded
 in the UI-independent domain preparation.
 
 Apply validates preparation against current state before mutating. If validation
-or assignment fails, restore the entire prior target-column state and leave
-dirty state/events unchanged. Partial row updates are forbidden.
+or assignment fails, restore the entire prior target-column and companion
+palette state and leave dirty state/events unchanged. Partial row updates and
+half-applied obs/uns annotation units are forbidden.
 
 Large counts use locale-aware formatting. The UI must never render an unbounded
 instance-ID list.
@@ -1157,6 +1193,7 @@ concrete validated shape:
 Examples are:
 
     TableComponentPath("obs", ("spatial_annotation",))
+    TableComponentPath("uns", ("spatial_annotation_colors",))
     TableComponentPath("obsm", ("spatial_canonical",))
     TableComponentPath(
         "uns",
@@ -1328,7 +1365,7 @@ persistence operations.
 | Query returns no matching centers after cache update | No further mutation | Remains dirty |
 | Cancel Apply after cache update | No further mutation | Remains dirty |
 | Apply annotation is a no-op | No | Unchanged from current state |
-| Apply sets/removes annotations | obs | Dirty |
+| Apply sets/removes annotations | obs, plus uns when the companion palette changes | Dirty |
 | Successful write, no remaining/newer dirty components | Captured components persisted | Clean |
 | Successful write with remaining/newer dirty components | Captured components persisted | Remains dirty |
 | Failed write | No accepted persistence completion | Remains dirty |
@@ -1417,18 +1454,23 @@ The implementation creates a correctly encoded spatial_coordinates mapping
 when absent and preserves every unrelated sibling entry when it already exists.
 It does not rewrite all of obsm or uns.
 
-The spatial annotation target, for example
-adata.obs["spatial_annotation"], is separate. If any obs column is dirty, the
-existing AnnData element-level persistence path writes the obs dataframe element
-with its index, column-order, missing-value, and categorical encodings. Writing
-obs is still a selective table-component write; it does not serialize the full
-AnnData object. Existing supported classifier metadata and future components are
-included only when their paths are present in the same shared dirty snapshot.
+The spatial annotation target and companion palette, for example
+`adata.obs["spatial_annotation"]` and
+`adata.uns["spatial_annotation_colors"]`, form one annotation consistency unit.
+If the obs column is dirty, the existing AnnData element-level persistence path
+writes the obs dataframe element with its index, column-order, missing-value,
+and categorical encodings. The palette uns element is additionally written only
+when its own path is dirty because it was created, repaired, or extended.
+Writing these remains a selective table-component operation; it does not
+serialize the full AnnData object. Existing supported classifier metadata and
+future components are included only when their paths are present in the same
+shared dirty snapshot.
 
 There is one shared Write Table State action rather than competing widget-local
 writers. A centroid-only dirty table writes only the spatial_canonical pair; an
-annotation-only dirty table writes obs; a table containing both changes writes
-both in the same operation.
+annotation-only dirty table writes obs and its palette when that palette also
+changed; a table containing both changes writes their union in the same
+operation.
 
 The matrix and its spatial-coordinate metadata are one persistence unit. The
 service stages/backs up as needed, validates both encoded elements, and must not
@@ -1779,18 +1821,26 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - duplicate IDs across regions allowed and within selected region rejected;
 - missing/boolean/fractional/string/non-finite IDs rejected;
 - new categorical annotation column with missing non-target rows;
-- compatible categorical, StringDtype, and object updates;
+- compatible string-categorical updates;
 - category addition preserves order/ordered state;
-- numeric/mixed/reserved target columns rejected;
+- valid stored palettes are preserved and extended by one default color without
+  changing existing entries;
+- missing or invalid palettes are displayed through stable position-based
+  defaults without mutation, then created or repaired only with an effective
+  annotation Apply;
+- adding a category never changes an existing category's resolved color;
+- StringDtype, object/string, numeric, boolean, datetime, mixed-object,
+  non-string categorical, and reserved target columns rejected;
 - set summaries update missing/equal/overwrite counts with the proposed value;
 - removal summaries report already-empty and annotations-to-remove counts;
-- removal writes missing values for categorical, StringDtype, and object
-  columns while preserving dtype and categorical metadata;
+- removal writes missing values for categorical columns while preserving dtype
+  and categorical metadata;
 - removal never deletes the column, prunes unused categories, or permits a New
   column target;
 - typed strings such as `"None"` and `"nan"` remain literal annotation values;
-- no-op leaves column identity/events/current dirty state unchanged;
-- apply rollback prevents partial mutation.
+- no-op leaves column and palette identity/events/current dirty state unchanged;
+- apply rollback restores both column and palette and prevents partial
+  obs/uns mutation.
 
 ### Controller and async tests
 
@@ -1810,6 +1860,14 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 
 - dependent combo filtering and stable selection preservation;
 - default spatial_annotation existing/new behavior;
+- Existing-column choices contain only string-categorical columns and exclude
+  reserved, StringDtype, object/string, numeric, and non-string categorical
+  columns;
+- an incompatible existing spatial_annotation column is never converted or
+  reused as a New target with the colliding name;
+- annotation coloring preserves a valid stored palette and otherwise derives
+  the stable shared default palette without mutating table state merely on
+  selection;
 - Run enablement/tooltips for every blocker;
 - dirty Shapes session blocker;
 - all centroid cache status states and phase text;
@@ -1845,11 +1903,15 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - an annotation-only write persists obs, including column order, missing values,
   categorical values/categories, and the dataframe index, without rewriting the
   full AnnData table;
+- when the companion palette changed, the same write persists exactly the
+  `<column>_colors` uns element and a reopened table retains the category-color
+  association;
 - removed annotations round-trip through zarr as missing values for every
-  supported target dtype, regardless of the concrete missing scalar returned by
-  AnnData on reload;
-- a mixed dirty manifest writes obs plus the canonical pair and clears dirty
-  state only after all captured component mutation tokens succeed;
+  supported categorical target, regardless of the concrete missing scalar
+  returned by AnnData on reload;
+- a mixed dirty manifest writes obs, any changed companion palette, and the
+  canonical pair, and clears dirty state only after all captured component
+  mutation tokens succeed;
 - an unknown dirty component blocks persistence and is never silently cleared;
 - no path calls AnnData.write_zarr or rewrites X, layers, var, varm, obsp, or
   unrelated obsm/uns entries;
@@ -3084,6 +3146,18 @@ wrapper dataclass:
     class SpatialAnnotationQueryOutdatedError(ValueError):
         """The binding or canonical-center query provenance is no longer current."""
 
+
+    @dataclass(frozen=True)
+    class SpatialAnnotationApplyResult:
+        annotation_changed: bool
+        palette_changed: bool
+
+        def __post_init__(self) -> None:
+            if self.palette_changed and not self.annotation_changed:
+                raise ValueError(
+                    "A spatial-annotation palette changes only with an effective annotation mutation."
+                )
+
 Arrays stored on these contracts are read-only defensive snapshots. Series are
 defensive copies that domain functions never mutate after construction.
 Names such as `table_name`, `labels_name`, `region_key`, and `instance_key` are
@@ -3114,7 +3188,7 @@ The public core operations are:
         sdata: SpatialData,
         preparation: SpatialAnnotationPreparation,
         expected_summary: SpatialAnnotationSummary,
-    ) -> None:
+    ) -> SpatialAnnotationApplyResult:
         ...
 
 Preparation and summarization never mutate SpatialData or AnnData. The dialog
@@ -3122,6 +3196,11 @@ can call `summarize_spatial_annotation()` repeatedly as the user edits the
 string value or switches between Set and Remove without resolving table rows
 again. `annotation_value=None` is an internal domain value meaning Remove
 annotation; the UI never asks the user to type a sentinel.
+
+Apply reports whether the obs column and associated palette actually changed.
+The widget uses those booleans to publish only the corresponding shared table
+component paths; the domain function still does not publish events or know
+about `HarpyAppState`.
 
 #### Exact row resolution
 
@@ -3147,10 +3226,10 @@ controller reports the no-result outcome before opening the dialog.
 `column_mode="new"` requires the normalized column name to remain absent.
 `column_mode="existing"` requires it to remain present and compatible. Both
 modes reject region_key and instance_key. Compatibility follows the Target
-column behavior contract above: string categorical, pandas StringDtype, or
-object/string containing only strings and missing values. No implicit
-conversion of numeric, boolean, datetime, mixed-object, or non-string
-categorical data is allowed.
+column behavior contract above: the existing Series must use
+`pd.CategoricalDtype`, and every declared category must be a string. No
+implicit conversion of StringDtype, object/string, numeric, boolean, datetime,
+mixed-object, or non-string categorical data is allowed.
 
 A non-None annotation value is trimmed once and must be a non-empty string.
 `None` means Remove annotation and is valid only with
@@ -3197,6 +3276,13 @@ table/cache inspection without reading labels pixels and requires:
    match the preparation;
 6. a freshly computed summary to equal `expected_summary`.
 
+Palette metadata does not affect query membership or overwrite/removal counts,
+so a palette-only change while the dialog is open does not invalidate the
+reviewed annotation. Apply reads the current palette immediately before
+mutation, preserves it when valid, and resolves missing or invalid state through
+the palette policy above. It must never overwrite a newer valid palette with an
+older dialog snapshot.
+
 If only relevant target values changed while the review dialog was open, Apply
 raises `SpatialAnnotationColumnChangedError` without mutation. The controller
 rebuilds the preparation and summary, updates the dialog, and requires
@@ -3211,19 +3297,27 @@ off-table. Existing compatible dtype, categorical order, and categorical
 reordering existing categories. Remove writes `pd.NA` at the resolved rows and
 does not remove categories that become unused. A new column is categorical,
 contains actual missing values outside the matched rows, and uses the applied
-string as its first category.
+string as its first category. Construct the complete replacement palette
+off-table as well whenever the palette is missing, invalid, or must be extended
+for a new category.
 
-Assign the completed Series to the target column once on the main thread. Keep
-an exact pre-assignment column snapshot and restore it if assignment or
-post-assignment validation fails; remove the target column on rollback when it
-did not previously exist. Do not publish an event or change dirty state until
-the domain mutation succeeds. Other obs columns, other regions, obsm, uns, and
-the canonical cache remain untouched.
+Assign the completed Series and, when required, its completed palette on the
+main thread as one atomic annotation consistency-unit update. Keep exact
+pre-assignment snapshots of both `table.obs[column_name]` and the presence/value
+of `table.uns["<column>_colors"]`. If either assignment or post-assignment
+validation fails, restore both snapshots; remove newly created entries during
+rollback. Do not publish an event or change dirty state until the complete
+domain mutation succeeds. Other obs columns, other uns keys, other regions,
+obsm, and the canonical cache remain untouched.
 
 If `changed_count == 0`, return without assignment. Do not replace the column
-object, publish a mutation, or alter dirty state. After an effective successful
-Apply, the widget publishes one ordinary `TableStateChangedEvent` through
-`record_table_mutation()` for the target obs path and selected labels region.
+object, create/repair palette metadata, publish a mutation, or alter dirty
+state, and return `SpatialAnnotationApplyResult(False, False)`. After an
+effective successful Apply, return `annotation_changed=True` and report
+`palette_changed=True` only when `<column>_colors` was created, repaired, or
+extended. The widget then publishes one ordinary `TableStateChangedEvent`
+through `record_table_mutation()` for the target obs path plus the palette uns
+path only when `palette_changed` is true, scoped to the selected labels region.
 Creating a new column reports `change_kind="created"`; setting or removing
 values in an existing column reports `change_kind="updated"`.
 
@@ -3246,24 +3340,30 @@ canonical cache.
 - provenance-carrying `CanonicalCenterQueryResult` refinement;
 - exact row resolution through region and instance keys;
 - immutable preparation and summary contracts;
+- explicit Apply result reporting annotation-column and palette changes;
 - mode-specific set/overwrite/removal summaries;
 - compatible existing-column set/removal and new categorical-column creation;
-- apply-time source/cache/binding/table revalidation and rollback;
+- valid-palette preservation, stable default palette creation/repair/extension,
+  and category-color stability;
+- apply-time source/cache/binding/table revalidation and atomic obs/uns
+  rollback;
 - ordinary shared table-state publication after an effective Apply;
 - focused table-domain tests.
 
 #### Exit criteria
 
 - no cancel, no-result, no-op, outdated preparation, or failed apply changes the
-  annotation column;
-- all effective mutations assign one completed target-column state atomically;
+  annotation column or companion palette;
+- all effective mutations assign one completed annotation-column/palette
+  consistency unit atomically;
 - displayed counts are the exact counts accepted by Apply;
 - apply rejects any changed binding, canonical-center snapshot, or relevant
   target-column state;
-- an effective Apply produces one ordinary dirty obs mutation and never changes
-  canonical cache paths;
-- focused tests cover set/remove, new/existing, no-op, rollback, and outdated
-  preparation paths.
+- an effective Apply produces one ordinary dirty obs mutation, additionally
+  reports the palette uns path exactly when that palette changed, and never
+  changes canonical cache paths;
+- focused tests cover set/remove, new/existing, valid/missing/invalid palette,
+  stable palette extension, no-op, rollback, and outdated preparation paths.
 
 ### Slice 6: Widget selection and validation shell
 
@@ -3273,7 +3373,8 @@ Deliverables:
 - coordinate system, Shapes, labels, table, target-column controls;
 - primary labels-layer load/activation and annotation-column coloring through a
   thin Spatial Query styling controller over the generic table-backed labels
-  styling API;
+  styling API with valid stored-palette preservation and stable
+  position-derived defaults when the palette is missing or invalid;
 - centroid cache status and explicit Recalculate centroids action;
 - dependent filtering with stable identity preservation;
 - default spatial_annotation behavior;
@@ -3317,6 +3418,8 @@ Deliverables:
 - Apply dialog with explicit Set annotation and Remove annotation modes, live
   mode-specific counts, and mandatory overwrite/removal warnings;
 - main-thread atomic annotation Apply;
+- widget-owned publication of the obs path and the palette uns path indicated
+  by `SpatialAnnotationApplyResult`;
 - targeted primary labels-layer refresh after an effective annotation Apply,
   with missing values rendered through the shared missing/unlabelled color;
 - controller/dialog async tests.
@@ -3380,7 +3483,8 @@ Deliverables:
 Exit criteria:
 
 - all widgets observe one current in-memory table state;
-- canonical centers and annotation columns persist/reload together;
+- canonical centers, annotation columns, and changed companion palettes
+  persist/reload together;
 - Write Table State persists the union of supported dirty components through
   AnnData element encodings and clears only successfully written unchanged
   component mutation tokens;
@@ -3441,15 +3545,21 @@ Completion additionally requires:
   do not participate in canonical cache identity;
 - table rows with no source label are rejected as binding inconsistencies;
 - labels absent from the table are not claimed as queryable or counted;
-- annotation set/removal apply and rollback are safe and atomic;
+- annotation set/removal and any associated palette update apply and roll back
+  as one atomic obs/uns consistency unit;
 - annotation coloring reuses the generic compact table-backed labels styling,
-  shared categorical palette, and missing-value color without creating a
-  viewer-only table mutation;
+  preserves valid stored colors, derives stable shared defaults by category
+  position, and never changes an existing category's color merely because a
+  category was appended;
+- missing or invalid `<column>_colors` state is not mutated merely for viewer
+  display, but is stored or repaired with the next effective annotation Apply
+  and recorded through the corresponding dirty uns path;
 - the latest explicit primary-label coloring action wins across Spatial Query
   and Object Classification, and unrelated table events do not override it;
 - shared cross-widget dirty state and general table events work for obs, obsm,
   and uns;
-- canonical cache and annotation columns round-trip through backed zarr;
+- canonical cache, annotation columns, and their changed companion palettes
+  round-trip through backed zarr;
 - persistence uses AnnData element-level encodings for dirty obs/obsm/uns
   components and never rewrites unrelated AnnData elements;
 - reload and dirty-dataset replacement protect local changes;
