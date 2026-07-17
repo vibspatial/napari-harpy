@@ -56,7 +56,9 @@ annotation:
    value to the Shapes element name;
 10. apply the string value or missing annotation state to the matching table
     rows;
-11. explicitly write or reload the shared table state when working with the
+11. visualize the selected annotation column on the primary labels layer and
+    refresh that visualization after an effective annotation change;
+12. explicitly write or reload the shared table state when working with the
     backed zarr store.
 
 The workflow targets zarr-backed SpatialData. The highest-resolution labels
@@ -90,6 +92,9 @@ results, or confuse in-memory state with persisted state.
   explicitly.
 - **One shared table state:** all Harpy widgets see the same in-memory AnnData
   and the same per-table dirty marker.
+- **One primary labels presentation:** Spatial Query reuses the primary labels
+  layer and the shared table-backed coloring infrastructure instead of creating
+  a competing styled overlay or a separate palette system.
 - **Deterministic and testable:** identical geometry, transforms, canonical
   centers, linkage metadata, and table state produce identical results.
 - **Accessible:** all important states, warnings, busy states, and errors are
@@ -354,6 +359,8 @@ centers still scans all scale0 chunks lazily.
 - canonical-center containment using vectorized Shapely;
 - assignment to one existing compatible obs column or one newly created column;
 - removal of annotations from matching rows in one existing compatible column;
+- primary-label visualization of the selected annotation column with the shared
+  categorical palette and missing-value styling;
 - mandatory overwrite/removal disclosure and confirmation;
 - asynchronous center calculation and query execution, cancellation, textual
   busy status, and stale-result protection;
@@ -380,7 +387,7 @@ centers still scans all scale0 chunks lazily.
 - any-pixel overlap, full-label containment, or percentage-overlap predicates;
 - boolean combinations selected interactively across Shapes elements;
 - automatically writing to zarr after every cache or annotation change;
-- automatically recoloring labels;
+- persisting a new `<column>_colors` palette merely to support viewer display;
 - detecting out-of-band labels pixel changes when dimensions, shape, dtype, and
   table linkage all remain unchanged;
 - using an existing obsm["spatial"] array without verified canonical metadata.
@@ -722,6 +729,60 @@ Remove annotation is available only for an existing compatible target column.
 It clears the matching row values to the column's missing state; it never
 deletes the obs column. New column plus Remove annotation is invalid because it
 would create no useful state.
+
+### Annotation visualization
+
+The selected labels element is loaded and activated as the primary labels
+layer through `ViewerAdapter.ensure_labels_loaded()`, following the same layer
+selection and activation behavior as Object Classification. Spatial Query must
+reuse that primary layer; it must not create a second styled-labels overlay for
+the annotation.
+
+The selected annotation target column is also the Spatial Query color source:
+
+- selecting a compatible existing target column applies its current values to
+  the primary labels layer immediately;
+- a New column cannot be used as a color source before it exists; after the
+  first effective Apply creates it, the new column remains selected and is
+  applied as the color source;
+- Set and Remove operations refresh the current visualization after the table
+  mutation succeeds; removed or otherwise missing values use the shared
+  semi-transparent missing/unlabelled color;
+- a no-op Apply does not emit a table mutation or perform a mutation-driven
+  refresh.
+
+Use the generic table-backed labels styling path through
+`apply_table_color_source_to_labels_layer()` and a `TableColorSourceSpec` for
+the selected obs column. Do not reuse Object Classification's specialized
+`ViewerStylingController`: it owns `user_class`, `pred_class`, prediction
+confidence, integer class IDs, and classifier palette semantics that do not
+belong to arbitrary spatial-annotation strings.
+
+Categorical annotation values use the existing shared default categorical
+palette, which is backed by the same palette machinery as Object
+Classification. A valid existing `<column>_colors` palette in `table.uns` may be
+respected by the generic styling path; if none exists or it is invalid, use the
+default palette. Viewer coloring alone is read-only table presentation: it must
+not create or modify `<column>_colors`, emit a table-state event, or mark the
+table dirty.
+
+An effective annotation Apply publishes the ordinary
+`TableStateChangedEvent` for the changed `obs/<column>` path. Spatial Query
+refreshes table-backed coloring only when the event refers to the current
+SpatialData object and table, covers the currently displayed annotation
+column, and either includes the selected labels region or is explicitly
+table-wide. Unrelated obs, obsm, uns, table, or region changes must not repaint
+the layer. A relevant reload or a mutation published by another widget follows
+the same targeted refresh rule.
+
+Because Object Classification and Spatial Query can both style the same
+primary labels layer, the most recent explicit user coloring action owns its
+presentation. Selecting a Spatial Query target column or successfully applying
+that annotation is such an action. A later Object Classification color choice
+may replace it, and vice versa. Shared presentation state must retain the
+currently applied primary-layer color-source identity so background table
+events refresh that source only; a widget must not reclaim layer styling merely
+because it received an unrelated refresh callback.
 
 ### Centroid status
 
@@ -1587,6 +1648,7 @@ The corresponding widget package is:
             __init__.py
             controller.py
             widget.py
+            viewer_styling.py
             dialogs.py
             status_card.py
 
@@ -1598,6 +1660,10 @@ The corresponding widget package is:
 
             widget.py
                 selectors, cache status, busy state, persistence actions
+
+            viewer_styling.py
+                thin primary-layer binding and generic annotation-column
+                styling orchestration; no classifier-specific class semantics
 
             dialogs.py
                 cache mismatch reporting
@@ -3205,6 +3271,9 @@ Deliverables:
 
 - registered Spatial Query dock widget and plugin manifest entry;
 - coordinate system, Shapes, labels, table, target-column controls;
+- primary labels-layer load/activation and annotation-column coloring through a
+  thin Spatial Query styling controller over the generic table-backed labels
+  styling API;
 - centroid cache status and explicit Recalculate centroids action;
 - dependent filtering with stable identity preservation;
 - default spatial_annotation behavior;
@@ -3217,6 +3286,9 @@ Exit criteria:
 - first-run cost and cache reuse state are clear before execution;
 - Recalculate centroids is available from a valid labels/table selection even
   when Shapes or annotation-target inputs are incomplete;
+- a compatible existing annotation column can be visualized without mutating
+  the table, and a configured New column is not treated as available before
+  its first effective Apply;
 - selection/inspection never mutates or dirties a table.
 
 ### Slice 7: Async calculate-query-review-apply flow
@@ -3245,6 +3317,8 @@ Deliverables:
 - Apply dialog with explicit Set annotation and Remove annotation modes, live
   mode-specific counts, and mandatory overwrite/removal warnings;
 - main-thread atomic annotation Apply;
+- targeted primary labels-layer refresh after an effective annotation Apply,
+  with missing values rendered through the shared missing/unlabelled color;
 - controller/dialog async tests.
 
 The centroid-calculation phase is:
@@ -3294,6 +3368,9 @@ Deliverables:
 
 - Spatial Query, Viewer, and Object Classification targeted refresh behavior
   consuming `table_state_changed` without feedback loops;
+- shared primary-label color-source ownership implementing the rule that the
+  most recent explicit coloring action controls the layer, so later unrelated
+  table events cannot let another widget silently reclaim its styling;
 - reusable Write Table State and Reload Table from zarr UI components backed by
   the generalized PersistenceController;
 - dirty reload write/discard/cancel behavior;
@@ -3309,6 +3386,8 @@ Exit criteria:
   component mutation tokens;
 - no full-AnnData rewrite occurs;
 - no event loop or unrelated classifier invalidation;
+- annotation coloring follows only relevant current-table, current-region,
+  current-obs-column events and never dirties the table merely by styling;
 - no late task affects a reloaded/replaced table;
 - there is no competing widget-local dirty truth.
 
@@ -3336,9 +3415,10 @@ The feature is complete when a user can select a valid stored polygon
 annotation, 2D labels element, and linked table; transparently create or reuse
 validated canonical centers; run a responsive center-containment query; review
 affected rows; set a string annotation in a compatible existing or new obs
-column or remove annotations from an existing compatible column; and safely
-write/reload all supported dirty table components from zarr without rewriting
-the complete AnnData object.
+column or remove annotations from an existing compatible column; visualize the
+selected annotation on the shared primary labels layer; and safely write/reload
+all supported dirty table components from zarr without rewriting the complete
+AnnData object.
 
 Completion additionally requires:
 
@@ -3362,6 +3442,11 @@ Completion additionally requires:
 - table rows with no source label are rejected as binding inconsistencies;
 - labels absent from the table are not claimed as queryable or counted;
 - annotation set/removal apply and rollback are safe and atomic;
+- annotation coloring reuses the generic compact table-backed labels styling,
+  shared categorical palette, and missing-value color without creating a
+  viewer-only table mutation;
+- the latest explicit primary-label coloring action wins across Spatial Query
+  and Object Classification, and unrelated table events do not override it;
 - shared cross-widget dirty state and general table events work for obs, obsm,
   and uns;
 - canonical cache and annotation columns round-trip through backed zarr;
