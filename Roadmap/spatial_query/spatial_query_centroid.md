@@ -115,6 +115,16 @@ circles, MultiPolygon values, and geometry collections are not eligible unless
 the shared Shapes Annotation validity contract is extended for them. Spatial
 Query must not define a conflicting geometry-validity rule.
 
+Spatial Query must reuse the complete existing Shapes Annotation edit-validity
+contract and its implementation rather than maintaining a second validator.
+The selected Shapes element must be accepted by
+`validate_existing_shapes_source_geodataframe()` and therefore be eligible for
+editing by the Shapes Annotation widget, including its active-geometry,
+GeoDataFrame-index, and Polygon requirements. A Shapes element rejected for
+editing must also be rejected by Spatial Query. If the shared edit-validity
+contract is extended in the future, both workflows inherit that change through
+the shared validator.
+
 The effective annotation region is the geometric union of all polygon rows.
 Overlapping polygons do not duplicate results. Disjoint polygons are allowed.
 Holes remain excluded according to Shapely/OGC polygon semantics.
@@ -229,10 +239,33 @@ the same coordinate system. The query geometry is transformed using:
     M_shapes_to_labels =
         inverse(M_labels_to_cs) @ M_shapes_to_cs
 
-The unioned annotation is transformed with M_shapes_to_labels before point
-membership is evaluated. Matrix conversion must explicitly use x, y order for
-Shapely coordinates. Napari's array-axis y, x order must not leak into this
-calculation.
+This equation defines the coordinate relationship; napari-harpy must not
+implement the inversion or composition itself. Resolve the transformation
+through SpatialData's transformation graph:
+
+    shapes_to_labels = get_transformation_between_coordinate_systems(
+        sdata,
+        source_coordinate_system=shapes_element,
+        target_coordinate_system=labels_element,
+        intermediate_coordinate_systems=coordinate_system,
+    )
+
+Passing the SpatialElements selects their intrinsic coordinate systems, while
+`intermediate_coordinate_systems=coordinate_system` requires the path to pass
+through the coordinate system selected by the user. Missing, non-invertible,
+or ambiguous paths are rejected by SpatialData rather than replaced with local
+path-discovery or matrix-composition logic.
+
+Convert the returned `BaseTransformation` explicitly with
+`to_affine_matrix(input_axes=("x", "y"), output_axes=("x", "y"))`. The unioned
+annotation is transformed with that matrix before point membership is
+evaluated. Napari's array-axis y, x order must not leak into this calculation.
+A small query adapter may verify the resulting 3 x 3 matrix shape and finite
+values and convert it to the representation expected by Shapely; it must not
+reimplement transformation-graph traversal, inversion, or composition. The
+conversion must be covered by identity, translation, anisotropic-scale,
+rotation, and reflection tests so matrix and axis conventions are not inferred
+from display behavior.
 
 Identity, translation, anisotropic scale, rotation, reflection, and other
 supported invertible 2D affine compositions must work. A transform must not be
@@ -944,68 +977,25 @@ main-thread domain operation.
 
 ### Inputs and results
 
-Use typed, UI-independent contracts, for example:
+The containment stage consumes `CanonicalCentersResult` as its only source of
+canonical centers and row-to-instance identity. Cache reuse and fresh
+calculation converge before containment begins. This stage never inspects,
+calculates, applies, or persists the canonical cache and never reads labels
+raster data.
 
-    SpatialCenterQueryRequest:
-        sdata
-        shapes_name
-        labels_name
-        table_name
-        coordinate_system
-        predicate = "canonical_center_inside"
-        cache_generation
-        source_signature
-        operation_id
-
-    SpatialCenterQueryResult:
-        shapes_name
-        labels_name
-        table_name
-        coordinate_system
-        instance_ids
-        eligible_instance_count
-        matched_instance_count
-        cache_action
-        cache_build_result or None
-        operation_id
-
-The exact Python types may differ. The separation is normative: center
-calculation and geometry querying return immutable data; cache updates,
-row preparation, and annotation mutation are distinct operations.
+The query returns an immutable result carrying the selected-region binding and
+the matching instance IDs in ascending order. Controller operation identity
+remains orchestration state. The concrete request, result, and thread-boundary
+contracts are specified in Slice 4.
 
 ### Query algorithm
 
-1. Validate and snapshot the selected Shapes polygons.
-2. Union all polygons into one effective region.
-3. resolve M_shapes_to_cs and M_labels_to_cs from current SpatialData;
-4. calculate inverse(M_labels_to_cs) @ M_shapes_to_cs;
-5. transform the union into labels-intrinsic x, y coordinates;
-6. prepare the Shapely geometry for repeated predicates;
-7. inspect spatial_canonical and metadata for the selected region;
-8. if valid, snapshot the selected region's row identities and x/y values;
-9. if absent, partial, or stale, calculate centers through RasterAggregator and
-   use the resulting x/y values for this query;
-10. reject non-finite values or a mismatch between row identities, instance IDs,
-    centers, and declared coverage;
-11. use the annotation bounds as a cheap vectorized prefilter;
-12. evaluate Shapely only for candidate centers:
-
-        candidates = (
-            (x >= min_x) & (x <= max_x)
-            & (y >= min_y) & (y <= max_y)
-        )
-        inside = shapely.intersects_xy(
-            region_in_labels,
-            x[candidates],
-            y[candidates],
-        )
-
-13. map true values back to instance IDs;
-14. return unique sorted positive integer IDs and diagnostics.
-
-No labels raster data is read during step 11-14. With a valid cache, the entire
-Run path after validation is an eager vectorized point query over the in-memory
-table coordinates.
+At a feature-contract level, the query validates and snapshots the selected
+Shapes polygons, transforms their union into the selected labels element's
+intrinsic x, y frame, applies a bounding-box prefilter followed by the
+authoritative vectorized `shapely.intersects_xy()` predicate, and maps matches
+back to the binding's instance IDs. Slice 4 specifies the exact execution
+boundary and algorithm.
 
 The bounding box is an optimization only. Shapely intersection is the
 authoritative membership test, including holes and boundaries.
@@ -2725,17 +2715,191 @@ Exit criteria:
 
 ### Slice 4: Vectorized centroid-containment query
 
-Deliverables:
+#### Public contracts
+
+Cache reuse and fresh calculation converge before the containment query:
+
+    valid cache ------------------+
+                                  |
+                                  v
+                         CanonicalCentersResult
+                                  ^
+                                  |
+    freshly calculated centers ---+
+                                  |
+                                  v
+                    centroid-containment query
+
+Build a self-contained immutable request on the main thread:
+
+    @dataclass(frozen=True)
+    class CanonicalCenterQueryRequest:
+        shapes_name: str
+        coordinate_system: str
+        canonical_centers: CanonicalCentersResult
+        polygons: tuple[Polygon, ...]
+        shapes_to_labels_affine: NDArray[np.float64]
+
+        @property
+        def table_name(self) -> str:
+            return self.canonical_centers.table_name
+
+        @property
+        def labels_name(self) -> str:
+            return self.canonical_centers.labels_name
+
+Return the minimal immutable domain result:
+
+    @dataclass(frozen=True)
+    class CanonicalCenterQueryResult:
+        binding: CanonicalRegionBinding
+        instance_ids: NDArray[np.integer]
+
+        @property
+        def eligible_instance_count(self) -> int:
+            return self.binding.n_obs
+
+        @property
+        def matched_instance_count(self) -> int:
+            return len(self.instance_ids)
+
+`binding` carries `table_name`, `labels_name`, and the validated selected-region
+identity without repeating those fields on the result. `instance_ids` contains
+the matching IDs in ascending order. The binding already guarantees that IDs
+are positive and unique, so the query selects and sorts them without a second
+uniqueness-normalization pass.
+
+The public core operations are:
+
+    def build_canonical_center_query_request(
+        sdata: SpatialData,
+        *,
+        shapes_name: str,
+        coordinate_system: str,
+        canonical_centers: CanonicalCentersResult,
+    ) -> CanonicalCenterQueryRequest:
+        ...
+
+    def evaluate_canonical_center_query(
+        request: CanonicalCenterQueryRequest,
+    ) -> CanonicalCenterQueryResult:
+        ...
+
+#### Snapshot and worker boundary
+
+`build_canonical_center_query_request()` fetches the selected Shapes element,
+applies the shared Shapes Annotation edit-validity validation, snapshots its
+polygons, and asks SpatialData for the element-to-element transformation:
+
+    shapes_to_labels = get_transformation_between_coordinate_systems(
+        sdata,
+        source_coordinate_system=shapes_element,
+        target_coordinate_system=labels_element,
+        intermediate_coordinate_systems=coordinate_system,
+    )
+
+It converts the returned `BaseTransformation` with
+`to_affine_matrix(input_axes=("x", "y"), output_axes=("x", "y"))` and snapshots
+the result as `shapes_to_labels_affine`. The affine is a finite 3 x 3
+homogeneous matrix using explicit x, y axes. SpatialData owns graph traversal,
+path selection, inversion, and composition. The request stores only the
+resulting matrix because the evaluator needs the exact coordinate relationship
+captured for this query.
+
+Shapely 2 geometries are immutable, so a tuple of validated Polygon objects is
+the geometry snapshot. Do not copy unrelated GeoDataFrame columns or index
+values into the request. Polygon union remains worker work because it can be
+substantially more expensive than capturing the geometry tuple.
+
+`evaluate_canonical_center_query()` receives only the request. It unions the
+polygons, transforms the union into labels-intrinsic coordinates, applies the
+bounding-box prefilter and vectorized predicate, and returns the matching
+instance IDs. It does not access SpatialData, Qt, napari layers, or mutable
+table state.
+
+The thread boundary is:
+
+    main thread
+        build_canonical_center_query_request()
+            -> validate and snapshot polygons
+            -> ask SpatialData for the Shapes-to-labels transformation
+            -> convert it to an explicit x/y affine
+            -> no mutation
+                    |
+                    v
+    worker
+        evaluate_canonical_center_query()
+            -> union and transform polygons
+            -> bounding-box prefilter
+            -> vectorized intersects_xy
+            -> return sorted matching instance IDs
+            -> no SpatialData access or mutation
+
+The request deliberately does not store `sdata`, duplicate `table_name` or
+`labels_name`, or carry cache state, cache action, or an operation ID. Table and
+labels names derive from `canonical_centers`; cache handling has already
+finished; and operation identity belongs to the controller.
+
+#### Query algorithm
+
+1. Receive a validated `CanonicalCentersResult` from the upstream cache or
+   calculation flow.
+2. On the main thread, call `build_canonical_center_query_request()`:
+   - validate and snapshot the selected Shapes polygons through the shared
+     Shapes Annotation edit-validity contract;
+   - ask `get_transformation_between_coordinate_systems()` for the
+     Shapes-intrinsic to labels-intrinsic transformation through the selected
+     coordinate system;
+   - convert and snapshot its affine using explicit x, y axes.
+3. In the worker, call `evaluate_canonical_center_query()`:
+   - union all polygons into one effective region;
+   - transform the union into labels-intrinsic x, y coordinates;
+   - prepare the Shapely geometry for repeated predicates;
+   - read y from canonical-center column 1 and x from column 2 for the selected
+     binding;
+   - use the annotation bounds as a cheap vectorized prefilter;
+   - evaluate Shapely only for candidate centers:
+
+        candidates = (
+            (x >= min_x) & (x <= max_x)
+            & (y >= min_y) & (y <= max_y)
+        )
+        inside = shapely.intersects_xy(
+            region_in_labels,
+            x[candidates],
+            y[candidates],
+        )
+
+4. Map true values back to the binding's instance IDs.
+5. Sort the matching IDs and return `CanonicalCenterQueryResult`.
+
+No labels raster data is read by this containment algorithm. With a valid
+cache, the entire Run path after validation is an eager vectorized point query
+over the in-memory table coordinates.
+
+Controller operation IDs remain orchestration state and do not belong in the
+domain request or result. Center calculation and geometry querying return
+immutable data; cache updates, row preparation, and annotation mutation remain
+distinct operations.
+
+#### Deliverables
 
 - shared Shapes validation/snapshot/union;
-- inverse(M_labels_to_cs) @ M_shapes_to_cs transformation;
+- `build_canonical_center_query_request()` as the main-thread snapshot and
+  transformation boundary;
+- `evaluate_canonical_center_query()` as the SpatialData-independent worker
+  operation;
+- SpatialData-owned Shapes-intrinsic to labels-intrinsic transformation through
+  the selected coordinate system;
 - bounding-box prefilter and vectorized Shapely intersects_xy predicate;
-- region filtering and sorted unique ID result;
-- valid-cache and fresh-build input paths using one query implementation;
+- selected-region filtering and a sorted ID result derived from the validated
+  unique binding;
+- one query implementation consuming `CanonicalCentersResult` after valid-cache
+  and fresh-calculation paths converge;
 - geometry/transform/predicate tests and zero-label-I/O instrumentation for
   cached queries.
 
-Exit criteria:
+#### Exit criteria
 
 - results match an independent point-in-polygon reference;
 - boundary, hole, transform, and x/y semantics are proven;
