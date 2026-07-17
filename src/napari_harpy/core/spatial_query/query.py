@@ -96,8 +96,8 @@ def evaluate_canonical_center_query(
         matching_ids = np.sort(request.canonical_centers.binding.instance_ids[candidate_positions[inside]])
 
     return CanonicalCenterQueryResult(
-        binding=request.canonical_centers.binding,
-        instance_ids=matching_ids,
+        canonical_centers=request.canonical_centers,
+        matched_instance_ids=matching_ids,
     )
 
 

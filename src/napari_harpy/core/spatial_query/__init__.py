@@ -1,5 +1,16 @@
 """Canonical spatial-query metadata and cache lifecycle."""
 
+from napari_harpy.core.spatial_query.annotation import (
+    SpatialAnnotationApplyResult,
+    SpatialAnnotationColumnChangedError,
+    SpatialAnnotationColumnMode,
+    SpatialAnnotationPreparation,
+    SpatialAnnotationQueryOutdatedError,
+    SpatialAnnotationSummary,
+    apply_spatial_annotation,
+    prepare_spatial_annotation,
+    summarize_spatial_annotation,
+)
 from napari_harpy.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
     CANONICAL_AXES,
@@ -67,7 +78,14 @@ __all__ = [
     "CanonicalRegionMetadata",
     "CanonicalSourceSignature",
     "SpatialDimension",
+    "SpatialAnnotationApplyResult",
+    "SpatialAnnotationColumnChangedError",
+    "SpatialAnnotationColumnMode",
+    "SpatialAnnotationPreparation",
+    "SpatialAnnotationQueryOutdatedError",
+    "SpatialAnnotationSummary",
     "apply_canonical_cache_update",
+    "apply_spatial_annotation",
     "build_canonical_cache_update_payload",
     "build_canonical_center_query_request",
     "build_canonical_metadata",
@@ -80,4 +98,6 @@ __all__ = [
     "ensure_canonical_centers",
     "evaluate_canonical_center_query",
     "parse_canonical_metadata",
+    "prepare_spatial_annotation",
+    "summarize_spatial_annotation",
 ]

@@ -2906,7 +2906,7 @@ snapshot used by the worker:
     @dataclass(frozen=True)
     class CanonicalCenterQueryResult:
         canonical_centers: CanonicalCentersResult
-        instance_ids: NDArray[np.integer]
+        matched_instance_ids: NDArray[np.integer]
 
         @property
         def binding(self) -> CanonicalRegionBinding:
@@ -2918,15 +2918,17 @@ snapshot used by the worker:
 
         @property
         def matched_instance_count(self) -> int:
-            return len(self.instance_ids)
+            return len(self.matched_instance_ids)
 
 `canonical_centers` is retained by reference rather than copied. It provides
 the source signature, selected-region binding, and exact center snapshot that
 produced the query membership. `binding`, `table_name`, and `labels_name` are
-derived properties rather than repeated fields. `instance_ids` contains the
-matching IDs in ascending order. The binding already guarantees that IDs are
-positive and unique, so the query selects and sorts them without a second
-uniqueness-normalization pass. This small result-contract refinement is part of
+derived properties rather than repeated fields. `matched_instance_ids`
+contains the matching IDs in ascending order, while `binding.instance_ids`
+contains every eligible instance evaluated by the query. The binding already
+guarantees that IDs are positive and unique, so the query selects and sorts
+them without a second uniqueness-normalization pass. This small result-contract
+refinement is part of
 Slice 5 because annotation apply-time validation is its first consumer.
 
 The public core operations are:

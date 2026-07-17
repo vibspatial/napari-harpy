@@ -69,18 +69,53 @@ class CanonicalCenterQueryRequest:
 
 @dataclass(frozen=True)
 class CanonicalCenterQueryResult:
-    """Sorted instance IDs whose canonical centers intersect the annotation."""
+    """Canonical-center provenance and sorted IDs intersecting the annotation.
 
-    binding: CanonicalRegionBinding
-    instance_ids: NDArray[np.integer] = field(repr=False, compare=False)
+    Parameters
+    ----------
+    canonical_centers
+        Complete immutable selected-region centers and provenance used by the
+        containment query.
+    matched_instance_ids
+        Unique, ascending instance IDs whose canonical centers intersect the
+        annotation polygons. This is a subset of
+        ``canonical_centers.binding.instance_ids``, which contains every
+        eligible instance evaluated by the query.
+
+    Notes
+    -----
+    ``canonical_centers`` intentionally retains the complete immutable center
+    result rather than only its binding. The matching instance IDs are a
+    geometric decision made from that exact source signature and center
+    snapshot. The ``apply_spatial_annotation()`` domain operation in
+    ``napari_harpy.core.spatial_query.annotation`` later passes this result to
+    ``_require_current_query_provenance()``, which compares both against the
+    current cache. This prevents an old query from annotating rows after centers
+    were rebuilt or otherwise changed while the result was awaiting review.
+    Keeping the existing result object avoids duplicating provenance fields or
+    copying its center array.
+    """
+
+    canonical_centers: CanonicalCentersResult
+    matched_instance_ids: NDArray[np.integer] = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.binding, CanonicalRegionBinding):
-            raise TypeError("Canonical-center query result requires a CanonicalRegionBinding.")
-        instance_ids = _readonly_integer_ids(self.instance_ids)
-        if len(instance_ids) > 1 and np.any(instance_ids[1:] <= instance_ids[:-1]):
+        if not isinstance(self.canonical_centers, CanonicalCentersResult):
+            raise TypeError("Canonical-center query result requires a CanonicalCentersResult.")
+        matched_instance_ids = _readonly_integer_ids(self.matched_instance_ids)
+        if len(matched_instance_ids) > 1 and np.any(matched_instance_ids[1:] <= matched_instance_ids[:-1]):
             raise ValueError("Canonical-center query result instance IDs must be unique and sorted.")
-        object.__setattr__(self, "instance_ids", instance_ids)
+        if (
+            len(matched_instance_ids)
+            and not np.isin(matched_instance_ids, self.binding.instance_ids, assume_unique=True).all()
+        ):
+            raise ValueError("Canonical-center query result instance IDs must be a subset of the selected region.")
+        object.__setattr__(self, "matched_instance_ids", matched_instance_ids)
+
+    @property
+    def binding(self) -> CanonicalRegionBinding:
+        """Return the selected-region binding used by the query."""
+        return self.canonical_centers.binding
 
     @property
     def eligible_instance_count(self) -> int:
@@ -90,4 +125,4 @@ class CanonicalCenterQueryResult:
     @property
     def matched_instance_count(self) -> int:
         """Return the number of matching instances."""
-        return len(self.instance_ids)
+        return len(self.matched_instance_ids)

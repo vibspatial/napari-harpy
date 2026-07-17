@@ -60,12 +60,13 @@ def test_query_includes_boundaries_excludes_holes_and_reads_no_labels_tasks(
     assert request.labels_name == "blobs_labels"
     assert request.polygons == (polygon_with_hole, disjoint_polygon)
     assert not request.polygons_to_labels_affine.flags.writeable
+    assert result.canonical_centers is canonical_centers
     assert result.binding is canonical_centers.binding
     assert result.eligible_instance_count == 7
     assert result.matched_instance_count == 4
     # Instance 4 has center (5, 5), strictly inside the polygon hole, and is therefore excluded.
-    assert result.instance_ids.tolist() == [2, 5, 6, 9]
-    assert not result.instance_ids.flags.writeable
+    assert result.matched_instance_ids.tolist() == [2, 5, 6, 9]
+    assert not result.matched_instance_ids.flags.writeable
     assert predicate_input_sizes == [6]
     assert executed_tasks == []
 
@@ -117,7 +118,7 @@ def test_request_uses_spatialdata_element_to_element_transformation(
     result = evaluate_canonical_center_query(request)
 
     np.testing.assert_allclose(request.polygons_to_labels_affine, expected_affine)
-    assert result.instance_ids.tolist() == [8]
+    assert result.matched_instance_ids.tolist() == [8]
 
 
 def test_request_uses_the_selected_region_coordinate_frame(
@@ -186,7 +187,7 @@ def test_query_applies_supported_xy_affines(
 
     result = evaluate_canonical_center_query(request)
 
-    assert result.instance_ids.tolist() == [3]
+    assert result.matched_instance_ids.tolist() == [3]
 
 
 def test_request_rejects_shapes_that_are_not_editable(
