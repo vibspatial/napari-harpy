@@ -23,6 +23,7 @@ import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
     ShapesElementWrittenEvent,
+    TableChangeKind,
     TableStateChangedEvent,
 )
 from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
@@ -47,13 +48,14 @@ def _table_event(
     *paths: TableComponentPath,
     table_name: str = "table",
     source: str = "test",
+    change_kind: TableChangeKind = "updated",
 ) -> TableStateChangedEvent:
     return TableStateChangedEvent(
         sdata=sdata,
         table_name=table_name,
         paths=frozenset(paths),
         regions=(),
-        change_kind="updated",
+        change_kind=change_kind,
         source=source,
     )
 
@@ -1066,7 +1068,7 @@ def test_viewer_widget_preserves_labels_card_color_source_selection_after_event(
     assert card.action_hint_label.text() == 'Action: add/update colored overlay for obs["cell_type"]'
 
 
-def test_viewer_widget_refreshes_table_color_sources_from_classification_table_event(qtbot, monkeypatch) -> None:
+def test_viewer_widget_refreshes_table_color_sources_when_user_class_is_created(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
@@ -1107,27 +1109,56 @@ def test_viewer_widget_refreshes_table_color_sources_from_classification_table_e
             value_key="user_class",
             value_kind="categorical",
         ),
-        TableColorSourceSpec(
-            table_name="table",
-            source_kind="obs_column",
-            value_key="pred_class",
-            value_kind="categorical",
-        ),
     ]
 
     widget.app_state.record_table_mutation(
         _table_event(
             fake_sdata,
             TableComponentPath("obs", ("user_class",)),
-            TableComponentPath("obs", ("pred_class",)),
-            source="object_classification",
+            TableComponentPath("uns", ("user_class_colors",)),
+            source="object_classification_annotation",
+            change_kind="created",
         )
     )
 
-    assert card._color_source_completer_model.stringList() == ["cell_type", "user_class", "pred_class"]
+    assert card._color_source_completer_model.stringList() == ["cell_type", "user_class"]
     assert card.selected_table_name == "table"
     assert card.selected_source_kind == "obs_column"
     assert len(viewer.layers) == 0
+
+
+def test_viewer_widget_skips_linked_table_refresh_for_updated_user_class_annotation(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    fake_sdata = object()
+    refresh_calls: list[str] = []
+    emitted_events: list[object] = []
+
+    qtbot.addWidget(widget)
+    widget.app_state.sdata = fake_sdata
+    monkeypatch.setattr(
+        widget,
+        "_refresh_labels_card_linked_tables",
+        lambda: refresh_calls.append("labels"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_shapes_card_linked_tables",
+        lambda: refresh_calls.append("shapes"),
+    )
+    widget.app_state.table_state_changed.connect(emitted_events.append)
+
+    event = _table_event(
+        fake_sdata,
+        TableComponentPath("obs", ("user_class",)),
+        TableComponentPath("uns", ("user_class_colors",)),
+        source="object_classification_annotation",
+    )
+    widget.app_state.record_table_mutation(event)
+
+    assert emitted_events == [event]
+    assert widget.app_state.is_table_dirty(fake_sdata, "table")
+    assert refresh_calls == []
 
 
 def test_viewer_widget_ignores_classification_table_events_for_other_sdata(qtbot, monkeypatch) -> None:

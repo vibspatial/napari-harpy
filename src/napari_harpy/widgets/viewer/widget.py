@@ -332,6 +332,15 @@ class ViewerWidget(QWidget):
             return
         if event.sdata is not self._app_state.sdata:
             return
+        # Existing `user_class` edits change row values and palette entries,
+        # but they do not change which table color sources the Viewer can
+        # discover. The object-classification widget refreshes the active
+        # labels layer directly, so rebuilding every linked-table control here
+        # only delays that row-scoped visual update. Keep refreshing for the
+        # initial `created` event, when `user_class` first becomes available as
+        # a Viewer color source.
+        if event.source == "object_classification_annotation" and event.change_kind == "updated":
+            return
 
         self._refresh_labels_card_linked_tables()
         self._refresh_shapes_card_linked_tables()
