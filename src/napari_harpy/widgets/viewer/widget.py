@@ -314,10 +314,19 @@ class ViewerWidget(QWidget):
     def _on_coordinate_system_changed(self, index: int) -> None:
         """Publish explicit user coordinate-system changes to shared app state."""
         coordinate_system = self.coordinate_system_combo.itemData(index)
-        self._app_state.set_coordinate_system(
+        changed = self._app_state.set_coordinate_system(
             coordinate_system if isinstance(coordinate_system, str) else None,
             source="viewer_widget",
         )
+        # changed is True
+        #     → app state emits coordinate_system_changed
+        #     → the shared event handler synchronizes all widgets
+        #
+        # changed is False
+        #     → no event is emitted
+        #     → this initiating widget must restore its own combo
+        if not changed:
+            self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
 
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         """Refresh the combo and cards when the shared coordinate system changes."""

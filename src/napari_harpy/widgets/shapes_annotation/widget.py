@@ -33,6 +33,7 @@ from qtpy.QtWidgets import (
 
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
+    CoordinateSystemChangeRequest,
     HarpyAppState,
     ShapesElementWrittenEvent,
     get_or_create_app_state,
@@ -129,6 +130,7 @@ _CREATE_HOLES_TOOLTIP = (
 )
 _SAVE_SHAPES_TOOLTIP = "Save the current annotation layer back to the selected SpatialData shapes element."
 _ShapesAnnotationTargetMode = Literal["create_new", "edit_existing"]
+_ShapesAnnotationContextChangeReason = Literal["coordinate_system", "shapes_target"]
 _ShapesAnnotationLayerOrigin = Literal[
     "created_by_annotation",
     "loaded_by_annotation",
@@ -397,6 +399,14 @@ class ShapesAnnotation(QWidget):
             active_layer_connect(self._on_active_layer_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
+        self._coordinate_system_change_guard = self._guard_coordinate_system_change
+        self._app_state.set_coordinate_system_change_guard(self._coordinate_system_change_guard)
+        app_state = self._app_state
+        guard = self._coordinate_system_change_guard
+        self.destroyed.connect(
+            lambda *_args, app_state=app_state, guard=guard: app_state.clear_coordinate_system_change_guard(guard)
+        )
+
     @property
     def app_state(self) -> HarpyAppState:
         """Return the shared per-viewer Harpy app state."""
@@ -468,41 +478,51 @@ class ShapesAnnotation(QWidget):
     def _on_coordinate_system_changed(self, index: int) -> None:
         coordinate_system = self.coordinate_system_combo.itemData(index)
         next_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
-        if self._annotation_layer is not None:
-            if next_coordinate_system == self._app_state.coordinate_system:
-                return
-            if self._annotation_layer_has_unsaved_changes():
-                # `False` means the user cancelled the discard warning, so
-                # restore the previous coordinate-system selection and keep the
-                # layer.
-                if not self._confirm_discard_annotation_layer(context="coordinate_system"):
-                    self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-                    self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
-                    self._refresh_create_layer_state()
-                    return
-                self._discard_annotation_layer()
-            else:
-                self._close_clean_annotation_session()
-            self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
+        if next_coordinate_system == self._app_state.coordinate_system:
             return
 
-        # Publish the UI choice to shared app state. `_on_app_state_coordinate_system_changed(...)`
-        # owns local selection and create-layer refresh so all sources follow one path.
-        self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE)
+        # Result of the set_coordinate_system() call immediately below:
+        #
+        # returns True: request accepted
+        #     → pre-change guard accepted the request
+        #     → app state changed its coordinate system
+        #     → coordinate_system_changed was emitted
+        #     → shared event handler refreshed the widget
+        #
+        # returns False: request rejected because
+        #     → a dirty Shapes Annotation session exists
+        #     → the coordinate-system change triggers discard confirmation
+        #     → the user cancels that confirmation
+        #     → try_close_edit_session() returns False
+        #     → set_coordinate_system() returns False
+        # rejected-request handling
+        #     → no event exists
+        #     → restore the combo and local derived state here
+        if not self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE):
+            self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+            self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
+            self._refresh_create_layer_state()
+
+    def _guard_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
+        """Protect unsaved Shapes edits from coordinate changes from any widget.
+
+        Viewer, Object Classification, and other widgets share this app state.
+        Unsaved polygon edits still exist only in this widget's editable napari
+        layer, so the change must be rejected before Harpy removes layers from
+        the previous coordinate system when the user cancels discard.
+        """
+        del request
+        return self.try_close_edit_session(reason="coordinate_system")
 
     def _on_shapes_target_changed(self, index: int) -> None:
         next_target = self._shapes_target_from_combo_index(index)
         if self._annotation_layer is not None:
             if next_target == self._selected_shapes_target:
                 return
-            if self._annotation_layer_has_unsaved_changes():
-                if not self._confirm_discard_annotation_layer(context="target"):
-                    self._sync_shapes_target_combo_selection(self._selected_shapes_target)
-                    self._refresh_create_layer_state()
-                    return
-                self._discard_annotation_layer()
-            else:
-                self._close_clean_annotation_session()
+            if not self.try_close_edit_session(reason="shapes_target"):
+                self._sync_shapes_target_combo_selection(self._selected_shapes_target)
+                self._refresh_create_layer_state()
+                return
 
         self._set_selected_shapes_target_from_combo(index)
         self._refresh_create_layer_state()
@@ -540,22 +560,18 @@ class ShapesAnnotation(QWidget):
             return
         if self._annotation_layer is not None:
             current_layer = self._annotation_layer
-            if self._annotation_layer_has_unsaved_changes():
-                if not self._confirm_discard_annotation_layer(context="target"):
-                    # The user cancelled the dirty-session switch while we are
-                    # inside napari's active-layer-change handling for the
-                    # layer the user just clicked. If we reactivate the old
-                    # annotation layer immediately, Qt may still finish the
-                    # original click afterward and leave the new layer selected
-                    # visually. Defer reactivation of the old layer to the
-                    # next event-loop turn so cancel keeps napari and the
-                    # widget on the old layer.
-                    QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
-                    self._refresh_create_layer_state()
-                    return
-                self._discard_annotation_layer()
-            else:
-                self._close_clean_annotation_session()
+            if not self.try_close_edit_session(reason="shapes_target"):
+                # The user cancelled the dirty-session switch while we are
+                # inside napari's active-layer-change handling for the
+                # layer the user just clicked. If we reactivate the old
+                # annotation layer immediately, Qt may still finish the
+                # original click afterward and leave the new layer selected
+                # visually. Defer reactivation of the old layer to the
+                # next event-loop turn so cancel keeps napari and the
+                # widget on the old layer.
+                QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
+                self._refresh_create_layer_state()
+                return
 
         target = _ShapesAnnotationTarget.edit_existing(candidate.shapes_name)
         self._sync_shapes_target_combo_selection(target)
@@ -693,21 +709,17 @@ class ShapesAnnotation(QWidget):
 
         if self._annotation_layer is not None:
             current_layer = self._annotation_layer
-            if self._annotation_layer_has_unsaved_changes():
-                if not self._confirm_discard_annotation_layer(context="target"):
-                    self._remove_pending_native_shapes_layer(layer)
-                    if self._viewer_contains_layer(current_layer):
-                        # Native file imports are inserted before Annotation can
-                        # ask whether to discard. If the user cancels, remove
-                        # that pending import and defer reactivation of the
-                        # kept dirty annotation layer until napari finishes the
-                        # insertion/removal event handling.
-                        QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
-                    self._refresh_create_layer_state()
-                    return
-                self._discard_annotation_layer()
-            else:
-                self._close_clean_annotation_session()
+            if not self.try_close_edit_session(reason="shapes_target"):
+                self._remove_pending_native_shapes_layer(layer)
+                if self._viewer_contains_layer(current_layer):
+                    # Native file imports are inserted before Annotation can
+                    # ask whether to discard. If the user cancels, remove that
+                    # pending import and defer reactivation of the
+                    # kept dirty annotation layer until napari finishes the
+                    # insertion/removal event handling.
+                    QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
+                self._refresh_create_layer_state()
+                return
 
         if not self._viewer_contains_layer(layer):
             return
@@ -1469,13 +1481,13 @@ class ShapesAnnotation(QWidget):
         readiness = self._refresh_save_shapes_state()
         self._apply_status_card_spec(readiness.status)
 
-    def _confirm_discard_annotation_layer(self, *, context: Literal["coordinate_system", "target"]) -> bool:
-        if context == "coordinate_system":
+    def _confirm_discard_annotation_layer(self, *, reason: _ShapesAnnotationContextChangeReason) -> bool:
+        if reason == "coordinate_system":
             message = "Changing coordinate system will discard the current unsaved shape annotations."
-        elif context == "target":
+        elif reason == "shapes_target":
             message = "Switching shapes target will discard the current unsaved shape annotations."
         else:
-            raise ValueError(f"Unknown discard context: {context!r}.")
+            raise ValueError(f"Unknown annotation context-change reason: {reason!r}.")
 
         dialog = QDialog(self)
         dialog.setWindowTitle("Discard Unsaved Shape Annotations")
@@ -1525,6 +1537,37 @@ class ShapesAnnotation(QWidget):
             self._annotation_shapes_name,
             self._annotation_coordinate_system,
         )
+
+    def try_close_edit_session(self, *, reason: _ShapesAnnotationContextChangeReason) -> bool:
+        """Close the current edit session when its discard is accepted.
+
+        Parameters
+        ----------
+        reason
+            Selection change that requires releasing the session. It chooses
+            the existing coordinate-system or Shapes-target warning text.
+
+        Returns
+        -------
+        bool
+            ``False`` only when a dirty session exists and the user cancels.
+            In that case the layer and session remain untouched. ``True``
+            means there was no session, a clean session was released, or the
+            user accepted discard and cleanup completed.
+        """
+        if reason not in ("coordinate_system", "shapes_target"):
+            raise ValueError(f"Unknown annotation context-change reason: {reason!r}.")
+        if self._annotation_layer is None:
+            return True
+
+        if self._annotation_layer_has_unsaved_changes():
+            if not self._confirm_discard_annotation_layer(reason=reason):
+                return False
+            self._discard_annotation_layer()
+            return True
+
+        self._close_clean_annotation_session()
+        return True
 
     def _discard_annotation_layer(self) -> None:
         """Discard the active annotation session, reloading saved layers when needed."""

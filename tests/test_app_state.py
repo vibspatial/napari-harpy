@@ -11,6 +11,7 @@ import napari_harpy.widgets.object_classification.widget as object_widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
+    CoordinateSystemChangeRequest,
     HarpyAppState,
     ShapesElementWrittenEvent,
     TableStateChangedEvent,
@@ -275,6 +276,80 @@ def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtb
     assert removed_calls == [{"sdata": sdata_blobs, "coordinate_system": "global"}]
 
 
+def test_harpy_app_state_coordinate_guard_rejects_before_event_or_layer_removal(
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    state = HarpyAppState()
+    state.sdata = sdata_blobs
+    state.coordinate_system = "global"
+    requests: list[CoordinateSystemChangeRequest] = []
+    coordinate_events: list[CoordinateSystemChangedEvent] = []
+    removed_calls: list[object] = []
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: ["global", "local"])
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_outside_coordinate_system",
+        lambda **_kwargs: removed_calls.append(object()),
+    )
+    state.coordinate_system_changed.connect(coordinate_events.append)
+    state.set_coordinate_system_change_guard(lambda request: requests.append(request) or False)
+
+    changed = state.set_coordinate_system("local", source="object_classification_widget")
+
+    assert changed is False
+    assert requests == [
+        CoordinateSystemChangeRequest(
+            sdata=sdata_blobs,
+            previous_coordinate_system="global",
+            coordinate_system="local",
+            source="object_classification_widget",
+        )
+    ]
+    assert state.coordinate_system == "global"
+    assert coordinate_events == []
+    assert removed_calls == []
+
+
+def test_harpy_app_state_coordinate_guard_runs_once_before_commit_and_supports_identity_safe_teardown(
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    state = HarpyAppState()
+    state.sdata = sdata_blobs
+    state.coordinate_system = "global"
+    timeline: list[str] = []
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: ["global", "local"])
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_outside_coordinate_system",
+        lambda **_kwargs: timeline.append("layers_removed"),
+    )
+    state.coordinate_system_changed.connect(lambda _event: timeline.append("event_emitted"))
+
+    def guard(_request: CoordinateSystemChangeRequest) -> bool:
+        assert state.coordinate_system == "global"
+        assert timeline == []
+        timeline.append("guard")
+        return True
+
+    state.set_coordinate_system_change_guard(guard)
+
+    assert state.set_coordinate_system("local", source="viewer_widget") is True
+    assert timeline == ["guard", "event_emitted", "layers_removed"]
+
+    # A no-op does not ask the guard again.
+    assert state.set_coordinate_system("local", source="viewer_widget") is False
+    assert timeline == ["guard", "event_emitted", "layers_removed"]
+
+    other_guard = lambda _request: True
+    assert state.clear_coordinate_system_change_guard(other_guard) is False
+    with pytest.raises(RuntimeError, match="already installed"):
+        state.set_coordinate_system_change_guard(other_guard)
+    assert state.clear_coordinate_system_change_guard(guard) is True
+    state.set_coordinate_system_change_guard(other_guard)
+
+
 def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_valid(monkeypatch) -> None:
     first_sdata = object()
     second_sdata = object()
@@ -429,6 +504,35 @@ def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_r
     assert app_state.coordinate_system == "local"
     assert viewer_widget.coordinate_system_combo.currentText() == "local"
     assert object_widget.coordinate_system_combo.currentText() == "local"
+
+
+def test_shared_coordinate_guard_rejection_restores_initiating_widget_selectors(qtbot, monkeypatch) -> None:
+    sdata = object()
+    _patch_shared_coordinate_system_names(monkeypatch, {id(sdata): ["global", "local"]})
+    _patch_empty_shared_widget_content(monkeypatch)
+
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    viewer_widget = ViewerWidget(viewer)
+    object_widget = ObjectClassificationWidget(viewer)
+    qtbot.addWidget(viewer_widget)
+    qtbot.addWidget(object_widget)
+    app_state.set_sdata(sdata)
+    requests: list[CoordinateSystemChangeRequest] = []
+    app_state.set_coordinate_system_change_guard(lambda request: requests.append(request) or False)
+
+    viewer_widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert app_state.coordinate_system == "global"
+    assert viewer_widget.coordinate_system_combo.currentText() == "global"
+    assert object_widget.coordinate_system_combo.currentText() == "global"
+
+    object_widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert app_state.coordinate_system == "global"
+    assert viewer_widget.coordinate_system_combo.currentText() == "global"
+    assert object_widget.coordinate_system_combo.currentText() == "global"
+    assert [request.source for request in requests] == ["viewer_widget", "object_classification_widget"]
 
 
 def test_shared_viewer_and_object_widgets_select_first_coordinate_system_when_previous_is_invalid_and_clear_on_sdata_clear(
