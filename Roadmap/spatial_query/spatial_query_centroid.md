@@ -3827,6 +3827,8 @@ exposes:
 ```python
 class ShapesAnnotation(QWidget):
     edit_session_dirty_changed = Signal(bool)
+    shapes_target_change_requested = Signal(object)
+    edit_session_saved = Signal(object)
 
     @property
     def has_unsaved_changes(self) -> bool: ...
@@ -3838,6 +3840,38 @@ class ShapesAnnotation(QWidget):
 `apply_annotation_context()` prepares or opens the edit workflow for a context
 already committed by the parent. It must not prompt, alter parent selectors, or
 change HarpyAppState.
+
+The child has one context-driven construction mode. It owns the Shapes edit
+controls, edit session, editable layer, and status feedback, but never creates
+its own coordinate-system or Shapes-target selectors. Direct
+`ShapesAnnotation(...)` construction remains supported for tests and
+programmatic embedding; the child is inactive until
+`apply_annotation_context()` supplies a usable context. Do not introduce an
+`embedded=True` option, a compatibility mode that reconstructs the old outer
+dock, or two parallel selector-ownership paths. The registered napari command
+constructs `AnnotationWidget`, which supplies the complete user-facing
+workflow.
+
+The three child signals have distinct responsibilities:
+
+- `edit_session_dirty_changed` emits whenever the child's snapshot-derived
+  boolean dirty state changes; the parent republishes one corresponding
+  `AnnotationContext`;
+- `shapes_target_change_requested` carries a `ShapesAnnotationTarget` when a
+  compatible active primary Shapes layer asks to become the selected target;
+  the parent runs the ordinary guarded Shapes-target transition before
+  committing it;
+- `edit_session_saved` carries the resulting
+  `ShapesAnnotationTarget.edit_existing(...)` after a successful save. When
+  the parent context still contains `create_new`, this promotes the target
+  without closing or reopening the now-clean edit session. For an already
+  selected existing target, it refreshes context without creating a target
+  transition.
+
+`edit_session_saved` is a local parent-child UI notification. The existing
+`ShapesElementWrittenEvent` remains the shared cross-widget notification that
+an in-memory Shapes element was written; neither signal replaces or duplicates
+the other's responsibility.
 
 For coordinate-system changes from any widget, the parent-owned Slice 6a guard
 delegates once to
@@ -3854,10 +3888,11 @@ new context after acceptance, never a transient clean version of the old
 target created during cleanup.
 
 A successful first save is not a request to leave the edit session. The child
-reports the result, and the parent promotes `create_new` to `edit_existing`,
-updates context, and publishes without releasing or reopening the clean
-session. Compatible active-primary-Shapes adoption instead requests the normal
-guarded parent Shapes-target transition.
+emits `edit_session_saved`, and the parent promotes `create_new` to
+`edit_existing`, updates context, and publishes without releasing or reopening
+the clean session. Compatible active-primary-Shapes adoption instead emits
+`shapes_target_change_requested` and requests the normal guarded parent
+Shapes-target transition.
 
 Deliverables:
 
@@ -3871,14 +3906,16 @@ Deliverables:
   dock surface, logo, scroll area, selector form, and committed selection state
   into the parent;
 - embed the remaining Shapes edit workflow without duplicate shared controls
-  or dock chrome, while keeping `ShapesAnnotation` independently constructible
-  and publicly importable as a context-driven child;
+  or dock chrome; keep `ShapesAnnotation` independently constructible and
+  publicly importable as one context-driven child that remains inactive until
+  supplied a usable `AnnotationContext`, with no dual standalone mode;
 - transfer Slice 6a guard installation and teardown ownership to the parent
   without changing the guard's app-state semantics or safety documentation;
 - implement parent commit, child context adoption, final-only context
   publication, and dirty-state reporting;
-- route first save and active-primary-Shapes adoption through their distinct
-  parent paths described above;
+- route dirty-state publication, first save, and active-primary-Shapes adoption
+  through their explicit child signals and distinct parent paths described
+  above;
 - preserve all polygon create/edit/hole/validate/save/discard behavior, status
   feedback, table events, and persistence behavior;
 - update lazy exports and add focused parent, manifest, compatibility,
@@ -3898,6 +3935,11 @@ Exit criteria:
 - first save promotes the saved target without releasing or reopening the
   current session, while active-primary-Shapes adoption cannot replace a dirty
   session without accepted preflight;
+- direct child construction creates no duplicate shared selector or outer dock
+  mode and becomes operational only after receiving a usable context;
+- the three child signals retain their distinct dirty-state, adoption-request,
+  and successful-save responsibilities, while `ShapesElementWrittenEvent`
+  remains the shared Shapes-write notification;
 - the parent owns the guard lifecycle, and closing it removes the guard;
 - existing direct `ShapesAnnotation` construction, the historical command ID,
   and the historical `Interactive` selector remain valid;
