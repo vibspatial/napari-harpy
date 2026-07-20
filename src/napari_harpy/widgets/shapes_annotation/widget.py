@@ -114,11 +114,6 @@ _CREATE_HOLES_TOOLTIP = (
 )
 _SAVE_SHAPES_TOOLTIP = "Save the current annotation layer back to the selected SpatialData shapes element."
 _ShapesAnnotationContextChangeReason = Literal["coordinate_system", "shapes_target"]
-_ShapesAnnotationLayerOrigin = Literal[
-    "created_by_annotation",
-    "loaded_by_annotation",
-    "adopted_primary",
-]
 
 
 # Temporary private alias for source compatibility while the public model moves
@@ -144,10 +139,6 @@ class _ShapesAnnotationSession:
     mode
         Whether the active layer belongs to create-new or edit-existing
         annotation workflow.
-    layer_origin
-        How the active napari layer entered the session. This determines
-        discard behavior: create-new layers can be removed, while existing
-        layers should be reloaded from saved SpatialData after discard.
     shapes_name
         The locked `sdata.shapes[...]` element name this session saves to.
     coordinate_system
@@ -178,16 +169,11 @@ class _ShapesAnnotationSession:
     """
 
     mode: ShapesAnnotationTargetMode
-    layer_origin: _ShapesAnnotationLayerOrigin
     shapes_name: str
     coordinate_system: str
     source_shapes_index_feature_name: str
     source_geodataframe: gpd.GeoDataFrame | None = None
     table_linked: bool = False
-
-    @property
-    def reload_on_discard(self) -> bool:
-        return self.layer_origin in {"loaded_by_annotation", "adopted_primary"}
 
     @property
     def target(self) -> ShapesAnnotationTarget:
@@ -768,7 +754,6 @@ class ShapesAnnotation(QWidget):
         )
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
-            layer_origin="created_by_annotation",
             shapes_name=shapes_name,
             coordinate_system=coordinate_system,
             source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
@@ -827,7 +812,6 @@ class ShapesAnnotation(QWidget):
         )
         self._annotation_session = _ShapesAnnotationSession(
             mode="create_new",
-            layer_origin="created_by_annotation",
             shapes_name=shapes_name,
             coordinate_system=coordinate_system,
             source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
@@ -890,7 +874,6 @@ class ShapesAnnotation(QWidget):
         )
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
-            layer_origin="loaded_by_annotation" if load_result.created else "adopted_primary",
             shapes_name=shapes_name,
             coordinate_system=coordinate_system,
             source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
@@ -1057,10 +1040,8 @@ class ShapesAnnotation(QWidget):
         previous_session: _ShapesAnnotationSession,
     ) -> None:
         saved_geodataframe = validate_existing_shapes_source_geodataframe(sdata.shapes[result.shapes_name])
-        layer_origin: _ShapesAnnotationLayerOrigin = previous_session.layer_origin
         source_shapes_index_feature_name = previous_session.source_shapes_index_feature_name
         if previous_session.mode == "create_new":
-            layer_origin = "loaded_by_annotation"
             source_shapes_index_feature_name = DEFAULT_SHAPES_INDEX_NAME
             # The typed create-new name has now been consumed by the saved
             # element, so reset the hidden field before it is shown again.
@@ -1081,7 +1062,6 @@ class ShapesAnnotation(QWidget):
 
         self._annotation_session = _ShapesAnnotationSession(
             mode="edit_existing",
-            layer_origin=layer_origin,
             shapes_name=result.shapes_name,
             coordinate_system=result.coordinate_system,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
@@ -1454,9 +1434,11 @@ class ShapesAnnotation(QWidget):
         sdata = self._app_state.sdata
         shapes_name = self._annotation_shapes_name
         coordinate_system = self._annotation_coordinate_system
-        reload_on_discard = (
-            self._annotation_session.reload_on_discard if self._annotation_session is not None else False
-        )
+        session = self._annotation_session
+        # Discarding edit-existing removes the dirty napari layer and reloads
+        # its persisted Shapes geometry. Create-new has no persisted element
+        # to restore, so its temporary layer is only removed.
+        reload_on_discard = session is not None and session.mode == "edit_existing"
 
         with self._suppress_widget_owned_layer_transition_callbacks():
             self._remove_annotation_layer()
