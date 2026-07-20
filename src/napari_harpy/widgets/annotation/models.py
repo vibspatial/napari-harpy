@@ -50,7 +50,36 @@ class ShapesAnnotationTarget:
 
 @dataclass(frozen=True)
 class AnnotationContext:
-    """Committed parent selection and Shapes edit state supplied to children."""
+    """Describe the parent-committed selection and current Shapes edit state.
+
+    Parameters
+    ----------
+    sdata
+        SpatialData object to which the annotation context belongs, or ``None``
+        when no object is loaded.
+    coordinate_system
+        Coordinate system committed in the shared app state, or ``None`` when
+        none is available.
+    shapes_target
+        Parent-selected create-new or edit-existing Shapes target, or ``None``
+        when no target is available.
+    has_unsaved_shapes_changes
+        Whether the Shapes child's editable napari layer differs from its clean
+        snapshot. Sibling consumers use this value to avoid querying outdated
+        saved Shapes geometry.
+
+    Dirty-state publication
+    -----------------------
+    ShapesAnnotation
+        → compares the editable layer with its clean snapshot
+        → emits edit_session_dirty_changed(dirty)
+
+    AnnotationWidget
+        → receives dirty in _on_child_dirty_state_changed()
+        → creates a new AnnotationContext
+        → sets has_unsaved_shapes_changes=dirty
+        → emits annotation_context_changed
+    """
 
     sdata: SpatialData | None
     coordinate_system: str | None

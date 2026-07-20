@@ -1,12 +1,4 @@
-"""Annotation widget for creating or editing SpatialData shapes elements.
-
-The widget keeps target selection separate from active edit sessions:
-`_ShapesAnnotationTarget` represents the current UI dropdown choice before a
-layer is opened, while `_ShapesAnnotationSession` represents the locked save
-target and source metadata after a layer has been created, loaded, or adopted.
-This prevents changing the dropdown from silently changing the active layer's
-save target.
-"""
+"""Child widget for creating or editing SpatialData Shapes elements."""
 
 from __future__ import annotations
 
@@ -238,10 +230,15 @@ class ShapesAnnotation(QWidget):
     | ``_annotation_layer``                    | ``ShapesAnnotation`` | Live editable napari Shapes layer                         |
     | ``_annotation_clean_snapshot``           | ``ShapesAnnotation`` | Baseline used to derive whether the live layer is dirty   |
 
-    The child's ``_selected_coordinate_system`` and
-    ``_selected_shapes_target`` are applied mirrors of the parent context, not
-    independent selections. ``_last_reported_dirty_state`` only deduplicates
-    child-to-parent notifications.
+    ``_last_reported_dirty_state`` only deduplicates child-to-parent
+    notifications.
+
+    Shapes-name validation remains child-owned. For create-new, the proposed
+    name belongs to this widget's input and is not part of the parent-owned
+    ``ShapesAnnotationTarget``. For edit-existing, the parent filters the
+    selectable elements, while this child verifies that the selected element
+    is still usable when opening it. Core Shapes conversion then validates the
+    GeoDataFrame and geometry contract.
 
     The parent applies its committed selection through
     ``apply_annotation_context()``. While a layer is active, the incoming
@@ -268,8 +265,6 @@ class ShapesAnnotation(QWidget):
             has_unsaved_shapes_changes=False,
         )
         self._coordinate_systems: list[str] = []
-        self._selected_coordinate_system: str | None = None
-        self._selected_shapes_target: _ShapesAnnotationTarget | None = None
         self._eligible_existing_shapes_names: list[str] = []
         self._validated_shapes_name: str | None = None
         self._annotation_session: _ShapesAnnotationSession | None = None
@@ -280,7 +275,6 @@ class ShapesAnnotation(QWidget):
             can_space_pan_draw=self._can_annotation_layer_space_pan_draw,
         )
         self._annotation_identity_feature_default_guard = _AnnotationIdentityFeatureDefaultGuard()
-        self._annotation_has_been_saved = False
         self._annotation_clean_snapshot: _ShapesAnnotationLayerSnapshot | None = None
         self._last_reported_dirty_state = False
         # Suppress layer-removal and active-layer callbacks during layer
@@ -394,10 +388,10 @@ class ShapesAnnotation(QWidget):
     @property
     def selected_coordinate_system(self) -> str | None:
         """Return the selected coordinate system."""
-        return self._selected_coordinate_system
+        return self._annotation_context.coordinate_system
 
     @property
-    def selected_shapes_name(self) -> str | None:
+    def validated_shapes_name(self) -> str | None:
         """Return the currently validated shapes element name."""
         return self._validated_shapes_name
 
@@ -415,6 +409,12 @@ class ShapesAnnotation(QWidget):
         """
         if context.sdata is not None and context.sdata is not self._app_state.sdata:
             raise ValueError("Annotation context SpatialData must match the shared app state.")
+        # Coordinate-system availability is validated centrally by
+        # HarpyAppState. This defensive boundary check does not repeat that
+        # validation; it ensures the child received the same parent-committed
+        # shared value.
+        if context.coordinate_system != self._app_state.coordinate_system:
+            raise ValueError("Annotation context coordinate system must match the shared app state.")
 
         # App-state sdata replacement removes registered layers before this
         # child receives its new context, so clear stale annotation UI state when our tracked
@@ -439,11 +439,9 @@ class ShapesAnnotation(QWidget):
                 "Close the active edit session before applying another context."
             )
 
-        previous_coordinate_system = self._selected_coordinate_system
-        previous_target = self._selected_shapes_target
+        previous_coordinate_system = self._annotation_context.coordinate_system
+        previous_target = self._annotation_context.shapes_target
         self._annotation_context = context
-        self._selected_coordinate_system = next_coordinate_system
-        self._selected_shapes_target = next_target
         sdata = context.sdata
         self._coordinate_systems = [] if sdata is None else get_coordinate_system_names_from_sdata(sdata)
         if sdata is None or next_coordinate_system is None:
@@ -500,7 +498,7 @@ class ShapesAnnotation(QWidget):
         current_layer = self._annotation_layer
         target = _ShapesAnnotationTarget.edit_existing(candidate.shapes_name)
         self.shapes_target_change_requested.emit(target)
-        if self._selected_shapes_target != target or self._annotation_layer is current_layer:
+        if self._annotation_context.shapes_target != target or self._annotation_layer is current_layer:
             if current_layer is not None:
                 # The user cancelled the dirty-session switch while we are
                 # inside napari's active-layer-change handling for the
@@ -525,7 +523,7 @@ class ShapesAnnotation(QWidget):
             return None
 
         sdata = self._app_state.sdata
-        coordinate_system = self._selected_coordinate_system
+        coordinate_system = self._annotation_context.coordinate_system
         if sdata is None or coordinate_system is None:
             return None
 
@@ -587,8 +585,8 @@ class ShapesAnnotation(QWidget):
             return
 
         sdata = self._app_state.sdata
-        target = self._selected_shapes_target
-        coordinate_system = self._selected_coordinate_system
+        target = self._annotation_context.shapes_target
+        coordinate_system = self._annotation_context.coordinate_system
         if (
             sdata is None
             or target is None
@@ -641,7 +639,7 @@ class ShapesAnnotation(QWidget):
             return
 
         sdata = self._app_state.sdata
-        coordinate_system = self._selected_coordinate_system
+        coordinate_system = self._annotation_context.coordinate_system
         if sdata is None or coordinate_system is None:
             return
 
@@ -659,7 +657,7 @@ class ShapesAnnotation(QWidget):
                 QTimer.singleShot(0, lambda: self._app_state.viewer_adapter.activate_layer(current_layer))
             self._refresh_create_layer_state()
             return
-        if self._selected_shapes_target != create_target:
+        if self._annotation_context.shapes_target != create_target:
             # A directly constructed context-driven child has no parent to
             # accept target changes; leave the native napari layer untouched.
             return
@@ -775,7 +773,6 @@ class ShapesAnnotation(QWidget):
             coordinate_system=coordinate_system,
             source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
         )
-        self._annotation_has_been_saved = False
         self._annotation_clean_snapshot = self._initial_native_layer_clean_snapshot(layer)
         self._connect_annotation_dirty_events(layer)
         self._set_create_name_controls_visible(True)
@@ -796,7 +793,7 @@ class ShapesAnnotation(QWidget):
             return
 
         self._refresh_create_layer_state()
-        target = self._selected_shapes_target
+        target = self._annotation_context.shapes_target
         if target is None or target.mode != "create_new":
             return
 
@@ -805,7 +802,7 @@ class ShapesAnnotation(QWidget):
     def _open_create_new_annotation_layer(self) -> None:
         sdata = self._app_state.sdata
         shapes_name = self._validated_shapes_name
-        coordinate_system = self._selected_coordinate_system
+        coordinate_system = self._annotation_context.coordinate_system
         if sdata is None or shapes_name is None or coordinate_system is None:
             return
 
@@ -835,7 +832,6 @@ class ShapesAnnotation(QWidget):
             coordinate_system=coordinate_system,
             source_shapes_index_feature_name=DEFAULT_SHAPES_INDEX_NAME,
         )
-        self._annotation_has_been_saved = False
         self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
         self._connect_annotation_dirty_events(layer)
         self._set_create_name_controls_visible(True)
@@ -844,8 +840,8 @@ class ShapesAnnotation(QWidget):
 
     def _open_existing_annotation_layer(self) -> None:
         sdata = self._app_state.sdata
-        target = self._selected_shapes_target
-        coordinate_system = self._selected_coordinate_system
+        target = self._annotation_context.shapes_target
+        coordinate_system = self._annotation_context.coordinate_system
         shapes_name = self._validated_shapes_name
         if (
             sdata is None
@@ -901,7 +897,6 @@ class ShapesAnnotation(QWidget):
             source_geodataframe=source_geodataframe.copy(deep=True),
             table_linked=table_linked,
         )
-        self._annotation_has_been_saved = True
         self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
         self._connect_annotation_dirty_events(layer)
         self._app_state.viewer_adapter.activate_layer(layer)
@@ -1097,7 +1092,6 @@ class ShapesAnnotation(QWidget):
             layer,
             feature_name=source_shapes_index_feature_name,
         )
-        self._annotation_has_been_saved = True
         self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
 
     def _clear_consumed_new_shapes_name(self) -> None:
@@ -1132,8 +1126,8 @@ class ShapesAnnotation(QWidget):
     def _refresh_create_layer_state(self) -> None:
         """Update layer-creation readiness from current sdata, coordinate system, and name."""
         sdata = self._app_state.sdata
-        coordinate_system = self._selected_coordinate_system
-        target = self._selected_shapes_target
+        coordinate_system = self._annotation_context.coordinate_system
+        target = self._annotation_context.shapes_target
         self._validated_shapes_name = None
         self.create_layer_button.setText("Create layer")
 
@@ -1474,8 +1468,20 @@ class ShapesAnnotation(QWidget):
             self._clear_annotation_state()
 
     def _close_clean_annotation_session(self) -> None:
-        """Release a clean annotation session without dirty discard/reload work."""
-        should_remove_layer = self._annotation_layer is not None and not self._annotation_has_been_saved
+        """Release a clean annotation session without dirty discard/reload work.
+
+        A clean ``create_new`` session still owns a temporary napari layer with
+        no persisted Shapes element behind it, so closing the session removes
+        that layer. For ``edit_existing``, closing clears the widget's session,
+        edit guards, and layer reference, but leaves the already-persisted
+        primary Shapes layer loaded in the viewer. A create-new session that
+        was saved has already been changed to ``edit_existing`` and therefore
+        follows that same keep-the-layer path.
+        """
+        session = self._annotation_session
+        should_remove_layer = (
+            self._annotation_layer is not None and session is not None and session.mode == "create_new"
+        )
 
         with self._suppress_widget_owned_layer_transition_callbacks():
             if should_remove_layer:
@@ -1502,9 +1508,9 @@ class ShapesAnnotation(QWidget):
         self._annotation_identity_feature_default_guard.disconnect()
         self._annotation_session = None
         self._annotation_layer = None
-        self._annotation_has_been_saved = False
         self._annotation_clean_snapshot = None
         self._publish_dirty_state_if_changed()
         self._set_create_name_controls_visible(
-            self._selected_shapes_target is not None and self._selected_shapes_target.mode == "create_new"
+            self._annotation_context.shapes_target is not None
+            and self._annotation_context.shapes_target.mode == "create_new"
         )

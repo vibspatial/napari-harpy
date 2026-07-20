@@ -46,7 +46,47 @@ _CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
 
 
 class AnnotationWidget(QWidget):
-    """Own shared Annotation selection and coordinate the Shapes child."""
+    """Own shared Annotation selection and coordinate the Shapes child.
+
+    Parent-to-child coordination intentionally uses direct method calls, while
+    child-to-parent communication uses Qt signals. The parent owns and knows
+    its child, and its commands require synchronous completion, return values,
+    exception propagation, or signal blocking. The child does not know its
+    concrete parent; it reports events through signals so it remains reusable
+    and does not acquire a dependency on ``AnnotationWidget``.
+
+    Child → parent signals
+    ----------------------
+    ShapesAnnotation.edit_session_dirty_changed(dirty)
+        → AnnotationWidget._on_child_dirty_state_changed()
+        → publish updated AnnotationContext
+
+    ShapesAnnotation.shapes_target_change_requested(target)
+        → AnnotationWidget._on_child_shapes_target_change_requested()
+        → close the current session if allowed
+        → select the requested target in the parent
+        → apply and publish the resulting AnnotationContext
+
+    ShapesAnnotation.edit_session_saved(target)
+        → AnnotationWidget._on_child_edit_session_saved()
+        → refresh the parent Shapes choices
+        → select the newly saved element as an edit-existing target
+        → apply and publish the resulting AnnotationContext
+
+    Parent → child calls
+    --------------------
+    AnnotationWidget
+        → ShapesAnnotation.try_close_edit_session()
+          before committing an incompatible coordinate system or Shapes target
+        → ShapesAnnotation.apply_annotation_context(context)
+          after the parent has accepted the selection and built its AnnotationContext
+
+    Parent → other child widgets and observers
+    ------------------------------------------
+    AnnotationWidget.annotation_context_changed(context)
+        → publishes the final shared context
+        → allows other child widgets and observers to react to context changes
+    """
 
     annotation_context_changed = Signal(object)
 
