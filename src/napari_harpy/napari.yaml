@@ -22,7 +22,7 @@ contributions:
       python_name: napari_harpy.widgets.object_classification.widget:ObjectClassificationWidget
     - id: napari-harpy.shapes_annotation
       title: Open annotation widget
-      python_name: napari_harpy.widgets.shapes_annotation.widget:ShapesAnnotation
+      python_name: napari_harpy.widgets.annotation.widget:AnnotationWidget
   widgets:
     - command: napari-harpy.viewer
       display_name: Viewer
