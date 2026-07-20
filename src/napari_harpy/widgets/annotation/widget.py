@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
@@ -97,17 +98,12 @@ class AnnotationWidget(QWidget):
         self.setMinimumWidth(WIDGET_MIN_WIDTH)
 
         self._app_state = get_or_create_app_state(napari_viewer)
-        self._coordinate_systems: list[str] = []
-        self._eligible_existing_shapes_names: list[str] = []
-        self._selected_coordinate_system: str | None = None
-        self._selected_shapes_target: ShapesAnnotationTarget | None = None
         self._annotation_context = AnnotationContext(
             sdata=self._app_state.sdata,
             coordinate_system=None,
             shapes_target=None,
             has_unsaved_shapes_changes=False,
         )
-        self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -189,13 +185,12 @@ class AnnotationWidget(QWidget):
         """Refresh parent-owned selectors and publish one resulting context."""
         with QSignalBlocker(self.coordinate_system_combo):
             self.coordinate_system_combo.clear()
-            self._coordinate_systems = [] if sdata is None else get_coordinate_system_names_from_sdata(sdata)
-            for coordinate_system in self._coordinate_systems:
+            coordinate_systems = [] if sdata is None else get_coordinate_system_names_from_sdata(sdata)
+            for coordinate_system in coordinate_systems:
                 self.coordinate_system_combo.addItem(coordinate_system, coordinate_system)
-            self.coordinate_system_combo.setEnabled(bool(self._coordinate_systems))
+            self.coordinate_system_combo.setEnabled(bool(coordinate_systems))
 
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-        self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
         self._refresh_shapes_targets()
         self._apply_and_publish_context()
 
@@ -205,7 +200,6 @@ class AnnotationWidget(QWidget):
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         del event
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-        self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
         self._refresh_shapes_targets()
         self._apply_and_publish_context()
 
@@ -234,7 +228,6 @@ class AnnotationWidget(QWidget):
         #     → restore the combo and local derived state here
         if not self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE):
             self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-            self._set_selected_coordinate_system(self.coordinate_system_combo.currentIndex())
 
     def _guard_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
         """Protect unsaved Shapes edits from coordinate changes from any widget.
@@ -253,7 +246,8 @@ class AnnotationWidget(QWidget):
 
     def _on_shapes_target_changed(self, index: int) -> None:
         next_target = self._shapes_target_from_combo_index(index)
-        if next_target == self._selected_shapes_target:
+        accepted_target = self._annotation_context.shapes_target
+        if next_target == accepted_target:
             return
         # This QSignalBlocker is the final-only AnnotationContext publication
         # boundary: closing the child can synchronously emit dirty=False while
@@ -261,10 +255,10 @@ class AnnotationWidget(QWidget):
         with QSignalBlocker(self.shapes_annotation):
             closed = self.shapes_annotation.try_close_edit_session(reason="shapes_target")
         if not closed:
-            self._sync_shapes_target_combo_selection(self._selected_shapes_target)
+            self._sync_shapes_target_combo_selection(accepted_target)
             return
 
-        self._set_selected_shapes_target_from_combo(index)
+        self._refresh_shapes_combo_tooltip()
         self._apply_and_publish_context()
 
     def _on_child_shapes_target_change_requested(self, target: object) -> None:
@@ -276,11 +270,11 @@ class AnnotationWidget(QWidget):
         with QSignalBlocker(self.shapes_annotation):
             closed = self.shapes_annotation.try_close_edit_session(reason="shapes_target")
         if not closed:
-            self._sync_shapes_target_combo_selection(self._selected_shapes_target)
+            self._sync_shapes_target_combo_selection(self._annotation_context.shapes_target)
             return
 
         self._refresh_shapes_targets(preferred_target=target)
-        if self._selected_shapes_target != target:
+        if self._shapes_target_from_combo_index(self.shapes_combo.currentIndex()) != target:
             return
         self._apply_and_publish_context()
 
@@ -291,12 +285,7 @@ class AnnotationWidget(QWidget):
         self._apply_and_publish_context()
 
     def _on_child_dirty_state_changed(self, dirty: bool) -> None:
-        self._annotation_context = AnnotationContext(
-            sdata=self._app_state.sdata,
-            coordinate_system=self._selected_coordinate_system,
-            shapes_target=self._selected_shapes_target,
-            has_unsaved_shapes_changes=dirty,
-        )
+        self._annotation_context = replace(self._annotation_context, has_unsaved_shapes_changes=dirty)
         # Parent publication boundary: expose the child-reported dirty state
         # through the shared AnnotationContext rather than the Shapes child.
         self.annotation_context_changed.emit(self._annotation_context)
@@ -304,8 +293,8 @@ class AnnotationWidget(QWidget):
     def _apply_and_publish_context(self) -> None:
         context = AnnotationContext(
             sdata=self._app_state.sdata,
-            coordinate_system=self._selected_coordinate_system,
-            shapes_target=self._selected_shapes_target,
+            coordinate_system=self._app_state.coordinate_system,
+            shapes_target=self._shapes_target_from_combo_index(self.shapes_combo.currentIndex()),
             has_unsaved_shapes_changes=self.shapes_annotation.has_unsaved_changes,
         )
         # apply_annotation_context() may clear a stale session or open/refresh
@@ -316,10 +305,8 @@ class AnnotationWidget(QWidget):
         with QSignalBlocker(self.shapes_annotation):
             self.shapes_annotation.apply_annotation_context(context)
 
-        self._annotation_context = AnnotationContext(
-            sdata=self._app_state.sdata,
-            coordinate_system=self._selected_coordinate_system,
-            shapes_target=self._selected_shapes_target,
+        self._annotation_context = replace(
+            context,
             has_unsaved_shapes_changes=self.shapes_annotation.has_unsaved_changes,
         )
         # Parent → sibling children/observers: publish only the final context
@@ -333,18 +320,14 @@ class AnnotationWidget(QWidget):
                 return
             self.coordinate_system_combo.setCurrentIndex(self.coordinate_system_combo.findData(coordinate_system))
 
-    def _set_selected_coordinate_system(self, index: int) -> None:
-        coordinate_system = self.coordinate_system_combo.itemData(index)
-        self._selected_coordinate_system = coordinate_system if isinstance(coordinate_system, str) else None
-
     def _refresh_shapes_targets(self, *, preferred_target: ShapesAnnotationTarget | None = None) -> None:
-        previous_target = preferred_target if preferred_target is not None else self._selected_shapes_target
+        previous_target = preferred_target if preferred_target is not None else self._annotation_context.shapes_target
         sdata = self._app_state.sdata
-        coordinate_system = self._selected_coordinate_system
+        coordinate_system = self._app_state.coordinate_system
         if sdata is None or coordinate_system is None:
-            self._eligible_existing_shapes_names = []
+            eligible_existing_shapes_names = []
         else:
-            self._eligible_existing_shapes_names = [
+            eligible_existing_shapes_names = [
                 option.shapes_name
                 for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
                     sdata=sdata,
@@ -354,7 +337,7 @@ class AnnotationWidget(QWidget):
 
         with QSignalBlocker(self.shapes_combo):
             self.shapes_combo.clear()
-            for shapes_name in self._eligible_existing_shapes_names:
+            for shapes_name in eligible_existing_shapes_names:
                 visible_shapes_name, shortened = format_feedback_identifier(
                     shapes_name,
                     max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
@@ -377,7 +360,7 @@ class AnnotationWidget(QWidget):
                 next_index = self._find_shapes_target_combo_index(ShapesAnnotationTarget.create_new())
             self.shapes_combo.setCurrentIndex(next_index)
 
-        self._set_selected_shapes_target_from_combo(self.shapes_combo.currentIndex())
+        self._refresh_shapes_combo_tooltip()
 
     def _find_shapes_target_combo_index(self, target: ShapesAnnotationTarget | None) -> int:
         if target is None:
@@ -393,18 +376,14 @@ class AnnotationWidget(QWidget):
                 self.shapes_combo.setCurrentIndex(-1)
             else:
                 self.shapes_combo.setCurrentIndex(self._find_shapes_target_combo_index(target))
-        self._set_selected_shapes_target_from_combo(self.shapes_combo.currentIndex())
+        self._refresh_shapes_combo_tooltip()
 
     def _shapes_target_from_combo_index(self, index: int) -> ShapesAnnotationTarget | None:
         item_data = self.shapes_combo.itemData(index) if 0 <= index < self.shapes_combo.count() else None
         return item_data if isinstance(item_data, ShapesAnnotationTarget) else None
 
-    def _set_selected_shapes_target_from_combo(self, index: int) -> None:
-        self._selected_shapes_target = self._shapes_target_from_combo_index(index)
-        self._refresh_shapes_combo_tooltip()
-
     def _refresh_shapes_combo_tooltip(self) -> None:
-        target = self._selected_shapes_target
+        target = self._shapes_target_from_combo_index(self.shapes_combo.currentIndex())
         if target is not None and target.mode == "edit_existing" and target.existing_shapes_name is not None:
             self.shapes_combo.setToolTip(format_tooltip(target.existing_shapes_name))
             return
@@ -415,7 +394,8 @@ class AnnotationWidget(QWidget):
         logo_label.setObjectName("annotation_header_logo")
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        logo_pixmap = QPixmap(str(self._logo_path))
+        logo_path = get_logo_path()
+        logo_pixmap = QPixmap(str(logo_path))
         if not logo_pixmap.isNull():
             logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
             return logo_label
