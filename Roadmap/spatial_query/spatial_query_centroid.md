@@ -3766,6 +3766,8 @@ Exit criteria:
 
 ### Slice 6b: Parent Annotation widget foundation
 
+**Implementation status: Implemented.**
+
 This slice performs only the architectural refactor needed to establish the
 final dock hierarchy:
 
@@ -3944,6 +3946,49 @@ Exit criteria:
 - existing direct `ShapesAnnotation` construction, the historical command ID,
   and the historical `Interactive` selector remain valid;
 - no canonical-center, Spatial Query, or table-annotation behavior is added.
+
+### Slice 6b follow-up: Shapes dirty-event filtering
+
+**Implementation status: Implemented.**
+
+This small follow-up tightens the dirty-state publication introduced by Slice
+6b. Napari Shapes operations emit pre-mutation `data` actions (`ADDING`,
+`REMOVING`, or `CHANGING`) followed by the corresponding completed action
+(`ADDED`, `REMOVED`, or `CHANGED`). Rebuilding the complete
+geometry-and-features snapshot for a pre-mutation event performs unnecessary
+work and still sees the previous clean state.
+
+The Shapes child therefore listens only to the active annotation layer's
+`data` emitter, ignores all three pre-mutation actions, and evaluates dirty
+state for the three completed actions. The callback contract is intentionally
+strict: a connected event must expose `type="data"` and an `action`. Missing
+actions or unexpected event types fail loudly instead of being normalized or
+silently accepted.
+
+The child deliberately does not subscribe to `layer.events.features`.
+Napari-harpy currently provides no feature-only Shapes editing workflow, and
+napari updates row-aligned features before emitting the completed `data` event
+for ordinary shape additions and removals. Listening to `features` as well
+would therefore repeat the same complete snapshot comparison. Features remain
+part of the authoritative clean snapshot, so an unexpected feature-only
+mutation is still detected when an edit session is closed.
+
+This is only an event-filtering optimization. It must retain
+`_annotation_layer_has_unsaved_changes()` and the existing exact comparison
+against `_annotation_clean_snapshot` as the source of truth. An event must not
+unconditionally mark the session dirty: if the geometry and features are
+restored exactly to their clean state, the parent context must be allowed to
+return to `has_unsaved_shapes_changes=False`.
+
+Focused tests must establish that:
+
+- `ADDING`, `REMOVING`, and `CHANGING` perform no dirty-state evaluation or
+  parent-context publication;
+- `ADDED`, `REMOVED`, and `CHANGED` each trigger dirty-state evaluation;
+- a data event without an action fails loudly, and an unexpected `features`
+  event is rejected by the data-only callback;
+- repeated events that do not change the derived boolean do not produce
+  duplicate `edit_session_dirty_changed` notifications.
 
 ### Slice 6c: Explicit coordinate-system change participant
 
