@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import warnings
+from pathlib import Path
 
+import bermuda
 import numpy as np
 import pandas as pd
 import pytest
@@ -11,6 +14,7 @@ from napari.layers.shapes._shapes_constants import Mode
 from shapely.geometry import Polygon
 
 import napari_harpy.widgets.shapes_annotation._create_holes as create_holes_module
+from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
 from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
@@ -52,7 +56,9 @@ def test_create_holes_plan_from_selection_selects_largest_shell_and_encodes_chil
     assert plan.shell_row_index == 1
     assert plan.hole_row_indices == (0, 2)
     planned_polygon = napari_polygon_vertices_to_shapely_polygon(plan.vertices)
-    assert planned_polygon.equals(Polygon(shell.exterior.coords, holes=[child_2.exterior.coords, child_1.exterior.coords]))
+    assert planned_polygon.equals(
+        Polygon(shell.exterior.coords, holes=[child_2.exterior.coords, child_1.exterior.coords])
+    )
     assert len(planned_polygon.interiors) == 2
     _assert_layer_data_unchanged(layer, original_data)
     assert set(layer.selected_data) == {0, 1, 2}
@@ -293,3 +299,171 @@ def test_apply_create_holes_plan_rejects_invalid_plan_before_mutation() -> None:
     _assert_layer_data_unchanged(layer, original_data)
     pd.testing.assert_frame_equal(layer.features, original_features)
     assert set(layer.selected_data) == {0, 1}
+
+
+class TestCreateHolesTriangulationFailure:
+    """Characterize the Bermuda failure and specify Harpy's rollback contract.
+
+    The checked-in fixture is the exact 570-by-2 ``float32`` napari polygon
+    path captured from the failed ``Create holes`` operation. Its exterior and
+    two holes render independently with Bermuda 0.1.7, but their valid combined
+    hole encoding causes Bermuda's face triangulator to panic. Napari converts
+    that panic into ``RuntimeError`` after replacing the live layer's private
+    shape view, which currently leaves the annotation layer empty.
+
+    The first test retains the real upstream reproducer while Bermuda is
+    affected. The second test injects the same failure boundary only for the
+    combined candidate, so Harpy's full-layer rollback remains covered after
+    Bermuda fixes this particular input. Both tests are strict expected
+    failures until the Create-holes transaction restores every captured layer
+    property before re-raising the rendering error.
+    """
+
+    _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "create_holes_triangulation_failure.txt"
+    _DATA_SHA256 = "21df8806d99580c208b26e075297fdbefeac4ce8f134ac370328203af55975ec"
+
+    @classmethod
+    def _load_vertices(cls) -> np.ndarray:
+        vertices = np.loadtxt(cls._FIXTURE_PATH, dtype=np.float32)
+        assert vertices.shape == (570, 2)
+        assert hashlib.sha256(vertices.tobytes()).hexdigest() == cls._DATA_SHA256
+        return vertices
+
+    @classmethod
+    def _make_layer(cls) -> Shapes:
+        failed_vertices = cls._load_vertices()
+        shell = failed_vertices[:546].copy()
+        hole_1 = failed_vertices[546:557].copy()
+        hole_2 = failed_vertices[558:569].copy()
+        unselected = shapely_polygon_to_napari_polygon_vertices(
+            Polygon([(40000, 40000), (40000, 40100), (40100, 40100), (40100, 40000)])
+        ).astype(np.float32)
+        layer = Shapes(
+            [hole_1, unselected, shell, hole_2],
+            shape_type=["polygon", "polygon", "polygon", "polygon"],
+            features=pd.DataFrame(
+                {
+                    "label": ["hole-1", "unselected", "shell", "hole-2"],
+                    "source_id": ["row-0", "row-1", "row-2", "row-3"],
+                }
+            ),
+        )
+        apply_primary_shapes_layer_style(layer)
+        layer.feature_defaults = pd.DataFrame(
+            {
+                "label": ["next-polygon"],
+                "source_id": [pd.NA],
+            }
+        )
+        layer.edge_color = np.asarray([_rgba("#112233"), _rgba("#445566"), _rgba("#778899"), _rgba("#aabbcc")])
+        layer.face_color = np.asarray([_rgba("#01020344"), _rgba("#05060744"), _rgba("#090a0b44"), _rgba("#0c0d0e44")])
+        layer.edge_width = [2, 4, 6, 8]
+        layer.z_index = [3, 5, 7, 9]
+        layer.opacity = 0.42
+        layer.current_edge_color = "#abcdef"
+        layer.current_face_color = "#12345678"
+        layer.current_edge_width = 11
+        layer.mode = Mode.DIRECT
+        layer.selected_data = {0, 2, 3}
+        return layer
+
+    @staticmethod
+    def _capture_complete_layer_state(layer: Shapes) -> dict[str, object]:
+        return {
+            "data": tuple(np.asarray(vertices).copy() for vertices in layer.data),
+            "shape_type": tuple(layer.shape_type),
+            "features": layer.features.copy(deep=True),
+            "feature_defaults": layer.feature_defaults.copy(deep=True),
+            "edge_color": np.asarray(layer.edge_color).copy(),
+            "face_color": np.asarray(layer.face_color).copy(),
+            "edge_width": tuple(layer.edge_width),
+            "z_index": tuple(layer.z_index),
+            "opacity": layer.opacity,
+            "current_edge_color": np.asarray(to_rgba(layer.current_edge_color)),
+            "current_face_color": np.asarray(to_rgba(layer.current_face_color)),
+            "current_edge_width": layer.current_edge_width,
+            "mode": layer.mode,
+            "selected_data": frozenset(layer.selected_data),
+        }
+
+    @staticmethod
+    def _assert_complete_layer_state_restored(layer: Shapes, baseline: dict[str, object]) -> None:
+        expected_data = baseline["data"]
+        assert isinstance(expected_data, tuple)
+        assert len(layer.data) == len(expected_data)
+        for actual_vertices, expected_vertices in zip(layer.data, expected_data, strict=True):
+            np.testing.assert_array_equal(actual_vertices, expected_vertices)
+        assert tuple(layer.shape_type) == baseline["shape_type"]
+        pd.testing.assert_frame_equal(layer.features, baseline["features"])
+        pd.testing.assert_frame_equal(layer.feature_defaults, baseline["feature_defaults"])
+        np.testing.assert_allclose(layer.edge_color, baseline["edge_color"])
+        np.testing.assert_allclose(layer.face_color, baseline["face_color"])
+        assert tuple(layer.edge_width) == baseline["edge_width"]
+        assert tuple(layer.z_index) == baseline["z_index"]
+        assert layer.opacity == baseline["opacity"]
+        np.testing.assert_allclose(to_rgba(layer.current_edge_color), baseline["current_edge_color"])
+        np.testing.assert_allclose(to_rgba(layer.current_face_color), baseline["current_face_color"])
+        assert layer.current_edge_width == baseline["current_edge_width"]
+        assert layer.mode == baseline["mode"]
+        assert frozenset(layer.selected_data) == baseline["selected_data"]
+        assert len(layer._data_view.shapes) == len(expected_data)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Create-holes full-layer rollback is not implemented yet.",
+    )
+    def test_full_geometry_bermuda_failure_restores_complete_layer(
+        self,
+        restore_triangulation_backend: None,
+    ) -> None:
+        configure_shapes_triangulation_backend("bermuda")
+        layer = self._make_layer()
+        baseline = self._capture_complete_layer_state(layer)
+        plan = create_holes_module._create_holes_plan_from_selection(layer)
+        failed_vertices = self._load_vertices()
+        np.testing.assert_array_equal(np.asarray(plan.vertices, dtype=np.float32), failed_vertices)
+
+        # Bermuda 0.1.7 panics for this exact valid candidate and napari wraps
+        # the panic in RuntimeError. When Bermuda fixes the issue, this
+        # RuntimeError expectation and this fixture-specific rollback check are
+        # no longer needed; the artificial-failure test below remains the
+        # permanent rollback contract for other rendering failures.
+        with pytest.raises(RuntimeError, match="Triangulation failed"):
+            create_holes_module._apply_create_holes_plan(layer, plan)
+
+        self._assert_complete_layer_state_restored(layer, baseline)
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="Create-holes full-layer rollback is not implemented yet.",
+    )
+    def test_artificial_render_failure_restores_complete_layer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_triangulation_backend: None,
+    ) -> None:
+        configure_shapes_triangulation_backend("bermuda")
+        layer = self._make_layer()
+        baseline = self._capture_complete_layer_state(layer)
+        plan = create_holes_module._create_holes_plan_from_selection(layer)
+        expected_candidate = np.asarray(plan.vertices, dtype=np.float32)
+        real_triangulate = bermuda.triangulate_polygons_with_edge
+        failure_count = 0
+
+        def fail_exact_candidate(polygons: list[np.ndarray]) -> object:
+            nonlocal failure_count
+            if np.array_equal(polygons[0], expected_candidate):
+                failure_count += 1
+                raise RuntimeError("synthetic Bermuda failure for create-holes rollback test")
+            return real_triangulate(polygons)
+
+        # Reject only the combined candidate. Baseline construction and
+        # rollback continue through real Bermuda, proving that recovery rebuilds
+        # renderable source rows instead of patching public Python attributes.
+        monkeypatch.setattr(bermuda, "triangulate_polygons_with_edge", fail_exact_candidate)
+
+        with pytest.raises(RuntimeError, match="Triangulation failed"):
+            create_holes_module._apply_create_holes_plan(layer, plan)
+
+        assert failure_count == 1
+        self._assert_complete_layer_state_restored(layer, baseline)
