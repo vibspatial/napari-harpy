@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from napari.layers import Shapes
+from napari.layers.base._base_constants import ActionType
+from napari.utils.events import Event
 from qtpy.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QDialog,
@@ -114,6 +116,13 @@ _CREATE_HOLES_TOOLTIP = (
 )
 _SAVE_SHAPES_TOOLTIP = "Save the current annotation layer back to the selected SpatialData shapes element."
 _ShapesAnnotationContextChangeReason = Literal["coordinate_system", "shapes_target"]
+_PRE_MUTATION_DATA_ACTIONS = frozenset(
+    {
+        ActionType.ADDING,
+        ActionType.REMOVING,
+        ActionType.CHANGING,
+    }
+)
 
 
 # Temporary private alias for source compatibility while the public model moves
@@ -1208,12 +1217,20 @@ class ShapesAnnotation(QWidget):
         self.edit_session_dirty_changed.emit(dirty)
 
     def _connect_annotation_dirty_events(self, layer: Shapes) -> None:
-        """Observe mutations on the one layer owned by the edit session."""
+        """Observe geometry mutations on the active annotation layer.
+
+        Napari-harpy currently provides no feature-only Shapes editing
+        workflow. Napari emits a completed data event after updating
+        row-aligned features during shape additions and removals, so listening
+        to features as well would duplicate the snapshot comparison.
+
+        Features remain part of the authoritative clean snapshot and are
+        therefore still checked when an edit session is closed.
+        """
         if layer is not self._annotation_layer:
             raise RuntimeError("Dirty events can only be connected for the active Shapes annotation layer.")
 
         layer.events.data.connect(self._on_annotation_layer_content_changed)
-        layer.events.features.connect(self._on_annotation_layer_content_changed)
 
     def _disconnect_annotation_dirty_events(self) -> None:
         """Disconnect events before the active annotation layer is cleared."""
@@ -1221,9 +1238,22 @@ class ShapesAnnotation(QWidget):
         if layer is None:
             return
         layer.events.data.disconnect(self._on_annotation_layer_content_changed)
-        layer.events.features.disconnect(self._on_annotation_layer_content_changed)
 
-    def _on_annotation_layer_content_changed(self, _event: object) -> None:
+    def _on_annotation_layer_content_changed(self, event: Event) -> None:
+        """Evaluate dirty state after a completed geometry mutation.
+
+        This callback observes only the active annotation layer's ``data``
+        emitter. Pre-mutation actions are ignored; completed geometry changes
+        use the exact geometry-and-features comparison against the clean layer
+        snapshot. Napari updates row-aligned features before emitting the
+        completed data event, so a separate features listener would repeat the
+        same comparison for ordinary shape additions and removals.
+        """
+        if event.type != "data":
+            raise ValueError(f"Unexpected Shapes annotation event type: {event.type!r}.")
+        if event.action in _PRE_MUTATION_DATA_ACTIONS:
+            return
+
         self._publish_dirty_state_if_changed()
 
     def _evaluate_annotation_layer_readiness(self) -> _AnnotationLayerReadiness:
