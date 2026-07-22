@@ -334,9 +334,9 @@ class ShapesAnnotation(QWidget):
         button_row.addWidget(self.create_holes_button)
         button_row.addWidget(self.save_shapes_button)
 
-        self.content_layout.addWidget(self.status_label)
         self.content_layout.addLayout(form_layout)
         self.content_layout.addLayout(button_row)
+        self.content_layout.addWidget(self.status_label)
 
         self._app_state.viewer_adapter.primary_shapes_layer_registered.connect(self._on_primary_shapes_layer_registered)
         self.name_edit.textChanged.connect(self._on_shapes_name_changed)
