@@ -157,8 +157,9 @@ def test_apply_create_holes_plan_replaces_shell_removes_children_and_preserves_l
     layer.selected_data = {0, 1, 2}
     plan = create_holes_module._create_holes_plan_from_selection(layer)
 
-    create_holes_module._apply_create_holes_plan(layer, plan)
+    applied = create_holes_module._apply_create_holes_plan(layer, plan)
 
+    assert applied is True
     assert len(layer.data) == 2
     assert list(layer.shape_type) == ["polygon", "polygon"]
     assert layer.features["label"].tolist() == ["shell", "unselected"]
@@ -235,8 +236,9 @@ def test_apply_create_holes_plan_preserves_styles_with_stale_napari_color_arrays
 
     with warnings.catch_warnings(record=True) as caught_warnings:
         warnings.simplefilter("always")
-        create_holes_module._apply_create_holes_plan(layer, plan)
+        applied = create_holes_module._apply_create_holes_plan(layer, plan)
 
+    assert applied is True
     style_warnings = [
         str(warning.message)
         for warning in caught_warnings
@@ -309,14 +311,15 @@ class TestCreateHolesTriangulationFailure:
     two holes render independently with Bermuda 0.1.7, but their valid combined
     hole encoding causes Bermuda's face triangulator to panic. Napari converts
     that panic into ``RuntimeError`` after replacing the live layer's private
-    shape view, which currently leaves the annotation layer empty.
+    shape view, which would leave the annotation layer empty without Harpy's
+    transaction rollback.
 
     The first test retains the real upstream reproducer while Bermuda is
     affected. The second test injects the same failure boundary only for the
     combined candidate, so Harpy's full-layer rollback remains covered after
-    Bermuda fixes this particular input. Both tests are strict expected
-    failures until the Create-holes transaction restores every captured layer
-    property before re-raising the rendering error.
+    Bermuda fixes this particular input. Both verify that the Create-holes
+    transaction consumes the application error after restoring every captured
+    layer property.
     """
 
     _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "create_holes_triangulation_failure.txt"
@@ -408,10 +411,6 @@ class TestCreateHolesTriangulationFailure:
         assert frozenset(layer.selected_data) == baseline["selected_data"]
         assert len(layer._data_view.shapes) == len(expected_data)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Create-holes full-layer rollback is not implemented yet.",
-    )
     def test_full_geometry_bermuda_failure_restores_complete_layer(
         self,
         restore_triangulation_backend: None,
@@ -424,19 +423,17 @@ class TestCreateHolesTriangulationFailure:
         np.testing.assert_array_equal(np.asarray(plan.vertices, dtype=np.float32), failed_vertices)
 
         # Bermuda 0.1.7 panics for this exact valid candidate and napari wraps
-        # the panic in RuntimeError. When Bermuda fixes the issue, this
-        # RuntimeError expectation and this fixture-specific rollback check are
-        # no longer needed; the artificial-failure test below remains the
-        # permanent rollback contract for other rendering failures.
-        with pytest.raises(RuntimeError, match="Triangulation failed"):
-            create_holes_module._apply_create_holes_plan(layer, plan)
+        # the panic in RuntimeError. The upstream failure is tracked at
+        # https://github.com/napari/bermuda/issues/194. The Create-holes
+        # transaction consumes that application error after restoring the
+        # baseline. When Bermuda fixes this input, this fixture-specific
+        # rollback is no longer necessary; the artificial-failure test below
+        # remains the permanent contract.
+        applied = create_holes_module._apply_create_holes_plan(layer, plan)
 
+        assert applied is False
         self._assert_complete_layer_state_restored(layer, baseline)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="Create-holes full-layer rollback is not implemented yet.",
-    )
     def test_artificial_render_failure_restores_complete_layer(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -462,8 +459,52 @@ class TestCreateHolesTriangulationFailure:
         # renderable source rows instead of patching public Python attributes.
         monkeypatch.setattr(bermuda, "triangulate_polygons_with_edge", fail_exact_candidate)
 
-        with pytest.raises(RuntimeError, match="Triangulation failed"):
+        applied = create_holes_module._apply_create_holes_plan(layer, plan)
+
+        assert applied is False
+        self._assert_complete_layer_state_restored(layer, baseline)
+
+        # A different, valid Create-holes edit still commits through Bermuda
+        # immediately after rollback, proving that the live layer remains
+        # usable rather than only superficially matching public attributes.
+        layer.selected_data = {2, 3}
+        follow_up_plan = create_holes_module._create_holes_plan_from_selection(layer)
+        assert create_holes_module._apply_create_holes_plan(layer, follow_up_plan) is True
+        assert failure_count == 1
+        assert len(layer.data) == 3
+
+    def test_raises_exception_group_when_application_and_rollback_both_fail(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        restore_triangulation_backend: None,
+    ) -> None:
+        configure_shapes_triangulation_backend("bermuda")
+        layer = self._make_layer()
+        plan = create_holes_module._create_holes_plan_from_selection(layer)
+        application_error = RuntimeError("simulated Create-holes application failure")
+        restoration_error = RuntimeError("simulated Create-holes baseline restoration failure")
+
+        def fail_application() -> None:
+            raise application_error
+
+        def fail_restoration(bound_layer: Shapes, baseline: object) -> None:
+            assert bound_layer is layer
+            assert baseline is not None
+            raise restoration_error
+
+        monkeypatch.setattr(
+            create_holes_module,
+            "ensure_shapes_triangulation_backend",
+            fail_application,
+        )
+        monkeypatch.setattr(
+            create_holes_module,
+            "_restore_shapes_layer_baseline",
+            fail_restoration,
+        )
+
+        with pytest.raises(ExceptionGroup) as caught:
             create_holes_module._apply_create_holes_plan(layer, plan)
 
-        assert failure_count == 1
-        self._assert_complete_layer_state_restored(layer, baseline)
+        assert caught.value.exceptions == (application_error, restoration_error)
+        assert caught.value.__cause__ is application_error

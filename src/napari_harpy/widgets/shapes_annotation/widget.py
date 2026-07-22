@@ -114,6 +114,7 @@ _CREATE_HOLES_TOOLTIP = (
     "Shift-click polygons to add them to the selection. The largest selected polygon becomes the shell; "
     "selected inner polygons become holes."
 )
+_CREATE_HOLES_RESTORED_ERROR = "Holes could not be created. The original annotations were restored."
 _SAVE_SHAPES_TOOLTIP = "Save the current annotation layer back to the selected SpatialData shapes element."
 _ShapesAnnotationContextChangeReason = Literal["coordinate_system", "shapes_target"]
 _PRE_MUTATION_DATA_ACTIONS = frozenset(
@@ -1026,12 +1027,17 @@ class ShapesAnnotation(QWidget):
 
         try:
             plan = _create_holes_plan_from_selection(layer)
-            hole_count = len(plan.hole_row_indices)
-            _apply_create_holes_plan(layer, plan)
+            applied = _apply_create_holes_plan(layer, plan)
         except ValueError as error:
             self._apply_status_card_spec(build_create_holes_error_card_spec(str(error)))
             return
 
+        if not applied:
+            self._refresh_save_shapes_state()
+            self._apply_status_card_spec(build_create_holes_error_card_spec(_CREATE_HOLES_RESTORED_ERROR))
+            return
+
+        hole_count = len(plan.hole_row_indices)
         self._refresh_save_shapes_state()
         self._apply_status_card_spec(
             build_create_holes_success_card_spec(

@@ -7,6 +7,7 @@ from html import unescape
 from types import SimpleNamespace
 
 import anndata as ad
+import bermuda
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -38,6 +39,7 @@ import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shap
 import napari_harpy.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
+from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
 from napari_harpy.core.shapes_geometry import (
@@ -187,6 +189,29 @@ def _assert_layer_data_unchanged(layer: Shapes, expected_data: list[np.ndarray])
     assert len(layer.data) == len(expected_data)
     for actual_vertices, expected_vertices in zip(layer.data, expected_data, strict=True):
         np.testing.assert_allclose(np.asarray(actual_vertices, dtype=float), expected_vertices)
+
+
+def _assert_shapes_layer_matches_baseline(
+    layer: Shapes,
+    baseline: shapes_annotation_layer_state_module._ShapesLayerBaseline,
+) -> None:
+    assert len(layer.data) == len(baseline.data)
+    for actual_vertices, expected_vertices in zip(layer.data, baseline.data, strict=True):
+        np.testing.assert_array_equal(actual_vertices, expected_vertices)
+    assert tuple(layer.shape_type) == baseline.shape_types
+    pd.testing.assert_frame_equal(layer.features, baseline.features)
+    pd.testing.assert_frame_equal(layer.feature_defaults, baseline.feature_defaults)
+    np.testing.assert_allclose(layer.edge_color, baseline.style.edge_color)
+    np.testing.assert_allclose(layer.face_color, baseline.style.face_color)
+    assert tuple(layer.edge_width) == baseline.style.edge_width
+    assert tuple(layer.z_index) == baseline.style.z_index
+    assert layer.opacity == baseline.style.opacity
+    np.testing.assert_allclose(to_rgba(layer.current_edge_color), to_rgba(baseline.style.current_edge_color))
+    np.testing.assert_allclose(to_rgba(layer.current_face_color), to_rgba(baseline.style.current_face_color))
+    assert layer.current_edge_width == baseline.style.current_edge_width
+    assert layer.mode == baseline.mode
+    assert frozenset(layer.selected_data) == baseline.selected_data
+    assert len(layer._data_view.shapes) == len(baseline.data)
 
 
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
@@ -4564,6 +4589,55 @@ def test_shapes_annotation_widget_create_holes_invalid_selection_warns_without_m
     pd.testing.assert_frame_equal(layer.features, original_features)
     assert widget.save_shapes_button.isEnabled() is True
     assert widget.create_holes_button.isEnabled() is True
+
+
+def test_shapes_annotation_widget_create_holes_render_failure_restores_layer_and_reports_error(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    restore_triangulation_backend: None,
+) -> None:
+    configure_shapes_triangulation_backend("bermuda")
+    shapes_name = "create_holes_regions"
+    sdata, _shell, _child, _unselected = _make_create_holes_sdata(shapes_name=shapes_name)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+
+    widget._test_parent.shapes_combo.setCurrentIndex(
+        _combo_index_for_text(widget._test_parent.shapes_combo, shapes_name)
+    )
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    layer.mode = Mode.DIRECT
+    layer.selected_data = {0, 1}
+    baseline = shapes_annotation_layer_state_module._capture_shapes_layer_baseline(layer)
+    plan = shapes_annotation_widget_module._create_holes_plan_from_selection(layer)
+    expected_candidate = np.asarray(plan.vertices, dtype=np.float32)
+    real_triangulate = bermuda.triangulate_polygons_with_edge
+    failure_count = 0
+
+    def fail_exact_candidate(polygons: list[np.ndarray]) -> object:
+        nonlocal failure_count
+        if np.array_equal(polygons[0], expected_candidate):
+            failure_count += 1
+            raise RuntimeError("synthetic Bermuda failure for Create-holes widget test")
+        return real_triangulate(polygons)
+
+    monkeypatch.setattr(bermuda, "triangulate_polygons_with_edge", fail_exact_candidate)
+
+    widget.create_holes_button.click()
+
+    assert failure_count == 1
+    _assert_shapes_layer_matches_baseline(layer, baseline)
+    assert widget._annotation_layer_has_unsaved_changes() is False
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is False
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.create_holes_button.isEnabled() is True
+    status = _status_text(widget)
+    assert "Could Not Create Holes" in status
+    assert "The original annotations were restored." in status
+    assert "Created Holes" not in status
 
 
 def test_shapes_annotation_widget_create_holes_mutates_layer_and_marks_dirty(qtbot) -> None:

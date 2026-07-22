@@ -2,12 +2,13 @@
 
 ## Status
 
-Investigation and phase 1 are complete. The shared `_ShapesLayerBaseline`,
-`_capture_shapes_layer_baseline(...)`, and
-`_restore_shapes_layer_baseline(...)` API now lives in `_layer_state.py`, and
-guarded insertion/deletion use it without a behavior change. The exact fixture
-and two Create-holes rollback tests remain strict expected failures pending
-phase 2, which will add the Create-holes transaction and widget error handling.
+Investigation and both implementation phases are complete. The shared
+`_ShapesLayerBaseline`, `_capture_shapes_layer_baseline(...)`, and
+`_restore_shapes_layer_baseline(...)` API lives in `_layer_state.py`; guarded
+insertion, deletion, and `Create holes` use it. The exact Bermuda reproducer,
+deterministic rollback regression, restoration-failure regression, and widget
+failure path are covered by passing tests. Opening the upstream Bermuda issue
+remains the follow-up.
 
 This document records the `Create holes` failure observed while editing the
 `tumor` Shapes element in:
@@ -280,14 +281,14 @@ Do not use `_ShapesAnnotationLayerSnapshot` for this API. That snapshot exists
 for dirty-state comparison and does not contain the complete copied state
 required for restoration.
 
-### Phase 2: make Create holes transactional
+### Phase 2: make Create holes transactional (complete)
 
-After phase 1 is complete, import the same `_ShapesLayerBaseline` capture and
-restore functions into `_create_holes.py`. No baseline or restoration logic
-should be duplicated there.
+`_create_holes.py` imports the same `_ShapesLayerBaseline` capture and restore
+functions established in phase 1. It contains no duplicate baseline or
+restoration logic.
 
-Conceptually, `_apply_create_holes_plan(...)` becomes one transaction and
-reports whether it committed:
+`_apply_create_holes_plan(...)` is one transaction and reports whether it
+committed:
 
 ```python
 baseline = _capture_shapes_layer_baseline(layer)
@@ -327,7 +328,7 @@ that the original annotations were restored. It must not call the success-card
 path. An `ExceptionGroup` is allowed to escape this normal handling because it
 means the safety guarantee itself failed and the layer may not be usable.
 
-No proposed implementation step should:
+The implementation does not:
 
 - switch to Numba;
 - automatically simplify polygons;
@@ -398,8 +399,7 @@ captured input, the Bermuda/napari failure boundary, and the purpose of each
 test. The class contains the fixture metadata and loader, layer factory, and
 complete-state capture/assertion helpers.
 
-As part of implementing the transaction, adjust the two rollback tests to the
-same no-raise contract used by insertion and deletion:
+The rollback tests use the same no-raise contract as insertion and deletion:
 
 - `test_full_geometry_bermuda_failure_restores_complete_layer` calls
   `Create holes` with real Bermuda, asserts that the transaction returns
@@ -413,20 +413,15 @@ same no-raise contract used by insertion and deletion:
   permanent Harpy transaction regression. It likewise asserts `False` and a
   complete restored baseline, without `pytest.raises(...)`.
 
-Both tests currently use `pytest.mark.xfail(strict=True)` with the reason that
-full-layer rollback is not implemented. At present they still expect the
-escaping napari `RuntimeError`; change those expectations to the unsuccessful
-return value above as part of the rollback implementation, then remove the
-XFAIL markers.
+Both rollback tests now pass without XFAIL markers. A third transaction test
+covers the exceptional recovery path by independently injecting application
+and restoration failures. It asserts that `_apply_create_holes_plan(...)`
+raises an `ExceptionGroup`, that
+`caught.value.exceptions == (application_error, restoration_error)`, and that
+`caught.value.__cause__ is application_error`, mirroring the existing
+insertion/deletion restoration-failure tests.
 
-Add a third transaction test for the exceptional recovery path. Inject a
-candidate application failure and independently make baseline restoration
-raise. Assert that `_apply_create_holes_plan(...)` raises an `ExceptionGroup`,
-that `caught.value.exceptions == (application_error, restoration_error)`, and
-that `caught.value.__cause__ is application_error`. This test should mirror the
-existing insertion/deletion restoration-failure tests.
-
-The final assertion should explicitly cover:
+Together, the rollback and widget assertions cover:
 
 - all four vertex arrays, byte-for-byte or with exact array equality;
 - ordered shape types;
@@ -447,8 +442,8 @@ Using an injected candidate-specific failure is important:
   combined candidate is rejected;
 - it separates Harpy's safety contract from the upstream algorithm defect.
 
-A focused widget test should additionally click `Create holes`, inject the same
-failure, and assert:
+A focused widget test additionally clicks `Create holes`, injects the same
+candidate-specific failure, and asserts:
 
 - no exception escapes the Qt callback;
 - the unsuccessful transaction result is handled without entering the success
@@ -483,15 +478,15 @@ On Bermuda `0.1.7` this test panics at
 `face_triangulation.rs:531`. Once Bermuda is corrected, it should pass without
 Harpy changing or re-encoding the input.
 
-Harpy's temporary real-Bermuda rollback characterization is isolated and
-marked XFAIL; the deterministic artificial-failure rollback test is the
-required permanent CI protection for Harpy. Bermuda's direct desired-success
-test remains the place where the exact candidate is expected to triangulate
-without error after the upstream fix.
+Harpy's temporary real-Bermuda rollback characterization is isolated; the
+deterministic artificial-failure rollback test is the required permanent CI
+protection for Harpy. Bermuda's direct desired-success test remains the place
+where the exact candidate is expected to triangulate without error after the
+upstream fix.
 
 ## Upstream Bermuda Issue Follow-up
 
-After the Harpy rollback is implemented and tested, open a Bermuda issue with:
+Open a Bermuda issue with:
 
 - Bermuda, napari, NumPy, Python, OS, and architecture versions;
 - the original exact NPZ attachment;

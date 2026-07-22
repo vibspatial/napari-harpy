@@ -11,8 +11,11 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
+from napari_harpy.widgets.shapes_annotation._layer_state import (
+    _capture_shapes_layer_baseline,
+    _restore_shapes_layer_baseline,
+)
 from napari_harpy.widgets.shapes_annotation._layer_style import (
-    _capture_shapes_layer_style,
     _restore_shapes_layer_current_style,
     _restore_shapes_layer_row_styles,
     _trim_stale_private_color_rows_before_rebuild,
@@ -105,7 +108,14 @@ def _create_holes_plan_from_selection(layer: Shapes) -> _CreateHolesShapesLayerP
     )
 
 
-def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -> None:
+def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -> bool:
+    """Apply one Create-holes plan transactionally.
+
+    Return ``True`` after a successful commit. If applying or rendering the
+    candidate fails, restore the complete pre-action layer state and return
+    ``False``. Raise an ``ExceptionGroup`` containing both failures only when
+    application and restoration both fail.
+    """
     row_count = len(layer.data)
     shell_row_index = plan.shell_row_index
     hole_row_indices = tuple(sorted(plan.hole_row_indices))
@@ -114,38 +124,51 @@ def _apply_create_holes_plan(layer: Shapes, plan: _CreateHolesShapesLayerPlan) -
     if any(row_index >= row_count for row_index in hole_row_indices):
         raise ValueError("Create-holes plan hole row is no longer present in the layer.")
 
-    current_mode = layer.mode
-    style_snapshot = _capture_shapes_layer_style(layer, row_count=row_count)
+    baseline = _capture_shapes_layer_baseline(layer)
+    style_snapshot = baseline.style
     surviving_row_indices = tuple(row_index for row_index in range(row_count) if row_index not in hole_row_indices)
 
     rebuilt_data = list(layer.data)
     rebuilt_data[shell_row_index] = np.asarray(plan.vertices, dtype=float).copy()
 
-    _trim_stale_private_color_rows_before_rebuild(layer, style_snapshot)
+    try:
+        _trim_stale_private_color_rows_before_rebuild(layer, style_snapshot)
 
-    # Assign through `layer.data`, not `_data_view.edit(...)`: create-holes can
-    # change the shell row's vertex count, and the public setter rebuilds
-    # napari's private rendering and hit-testing cache.
-    ensure_shapes_triangulation_backend()
-    layer.data = rebuilt_data
-    layer.remove(list(hole_row_indices))
-    layer.opacity = style_snapshot.opacity
+        # Assign through `layer.data`, not `_data_view.edit(...)`:
+        # Create-holes can change the shell row's vertex count, and the public
+        # setter rebuilds napari's private rendering and hit-testing cache.
+        ensure_shapes_triangulation_backend()
+        layer.data = rebuilt_data
+        layer.remove(list(hole_row_indices))
+        layer.opacity = style_snapshot.opacity
 
-    new_shell_row_index = shell_row_index - sum(row_index < shell_row_index for row_index in hole_row_indices)
-    layer.mode = current_mode
-    layer.selected_data = {new_shell_row_index}
+        new_shell_row_index = shell_row_index - sum(row_index < shell_row_index for row_index in hole_row_indices)
+        layer.mode = baseline.mode
+        layer.selected_data = {new_shell_row_index}
 
-    # The annotation layer connects current edge color/width changes back to all
-    # row styles. Restore draw defaults without emitting those sync callbacks,
-    # after selecting the final shell row and before reapplying final row styles.
-    _restore_shapes_layer_current_style(layer, style_snapshot)
+        # The annotation layer connects current edge color/width changes back
+        # to all row styles. Restore draw defaults without emitting those sync
+        # callbacks, after selecting the final shell row and before reapplying
+        # final row styles.
+        _restore_shapes_layer_current_style(layer, style_snapshot)
 
-    # Reapply surviving row styles last. Selecting the final shell row and
-    # restoring current draw defaults can touch selected row styling through
-    # napari/Harpy callbacks; the final row-aligned styles should win.
-    _restore_shapes_layer_row_styles(layer, style_snapshot, row_indices=surviving_row_indices)
-    # Public napari layer APIs above emit the data/selection events that drive
-    # viewer refresh; keep explicit refreshes for low-level edit paths.
+        # Reapply surviving row styles last. Selecting the final shell row and
+        # restoring current draw defaults can touch selected row styling
+        # through napari/Harpy callbacks; the final row-aligned styles should
+        # win.
+        _restore_shapes_layer_row_styles(layer, style_snapshot, row_indices=surviving_row_indices)
+        layer.refresh()
+    except Exception as application_error:  # noqa: BLE001 - transaction boundary
+        try:
+            _restore_shapes_layer_baseline(layer, baseline)
+        except Exception as restoration_error:  # noqa: BLE001 - retain both failures
+            raise ExceptionGroup(
+                "Create holes failed and restoring the previous layer state also failed.",
+                [application_error, restoration_error],
+            ) from application_error
+        return False
+
+    return True
 
 
 def _coerce_plan_row_index(index: object, *, row_kind: str) -> int:
