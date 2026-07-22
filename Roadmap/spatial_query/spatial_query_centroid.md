@@ -3992,6 +3992,8 @@ Focused tests must establish that:
 
 ### Slice 6c: Explicit coordinate-system change participant
 
+**Implementation status: Implemented.**
+
 This slice makes the pre-change relationship introduced in Slice 6a explicit
 after Slice 6b has established the parent Annotation widget as its long-term
 owner. The pre-change boundary remains in `HarpyAppState` because a shared

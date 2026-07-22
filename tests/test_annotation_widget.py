@@ -207,16 +207,16 @@ def test_annotation_widget_starts_inactive_without_spatialdata(qtbot) -> None:
 
 
 
-def test_annotation_widget_destruction_unregisters_coordinate_change_guard(qtbot) -> None:
-    """Ensure Qt destruction cannot leave a stale parent-owned guard in shared app state."""
+def test_annotation_widget_destruction_unregisters_coordinate_change_participant(qtbot) -> None:
+    """Ensure Qt destruction cannot leave a stale parent-owned participant."""
     viewer = DummyViewer()
     app_state = get_or_create_app_state(viewer)
     widget = AnnotationWidget(viewer)
 
-    assert app_state._coordinate_system_change_guard is widget._coordinate_system_change_guard
+    assert app_state._coordinate_system_change_participant is widget
 
     widget.deleteLater()
-    qtbot.waitUntil(lambda: app_state._coordinate_system_change_guard is None)
+    qtbot.waitUntil(lambda: app_state._coordinate_system_change_participant is None)
 
 
 
@@ -685,6 +685,5 @@ def test_annotation_widget_dirty_existing_target_switch_ignores_reloaded_old_act
     assert published_contexts[0] is parent.annotation_context
     assert parent.annotation_context.saved_shapes_name == "other_polygons"
     assert parent.annotation_context.has_unsaved_shapes_changes is False
-
 
 

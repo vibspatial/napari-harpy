@@ -78,6 +78,14 @@ class DummyViewer:
         self.window = DummyWindow()
 
 
+class DummyCoordinateSystemChangeParticipant:
+    def __init__(self, callback: Callable[[CoordinateSystemChangeRequest], bool]) -> None:
+        self._callback = callback
+
+    def prepare_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
+        return self._callback(request)
+
+
 def _patch_shared_coordinate_system_names(monkeypatch, coordinate_systems_by_sdata_id: dict[int, list[str]]) -> None:
     def _get_coordinate_system_names(sdata: object) -> list[str]:
         return list(coordinate_systems_by_sdata_id.get(id(sdata), []))
@@ -276,7 +284,7 @@ def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtb
     assert removed_calls == [{"sdata": sdata_blobs, "coordinate_system": "global"}]
 
 
-def test_harpy_app_state_coordinate_guard_rejects_before_event_or_layer_removal(
+def test_harpy_app_state_coordinate_participant_rejects_before_event_or_layer_removal(
     monkeypatch,
     sdata_blobs,
 ) -> None:
@@ -293,7 +301,8 @@ def test_harpy_app_state_coordinate_guard_rejects_before_event_or_layer_removal(
         lambda **_kwargs: removed_calls.append(object()),
     )
     state.coordinate_system_changed.connect(coordinate_events.append)
-    state.set_coordinate_system_change_guard(lambda request: requests.append(request) or False)
+    participant = DummyCoordinateSystemChangeParticipant(lambda request: requests.append(request) or False)
+    state.register_coordinate_system_change_participant(participant)
 
     changed = state.set_coordinate_system("local", source="object_classification_widget")
 
@@ -311,7 +320,7 @@ def test_harpy_app_state_coordinate_guard_rejects_before_event_or_layer_removal(
     assert removed_calls == []
 
 
-def test_harpy_app_state_coordinate_guard_runs_once_before_commit_and_supports_identity_safe_teardown(
+def test_harpy_app_state_coordinate_participant_runs_once_before_commit_and_supports_identity_safe_teardown(
     monkeypatch,
     sdata_blobs,
 ) -> None:
@@ -327,27 +336,28 @@ def test_harpy_app_state_coordinate_guard_runs_once_before_commit_and_supports_i
     )
     state.coordinate_system_changed.connect(lambda _event: timeline.append("event_emitted"))
 
-    def guard(_request: CoordinateSystemChangeRequest) -> bool:
+    def prepare(_request: CoordinateSystemChangeRequest) -> bool:
         assert state.coordinate_system == "global"
         assert timeline == []
-        timeline.append("guard")
+        timeline.append("participant")
         return True
 
-    state.set_coordinate_system_change_guard(guard)
+    participant = DummyCoordinateSystemChangeParticipant(prepare)
+    state.register_coordinate_system_change_participant(participant)
 
     assert state.set_coordinate_system("local", source="viewer_widget") is True
-    assert timeline == ["guard", "event_emitted", "layers_removed"]
+    assert timeline == ["participant", "event_emitted", "layers_removed"]
 
-    # A no-op does not ask the guard again.
+    # A no-op does not ask the participant again.
     assert state.set_coordinate_system("local", source="viewer_widget") is False
-    assert timeline == ["guard", "event_emitted", "layers_removed"]
+    assert timeline == ["participant", "event_emitted", "layers_removed"]
 
-    other_guard = lambda _request: True
-    assert state.clear_coordinate_system_change_guard(other_guard) is False
-    with pytest.raises(RuntimeError, match="already installed"):
-        state.set_coordinate_system_change_guard(other_guard)
-    assert state.clear_coordinate_system_change_guard(guard) is True
-    state.set_coordinate_system_change_guard(other_guard)
+    other_participant = DummyCoordinateSystemChangeParticipant(lambda _request: True)
+    assert state.unregister_coordinate_system_change_participant(other_participant) is False
+    with pytest.raises(RuntimeError, match="already registered"):
+        state.register_coordinate_system_change_participant(other_participant)
+    assert state.unregister_coordinate_system_change_participant(participant) is True
+    state.register_coordinate_system_change_participant(other_participant)
 
 
 def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_valid(monkeypatch) -> None:
@@ -506,7 +516,7 @@ def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_r
     assert object_widget.coordinate_system_combo.currentText() == "local"
 
 
-def test_shared_coordinate_guard_rejection_restores_initiating_widget_selectors(qtbot, monkeypatch) -> None:
+def test_shared_coordinate_participant_rejection_restores_initiating_widget_selectors(qtbot, monkeypatch) -> None:
     sdata = object()
     _patch_shared_coordinate_system_names(monkeypatch, {id(sdata): ["global", "local"]})
     _patch_empty_shared_widget_content(monkeypatch)
@@ -519,7 +529,8 @@ def test_shared_coordinate_guard_rejection_restores_initiating_widget_selectors(
     qtbot.addWidget(object_widget)
     app_state.set_sdata(sdata)
     requests: list[CoordinateSystemChangeRequest] = []
-    app_state.set_coordinate_system_change_guard(lambda request: requests.append(request) or False)
+    participant = DummyCoordinateSystemChangeParticipant(lambda request: requests.append(request) or False)
+    app_state.register_coordinate_system_change_participant(participant)
 
     viewer_widget.coordinate_system_combo.setCurrentIndex(1)
 

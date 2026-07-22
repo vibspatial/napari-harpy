@@ -163,12 +163,13 @@ class AnnotationWidget(QWidget):
 
         self.refresh_from_sdata(self._app_state.sdata)
 
-        self._coordinate_system_change_guard = self._guard_coordinate_system_change
-        self._app_state.set_coordinate_system_change_guard(self._coordinate_system_change_guard)
+        self._app_state.register_coordinate_system_change_participant(self)
         app_state = self._app_state
-        guard = self._coordinate_system_change_guard
+        participant = self
         self.destroyed.connect(
-            lambda *_args, app_state=app_state, guard=guard: app_state.clear_coordinate_system_change_guard(guard)
+            lambda *_args, app_state=app_state, participant=participant: (
+                app_state.unregister_coordinate_system_change_participant(participant)
+            )
         )
 
     @property
@@ -212,7 +213,7 @@ class AnnotationWidget(QWidget):
         # Result of the set_coordinate_system() call immediately below:
         #
         # returns True: request accepted
-        #     → pre-change guard accepted the request
+        #     → pre-change participant accepted the request
         #     → app state changed its coordinate system
         #     → coordinate_system_changed was emitted
         #     → shared event handler refreshed the widget
@@ -229,8 +230,8 @@ class AnnotationWidget(QWidget):
         if not self._app_state.set_coordinate_system(next_coordinate_system, source=_SOURCE):
             self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
 
-    def _guard_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
-        """Protect unsaved Shapes edits from coordinate changes from any widget.
+    def prepare_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
+        """Prepare the Shapes child for a coordinate change from any widget.
 
         Viewer, Object Classification, and other widgets share this app state.
         Unsaved polygon edits still exist only in the Shapes child's editable

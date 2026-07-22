@@ -498,14 +498,16 @@ def _add_dummy_table_annotating_shapes(sdata: SpatialData, *, shapes_name: str, 
     return table
 
 
-def test_shapes_annotation_child_constructs_inactive_without_duplicate_shared_selectors(qtbot) -> None:
-    widget = ShapesAnnotation()
+def test_shapes_annotation_child_constructs_without_shared_selectors_or_transition_participation(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ShapesAnnotation(viewer)
     qtbot.addWidget(widget)
 
     assert widget.selected_spatialdata is None
     assert widget.selected_coordinate_system is None
     assert not hasattr(widget, "coordinate_system_combo")
     assert not hasattr(widget, "shapes_combo")
+    assert widget.app_state._coordinate_system_change_participant is None
 
 
 def test_shapes_annotation_child_reapplies_context_for_active_create_new_session(

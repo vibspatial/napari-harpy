@@ -25,9 +25,8 @@ So the relationship is:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol
 from weakref import WeakKeyDictionary
 
 from qtpy.QtCore import QObject, Signal
@@ -157,10 +156,10 @@ class CoordinateSystemChangedEvent:
 class CoordinateSystemChangeRequest:
     """Describe a requested coordinate-system change before it is committed.
 
-    A coordinate-system guard receives this immutable request while the old
-    app-state value and viewer layers are still intact. Returning ``False``
-    rejects the request without emitting ``coordinate_system_changed`` or
-    removing layers.
+    The coordinate-system change participant receives this immutable request
+    while the old app-state value and viewer layers are still intact. Returning
+    ``False`` rejects the request without emitting
+    ``coordinate_system_changed`` or removing layers.
     """
 
     sdata: SpatialData | None
@@ -169,7 +168,12 @@ class CoordinateSystemChangeRequest:
     source: str | None = None
 
 
-type CoordinateSystemChangeGuard = Callable[[CoordinateSystemChangeRequest], bool]
+class CoordinateSystemChangeParticipant(Protocol):
+    """Participate synchronously in a shared coordinate-system transition."""
+
+    def prepare_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
+        """Return whether the requested transition may be committed."""
+        ...
 
 
 def _path_covers(parent: TableComponentPath, child: TableComponentPath) -> bool:
@@ -237,7 +241,7 @@ class HarpyAppState(QObject):
         self.layer_bindings = LayerBindingRegistry()
         self.viewer_adapter = ViewerAdapter(viewer=viewer, layer_bindings=self.layer_bindings)
         self._dirty_table_tokens: dict[tuple[int, str], dict[TableComponentPath, _TableMutationToken]] = {}
-        self._coordinate_system_change_guard: CoordinateSystemChangeGuard | None = None
+        self._coordinate_system_change_participant: CoordinateSystemChangeParticipant | None = None
 
     def set_sdata(self, sdata: SpatialData | None) -> None:
         """Set the loaded SpatialData object and notify listeners."""
@@ -267,10 +271,10 @@ class HarpyAppState(QObject):
         """Request a change to the shared coordinate system.
 
         When the requested coordinate system is valid and differs from the current
-        one, the registered guard is called immediately before the change is applied.
-        If the guard rejects the request, the coordinate system remains unchanged,
-        no ``coordinate_system_changed`` event is emitted, and no viewer layers are
-        removed.
+        one, the registered participant is called immediately before the change
+        is applied. If the participant rejects the request, the coordinate
+        system remains unchanged, no ``coordinate_system_changed`` event is
+        emitted, and no viewer layers are removed.
 
         Example flow
         ------------
@@ -280,7 +284,7 @@ class HarpyAppState(QObject):
             ↓
         check that "local" differs from the current "global"
             ↓
-        call the guard immediately
+        call the participant immediately
             ├── False
             │      → stop
             │      → coordinate system remains "global"
@@ -297,8 +301,8 @@ class HarpyAppState(QObject):
         if normalized_coordinate_system == self.coordinate_system:
             return False
 
-        guard = self._coordinate_system_change_guard
-        if guard is not None:
+        participant = self._coordinate_system_change_participant
+        if participant is not None:
             request = CoordinateSystemChangeRequest(
                 sdata=self.sdata,
                 previous_coordinate_system=self.coordinate_system,
@@ -308,7 +312,11 @@ class HarpyAppState(QObject):
             # This must run before state mutation or layer removal: otherwise
             # an external coordinate switch could silently delete the only
             # copy of unsaved Shapes Annotation edits.
-            if not guard(request):
+            # Today the participant is AnnotationWidget. Its implementation
+            # delegates to ShapesAnnotation.try_close_edit_session(), which
+            # preserves the current edit session when the user cancels.
+            accepted = participant.prepare_coordinate_system_change(request)
+            if accepted is False:
                 return False
 
         self._update_coordinate_system_state(normalized_coordinate_system, source=source)
@@ -319,33 +327,38 @@ class HarpyAppState(QObject):
         )
         return True
 
-    def set_coordinate_system_change_guard(self, guard: CoordinateSystemChangeGuard | None) -> None:
-        """Install the single owner of coordinate-system change preflight.
+    def register_coordinate_system_change_participant(
+        self,
+        participant: CoordinateSystemChangeParticipant,
+    ) -> None:
+        """Register the single owner of coordinate-system change preflight.
 
-        The Annotation widget owns this optional per-viewer guard and must
-        remove it during teardown. Replacing another active guard is rejected
-        so one widget cannot silently disable another widget's data-loss
-        protection.
+        The Annotation widget owns this optional per-viewer role and must
+        unregister itself during teardown. Replacing another active participant
+        is rejected so one widget cannot silently disable another widget's
+        data-loss protection.
         """
-        if guard is not None and not callable(guard):
-            raise TypeError("Coordinate-system change guard must be callable or None.")
         if (
-            guard is not None
-            and self._coordinate_system_change_guard is not None
-            and guard is not self._coordinate_system_change_guard
+            self._coordinate_system_change_participant is not None
+            and participant is not self._coordinate_system_change_participant
         ):
-            raise RuntimeError("A coordinate-system change guard is already installed for this viewer session.")
-        self._coordinate_system_change_guard = guard
+            raise RuntimeError(
+                "A coordinate-system change participant is already registered for this viewer session."
+            )
+        self._coordinate_system_change_participant = participant
 
-    def clear_coordinate_system_change_guard(self, guard: CoordinateSystemChangeGuard) -> bool:
-        """Remove ``guard`` only when it still owns coordinate preflight.
+    def unregister_coordinate_system_change_participant(
+        self,
+        participant: CoordinateSystemChangeParticipant,
+    ) -> bool:
+        """Unregister ``participant`` only while it still owns preflight.
 
         Identity-safe removal prevents teardown of an older widget from
-        clearing a guard installed by a newer owner.
+        removing a participant registered by a newer owner.
         """
-        if self._coordinate_system_change_guard is not guard:
+        if self._coordinate_system_change_participant is not participant:
             return False
-        self._coordinate_system_change_guard = None
+        self._coordinate_system_change_participant = None
         return True
 
     def clear_coordinate_system(self, *, source: str | None = None) -> bool:
