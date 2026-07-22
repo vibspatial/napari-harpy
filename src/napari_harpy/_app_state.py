@@ -169,10 +169,51 @@ class CoordinateSystemChangeRequest:
 
 
 class CoordinateSystemChangeParticipant(Protocol):
-    """Participate synchronously in a shared coordinate-system transition."""
+    """Let Annotation participate in a shared coordinate-system transition.
+
+    ``HarpyAppState`` cannot safely commit every coordinate-system change on
+    its own. The Annotation widget may own an editable Shapes layer whose
+    unsaved geometry would be lost when layers from the old coordinate system
+    are removed. Annotation therefore registers itself as the one optional
+    participant and implements ``prepare_coordinate_system_change()`` to
+    delegate that preflight to
+    ``ShapesAnnotation.try_close_edit_session()``.
+
+    This is a structural ``Protocol`` rather than a required base class. A
+    class does not need to inherit from ``CoordinateSystemChangeParticipant``;
+    it satisfies the contract by providing the method declared below. This
+    lets ``HarpyAppState`` call the participant without importing or depending
+    directly on ``AnnotationWidget``.
+
+    The runtime flow is::
+
+        AnnotationWidget registers itself with HarpyAppState
+            ↓
+        a widget requests a shared coordinate-system change
+            ↓
+        HarpyAppState calls prepare_coordinate_system_change(request)
+            ↓
+        AnnotationWidget asks its Shapes child to close the edit session
+            ├── True  → HarpyAppState commits the change
+            └── False → HarpyAppState preserves the old state and layers
+    """
 
     def prepare_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
-        """Return whether the requested transition may be committed."""
+        """Return whether the requested transition may be committed.
+
+        Parameters
+        ----------
+        request
+            Immutable description of the proposed change, captured while the
+            previous app state and viewer layers are still intact.
+
+        Returns
+        -------
+        bool
+            ``True`` after any participant-owned state is ready for the
+            transition. ``False`` rejects the request without changing app
+            state, emitting ``coordinate_system_changed``, or removing layers.
+        """
         ...
 
 
