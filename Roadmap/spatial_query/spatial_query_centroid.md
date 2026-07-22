@@ -740,9 +740,12 @@ selections survive refreshes.
   whose categories are all strings, and exclude region_key and instance_key.
 - Changing an upstream selection refreshes downstream options, closes pending
   dialogs, and cancels or invalidates active work.
-- Preserve a downstream selection if its stable identity remains valid.
-  Otherwise choose the first valid option or show a disabled placeholder with
-  an explanation.
+- Preserve a downstream selection if its stable identity remains valid. The
+  Spatial Query labels selector is deliberately left unbound with the
+  `Choose a labels element` placeholder when there is no previous explicit
+  selection or that selection is no longer available; it never silently
+  selects the first labels element. Other dependent controls follow their
+  documented defaults or show a disabled placeholder with an explanation.
 
 The parent's coordinate-system combo participates in the shared
 active-coordinate-system model. The parent commits an in-widget change to
@@ -4252,10 +4255,13 @@ AnnotationContext.sdata + coordinate_system
                 → canonical-cache inspection for the labels/table pair
 ```
 
-Refresh dependent controls with signals blocked. Preserve the current item by
-stable identity when it remains valid; otherwise use the documented
-`spatial_annotation` default policy. A create-new Shapes target has no saved
-query geometry. A supplied context with no `saved_shapes_name`, or with
+Refresh dependent controls with signals blocked. Preserve an explicitly
+selected labels element by stable identity when it remains valid; otherwise
+leave the labels selector at `Choose a labels element` and do not populate or
+inspect its downstream table/cache state. Other dependent controls use the
+documented `spatial_annotation` default policy once labels and table context
+exists. A create-new Shapes target has no saved query geometry. A supplied
+context with no `saved_shapes_name`, or with
 `has_unsaved_shapes_changes=True`, disables Run in this child. Slice 6f wires
 the live parent publication into this already-defined behavior rather than
 adding another dirty-session policy.
