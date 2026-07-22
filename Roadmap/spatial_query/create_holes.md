@@ -2,7 +2,12 @@
 
 ## Status
 
-Investigation complete. Implementation remains planned.
+Investigation complete. The exact fixture and two model-level rollback tests
+are implemented as strict expected failures. Their final expectations must be
+updated to the insertion/deletion transaction contract described below:
+successful restoration consumes the application error, while failed
+restoration raises both errors. Production rollback and widget error handling
+remain planned.
 
 This document records the `Create holes` failure observed while editing the
 `tumor` Shapes element in:
@@ -18,8 +23,9 @@ The agreed Harpy scope is deliberately narrow:
   valid polygon geometry in an attempt to make Bermuda accept it;
 - make `Create holes` a full transaction and restore the complete live layer
   when rendering or triangulation fails;
-- show the failure in the Shapes Annotation status card instead of allowing an
-  exception to escape the Qt callback;
+- after successful rollback, show the failure in the Shapes Annotation status
+  card instead of allowing the application exception to escape the Qt
+  callback;
 - preserve the exact failing geometry as a regression fixture and use it to
   report the triangulation defect upstream to Bermuda.
 
@@ -197,9 +203,11 @@ restoration, or final refresh:
    and that the original annotations were restored;
 4. leave the layer selected, editable, and usable for further work;
 5. leave the dirty state exactly as it was before the click;
-6. retain the original exception as the cause for debugging;
-7. if restoration itself fails, retain both failures, following the existing
-   `ExceptionGroup` pattern in `_AnnotationLayerEditGuard`.
+6. if restoration succeeds, consume the application error and report a normal
+   unsuccessful result, matching guarded vertex insertion and deletion;
+7. only if restoration itself fails, raise an `ExceptionGroup` containing the
+   original `application_error` followed by the `restoration_error`, with the
+   application error retained as `__cause__`.
 
 The complete restorable baseline must contain real copies, not only the hashed
 `_ShapesAnnotationLayerSnapshot`. At minimum it must cover:
@@ -225,7 +233,8 @@ Reuse or extract the full-layer baseline/restore behavior already used for
 guarded row-length-changing insertion and deletion. Do not create a second,
 weaker rollback definition specifically for holes.
 
-Conceptually, `_apply_create_holes_plan(...)` becomes one transaction:
+Conceptually, `_apply_create_holes_plan(...)` becomes one transaction and
+reports whether it committed:
 
 ```python
 baseline = capture_full_shapes_layer_baseline(layer)
@@ -242,22 +251,28 @@ except Exception as application_error:
             "Create holes failed and restoring the previous layer state also failed.",
             [application_error, restoration_error],
         ) from application_error
-    raise CreateHolesApplicationError(
-        "Holes could not be created because napari could not render the result. "
-        "The original annotations were restored."
-    ) from application_error
+    return False
+return True
 ```
 
-The exact exception class is an implementation choice. The important contract
-is that the transaction catches normal application exceptions, including
-napari's `RuntimeError` wrapper around the PyO3 panic, performs rollback, and
-gives the widget a specific error it can render. Harpy does not need to catch a
-raw `BaseException` from Bermuda because napari already catches that at its
-triangulation boundary and raises `RuntimeError`.
+The transaction catches normal application exceptions, including napari's
+`RuntimeError` wrapper around the PyO3 panic. If restoration succeeds, it does
+not re-raise that application error; it returns `False`, just as guarded vertex
+insertion and deletion warn and return after successfully restoring their
+baseline. Harpy does not need to catch a raw `BaseException` from Bermuda
+because napari already catches that at its triangulation boundary and raises
+`RuntimeError`.
 
-The button callback must handle the application error in addition to planning
-`ValueError`. It should refresh button/dirty readiness after rollback and show
-the error card. It must not call the success-card path.
+Only restoration failure raises. That `ExceptionGroup` must preserve the two
+distinct exception objects in order, `(application_error,
+restoration_error)`, and use `application_error` as its cause, matching the
+existing insertion/deletion tests.
+
+The button callback should treat a `False` result as an unsuccessful restored
+operation: refresh button/dirty readiness and show an error card explaining
+that the original annotations were restored. It must not call the success-card
+path. An `ExceptionGroup` is allowed to escape this normal handling because it
+means the safety guarantee itself failed and the layer may not be usable.
 
 No proposed implementation step should:
 
@@ -323,57 +338,40 @@ row 2: captured exterior     selected shell
 row 3: captured hole 2       selected
 ```
 
-Then inject a deterministic one-shot rendering failure only when napari sees
-the exact combined candidate. Delegate all other Bermuda calls to the original
-function so initial layer construction and rollback both use the real backend.
-A test sketch is:
+The currently implemented issue-specific support and tests are grouped in
+`TestCreateHolesTriangulationFailure` in
+`tests/test_shapes_annotation_create_holes.py`. Its class docstring records the
+captured input, the Bermuda/napari failure boundary, and the purpose of each
+test. The class contains the fixture metadata and loader, layer factory, and
+complete-state capture/assertion helpers.
 
-```python
-def test_apply_create_holes_render_failure_restores_full_layer(monkeypatch):
-    failed_vertices = load_exact_create_holes_fixture()
-    shell, hole_1, hole_2 = split_fixture_into_source_rows(failed_vertices)
-    unrelated = make_unrelated_polygon()
+As part of implementing the transaction, adjust the two rollback tests to the
+same no-raise contract used by insertion and deletion:
 
-    layer = Shapes(
-        [hole_1, unrelated, shell, hole_2],
-        shape_type=["polygon"] * 4,
-        features=pd.DataFrame(
-            {
-                "label": ["hole-1", "unrelated", "shell", "hole-2"],
-                "source_id": ["row-0", "row-1", "row-2", "row-3"],
-            }
-        ),
-    )
-    apply_non_default_row_and_current_styles(layer)
-    layer.mode = Mode.DIRECT
-    layer.selected_data = {0, 2, 3}
+- `test_full_geometry_bermuda_failure_restores_complete_layer` calls
+  `Create holes` with real Bermuda, asserts that the transaction returns
+  `False`, and then requires the full baseline to be restored. This is the
+  temporary fixture-specific rollback characterization; when Bermuda accepts
+  this input, the rollback expectation is no longer applicable and the test
+  can be removed or converted to a success test.
+- `test_artificial_render_failure_restores_complete_layer` injects a failure
+  only for the exact combined candidate. Every other triangulation delegates
+  to real Bermuda, including the baseline rebuild during rollback. This is the
+  permanent Harpy transaction regression. It likewise asserts `False` and a
+  complete restored baseline, without `pytest.raises(...)`.
 
-    baseline = capture_test_layer_state(layer)
-    plan = _create_holes_plan_from_selection(layer)
-    expected_candidate = np.asarray(plan.vertices, dtype=np.float32)
+Both tests currently use `pytest.mark.xfail(strict=True)` with the reason that
+full-layer rollback is not implemented. At present they still expect the
+escaping napari `RuntimeError`; change those expectations to the unsuccessful
+return value above as part of the rollback implementation, then remove the
+XFAIL markers.
 
-    real_triangulate = bermuda.triangulate_polygons_with_edge
-    failure_count = 0
-
-    def fail_exact_candidate(polygons):
-        nonlocal failure_count
-        if np.array_equal(polygons[0], expected_candidate):
-            failure_count += 1
-            raise RuntimeError("synthetic Bermuda failure for rollback test")
-        return real_triangulate(polygons)
-
-    monkeypatch.setattr(
-        bermuda,
-        "triangulate_polygons_with_edge",
-        fail_exact_candidate,
-    )
-
-    with pytest.raises(CreateHolesApplicationError, match="original annotations were restored"):
-        _apply_create_holes_plan(layer, plan)
-
-    assert failure_count == 1
-    assert_test_layer_state_equal(layer, baseline)
-```
+Add a third transaction test for the exceptional recovery path. Inject a
+candidate application failure and independently make baseline restoration
+raise. Assert that `_apply_create_holes_plan(...)` raises an `ExceptionGroup`,
+that `caught.value.exceptions == (application_error, restoration_error)`, and
+that `caught.value.__cause__ is application_error`. This test should mirror the
+existing insertion/deletion restoration-failure tests.
 
 The final assertion should explicitly cover:
 
@@ -400,6 +398,8 @@ A focused widget test should additionally click `Create holes`, inject the same
 failure, and assert:
 
 - no exception escapes the Qt callback;
+- the unsuccessful transaction result is handled without entering the success
+  path;
 - the error status card is visible;
 - no success card is shown;
 - the layer equals its baseline;
@@ -408,13 +408,15 @@ failure, and assert:
 
 ## Bermuda Characterization and Upstream Test
 
-Keep the direct Bermuda reproducer separate from the permanent rollback test.
-It can be a local characterization test or, preferably, the test submitted
-with the Bermuda issue/patch:
+The temporary real-Bermuda Harpy rollback test and the artificial permanent
+rollback test are separate methods in the grouped class. The former does not
+need to assert an escaping `RuntimeError` once Harpy follows the
+insertion/deletion contract. The upstream Bermuda issue/patch should add its
+own desired-success test that calls Bermuda directly:
 
 ```python
 def test_full_napari_hole_path_does_not_panic():
-    vertices = load_exact_create_holes_fixture()
+    vertices = np.loadtxt(fixture_path, dtype=np.float32)
 
     (triangles, face_vertices), edge_mesh = (
         bermuda.triangulate_polygons_with_edge([vertices])
@@ -428,10 +430,11 @@ On Bermuda `0.1.7` this test panics at
 `face_triangulation.rs:531`. Once Bermuda is corrected, it should pass without
 Harpy changing or re-encoding the input.
 
-If a temporary characterization is added to Harpy, mark and isolate it clearly
-so it does not become a permanent expectation of failure. An `xfail` can make
-the current upstream limitation visible, but the deterministic rollback test
-is the required CI protection for Harpy.
+Harpy's temporary real-Bermuda rollback characterization is isolated and
+marked XFAIL; the deterministic artificial-failure rollback test is the
+required permanent CI protection for Harpy. Bermuda's direct desired-success
+test remains the place where the exact candidate is expected to triangulate
+without error after the upstream fix.
 
 ## Upstream Bermuda Issue Follow-up
 
@@ -460,7 +463,12 @@ characterization marker.
   integrity assertion.
 - `Create holes` remains on Bermuda and does not rewrite valid geometry.
 - A forced rendering failure restores the complete live Shapes layer.
-- No exception escapes the `Create holes` Qt callback.
+- A rendering/application failure followed by successful restoration returns
+  an unsuccessful result and does not raise.
+- A restoration failure raises an `ExceptionGroup` containing both the
+  application and restoration errors, with the application error as its cause.
+- When restoration succeeds, no application exception escapes the `Create
+  holes` Qt callback; restoration failure remains exceptional.
 - The user receives an explicit restored-original-annotations error status.
 - Dirty state is unchanged by a failed operation.
 - The annotation layer remains editable immediately after rollback.
