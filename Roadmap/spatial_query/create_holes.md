@@ -229,15 +229,68 @@ SpatialData element over unrelated unsaved edits.
 
 ## Proposed Implementation Direction
 
-Reuse or extract the full-layer baseline/restore behavior already used for
-guarded row-length-changing insertion and deletion. Do not create a second,
-weaker rollback definition specifically for holes.
+Implement this in two separately reviewable phases. The first phase is a
+behavior-preserving extraction of the existing insertion/deletion recovery
+mechanism. The second phase uses that established mechanism for `Create
+holes`. Do not create a second, weaker rollback definition specifically for
+holes.
+
+### Phase 1: extract shared Shapes layer state recovery
+
+Add the neutral module
+`napari_harpy.widgets.shapes_annotation._layer_state` with this private API:
+
+```python
+@dataclass(frozen=True)
+class _ShapesLayerBaseline:
+    ...
+
+
+def _capture_shapes_layer_baseline(layer: Shapes) -> _ShapesLayerBaseline:
+    ...
+
+
+def _restore_shapes_layer_baseline(
+    layer: Shapes,
+    baseline: _ShapesLayerBaseline,
+) -> None:
+    ...
+```
+
+This is an extraction, not a new recovery implementation:
+
+- rename and generalize `_PolygonVertexRowChangeBaseline` to
+  `_ShapesLayerBaseline`;
+- move the existing
+  `_restore_polygon_vertex_row_change_baseline(...)` body unchanged into
+  `_restore_shapes_layer_baseline(...)`;
+- extract the two identical inline baseline constructions in guarded vertex
+  insertion and deletion into `_capture_shapes_layer_baseline(...)`;
+- update insertion and deletion to call those two shared functions;
+- update their type references, tests, and restoration-failure monkeypatch
+  targets accordingly.
+
+Phase 1 must not change `Create holes`. Its purpose is to prove that the
+generalized API preserves existing insertion/deletion behavior before another
+caller depends on it. Focused verification must cover successful insertion and
+deletion, successful rollback after an application failure, and the existing
+`ExceptionGroup` behavior when restoration also fails.
+
+Do not use `_ShapesAnnotationLayerSnapshot` for this API. That snapshot exists
+for dirty-state comparison and does not contain the complete copied state
+required for restoration.
+
+### Phase 2: make Create holes transactional
+
+After phase 1 is complete, import the same `_ShapesLayerBaseline` capture and
+restore functions into `_create_holes.py`. No baseline or restoration logic
+should be duplicated there.
 
 Conceptually, `_apply_create_holes_plan(...)` becomes one transaction and
 reports whether it committed:
 
 ```python
-baseline = capture_full_shapes_layer_baseline(layer)
+baseline = _capture_shapes_layer_baseline(layer)
 
 try:
     apply_rebuilt_data_and_remove_hole_rows(layer, plan)
@@ -245,7 +298,7 @@ try:
     layer.refresh()
 except Exception as application_error:
     try:
-        restore_full_shapes_layer_baseline(layer, baseline)
+        _restore_shapes_layer_baseline(layer, baseline)
     except Exception as restoration_error:
         raise ExceptionGroup(
             "Create holes failed and restoring the previous layer state also failed.",
@@ -473,5 +526,9 @@ characterization marker.
 - Dirty state is unchanged by a failed operation.
 - The annotation layer remains editable immediately after rollback.
 - Successful `Create holes` behavior and save/reload behavior remain covered.
+- Insertion and deletion use the shared `_layer_state.py` capture/restore API
+  without a behavior change.
+- `Create holes` uses that same capture/restore implementation and contains no
+  duplicate baseline or restoration logic.
 - Focused tests cover the transaction and widget paths.
 - A separate Bermuda issue contains the exact upstream reproducer.
