@@ -9,6 +9,7 @@ from napari_harpy.core.spatial_query.annotation import (
     SpatialAnnotationSummary,
     apply_spatial_annotation,
     prepare_spatial_annotation,
+    require_compatible_spatial_annotation_column,
     summarize_spatial_annotation,
 )
 from napari_harpy.core.spatial_query.canonical import (
@@ -99,5 +100,6 @@ __all__ = [
     "evaluate_canonical_center_query",
     "parse_canonical_metadata",
     "prepare_spatial_annotation",
+    "require_compatible_spatial_annotation_column",
     "summarize_spatial_annotation",
 ]

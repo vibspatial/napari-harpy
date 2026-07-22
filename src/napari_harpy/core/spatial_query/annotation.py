@@ -208,7 +208,7 @@ def prepare_spatial_annotation(
     row_positions = _resolve_query_row_positions(query_result, live_binding)
 
     if column_mode == "existing":
-        current_column = _require_compatible_existing_column(table, normalized_column_name)
+        current_column = require_compatible_spatial_annotation_column(table, normalized_column_name)
         current_values = current_column.iloc[row_positions].copy(deep=True)
     else:
         if normalized_column_name in table.obs.columns:
@@ -302,7 +302,7 @@ def apply_spatial_annotation(
     table = _require_current_query_provenance(sdata, preparation)
     current_column: pd.Series | None = None
     if preparation.column_mode == "existing":
-        current_column = _require_compatible_existing_column(table, preparation.column_name)
+        current_column = require_compatible_spatial_annotation_column(table, preparation.column_name)
         _require_unchanged_existing_column(preparation, current_column)
     elif preparation.column_name in table.obs.columns:
         raise ValueError(f"New annotation column `{preparation.column_name}` already exists.")
@@ -352,7 +352,8 @@ def _bindings_match(current: CanonicalRegionBinding, expected: CanonicalRegionBi
     )
 
 
-def _require_compatible_existing_column(table: AnnData, column_name: str) -> pd.Series:
+def require_compatible_spatial_annotation_column(table: AnnData, column_name: str) -> pd.Series:
+    """Return an existing column that can store spatial annotations."""
     if column_name not in table.obs.columns:
         raise ValueError(f"Existing annotation column `{column_name}` is not present.")
     values = table.obs[column_name]
