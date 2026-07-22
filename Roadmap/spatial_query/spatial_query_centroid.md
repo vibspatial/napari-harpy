@@ -589,7 +589,8 @@ between existing rows. No operation currently planned in this roadmap changes
 the row-to-region or row-to-instance association. An out-of-band same-set
 reassignment is therefore an explicit structural-validation limitation, like
 an out-of-band labels-pixel edit that preserves the labels structural
-signature. Forced recalculation is the recovery path.
+signature. The user-facing workflow does not attempt to recover from
+unsupported out-of-band mutations.
 
 Any future supported producer that changes row-to-region or row-to-instance
 linkage must define its cache lifecycle as part of that feature. It must either
@@ -620,9 +621,10 @@ validated and applied later when the annotation geometry is queried.
 This contract cannot detect an out-of-band label-pixel edit that preserves the
 complete structural signature. Detecting that case would require reading or
 hashing the raster again and would defeat fast cache reuse. The explicit
-Recalculate centroids action described below is the user-facing recovery path;
-the core ensure operation also exposes the same forced-recalculation mode to
-non-UI callers.
+forced-recalculation mode remains available to core callers and future
+producer-specific recovery tooling, but it is not exposed as a routine widget
+action. A future supported labels-pixel editor must publish an explicit cache
+invalidation or eager-recalculation contract.
 
 ### Cache states
 
@@ -708,7 +710,7 @@ owns this dependent control order:
 2. Linked table combo.
 3. Target column mode: Existing column or New column.
 4. Existing-column combo or new-column line edit.
-5. Centroid cache status and Recalculate centroids button.
+5. Centroid cache status.
 6. Run Spatial Query button.
 7. Query/action status card that reports when calculation is busy.
 8. Write Table State and Reload Table from zarr buttons.
@@ -875,43 +877,11 @@ The status area reports one of:
 - Running: calculating centroids;
 - Running: querying centroids.
 
-Tooltips explain that the first calculation scans all scale0 chunks lazily and
-may take substantially longer than later queries. The UI must not promise that
-only chunks near the polygon will be read: center calculation is a global
-labels aggregation.
-
-### Recalculate centroids action
-
-Recalculate centroids is an explicit standalone action for refreshing the
-selected labels region when the user knows or suspects that label pixels have
-changed without a detectable structural change. It is user-facing terminology;
-internal code and metadata continue to use the spatial_canonical contract.
-
-The action is enabled when a supported labels element and a valid non-empty
-linked-table region are selected and no conflicting table/calculation operation
-is running. It does not require a valid Shapes selection or annotation target,
-does not perform a spatial query, and never changes an annotation column.
-
-On activation:
-
-1. capture the selected labels/table-region identities, structural signatures,
-   instance-set digest, current cache inspection, and a new operation ID;
-2. bypass valid-cache reuse and calculate all requested table-region centroids
-   lazily from scale0;
-3. validate that every requested table ID has exactly one finite result;
-4. re-inspect and revalidate the captured table, labels, and binding on the main
-   thread before accepting the payload;
-5. atomically replace only the selected region's current row positions and
-   metadata when the shared matrix/top-level contract is valid, preserving all
-   other valid regions;
-6. emit the shared table-state event, mark the table dirty, refresh the centroid
-   status, and report completion.
-
-If calculation is cancelled, fails, produces a missing/non-finite requested ID,
-or becomes stale before the cache update, the previous obsm/uns state is preserved
-exactly, no mutation event is emitted, and dirty state is unchanged. An
-all-regions invalid matrix/metadata state follows the existing rebuild rules,
-but is not replaced until a complete valid calculation result is available.
+The tooltip explains in user-facing terms that centers will first be
+calculated for the selected labels element before the spatial query runs. The
+UI does not expose a manual Recalculate action. Run owns the complete automatic
+cache lifecycle: it reuses a valid report and calculates, refreshes, or rebuilds
+centers for absent, partial, stale, or invalid states before querying.
 
 ### Run and result flow
 
@@ -1411,8 +1381,6 @@ persistence operations.
 | Invalidate/cancel center calculation | No accepted mutation | Unchanged |
 | Center calculation fails | No accepted mutation | Unchanged |
 | Create/extend/refresh/rebuild centers | obsm and uns | Dirty |
-| Successful Recalculate centroids | selected-region obsm and uns | Dirty |
-| Failed/cancelled Recalculate centroids | No accepted mutation | Unchanged |
 | Query returns no matching centers after cache update | No further mutation | Remains dirty |
 | Cancel Apply after cache update | No further mutation | Remains dirty |
 | Apply annotation is a no-op | No | Unchanged from current state |
@@ -1955,11 +1923,6 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - Run enablement/tooltips for every blocker;
 - dirty Shapes session blocker;
 - all centroid cache status states and phase text;
-- Recalculate centroids enablement is based on labels/table binding rather than
-  Shapes or annotation-target validity;
-- Recalculate centroids bypasses cache reuse, shows textual busy/cancellation
-  status, refreshes status on success, and never starts a query or annotation
-  flow;
 - invalid-cache mismatch reporting and automatic rebuild state;
 - result dialog contents and centroid predicate wording;
 - live Set/Remove summaries and value validation;
@@ -4230,7 +4193,6 @@ The public child boundary is:
 ```python
 class SpatialQuery(QWidget):
     run_requested = Signal()
-    recalculate_centers_requested = Signal()
 
     def apply_annotation_context(
         self,
@@ -4239,10 +4201,10 @@ class SpatialQuery(QWidget):
         ...
 ```
 
-Both signals are parameterless action intents in this slice. No calculation or
+The signal is a parameterless action intent in this slice. No calculation or
 query request dataclass is introduced merely to transport current control
 values. The future execution layer captures and validates immutable
-computational inputs synchronously when it accepts an intent, before starting
+computational inputs synchronously when it accepts the intent, before starting
 background work.
 
 The child stores only the last parent-supplied `AnnotationContext` and the
@@ -4320,10 +4282,10 @@ INVALID
     → Run will report the mismatch and rebuild conservatively
 ```
 
-Every successfully constructed report is rebuild-authorized. Recalculate
-centroids therefore requires only a valid current labels/table report; it does
-not require saved Shapes geometry or a target column. Run additionally
-requires a saved clean Shapes context and a valid target-column intent.
+Every successfully constructed report is rebuild-authorized through Run. Run
+requires a saved clean Shapes context and a valid target-column intent; it
+automatically reuses, calculates, refreshes, or rebuilds canonical centers as
+indicated by the report.
 
 Viewer styling is user-driven in this shell. An explicit labels or existing
 target-column selection uses
@@ -4357,8 +4319,7 @@ Deliverables:
   duplicate the Slice 5 target rules;
 - dependent filtering with stable identity preservation and default
   `spatial_annotation` new-column behavior;
-- centroid-cache inspection status and explicit Run and Recalculate centroids
-  action intents;
+- centroid-cache inspection status and one explicit Run action intent;
 - primary labels-layer load/activation and existing-column visualization
   through the Slice 6d styling boundary;
 - status cards, tooltips, accessible names, and focused selector/state tests.
@@ -4373,10 +4334,7 @@ Exit criteria:
 
 - Run is enabled only for a complete valid or rebuild-authorized request;
 - first-run cost and cache reuse state are clear before execution;
-- Recalculate centroids is available from a valid labels/table selection even
-  when Shapes or annotation-target inputs are incomplete;
-- create-new or dirty Shapes context disables Run directly in the child, while
-  Recalculate remains governed only by the labels/table report;
+- create-new or dirty Shapes context disables Run directly in the child;
 - a compatible existing annotation column can be visualized without mutating
   the table, and a configured New column is not treated as available before
   its first effective Apply;
@@ -4452,7 +4410,7 @@ AnnotationWidget emits annotation_context_changed(context)
     ↓
 SpatialQuery refreshes its readiness from that context
     ↓
-dirty=True disables Run but does not disable Recalculate centroids
+dirty=True disables Run
 ```
 
 Spatial Query must not read Shapes child state directly, and the parent must
@@ -4513,9 +4471,8 @@ Deliverables:
   it observes the current saved in-memory geometry;
 - preserve the Shapes edit session when the Spatial Query child activates the
   primary labels layer;
-- keep `run_requested` and `recalculate_centers_requested` as unconnected
-  intent-only signals in this integration slice; do not construct or drive the
-  Spatial Query controller here;
+- keep `run_requested` as an unconnected intent-only signal in this integration
+  slice; do not construct or drive the Spatial Query controller here;
 - focused tests covering initial context delivery, coordinate-system and
   Shapes-target publication, dirty/clean transitions, successful-save refresh,
   same-SpatialData selection preservation, SpatialData-replacement reset,
@@ -4554,10 +4511,6 @@ Deliverables:
 
 - worker orchestration with one monotonically increasing operation ID
   spanning an optional centroid-calculation phase and a spatial-query phase;
-- standalone Recalculate centroids orchestration that bypasses valid reuse,
-  calculates a payload in the worker, and applies it on the main thread, ending
-  after the cache update rather than continuing into query or annotation
-  review;
 - textual busy status, cancellation, cleanup, and error routing;
 - main-thread cache update/revalidation;
 - Spatial Query child-owned shared-state publication after an accepted cache
@@ -4594,11 +4547,9 @@ The centroid-calculation phase is:
         ↓
     HarpyAppState marks the canonical consistency unit dirty
 
-It is skipped when the selected-region cache is already valid. Standalone
-Recalculate centroids performs this phase with valid reuse bypassed and ends
-after the main-thread cache update and Spatial Query child-owned table-state
-publication. Valid cache reuse, cancellation, worker failure, or rejected
-payloads never publish a canonical table mutation event.
+It is skipped when the selected-region cache is already valid. Valid cache
+reuse, cancellation, worker failure, or rejected payloads never publish a
+canonical table mutation event.
 
 The spatial-query phase is:
 
@@ -4617,8 +4568,6 @@ Exit criteria:
 
 - napari remains responsive during global aggregation;
 - cancel/stale/error paths cannot update the cache, open late dialogs, or annotate;
-- successful Recalculate centroids applies only the refreshed cache update, marks the
-  shared table dirty, and opens no query/result dialog;
 - the Spatial Query child, not `SpatialQueryController`, owns construction and
   publication of the accepted canonical `TableStateChangedEvent` through the
   parent Annotation widget's shared app state;

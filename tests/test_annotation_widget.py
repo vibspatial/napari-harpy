@@ -199,7 +199,6 @@ def test_annotation_widget_starts_inactive_without_spatialdata(qtbot) -> None:
     assert parent.content_layout.indexOf(parent.shapes_annotation) < parent.content_layout.indexOf(parent.spatial_query)
     assert parent.spatial_query.annotation_context is parent.annotation_context
     assert parent.spatial_query.run_button.isEnabled() is False
-    assert parent.spatial_query.recalculate_centers_button.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
@@ -289,7 +288,6 @@ def test_annotation_widget_shapes_context_updates_reuse_spatial_query_cache_insp
     assert inspection_count == 1
     assert spatial_query.cache_report is cache_report
     assert spatial_query.run_button.isEnabled() is False
-    assert spatial_query.recalculate_centers_button.isEnabled() is True
 
     parent.shapes_annotation.edit_session_dirty_changed.emit(False)
 

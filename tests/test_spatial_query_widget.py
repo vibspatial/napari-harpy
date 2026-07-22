@@ -89,7 +89,6 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     assert widget.labels_combo.isEnabled() is False
     assert widget.table_combo.isEnabled() is False
     assert widget.run_button.isEnabled() is False
-    assert widget.recalculate_centers_button.isEnabled() is False
     assert "No SpatialData Loaded" in _status_text(widget.readiness_status_label)
 
 
@@ -121,7 +120,6 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
     assert widget.selected_column_name == "spatial_annotation"
     assert widget.cache_report is not None
     assert widget.run_button.isEnabled() is True
-    assert widget.recalculate_centers_button.isEnabled() is True
     assert inspection_calls == 1
     assert viewer.layers == []  # Programmatic context refresh does not claim viewer styling.
 
@@ -130,11 +128,9 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
 
     intents: list[str] = []
     widget.run_requested.connect(lambda: intents.append("run"))
-    widget.recalculate_centers_requested.connect(lambda: intents.append("recalculate"))
     qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
-    qtbot.mouseClick(widget.recalculate_centers_button, Qt.MouseButton.LeftButton)
 
-    assert intents == ["run", "recalculate"]
+    assert intents == ["run"]
     pd.testing.assert_frame_equal(sdata_blobs.tables["table"].obs, obs_before)
     assert sdata_blobs.tables["table"].uns == uns_before
 
@@ -186,7 +182,6 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
     assert widget.selected_column_mode == "new"
     assert widget.selected_column_name is None
     assert widget.run_button.isEnabled() is False
-    assert widget.recalculate_centers_button.isEnabled() is True
     assert "already exists" in _status_text(widget.readiness_status_label)
 
     widget.new_column_edit.setText("reviewed_annotation")
@@ -211,7 +206,6 @@ def test_spatial_query_shell_reports_cache_inspection_failure_separately(
 
     assert widget.cache_report is None
     assert widget.run_button.isEnabled() is False
-    assert widget.recalculate_centers_button.isEnabled() is False
     assert "Centroid Inspection Error" in _status_text(widget.cache_status_label)
     assert "invalid current table binding" in _status_text(widget.cache_status_label)
 
@@ -223,7 +217,7 @@ def test_spatial_query_shell_reports_cache_inspection_failure_separately(
         (False, True, "Saved Shapes Required"),
     ],
 )
-def test_spatial_query_shell_shapes_context_blocks_only_run(
+def test_spatial_query_shell_shapes_context_blocks_run(
     qtbot,
     sdata_blobs: SpatialData,
     dirty: bool,
@@ -237,5 +231,4 @@ def test_spatial_query_shell_shapes_context_blocks_only_run(
 
     assert widget.cache_report is not None
     assert widget.run_button.isEnabled() is False
-    assert widget.recalculate_centers_button.isEnabled() is True
     assert expected_status in _status_text(widget.readiness_status_label)

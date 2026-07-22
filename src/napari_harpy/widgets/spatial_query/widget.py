@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal, cast
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
-from qtpy.QtWidgets import QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
 from napari_harpy.core.spatial_query import (
@@ -57,7 +57,6 @@ class SpatialQuery(QWidget):
     """
 
     run_requested = Signal()
-    recalculate_centers_requested = Signal()
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
@@ -127,19 +126,6 @@ class SpatialQuery(QWidget):
         self.cache_status_label.setWordWrap(True)
         root_layout.addWidget(self.cache_status_label)
 
-        button_layout = QHBoxLayout()
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(8)
-
-        self.recalculate_centers_button = QPushButton("Recalculate centroids")
-        self.recalculate_centers_button.setObjectName("spatial_query_recalculate_centers_button")
-        self.recalculate_centers_button.setAccessibleName("Recalculate centroids")
-        self.recalculate_centers_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.recalculate_centers_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
-        self.recalculate_centers_button.setToolTip(
-            format_tooltip("Force recalculation for the selected labels region, even when cached centers are valid.")
-        )
-
         self.run_button = QPushButton("Run spatial query")
         self.run_button.setObjectName("spatial_query_run_button")
         self.run_button.setAccessibleName("Run spatial query")
@@ -149,9 +135,7 @@ class SpatialQuery(QWidget):
             format_tooltip("Evaluate canonical label centers against the selected saved Shapes geometry.")
         )
 
-        button_layout.addWidget(self.recalculate_centers_button)
-        button_layout.addWidget(self.run_button)
-        root_layout.addLayout(button_layout)
+        root_layout.addWidget(self.run_button)
 
         self.readiness_status_label = QLabel()
         self.readiness_status_label.setObjectName("spatial_query_readiness_status_label")
@@ -163,7 +147,6 @@ class SpatialQuery(QWidget):
         self.column_mode_combo.currentIndexChanged.connect(self._on_column_mode_changed)
         self.existing_column_combo.currentIndexChanged.connect(self._on_existing_column_changed)
         self.new_column_edit.textChanged.connect(self._on_new_column_changed)
-        self.recalculate_centers_button.clicked.connect(self.recalculate_centers_requested.emit)
         self.run_button.clicked.connect(self.run_requested.emit)
 
         self._set_column_control_visibility()
@@ -492,7 +475,6 @@ class SpatialQuery(QWidget):
         column_name, target_error, target_description = self._resolve_target_intent()
         del column_name
         has_report = self._canonical_cache_report is not None
-        self.recalculate_centers_button.setEnabled(has_report)
         self.run_button.setEnabled(
             has_report
             and self._annotation_context.saved_shapes_name is not None
