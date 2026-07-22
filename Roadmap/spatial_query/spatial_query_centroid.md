@@ -740,11 +740,13 @@ selections survive refreshes.
   whose categories are all strings, and exclude region_key and instance_key.
 - Changing an upstream selection refreshes downstream options, closes pending
   dialogs, and cancels or invalidates active work.
-- Preserve a downstream selection if its stable identity remains valid. The
-  Spatial Query labels selector is deliberately left unbound with the
-  `Choose a labels element` placeholder when there is no previous explicit
-  selection or that selection is no longer available; it never silently
-  selects the first labels element. Other dependent controls follow their
+- Preserve a downstream selection if its stable identity remains valid, except
+  across an accepted coordinate-system change. That transition deliberately
+  clears the Spatial Query labels selection and all dependent state even when
+  the same labels element is available in both coordinate systems. The labels
+  selector then shows `Choose a labels element`; it never silently selects or
+  reloads an element. Removing the selected primary labels layer from napari
+  has the same clearing behavior. Other dependent controls follow their
   documented defaults or show a disabled placeholder with an explanation.
 
 The parent's coordinate-system combo participates in the shared
@@ -4507,10 +4509,115 @@ Exit criteria:
 - integration itself does not calculate centers, run a query, apply an
   annotation, or dirty a table.
 
+### Slice 6g: Spatial Query labels-selection and viewer-layer lifecycle
+
+Align Spatial Query with the established Object Classification labels
+selection lifecycle. A labels selection is an explicit request to load and
+display that element in the active coordinate system; it must not survive a
+coordinate-system transition or the removal of its corresponding primary
+labels layer merely because the SpatialData element itself remains available.
+
+This slice deliberately supersedes the shell-stage stable-identity
+preservation described in Slice 6e and the same-SpatialData preservation from
+Slice 6f for coordinate-system changes. Shapes-target and dirty-state-only
+context publications still preserve all Spatial Query selections and reuse the
+captured cache report.
+
+The coordinate-system transition is:
+
+```text
+accepted coordinate-system change
+    ↓
+AnnotationWidget publishes the new AnnotationContext
+    ↓
+SpatialQuery repopulates supported labels choices
+    ↓
+clear the labels selection even if its previous name remains available
+    ↓
+show "Choose a labels element"
+    ↓
+clear linked table, target-column, cache-report, styling-error, and readiness state
+    ↓
+do not load a labels layer and do not inspect the canonical-centers cache
+```
+
+The app-state boundary continues to remove Harpy-managed viewer layers outside
+the newly active coordinate system. Spatial Query must not attempt to preserve
+or immediately reload the old primary labels layer in the new coordinate
+system. The user makes a new explicit labels choice after the transition.
+
+Spatial Query also subscribes to the existing
+`ViewerAdapter.primary_labels_layers_changed` signal, as Object Classification
+already does. It resolves live availability through
+`get_loaded_primary_labels_layer()` rather than inspecting napari layer names
+or maintaining a second layer reference. The removal flow is:
+
+```text
+selected primary labels layer is removed from napari
+    ↓
+ViewerAdapter unregisters its binding
+    ↓
+primary_labels_layers_changed is emitted
+    ↓
+SpatialQuery finds no matching loaded primary layer
+    ↓
+clear labels selection and every dependent control/report
+    ↓
+show "Choose a labels element" and disable Run
+```
+
+Removing an unrelated primary labels layer must not affect the Spatial Query
+selection. Likewise, insertion of a primary labels layer by Viewer, Object
+Classification, or another consumer must not auto-select it in Spatial Query.
+The final invariant is one-way: a non-empty Spatial Query labels selection
+requires the matching primary labels layer to be loaded for the current
+SpatialData object and coordinate system, while a loaded layer does not imply
+that Spatial Query selected it.
+
+Keep this synchronization event-driven and control-owned:
+
+- do not add a parallel selected-labels field or retain a napari layer object
+  on `SpatialQuery`;
+- clear the combo and downstream state through one explicit helper so
+  coordinate changes and selected-layer removal follow the same contract;
+- guard only the widget's own synchronous load/style path if necessary to
+  avoid treating its successful layer registration as a disappearance;
+- clearing the selection must not inspect or mutate the canonical cache,
+  change the table, or affect the Shapes edit session;
+- widget destruction relies on Qt receiver teardown in the same way as the
+  existing Object Classification adapter-signal connection.
+
+Deliverables:
+
+- reset Spatial Query labels selection on every accepted coordinate-system
+  change, including when the previous element is valid in the new system;
+- retain the populated options but restore the `Choose a labels element`
+  placeholder and require a new explicit choice;
+- clear linked table, target-column controls, captured cache report and errors,
+  and Run readiness without performing cache inspection;
+- consume `primary_labels_layers_changed` and clear state when the selected
+  primary labels layer is manually removed;
+- ignore unrelated primary-label removal and all unrequested layer insertion;
+- update the earlier preservation-focused test and add focused
+  coordinate-change, selected-layer-removal, and unrelated-layer-removal
+  coverage.
+
+Exit criteria:
+
+- coordinate-system changes never preserve or auto-reload the Spatial Query
+  labels selection;
+- manual removal of the selected primary labels layer leaves no selected
+  labels/table/cache state behind and disables Run;
+- unrelated viewer-layer changes do not disturb a valid current selection;
+- no cache digest is recalculated until the user explicitly selects labels
+  again;
+- Object Classification and Spatial Query present the same labels-reset
+  behavior without sharing widget-local state.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child in Slice 6f to the existing core calculation, query, and
+Spatial Query child after Slice 6g to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
