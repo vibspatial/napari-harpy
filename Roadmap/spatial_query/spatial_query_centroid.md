@@ -4393,11 +4393,74 @@ Compose the two independently established children into the final dock
 hierarchy:
 
     AnnotationWidget
+        ├── shared Coordinate System selector
+        ├── shared Shapes selector
         ├── ShapesAnnotation
         └── SpatialQuery
 
+Keep the children stacked in that order in the parent's existing scroll area:
+Shapes Annotation first and Spatial Query directly below it. Do not introduce
+tabs, another nested navigation control, a second top-level widget surface, or
+a separate dock. Construct both children with the same napari viewer so they
+resolve the same per-viewer `HarpyAppState`.
+
 This slice wires shared selection and dirty-session context only. It does not
 yet implement asynchronous calculate-query-review-apply execution.
+
+Use the parent's existing final-context publication as the only Spatial Query
+context input:
+
+```python
+self.annotation_context_changed.connect(
+    self.spatial_query.apply_annotation_context,
+)
+```
+
+Establish this connection before the parent's initial `refresh_from_sdata()`
+so the Spatial Query child receives the first published context. Do not also
+call `SpatialQuery.apply_annotation_context()` through a parallel path. The
+parent continues to call Shapes child commands directly where it needs
+synchronous completion, return values, exception propagation, or signal
+blocking; `annotation_context_changed` is the already-established publication
+boundary for the final immutable context consumed by other children and
+observers.
+
+The normal publication order is:
+
+```text
+AnnotationWidget builds the candidate AnnotationContext
+    ↓
+ShapesAnnotation.apply_annotation_context(context)
+    ↓
+parent reads the Shapes child's final dirty state
+    ↓
+parent stores and emits the final AnnotationContext
+    ↓
+SpatialQuery.apply_annotation_context(context)
+```
+
+Dirty-state publication follows the same boundary:
+
+```text
+ShapesAnnotation.edit_session_dirty_changed(dirty)
+    ↓
+AnnotationWidget replaces has_unsaved_shapes_changes in its context
+    ↓
+AnnotationWidget emits annotation_context_changed(context)
+    ↓
+SpatialQuery refreshes its readiness from that context
+    ↓
+dirty=True disables Run but does not disable Recalculate centroids
+```
+
+Spatial Query must not read Shapes child state directly, and the parent must
+not duplicate the child's Run blocker. A successful Shapes save, discard, or
+other final dirty-to-clean transition republishes the resulting context so the
+Spatial Query child observes the current saved in-memory geometry. The child
+retains valid labels, table, target-mode, and column selections across context
+updates for the same SpatialData object; a SpatialData replacement resets
+those dependent selections through its existing
+`apply_annotation_context()` contract.
 
 Deliverables:
 
@@ -4405,8 +4468,10 @@ Deliverables:
   retaining one Annotation manifest entry and adding no separate Spatial Query
   dock contribution;
 - one parent-owned and published `AnnotationContext` shared with both children;
-- direct parent-to-Spatial-Query context publication: unsaved edits to the
-  selected Shapes element reach the child through
+- connect the parent's existing `annotation_context_changed` signal to the
+  Spatial Query child's `apply_annotation_context()` method before initial
+  refresh, with no duplicate direct context-delivery path;
+- unsaved edits to the selected Shapes element reach the child through
   `AnnotationContext.has_unsaved_shapes_changes`, exercising the child's
   existing Run blocker and explanation; no second parent-owned blocking rule
   or general cross-widget Shapes dirty-state registry is introduced;
@@ -4414,7 +4479,14 @@ Deliverables:
   it observes the current saved in-memory geometry;
 - preserve the Shapes edit session when the Spatial Query child activates the
   primary labels layer;
-- focused parent/child context, dirty-session, refresh, and regression tests.
+- keep `run_requested` and `recalculate_centers_requested` as unconnected
+  intent-only signals in this integration slice; do not construct or drive the
+  Spatial Query controller here;
+- focused tests covering initial context delivery, coordinate-system and
+  Shapes-target publication, dirty/clean transitions, successful-save refresh,
+  same-SpatialData selection preservation, SpatialData-replacement reset,
+  Shapes-session preservation during labels-layer activation, and existing
+  Shapes Annotation regressions.
 
 Exit criteria:
 
@@ -4426,6 +4498,8 @@ Exit criteria:
   the Spatial Query child and makes the saved in-memory geometry eligible;
 - parent context changes consistently refresh or invalidate dependent Spatial
   Query selections and intent;
+- Spatial Query action signals remain execution-free and cause no calculation,
+  query, dialog, table mutation, or dirty-state publication in this slice;
 - the existing Shapes Annotation workflow remains behaviorally unchanged;
 - integration itself does not calculate centers, run a query, apply an
   annotation, or dirty a table.
