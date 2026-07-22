@@ -23,7 +23,6 @@ from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_
 from napari_harpy.widgets.annotation.models import AnnotationContext
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
-    PRIMARY_BUTTON_STYLESHEET,
     CompactComboBox,
     build_input_control_stylesheet,
     create_form_label,
@@ -145,7 +144,7 @@ class SpatialQuery(QWidget):
         self.run_button.setObjectName("spatial_query_run_button")
         self.run_button.setAccessibleName("Run spatial query")
         self.run_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.run_button.setStyleSheet(PRIMARY_BUTTON_STYLESHEET)
+        self.run_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
         self.run_button.setToolTip(
             format_tooltip("Evaluate canonical label centers against the selected saved Shapes geometry.")
         )
