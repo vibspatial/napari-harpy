@@ -35,6 +35,7 @@ import napari_harpy.core.shapes_geometry as shapes_geometry_module
 import napari_harpy.widgets.annotation.widget as annotation_widget_module
 import napari_harpy.widgets.shapes_annotation._edit_guard as shapes_annotation_edit_guard_module
 import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
+import napari_harpy.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
 from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
@@ -2855,14 +2856,14 @@ def test_annotation_layer_edit_guard_vertex_insert_preserves_application_and_res
 
     def fail_restoration(
         bound_layer: Shapes,
-        baseline: shapes_annotation_edit_guard_module._PolygonVertexRowChangeBaseline,
+        baseline: shapes_annotation_layer_state_module._ShapesLayerBaseline,
     ) -> None:
         raise restoration_error
 
     monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
     monkeypatch.setattr(
         shapes_annotation_edit_guard_module,
-        "_restore_polygon_vertex_row_change_baseline",
+        "_restore_shapes_layer_baseline",
         fail_restoration,
     )
     guard.attach(layer)
@@ -3250,14 +3251,14 @@ def test_annotation_layer_edit_guard_vertex_remove_preserves_application_and_res
 
     def fail_restoration(
         bound_layer: Shapes,
-        baseline: shapes_annotation_edit_guard_module._PolygonVertexRowChangeBaseline,
+        baseline: shapes_annotation_layer_state_module._ShapesLayerBaseline,
     ) -> None:
         raise restoration_error
 
     monkeypatch.setattr(guard, "_replace_shape_row_preserving_layer_state", fail_after_rebuild)
     monkeypatch.setattr(
         shapes_annotation_edit_guard_module,
-        "_restore_polygon_vertex_row_change_baseline",
+        "_restore_shapes_layer_baseline",
         fail_restoration,
     )
     guard.attach(layer)

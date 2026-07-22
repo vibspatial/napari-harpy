@@ -2,12 +2,12 @@
 
 ## Status
 
-Investigation complete. The exact fixture and two model-level rollback tests
-are implemented as strict expected failures. Their final expectations must be
-updated to the insertion/deletion transaction contract described below:
-successful restoration consumes the application error, while failed
-restoration raises both errors. Production rollback and widget error handling
-remain planned.
+Investigation and phase 1 are complete. The shared `_ShapesLayerBaseline`,
+`_capture_shapes_layer_baseline(...)`, and
+`_restore_shapes_layer_baseline(...)` API now lives in `_layer_state.py`, and
+guarded insertion/deletion use it without a behavior change. The exact fixture
+and two Create-holes rollback tests remain strict expected failures pending
+phase 2, which will add the Create-holes transaction and widget error handling.
 
 This document records the `Create holes` failure observed while editing the
 `tumor` Shapes element in:
@@ -235,7 +235,7 @@ mechanism. The second phase uses that established mechanism for `Create
 holes`. Do not create a second, weaker rollback definition specifically for
 holes.
 
-### Phase 1: extract shared Shapes layer state recovery
+### Phase 1: extract shared Shapes layer state recovery (complete)
 
 Add the neutral module
 `napari_harpy.widgets.shapes_annotation._layer_state` with this private API:
