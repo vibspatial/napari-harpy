@@ -4095,32 +4095,111 @@ Exit criteria:
 
 ### Slice 6d: Spatial annotation viewer-styling foundation
 
+**Implementation status: Implemented.**
+
 This slice isolates the small amount of primary-label layer orchestration that
 is specific to spatial annotation. It must build on the existing generic
 table-backed labels styling API rather than reproduce palette resolution or
 Object Classification semantics.
+
+The boundary is one stateless function rather than a controller or another
+state-owning class:
+
+```python
+def load_and_style_spatial_annotation_labels(
+    viewer_adapter: ViewerAdapter,
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    labels_name: str,
+    table_name: str,
+    column_name: str,
+) -> LabelsLoadResult:
+    ...
+```
+
+It performs only the following orchestration:
+
+```text
+validate categorical annotation column
+    ↓
+ViewerAdapter.ensure_labels_loaded()               # primary layer
+    ↓
+apply_table_color_source_to_labels_layer()
+    ↓
+ViewerAdapter.sync_labels_display_after_colormap_change()
+    ↓
+ViewerAdapter.activate_layer()
+```
+
+The function constructs the following generic styling request internally; its
+callers do not need to understand generic viewer color-source configuration:
+
+```python
+TableColorSourceSpec(
+    table_name=table_name,
+    source_kind="obs_column",
+    value_key=column_name,
+    value_kind="categorical",
+)
+```
+
+The selected existing column must use pandas categorical dtype and contain
+only string categories, matching the Spatial Annotation apply contract. Expose
+the existing private validation in `core/spatial_query/annotation.py` as one
+shared core helper and use it from annotation preparation, this styling
+boundary, and the later column-discovery implementation. Column validation
+must happen before loading or changing a viewer layer. Table-binding
+validation remains owned by `apply_table_color_source_to_labels_layer()` and
+must not be repeated as a separate preflight scan.
 
 Deliverables:
 
 - a thin `widgets/spatial_query/viewer_styling.py` boundary for loading or
   reusing the selected labels element as the primary labels layer, activating
   it, and applying one selected annotation column as its color source;
+- reuse of the existing `LabelsLoadResult`, including the layer-created and
+  palette-resolution information; no spatial-query-specific result dataclass;
+- a shared core validator for categorical string annotation columns, replacing
+  the private Slice 5-only validation path rather than duplicating its rules;
 - valid stored `<column>_colors` palette preservation and stable
   position-derived display defaults when that palette is missing or invalid,
   through the shared styling and palette APIs;
-- missing annotation values rendered through the shared missing/unlabelled
+- missing annotation values rendered through the shared categorical missing
   color;
 - no table, palette, dirty-state, canonical-cache, or persisted-data mutation
   during layer loading or styling;
-- focused tests for primary-layer reuse, coloring, invalid or missing palette
-  fallback, missing values, and no-mutation behavior.
+- focused boundary tests for primary-layer creation, reuse, activation,
+  coloring, validation-before-loading, and no-mutation behavior. Existing
+  shared palette and labels-colormap tests remain responsible for stored,
+  missing, invalid, and missing-value color semantics.
+
+Palette resolution during styling is read-only:
+
+- a valid stored `<column>_colors` palette is used unchanged;
+- a missing or invalid stored palette produces the shared stable viewer-only
+  fallback;
+- styling never creates, repairs, or replaces `<column>_colors` in `.uns`;
+- palette persistence remains part of an effective Spatial Annotation apply;
+- a configured New column is not styleable until its first effective Apply has
+  created the categorical column.
 
 Exit criteria:
 
 - the styling boundary contains only spatial-annotation layer orchestration;
+- categorical-string column validation precedes viewer-layer loading or
+  restyling, while the generic styling helper performs table-binding
+  validation exactly once;
+- the selected labels element is loaded or reused as the registered primary
+  labels layer, styled, synchronized, and activated;
 - it does not introduce a second labels overlay, classifier-specific class
   semantics, a color-source ownership policy, or a widget controller;
+- it does not call `ViewerAdapter.ensure_styled_labels_loaded()`, because that
+  API represents a separate styled overlay rather than the shared primary
+  annotation layer;
 - all palette selection remains delegated to the shared core/viewer contracts;
+- only napari layer presentation state may change; the AnnData table, app
+  dirty manifest, canonical cache, and persisted data remain unchanged;
 - if inspection shows that an operation is already fully expressed by an
   existing helper, the spatial-query boundary delegates to that helper instead
   of wrapping it with additional state.
