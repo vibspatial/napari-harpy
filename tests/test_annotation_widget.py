@@ -12,6 +12,7 @@ from spatialdata import SpatialData
 import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.annotation.widget as annotation_widget_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
+import napari_harpy.widgets.spatial_query.widget as spatial_query_widget_module
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy.widgets.annotation.models import AnnotationContext
 from napari_harpy.widgets.annotation.widget import AnnotationWidget
@@ -195,6 +196,10 @@ def test_annotation_widget_starts_inactive_without_spatialdata(qtbot) -> None:
     assert parent.coordinate_system_combo.isEnabled() is False
     assert parent.shapes_combo.count() == 0
     assert parent.shapes_combo.isEnabled() is False
+    assert parent.content_layout.indexOf(parent.shapes_annotation) < parent.content_layout.indexOf(parent.spatial_query)
+    assert parent.spatial_query.annotation_context is parent.annotation_context
+    assert parent.spatial_query.run_button.isEnabled() is False
+    assert parent.spatial_query.recalculate_centers_button.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
@@ -204,7 +209,6 @@ def test_annotation_widget_starts_inactive_without_spatialdata(qtbot) -> None:
     assert "Shift-click polygons to add them to the selection" in create_holes_tooltip
     assert "Save the current annotation layer back" in _clean_tooltip_text(widget.save_shapes_button.toolTip())
     assert "No SpatialData Loaded" in _status_text(widget)
-
 
 
 def test_annotation_widget_destruction_unregisters_coordinate_change_participant(qtbot) -> None:
@@ -217,7 +221,6 @@ def test_annotation_widget_destruction_unregisters_coordinate_change_participant
 
     widget.deleteLater()
     qtbot.waitUntil(lambda: app_state._coordinate_system_change_participant is None)
-
 
 
 def test_annotation_widget_refreshes_when_shared_sdata_changes(
@@ -239,6 +242,84 @@ def test_annotation_widget_refreshes_when_shared_sdata_changes(
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is False
     assert "Shapes element name must not be empty" in _status_text(widget)
+    assert widget._test_parent.spatial_query.selected_spatialdata is sdata_blobs
+    assert widget._test_parent.spatial_query.selected_coordinate_system == "global"
+
+
+def test_annotation_widget_shapes_context_updates_reuse_spatial_query_cache_inspection(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    """Shapes-target and dirty-state updates must not repeat table digest inspection."""
+    inspection_count = 0
+    real_inspect = spatial_query_widget_module.inspect_canonical_cache
+
+    def record_inspection(*args, **kwargs):
+        nonlocal inspection_count
+        inspection_count += 1
+        return real_inspect(*args, **kwargs)
+
+    monkeypatch.setattr(spatial_query_widget_module, "inspect_canonical_cache", record_inspection)
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    parent = AnnotationWidget(viewer)
+    qtbot.addWidget(parent)
+    spatial_query = parent.spatial_query
+
+    assert spatial_query.app_state is parent.app_state
+    assert inspection_count == 1
+    cache_report = spatial_query.cache_report
+    selected_labels_name = spatial_query.selected_labels_name
+    selected_table_name = spatial_query.selected_table_name
+
+    parent.shapes_combo.setCurrentIndex(_combo_index_for_text(parent.shapes_combo, "blobs_polygons"))
+
+    assert inspection_count == 1
+    assert spatial_query.cache_report is cache_report
+    assert spatial_query.selected_labels_name == selected_labels_name
+    assert spatial_query.selected_table_name == selected_table_name
+    assert spatial_query.run_button.isEnabled() is True
+
+    parent.shapes_annotation.edit_session_dirty_changed.emit(True)
+
+    assert parent.annotation_context.has_unsaved_shapes_changes is True
+    assert spatial_query.annotation_context is parent.annotation_context
+    assert inspection_count == 1
+    assert spatial_query.cache_report is cache_report
+    assert spatial_query.run_button.isEnabled() is False
+    assert spatial_query.recalculate_centers_button.isEnabled() is True
+
+    parent.shapes_annotation.edit_session_dirty_changed.emit(False)
+
+    assert parent.annotation_context.has_unsaved_shapes_changes is False
+    assert inspection_count == 1
+    assert spatial_query.run_button.isEnabled() is True
+
+
+def test_annotation_widget_spatial_query_labels_activation_preserves_shapes_session(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    parent = AnnotationWidget(viewer)
+    qtbot.addWidget(parent)
+    parent.shapes_combo.setCurrentIndex(_combo_index_for_text(parent.shapes_combo, "blobs_polygons"))
+    annotation_layer = parent.shapes_annotation._annotation_layer
+    annotation_session = parent.shapes_annotation._annotation_session
+    assert annotation_layer is not None
+    assert annotation_session is not None
+    assert parent.spatial_query.labels_combo.count() > 1
+
+    parent.spatial_query.labels_combo.setCurrentIndex(1)
+
+    assert parent.shapes_annotation._annotation_layer is annotation_layer
+    assert parent.shapes_annotation._annotation_session is annotation_session
+    assert annotation_layer in viewer.layers
+    assert viewer.layers.selection.active is not annotation_layer
 
 
 def test_annotation_widget_shapes_selector_auto_opens_existing_target(
@@ -342,7 +423,6 @@ def test_annotation_widget_disables_create_when_coordinate_system_is_cleared(
     assert widget.selected_coordinate_system is None
     assert widget.create_layer_button.isEnabled() is False
     assert "Choose Coordinate System" in _status_text(widget)
-
 
 
 def test_annotation_widget_cancelling_coordinate_change_preserves_annotation_layer(
@@ -569,10 +649,16 @@ def test_annotation_widget_clean_saved_target_change_keeps_saved_layer_without_w
 ) -> None:
     viewer = DummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    spatial_query_cache_report = widget._test_parent.spatial_query.cache_report
     widget.create_layer_button.click()
     saved_layer = viewer.layers[0]
     _add_polygon(saved_layer)
     widget.save_shapes_button.click()
+
+    assert widget._test_parent.annotation_context.saved_shapes_name == "new_regions"
+    assert widget._test_parent.spatial_query.annotation_context is widget._test_parent.annotation_context
+    assert widget._test_parent.spatial_query.cache_report is spatial_query_cache_report
+    assert widget._test_parent.spatial_query.run_button.isEnabled() is True
 
     def fail_if_confirmed(*, reason: str) -> bool:
         raise AssertionError(f"Clean saved target switch should not warn: {reason}")
@@ -685,5 +771,3 @@ def test_annotation_widget_dirty_existing_target_switch_ignores_reloaded_old_act
     assert published_contexts[0] is parent.annotation_context
     assert parent.annotation_context.saved_shapes_name == "other_polygons"
     assert parent.annotation_context.has_unsaved_shapes_changes is False
-
-

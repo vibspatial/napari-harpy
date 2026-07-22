@@ -221,18 +221,37 @@ class SpatialQuery(QWidget):
         return self._canonical_cache_report
 
     def apply_annotation_context(self, context: AnnotationContext) -> None:
-        """Adopt parent-owned context and refresh dependent controls without styling."""
+        """Adopt parent context, refreshing selectors only when their dependencies change.
+
+        SpatialData identity and coordinate-system changes invalidate the
+        labels/table selection chain and its captured canonical-cache report.
+        Shapes-target and dirty-state changes affect Run readiness only and
+        therefore reuse the current selections and report.
+        """
         if not isinstance(context, AnnotationContext):
             raise TypeError("Spatial Query requires an AnnotationContext.")
 
-        preserve_selection = context.sdata is self._annotation_context.sdata
+        previous_context = self._annotation_context
+        selection_dependencies_changed = (
+            context.sdata is not previous_context.sdata
+            or context.coordinate_system != previous_context.coordinate_system
+        )
+        self._annotation_context = context
+
+        if not selection_dependencies_changed:
+            # Shapes target and dirty state affect Run readiness, but they do
+            # not invalidate the labels/table selection or its captured cache
+            # report. Avoid recalculating the table instance-set digest here.
+            self._refresh_controls_and_status()
+            return
+
+        preserve_selection = context.sdata is previous_context.sdata
         preferred_labels = self.selected_labels_name if preserve_selection else None
         preferred_table = self.selected_table_name if preserve_selection else None
         preferred_mode = self.selected_column_mode if preserve_selection else None
         preferred_existing_column = self._selected_existing_column_name() if preserve_selection else None
         preferred_new_column = self.new_column_edit.text() if preserve_selection else _DEFAULT_NEW_COLUMN_NAME
 
-        self._annotation_context = context
         self._layer_styling_error = None
         self._refresh_labels(preferred_labels)
         self._refresh_tables(preferred_table)

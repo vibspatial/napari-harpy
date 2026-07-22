@@ -4389,6 +4389,8 @@ Exit criteria:
 
 ### Slice 6f: Annotation parent/child integration
 
+**Implementation status: Implemented.**
+
 Compose the two independently established children into the final dock
 hierarchy:
 
@@ -4462,6 +4464,38 @@ updates for the same SpatialData object; a SpatialData replacement resets
 those dependent selections through its existing
 `apply_annotation_context()` contract.
 
+`SpatialQuery.apply_annotation_context()` must distinguish context fields that
+invalidate its selection dependencies from fields that affect only query
+readiness. A SpatialData identity or coordinate-system change refreshes the
+labels, linked tables, target columns, and canonical-centers cache report. A
+Shapes-target or `has_unsaved_shapes_changes` change for the same SpatialData
+and coordinate system updates readiness only; it must retain the current
+selectors and captured cache report and must not recalculate the selected
+region's instance-set digest:
+
+```python
+previous_context = self._annotation_context
+selection_dependencies_changed = (
+    context.sdata is not previous_context.sdata
+    or context.coordinate_system != previous_context.coordinate_system
+)
+self._annotation_context = context
+
+if not selection_dependencies_changed:
+    # Shapes target and dirty state affect Run readiness, but they do not
+    # invalidate the labels/table selection or its captured cache report.
+    self._refresh_controls_and_status()
+    return
+
+# Refresh dependent selectors and inspect the canonical-centers cache.
+```
+
+Keep this distinction explicit in the method docstring and retain an inline
+comment at the early return. The optimization is part of the lifecycle
+contract, not merely a micro-optimization: Shapes dirty-state publication must
+not trigger repeated table instance-set hashing. User-driven labels/table
+changes continue to inspect through their existing handlers.
+
 Deliverables:
 
 - embed the Spatial Query child in the existing parent Annotation widget while
@@ -4486,7 +4520,11 @@ Deliverables:
   Shapes-target publication, dirty/clean transitions, successful-save refresh,
   same-SpatialData selection preservation, SpatialData-replacement reset,
   Shapes-session preservation during labels-layer activation, and existing
-  Shapes Annotation regressions.
+  Shapes Annotation regressions;
+- a focused inspection-count test proving that dirty-only and Shapes-target-only
+  context publications reuse the captured cache report, while SpatialData or
+  coordinate-system changes follow the full dependent-selector and cache
+  refresh path.
 
 Exit criteria:
 
@@ -4496,6 +4534,8 @@ Exit criteria:
   of truth published to both children;
 - dirty selected Shapes geometry blocks Run, while a successful save refreshes
   the Spatial Query child and makes the saved in-memory geometry eligible;
+- dirty-only and Shapes-target-only context changes never re-inspect the
+  canonical-centers cache or recalculate its instance-set digest;
 - parent context changes consistently refresh or invalidate dependent Spatial
   Query selections and intent;
 - Spatial Query action signals remain execution-free and cause no calculation,

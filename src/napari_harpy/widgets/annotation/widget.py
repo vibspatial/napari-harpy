@@ -33,6 +33,7 @@ from napari_harpy.widgets.shared_styles import (
     format_feedback_identifier,
     format_tooltip,
 )
+from napari_harpy.widgets.spatial_query.widget import SpatialQuery
 
 if TYPE_CHECKING:
     import napari
@@ -47,14 +48,15 @@ _CREATE_SHAPES_OPTION_TEXT = "Create shapes..."
 
 
 class AnnotationWidget(QWidget):
-    """Own shared Annotation selection and coordinate the Shapes child.
+    """Own shared Annotation selection and coordinate both workflow children.
 
-    Parent-to-child coordination intentionally uses direct method calls, while
-    child-to-parent communication uses Qt signals. The parent owns and knows
-    its child, and its commands require synchronous completion, return values,
-    exception propagation, or signal blocking. The child does not know its
-    concrete parent; it reports events through signals so it remains reusable
-    and does not acquire a dependency on ``AnnotationWidget``.
+    Parent-to-child commands intentionally use direct method calls, while
+    child-to-parent communication and final shared-context publication use Qt
+    signals. The parent owns and knows its children, and its commands require
+    synchronous completion, return values, exception propagation, or signal
+    blocking. Children do not know their concrete parent; they report events
+    through signals or consume the immutable published context so they remain
+    reusable and do not acquire a dependency on ``AnnotationWidget``.
 
     Child → parent signals
     ----------------------
@@ -86,7 +88,27 @@ class AnnotationWidget(QWidget):
     ------------------------------------------
     AnnotationWidget.annotation_context_changed(context)
         → publishes the final shared context
-        → allows other child widgets and observers to react to context changes
+        → SpatialQuery.apply_annotation_context(context)
+        → allows other observers to react to context changes
+
+    Final context construction
+    --------------------------
+    The Shapes child participates in producing the final context, while the
+    Spatial Query child only consumes it:
+
+    parent builds candidate context
+        ↓
+    parent directly calls ShapesAnnotation under QSignalBlocker
+        ↓
+    ShapesAnnotation reaches its final edit-session state
+        ↓
+    parent reads final Shapes dirty state
+        ↓
+    parent builds and stores final AnnotationContext
+        ↓
+    parent emits annotation_context_changed
+        ↓
+    SpatialQuery consumes that final context
     """
 
     annotation_context_changed = Signal(object)
@@ -148,6 +170,8 @@ class AnnotationWidget(QWidget):
 
         self.shapes_annotation = ShapesAnnotation(napari_viewer)
         self.content_layout.addWidget(self.shapes_annotation)
+        self.spatial_query = SpatialQuery(napari_viewer)
+        self.content_layout.addWidget(self.spatial_query)
         self.content_layout.addStretch(1)
 
         self.scroll_area.setWidget(self.scroll_content)
@@ -160,6 +184,11 @@ class AnnotationWidget(QWidget):
         self.shapes_annotation.edit_session_dirty_changed.connect(self._on_child_dirty_state_changed)
         self.shapes_annotation.shapes_target_change_requested.connect(self._on_child_shapes_target_change_requested)
         self.shapes_annotation.edit_session_saved.connect(self._on_child_edit_session_saved)
+        # refresh_from_sdata() below publishes the initial final
+        # AnnotationContext. Connect Spatial Query first so it receives that
+        # publication. All later contexts also reach Spatial Query through this
+        # signal; we do not call apply_annotation_context() separately.
+        self.annotation_context_changed.connect(self.spatial_query.apply_annotation_context)
 
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -310,8 +339,9 @@ class AnnotationWidget(QWidget):
             context,
             has_unsaved_shapes_changes=self.shapes_annotation.has_unsaved_changes,
         )
-        # Parent → sibling children/observers: publish only the final context
-        # after the Shapes child has adopted the committed parent selection.
+        # Parent → Spatial Query child and other observers: publish only the
+        # final context after the Shapes child has adopted the committed parent
+        # selection.
         self.annotation_context_changed.emit(self._annotation_context)
 
     def _sync_coordinate_system_combo_selection(self, coordinate_system: str | None) -> None:
