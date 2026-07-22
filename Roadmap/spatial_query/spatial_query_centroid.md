@@ -796,8 +796,12 @@ Shapes Annotation session.
 The selected annotation target column is also the Spatial Query child's color
 source:
 
-- selecting a compatible existing target column applies its current values to
-  the primary labels layer immediately;
+- explicitly selecting a labels element or compatible existing target column
+  applies the current column values to the primary labels layer immediately;
+- programmatic context, selector, or table refreshes update the available
+  controls without silently reclaiming primary-layer styling from another
+  workflow; only an explicit user coloring action establishes Spatial Query as
+  the most recent color-source owner;
 - a New column cannot be used as a color source before it exists; after the
   first effective Apply creates it, the new column remains selected and is
   applied as the color source;
@@ -1626,26 +1630,35 @@ also replace the dataset.
 
 ## Validation and Error States
 
-Run remains disabled, with concise status and a detailed tooltip, when:
+The Spatial Query shell keeps Run disabled, with concise status and a detailed
+tooltip, when:
 
 - no SpatialData is loaded;
-- SpatialData/table is not backed by zarr;
 - no coordinate system is selected;
-- no eligible Shapes element is selected;
+- no saved eligible Shapes element is selected;
 - the selected Shapes has unsaved Shapes Annotation edits;
-- Shapes geometry is invalid, empty, unsupported, or cannot be unioned;
 - no eligible 2D labels element is selected;
 - labels has no readable 2D scale0 array;
-- Shapes or labels is unavailable in the selected coordinate system;
-- a required transform is missing, non-finite, unsupported, or non-invertible;
 - no linked table is selected;
 - table linkage metadata is missing/inconsistent;
 - selected-region instance IDs are missing, duplicated, non-positive, or not
   integer-like;
 - no valid target mode/column is configured;
 - a new column name is empty, invalid, reserved, or colliding;
-- an existing target column has an incompatible dtype;
-- a calculation/query is already running for the same request.
+- an existing target column has an incompatible dtype.
+
+After Run is requested, the execution flow performs one synchronous preflight
+before starting any worker. It rejects the intent when the Shapes geometry is
+invalid, empty, unsupported, or cannot be unioned; Shapes or labels is no
+longer available in the selected coordinate system; or the required transform
+is missing, non-finite, unsupported, or non-invertible. Once Slice 7 connects
+execution, an active calculation or query also disables Run until that
+operation finishes or is cancelled.
+
+An in-memory SpatialData object is a valid calculation, query, and annotation
+target. Backing by zarr is required only for persistence actions: Write Table
+State and Reload Table from zarr remain unavailable when the selected object
+is not backed.
 
 Runtime outcomes are distinct:
 
@@ -4210,6 +4223,127 @@ Build the Spatial Query child as an independently testable, embeddable widget.
 It is not registered as a napari dock and is not yet composed into the parent
 Annotation widget.
 
+The public child boundary is:
+
+```python
+class SpatialQuery(QWidget):
+    run_requested = Signal()
+    recalculate_centers_requested = Signal()
+
+    def apply_annotation_context(
+        self,
+        context: AnnotationContext,
+    ) -> None:
+        ...
+```
+
+Both signals are parameterless action intents in this slice. No calculation or
+query request dataclass is introduced merely to transport current control
+values. The future execution layer captures and validates immutable
+computational inputs synchronously when it accepts an intent, before starting
+background work.
+
+The child stores only the last parent-supplied `AnnotationContext` and the
+current `CanonicalCacheReport`, when inspection succeeds. Labels, table,
+target-column mode, and column name remain control-owned selection state and
+are read from combo `itemData()` or the new-column line edit. Do not mirror
+them in parallel `_selected_*` fields.
+
+The target-column controls are explicit rather than represented by another
+target dataclass:
+
+```text
+Target column mode: Existing column | New column
+
+Existing column
+    → compatible categorical-string column combo
+
+New column
+    → line edit initially containing "spatial_annotation"
+```
+
+Add one shared core discovery helper:
+
+```python
+def get_compatible_spatial_annotation_column_names(
+    sdata: SpatialData,
+    table_name: str,
+) -> list[str]:
+    ...
+```
+
+It preserves `.obs` column order, excludes the table `region_key` and
+`instance_key`, ignores non-string column names, and applies the same internal
+categorical-string predicate as
+`require_compatible_spatial_annotation_column()`. Discovery and fail-loud
+validation must not maintain separate definitions of column compatibility.
+
+Selection dependencies are applied in this order:
+
+```text
+AnnotationContext.sdata + coordinate_system
+    → supported 2D labels elements in that coordinate system
+        → tables declaring the labels element as an annotated region
+            → existing compatible columns or validated new-column intent
+                → canonical-cache inspection for the labels/table pair
+```
+
+Refresh dependent controls with signals blocked. Preserve the current item by
+stable identity when it remains valid; otherwise use the documented
+`spatial_annotation` default policy. A create-new Shapes target has no saved
+query geometry. A supplied context with no `saved_shapes_name`, or with
+`has_unsaved_shapes_changes=True`, disables Run in this child. Slice 6f wires
+the live parent publication into this already-defined behavior rather than
+adding another dirty-session policy.
+
+Inspect the canonical cache once after a labels/table selection settles and
+retain that report until an upstream selection or explicit refresh invalidates
+it. Do not rebuild the report during status-card rendering. Report states map
+to the shell as follows:
+
+```text
+VALID
+    → Run will reuse existing centers
+
+ABSENT
+    → Run will calculate centers first
+
+PARTIAL
+    → Run will calculate centers for the selected labels region
+
+STALE
+    → Run will refresh centers for the selected labels region
+
+INVALID
+    → Run will report the mismatch and rebuild conservatively
+```
+
+Every successfully constructed report is rebuild-authorized. Recalculate
+centroids therefore requires only a valid current labels/table report; it does
+not require saved Shapes geometry or a target column. Run additionally
+requires a saved clean Shapes context and a valid target-column intent.
+
+Viewer styling is user-driven in this shell. An explicit labels or existing
+target-column selection uses
+`load_and_style_spatial_annotation_labels()` to load or reuse, style, and
+activate the primary labels layer. Programmatic context and dependent-selector
+refreshes do not silently reapply Spatial Query coloring. A New column is not
+a color source before its first effective Apply.
+
+Add `widgets/spatial_query/status_card.py` as a pure status-spec builder. It
+receives already-derived selection and cache state and returns presentation
+data; it does not inspect SpatialData, mutate widget state, or own controller
+messages. Busy, cancellation, execution success, and execution error cards are
+added when the execution flow is connected.
+
+Shell validation remains cheap and synchronous. Before enabling Run it checks
+the saved/clean Shapes context, supported 2D labels selection, linked table and
+successful canonical inspection, and target-column intent. Complete
+Shapes-geometry and element-to-element transformation snapshot validation is
+performed synchronously by the execution flow after Run is requested and
+before any expensive centroid worker starts; the shell must not duplicate the
+core query-construction contract.
+
 Deliverables:
 
 - an unregistered Spatial Query child accepting the parent-supplied
@@ -4229,7 +4363,9 @@ Deliverables:
 
 The action controls in this shell validate state and emit intent only. They do
 not calculate centers, run a query, open a review dialog, mutate a table, or
-publish dirty state; those execution paths belong to Slice 7.
+publish dirty state; those execution paths belong to Slice 7. The existing
+`SpatialQueryController` is deliberately not constructed or driven by this
+shell.
 
 Exit criteria:
 
@@ -4237,9 +4373,14 @@ Exit criteria:
 - first-run cost and cache reuse state are clear before execution;
 - Recalculate centroids is available from a valid labels/table selection even
   when Shapes or annotation-target inputs are incomplete;
+- create-new or dirty Shapes context disables Run directly in the child, while
+  Recalculate remains governed only by the labels/table report;
 - a compatible existing annotation column can be visualized without mutating
   the table, and a configured New column is not treated as available before
   its first effective Apply;
+- programmatic refresh cannot silently reclaim primary-label coloring;
+- in-memory SpatialData remains eligible for calculation and annotation even
+  though persistence actions require a backed object;
 - selection, inspection, and styling never mutate or dirty a table;
 - focused tests can drive the child with supplied context without constructing
   the parent widget.
@@ -4262,10 +4403,11 @@ Deliverables:
   retaining one Annotation manifest entry and adding no separate Spatial Query
   dock contribution;
 - one parent-owned and published `AnnotationContext` shared with both children;
-- direct parent-to-Spatial-Query dirty-session blocking: unsaved edits to the
-  selected Shapes element disable Run, invalidate current query intent, and
-  explain that the user must save or discard; no general cross-widget Shapes
-  dirty-state registry is introduced;
+- direct parent-to-Spatial-Query context publication: unsaved edits to the
+  selected Shapes element reach the child through
+  `AnnotationContext.has_unsaved_shapes_changes`, exercising the child's
+  existing Run blocker and explanation; no second parent-owned blocking rule
+  or general cross-widget Shapes dirty-state registry is introduced;
 - refresh the Spatial Query child after a successful Shapes save or discard so
   it observes the current saved in-memory geometry;
 - preserve the Shapes edit session when the Spatial Query child activates the
