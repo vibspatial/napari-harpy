@@ -4219,6 +4219,8 @@ Exit criteria:
 
 ### Slice 6e: Spatial Query child widget shell
 
+**Implementation status: Implemented.**
+
 Build the Spatial Query child as an independently testable, embeddable widget.
 It is not registered as a napari dock and is not yet composed into the parent
 Annotation widget.

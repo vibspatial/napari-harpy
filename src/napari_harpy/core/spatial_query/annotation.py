@@ -359,9 +359,32 @@ def require_compatible_spatial_annotation_column(table: AnnData, column_name: st
     values = table.obs[column_name]
     if not isinstance(values.dtype, pd.CategoricalDtype):
         raise ValueError(f"Existing annotation column `{column_name}` must be categorical.")
-    if any(not isinstance(category, str) for category in values.cat.categories):
+    if not _is_compatible_spatial_annotation_column(values):
         raise ValueError(f"Existing annotation column `{column_name}` must contain only string categories.")
     return values
+
+
+def get_compatible_spatial_annotation_column_names(
+    sdata: SpatialData,
+    table_name: str,
+) -> list[str]:
+    """Return compatible existing annotation columns in table order."""
+    table = sdata.tables[table_name]
+    table_metadata = get_table_metadata(sdata, table_name)
+    excluded_columns = {table_metadata.region_key, table_metadata.instance_key}
+    return [
+        column_name
+        for column_name in table.obs.columns
+        if isinstance(column_name, str)
+        and column_name not in excluded_columns
+        and _is_compatible_spatial_annotation_column(table.obs[column_name])
+    ]
+
+
+def _is_compatible_spatial_annotation_column(values: pd.Series) -> bool:
+    return isinstance(values.dtype, pd.CategoricalDtype) and all(
+        isinstance(category, str) for category in values.cat.categories
+    )
 
 
 def _resolve_query_row_positions(

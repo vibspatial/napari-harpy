@@ -14,10 +14,24 @@ from napari_harpy.core.spatial_query import (
     apply_canonical_cache_update,
     apply_spatial_annotation,
     build_canonical_cache_update_payload,
+    get_compatible_spatial_annotation_column_names,
     inspect_canonical_cache,
     prepare_spatial_annotation,
     summarize_spatial_annotation,
 )
+
+
+def test_compatible_annotation_column_discovery_uses_shared_contract_and_table_order(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    table.obs["first"] = pd.Categorical(["A"] * table.n_obs, categories=["A"])
+    table.obs["plain_string"] = pd.Series(["A"] * table.n_obs, index=table.obs.index, dtype="string")
+    table.obs["integer_category"] = pd.Categorical([1] * table.n_obs, categories=[1])
+    table.obs["empty"] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
+    table.obs[1] = pd.Categorical(["ignored"] * table.n_obs, categories=["ignored"])
+
+    assert get_compatible_spatial_annotation_column_names(sdata_blobs, "table") == ["first", "empty"]
 
 
 def test_existing_annotation_set_extends_category_and_valid_palette_stably(
