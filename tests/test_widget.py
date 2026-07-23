@@ -28,7 +28,7 @@ import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
 from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
-from napari_harpy.core.class_palette import default_class_colors
+from napari_harpy.core.class_palette import DEFAULT_NEUTRAL_COLOR, default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
@@ -865,12 +865,73 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     assert widget.selected_table_name == "table"
     assert widget.warning_status.isHidden()
     assert widget.warning_status.text() == ""
+    assert "Table Binding Invalid" in widget.selection_status.text()
     assert "contains duplicate values within that region" in widget.selection_status.text()
     assert not widget.color_by_combo.isEnabled()
     assert not widget.class_spinbox.isEnabled()
     assert not widget.retrain_button.isEnabled()
     assert not widget.sync_button.isEnabled()
     assert not widget.reload_button.isEnabled()
+
+
+def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_neutrally(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        np.zeros(table.n_obs, dtype=np.int64),
+        categories=[0],
+    )
+    previous_obs = table.obs.copy(deep=True)
+    previous_uns = table.uns.copy()
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.selected_table_name == "table"
+    assert "Table Binding Invalid" in widget.selection_status.text()
+    assert "Object Classification state is invalid" in widget.selection_status.text()
+    assert "user_class" in widget.selection_status.text()
+    assert "positive integer categories" in widget.selection_status.text()
+    assert widget._annotation_controller._selected_table_name is None
+    assert widget._classifier_controller._selected_table_name is None
+    assert widget._viewer_styling_controller._selected_table_name is None
+    assert widget._persistence_controller._selected_table_name is None
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(5), np.asarray(to_rgba(DEFAULT_NEUTRAL_COLOR), dtype=np.float32))
+    assert not widget.class_spinbox.isEnabled()
+    assert not widget.apply_class_button.isEnabled()
+    assert not widget.clear_class_button.isEnabled()
+    assert not widget.feature_matrix_combo.isEnabled()
+    assert not widget.register_feature_matrix_button.isEnabled()
+    assert not widget.color_by_combo.isEnabled()
+    assert not widget.auto_train_checkbox.isEnabled()
+    assert not widget.retrain_button.isEnabled()
+    assert not widget.export_classifier_button.isEnabled()
+    assert not widget.sync_button.isEnabled()
+    assert not widget.reload_button.isEnabled()
+    assert widget.warning_status.isHidden()
+    pd.testing.assert_frame_equal(table.obs, previous_obs)
+    assert table.uns == previous_uns
+    assert not app_state.is_table_dirty(sdata_blobs, "table")
+
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1, *([pd.NA] * (table.n_obs - 1))],
+        categories=[1],
+    )
+    widget._bind_current_selection()
+
+    assert widget._table_binding_error is None
+    assert widget._annotation_controller._selected_table_name == "table"
+    assert widget._classifier_controller._selected_table_name == "table"
+    assert widget.color_by_combo.isEnabled()
+    assert widget.auto_train_checkbox.isEnabled()
 
 
 def test_widget_auto_loads_selected_segmentation_when_shared_sdata_is_set(qtbot, sdata_blobs: SpatialData) -> None:
@@ -3092,6 +3153,10 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
 
 def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(
+        np.ones(table.n_obs, dtype=np.int64),
+        categories=[1],
+    )
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
         np.linspace(0.0, 1.0, table.n_obs),
         index=table.obs.index,

@@ -11,6 +11,10 @@ from spatialdata import SpatialData
 import napari_harpy.widgets.object_classification.controller as classifier_module
 from napari_harpy.core.annotation import USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
+from napari_harpy.core.classifier import (
+    ObjectClassificationStateError,
+    validate_object_classification_table_state,
+)
 from napari_harpy.core.classifier_export import read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND, FeatureMatrixMetadataState
 from napari_harpy.widgets.object_classification.controller import (
@@ -22,6 +26,81 @@ from napari_harpy.widgets.object_classification.controller import (
 )
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
+
+
+def test_object_classification_state_validation_is_read_only_for_canonical_columns(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    user_values = [1, pd.NA, 2, *([pd.NA] * (table.n_obs - 3))]
+    pred_values = [2, pd.NA, 1, *([pd.NA] * (table.n_obs - 3))]
+    confidence_values = [0.8, np.nan, 0.7, *([np.nan] * (table.n_obs - 3))]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(user_values, categories=[1, 2])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[1, 2])
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
+        confidence_values,
+        index=table.obs.index,
+        dtype="float64",
+    )
+    previous_obs = table.obs.copy(deep=True)
+    previous_uns = table.uns.copy()
+
+    validate_object_classification_table_state(table)
+
+    pd.testing.assert_frame_equal(table.obs, previous_obs)
+    assert table.uns == previous_uns
+
+
+@pytest.mark.parametrize(
+    ("values", "expected_message"),
+    [
+        (pd.Series([1, 2], dtype="int64"), "categorical dtype"),
+        (pd.Series(pd.Categorical([0, 1], categories=[0, 1])), "invalid category"),
+        (pd.Series(pd.Categorical(["1", "2"])), "invalid category"),
+    ],
+)
+def test_object_classification_state_validation_rejects_invalid_user_class(
+    sdata_blobs: SpatialData,
+    values: pd.Series,
+    expected_message: str,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Series(
+        np.resize(values.to_numpy(), table.n_obs),
+        index=table.obs.index,
+        dtype=values.dtype,
+    )
+
+    with pytest.raises(ObjectClassificationStateError, match=expected_message):
+        validate_object_classification_table_state(table)
+
+
+@pytest.mark.parametrize("invalid_state", ["incomplete", "integer_confidence", "mismatched", "out_of_range"])
+def test_object_classification_state_validation_rejects_invalid_prediction_state(
+    sdata_blobs: SpatialData,
+    invalid_state: str,
+) -> None:
+    table = sdata_blobs["table"]
+    pred_values = pd.Categorical([1, pd.NA, *([pd.NA] * (table.n_obs - 2))], categories=[1])
+    table.obs[PRED_CLASS_COLUMN] = pred_values
+    if invalid_state == "incomplete":
+        expected_message = "must either both exist or both be absent"
+    elif invalid_state == "integer_confidence":
+        table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(1, index=table.obs.index, dtype="int64")
+        expected_message = "floating-point dtype"
+    elif invalid_state == "mismatched":
+        table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(0.5, index=table.obs.index, dtype="float64")
+        expected_message = "missing exactly when"
+    else:
+        table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
+            [1.5, np.nan, *([np.nan] * (table.n_obs - 2))],
+            index=table.obs.index,
+            dtype="float64",
+        )
+        expected_message = "between 0 and 1"
+
+    with pytest.raises(ObjectClassificationStateError, match=expected_message):
+        validate_object_classification_table_state(table)
 
 
 class _DeferredWorker(QObject):

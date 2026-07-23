@@ -12,6 +12,7 @@ import pandas as pd
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from numpy.typing import NDArray
 
+from napari_harpy.core.annotation import USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import normalize_class_values, set_class_annotation_state
 from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
 from napari_harpy.core.feature_matrix_metadata import (
@@ -43,6 +44,75 @@ PRED_CLASS_COLORS_KEY = f"{PRED_CLASS_COLUMN}_colors"
 PRED_CONFIDENCE_COLUMN = "pred_confidence"
 CLASSIFIER_CONFIG_KEY = "classifier_config"
 CLASSIFIER_APPLY_CONFIG_KEY = "classifier_apply_config"
+
+
+class ObjectClassificationStateError(ValueError):
+    """Raised when existing Object Classification columns are not canonical."""
+
+
+def validate_object_classification_table_state(table: AnnData) -> None:
+    """Validate existing Object Classification columns without mutation."""
+    if USER_CLASS_COLUMN in table.obs:
+        _validate_categorical_class_column(table.obs[USER_CLASS_COLUMN], column_name=USER_CLASS_COLUMN)
+
+    has_pred_class = PRED_CLASS_COLUMN in table.obs
+    has_pred_confidence = PRED_CONFIDENCE_COLUMN in table.obs
+    if not has_pred_class and not has_pred_confidence:
+        return
+    if has_pred_class != has_pred_confidence:
+        missing_column = PRED_CONFIDENCE_COLUMN if has_pred_class else PRED_CLASS_COLUMN
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{PRED_CLASS_COLUMN}` and `{PRED_CONFIDENCE_COLUMN}` must either both exist or both be absent. "
+            f"Missing column: `{missing_column}`."
+        )
+
+    pred_class = table.obs[PRED_CLASS_COLUMN]
+    pred_confidence = table.obs[PRED_CONFIDENCE_COLUMN]
+    _validate_categorical_class_column(pred_class, column_name=PRED_CLASS_COLUMN)
+    if not pd.api.types.is_float_dtype(pred_confidence.dtype):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{PRED_CONFIDENCE_COLUMN}` must use a floating-point dtype with values between 0 and 1. "
+            f"Observed dtype: `{pred_confidence.dtype}`."
+        )
+
+    pred_class_missing = pred_class.isna().to_numpy(dtype=bool, copy=False)
+    pred_confidence_missing = pred_confidence.isna().to_numpy(dtype=bool, copy=False)
+    mismatched_missingness = pred_class_missing != pred_confidence_missing
+    if bool(mismatched_missingness.any()):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{PRED_CONFIDENCE_COLUMN}` must be missing exactly when `{PRED_CLASS_COLUMN}` is missing. "
+            f"Found {int(mismatched_missingness.sum())} mismatched row(s)."
+        )
+
+    confidence_values = pred_confidence.loc[~pred_confidence_missing].to_numpy(dtype=np.float64, copy=False)
+    if confidence_values.size and (
+        not bool(np.isfinite(confidence_values).all())
+        or bool(((confidence_values < 0.0) | (confidence_values > 1.0)).any())
+    ):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"non-missing `{PRED_CONFIDENCE_COLUMN}` values must be finite floating-point values between 0 and 1."
+        )
+
+
+def _validate_categorical_class_column(values: pd.Series, *, column_name: str) -> None:
+    if not isinstance(values.dtype, pd.CategoricalDtype):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{column_name}` must use a categorical dtype with positive integer categories. "
+            f"Observed dtype: `{values.dtype}`."
+        )
+
+    for category in values.cat.categories:
+        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)) or int(category) <= 0:
+            raise ObjectClassificationStateError(
+                "Object Classification state is invalid: "
+                f"`{column_name}` must use a categorical dtype with positive integer categories. "
+                f"Observed invalid category: `{category!r}`. Rows without a class must be stored as missing values."
+            )
 
 
 @dataclass(frozen=True)

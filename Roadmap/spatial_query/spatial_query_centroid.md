@@ -5395,7 +5395,7 @@ Exit criteria:
 
 ### Slice 6l: Graceful invalid Object Classification class state
 
-**Implementation status: Planned.**
+**Implementation status: Implemented.**
 
 Keep the strict missing-value class contract introduced in Slice 6k, but make
 invalid existing Object Classification columns a controlled widget validation

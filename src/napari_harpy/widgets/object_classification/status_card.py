@@ -133,13 +133,13 @@ def build_object_classification_selection_status_card_spec(
 
     if table_binding_error is not None:
         return _ObjectClassificationStatusCardSpec(
-            title="Selection Warning",
+            title="Table Binding Invalid",
             lines=(
                 *layer_preparation_lines,
                 f'Bound to labels element "{selected_segmentation_name}".',
                 table_binding_error,
             ),
-            kind="warning",
+            kind="error",
         )
 
     if selected_instance_id is None:

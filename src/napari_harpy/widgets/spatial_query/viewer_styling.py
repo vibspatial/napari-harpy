@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from napari.utils.colormaps import DirectLabelColormap
-
 from napari_harpy.core._color_source import TableColorSourceSpec
 from napari_harpy.core.spatial_query.annotation import require_compatible_spatial_annotation_column
 from napari_harpy.core.spatialdata import get_table
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.adapter import ViewerAdapter
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
+    apply_neutral_labels_style,
     apply_table_color_source_to_labels_layer,
 )
 
@@ -33,17 +31,7 @@ def load_and_style_unannotated_spatial_annotation_labels(
         labels_name,
         coordinate_system,
     )
-    # A compact colormap is unnecessary here: `None` is the fallback for every
-    # unmapped foreground label, so this remains a two-entry mapping even for
-    # hundreds of thousands of instances. CompactLabelColormap is reserved for
-    # table-backed styling that needs an explicit label-id -> texture-code map.
-    load_result.layer.colormap = DirectLabelColormap(
-        color_dict={
-            None: MISSING_CATEGORICAL_COLOR,
-            0: "transparent",
-        },
-        background_value=0,
-    )
+    apply_neutral_labels_style(load_result.layer)
     viewer_adapter.sync_labels_display_after_colormap_change(load_result.layer)
     viewer_adapter.activate_layer(load_result.layer)
 

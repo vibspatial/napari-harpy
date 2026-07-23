@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 from napari.layers import Labels
-from napari.utils.colormaps import label_colormap
+from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
 from napari_harpy.core._color_source import (
     TableColorSourceSpec,
@@ -14,6 +14,7 @@ from napari_harpy.core._color_source import (
     validate_table_color_value_kind,
 )
 from napari_harpy.core.class_palette import (
+    DEFAULT_NEUTRAL_COLOR,
     CategoricalPaletteSource,
     resolve_table_categorical_palette,
     validate_categorical_palette_source,
@@ -57,6 +58,20 @@ class LabelsLoadResult(LabelsStyleResult):
 
     layer: Labels
     created: bool
+
+
+def apply_neutral_labels_style(layer: Labels) -> None:
+    """Style every foreground label neutrally without table-backed values."""
+    # A compact colormap is unnecessary: `None` is the fallback for every
+    # unmapped foreground label, so this remains a two-entry mapping even for
+    # hundreds of thousands of instances.
+    layer.colormap = DirectLabelColormap(
+        color_dict={
+            None: DEFAULT_NEUTRAL_COLOR,
+            0: "transparent",
+        },
+        background_value=0,
+    )
 
 
 def apply_table_color_source_to_labels_layer(

@@ -37,6 +37,10 @@ from napari_harpy.core.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
+from napari_harpy.core.classifier import (
+    ObjectClassificationStateError,
+    validate_object_classification_table_state,
+)
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
@@ -55,6 +59,7 @@ from napari_harpy.core.spatialdata import (
     get_table_obsm_keys,
     validate_table_binding,
 )
+from napari_harpy.viewer.labels_styling import apply_neutral_labels_style
 from napari_harpy.widgets.object_classification.annotation_controller import (
     AnnotationController,
     UserClassAnnotationChange,
@@ -994,6 +999,12 @@ class ObjectClassificationWidget(QWidget):
         self._selected_prediction_scope = DEFAULT_PREDICTION_SCOPE
 
     def _validate_selected_table_binding(self) -> str | None:
+        """Return why the selected table cannot be bound, without mutating it.
+
+        Object Classification state is inspected after the structural
+        labels/table relationship and before any controller adopts the table.
+        Both failures therefore use the same all-or-nothing binding boundary.
+        """
         if (
             self.selected_spatialdata is None
             or self.selected_segmentation_name is None
@@ -1004,6 +1015,12 @@ class ObjectClassificationWidget(QWidget):
         try:
             validate_table_binding(self.selected_spatialdata, self.selected_segmentation_name, self.selected_table_name)
         except ValueError as error:
+            return str(error)
+
+        table = get_table(self.selected_spatialdata, self.selected_table_name)
+        try:
+            validate_object_classification_table_state(table)
+        except ObjectClassificationStateError as error:
             return str(error)
 
         return None
@@ -1023,15 +1040,17 @@ class ObjectClassificationWidget(QWidget):
         updating those references, not by materializing new table objects.
 
         Before rebinding, the selected table is validated against the selected
-        labels layer. If the linkage is invalid, the table is intentionally
-        downgraded to an ``effective_table_name`` of ``None`` so the
-        controllers can stay bound to the current ``SpatialData``/labels
-        context without attempting table-backed operations that would be
-        inconsistent.
+        labels layer and its existing Object Classification columns are
+        inspected read-only. If either contract is invalid, the table is
+        intentionally downgraded to an ``effective_table_name`` of ``None`` for
+        every table-dependent controller. The selected Labels layer remains
+        bound and receives neutral styling, while the status card explains why
+        the selected table was rejected.
 
         The method also:
 
         - validates whether the selected table can annotate the selected labels layer
+          and contains canonical Object Classification state
         - propagates that effective binding to annotation, classifier, styling,
           and persistence controllers
         - lets annotation/classifier controllers canonicalize existing class
@@ -1161,6 +1180,13 @@ class ObjectClassificationWidget(QWidget):
 
     def _update_warning_status_card(self) -> None:
         """Refresh the shared warning slot used by object-classification setup."""
+        if self._table_binding_error is not None:
+            # The primary selection status already reports the blocking table
+            # error. Clear this secondary slot so it cannot retain a stale
+            # feature-metadata or layer-styling warning for the rejected table.
+            self._apply_status_card_spec(self.warning_status, None)
+            return
+
         feature_metadata_warning_message = None
         if self._layer_styling_error is None:
             feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
@@ -1180,6 +1206,7 @@ class ObjectClassificationWidget(QWidget):
         self,
         feature_matrix_metadata_state: FeatureMatrixMetadataState | None,
     ) -> None:
+        self.feature_matrix_combo.setEnabled(self._table_binding_error is None and bool(self._feature_matrix_keys))
         if self._table_binding_error is not None:
             self.register_feature_matrix_button.setEnabled(False)
             self._set_tooltip(self.register_feature_matrix_button, self._table_binding_error)
@@ -1421,6 +1448,8 @@ class ObjectClassificationWidget(QWidget):
         self._set_tooltip(self.color_by_combo, tooltip)
 
     def _update_classifier_controls(self) -> None:
+        self.auto_train_checkbox.setEnabled(self._table_binding_error is None)
+        self._update_auto_train_tooltip()
         can_configure_scope = (
             self.selected_spatialdata is not None
             and self.selected_segmentation_name is not None
@@ -1769,6 +1798,18 @@ class ObjectClassificationWidget(QWidget):
         )
 
     def _refresh_layer_styling(self) -> None:
+        if self._table_binding_error is not None:
+            layer = self._annotation_controller.labels_layer
+            if layer is not None:
+                # The labels layer is already loaded. Replace any previous
+                # table-backed colors with the shared neutral style because
+                # the rejected table cannot provide trustworthy class values.
+                apply_neutral_labels_style(layer)
+                self._app_state.viewer_adapter.sync_labels_display_after_colormap_change(layer)
+            self._layer_styling_error = None
+            self._update_warning_status_card()
+            return
+
         try:
             self._viewer_styling_controller.refresh()
         except ClassStateError as error:
@@ -1828,7 +1869,9 @@ class ObjectClassificationWidget(QWidget):
         self._refresh_layer_styling()
 
     def _update_auto_train_tooltip(self) -> None:
-        if self._auto_train_enabled:
+        if self._table_binding_error is not None:
+            tooltip = self._table_binding_error
+        elif self._auto_train_enabled:
             tooltip = "Automatically train the classifier after each annotation."
         else:
             tooltip = "Keep predictions stale while annotating; click Train Classifier to update predictions."
