@@ -4856,11 +4856,78 @@ compatible Existing column selected
     → use its current categorical values
     → use its valid stored palette or the shared read-only fallback palette
 
-first effective Apply creates the New column
+Slice 7: first effective Apply creates the New column
     → store the categorical column and its palette atomically
     → keep that column selected as an Existing target
     → immediately replace the neutral presentation with table-backed coloring
 ```
+
+Keep the current named-default behavior. `spatial_annotation` is the preferred
+conventional target, but it is not an unconditional color source:
+
+```text
+user explicitly selects a labels element in Spatial Query
+    → select its linked annotation table
+    → discover compatible categorical string columns
+    ↓
+compatible "spatial_annotation" column exists
+    → select Existing column mode
+    → select "spatial_annotation"
+    → color from its current categorical values and resolved palette
+
+"spatial_annotation" column does not exist
+    → select New column mode
+    → propose "spatial_annotation" as the new column name
+    → apply the neutral unannotated presentation
+
+"spatial_annotation" column exists but is incompatible
+    → exclude it from the Existing-column choices
+    → do not convert, repair, or overwrite it
+    → select New column mode with the colliding proposed default name
+    → apply the neutral unannotated presentation
+    → disable Run until the target collision is resolved
+    → require another compatible Existing column or a different New name
+```
+
+Compatibility here means pandas categorical dtype with only string categories.
+Plain integer, string, or object dtype is not compatible, and neither is a
+categorical column with non-string categories.
+
+The incompatible named-default branch must explain why the existing
+`spatial_annotation` column was not selected. A generic message that the New
+column name already exists is insufficient on its own. The status card should
+state that the existing column cannot be used because Spatial Query requires a
+categorical column with string categories, and direct the user to select
+another compatible Existing column or enter a different New-column name.
+
+Do not automatically select the first differently named compatible column.
+Those columns remain available in the Existing-column dropdown, but choosing
+one is an explicit user action. Once the user explicitly selects another
+compatible Existing column, that column is both the annotation target and the
+color source; later programmatic refreshes must not force the selection back
+to `spatial_annotation`.
+
+This convention parallels Object Classification without erasing the difference
+between the workflows:
+
+```text
+Object Classification
+    → fixed conventional annotation column: "user_class"
+    → available: color from its values
+    → absent: show the unannotated presentation
+
+Spatial Query
+    → preferred conventional annotation column: "spatial_annotation"
+    → compatible and selected: color from its values
+    → absent: propose it as New and show the neutral presentation
+    → another compatible Existing column may be selected explicitly
+```
+
+Only an explicit labels or annotation-target selection inside Spatial Query
+may claim the primary layer's presentation. A labels layer loaded by Viewer,
+Object Classification, or another workflow must not cause Spatial Query to
+select `spatial_annotation` or restyle that layer merely because it appeared
+in napari.
 
 Keep this as a stateless presentation boundary beside
 `load_and_style_spatial_annotation_labels()` in
@@ -4892,6 +4959,26 @@ than materializing one value or color per instance. Applying it must not scan
 labels pixels, calculate canonical centers, derive table row mappings, or
 install fake layer features for a column that does not exist.
 
+The implementation ownership is intentionally split at the Apply boundary:
+
+```text
+Slice 6i
+    → provide the stateless neutral-style helper
+    → apply neutral or Existing-column styling from explicit selection actions
+    → expose the styling paths needed after a later annotation Apply
+
+Slice 7
+    → perform the first effective annotation Apply
+    → create the New categorical column and palette atomically
+    → retain that column as the selected Existing target
+    → invoke Existing-column styling for the newly created annotation
+```
+
+Slice 6i does not introduce or simulate annotation Apply merely to demonstrate
+the final transition. Slice 7 owns that operational transition because it owns
+the review-and-Apply flow. Slice 6i only establishes and tests the presentation
+helpers and selection-driven behavior that Slice 7 will consume.
+
 Styling remains driven by explicit user actions:
 
 - explicitly selecting a labels element applies either its selected Existing
@@ -4920,11 +5007,10 @@ Deliverables:
 - Spatial Query control wiring that replaces raw napari labels colors with the
   neutral presentation whenever an explicit user coloring action has no
   selected Existing source;
-- immediate transition from neutral to table-backed coloring after the first
-  effective Apply creates the target column;
 - focused tests for transparent background, neutral foreground, primary-layer
   reuse and activation, no table/cache mutation, explicit Existing/New
-  transitions, and no styling reclamation during programmatic refresh.
+  transitions, incompatible named-default diagnosis, and no styling
+  reclamation during programmatic refresh.
 
 Exit criteria:
 
@@ -4936,7 +5022,13 @@ Exit criteria:
 - selecting or displaying the neutral state remains read-only and leaves
   `.obs`, `.uns`, dirty state, persisted state, and the canonical cache
   unchanged;
+- an incompatible existing `spatial_annotation` column is never silently
+  coerced or overwritten, keeps Run disabled while its name collides with the
+  proposed New target, and produces an actionable compatibility message;
 - Existing-column palette behavior remains unchanged;
+- the helper and control boundaries required for Slice 7 to replace neutral
+  styling after the first effective Apply are available without Slice 6i
+  implementing Apply itself;
 - Object Classification and Spatial Query share the neutral visual convention
   without sharing widget-specific controllers or annotation-domain semantics.
 
