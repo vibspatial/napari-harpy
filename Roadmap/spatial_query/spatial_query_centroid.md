@@ -4655,7 +4655,7 @@ def build_spatial_query_status_card_spec(
     labels_name: str | None,
     table_name: str | None,
     cache_report: CanonicalCacheReport | None,
-    cache_inspection_error: str | None,
+    canonical_input_inspection_error: str | None,
     target_error: str | None,
     target_description: str | None,
     layer_styling_error: str | None,
@@ -4678,16 +4678,29 @@ Use deterministic priority for incomplete or exceptional state:
 4. dirty Shapes edit session
 5. no labels selection
 6. no linked table
-7. cache inspection error or missing report for a complete labels/table selection
+7. live labels-source or table-binding inspection failure, or an unavailable
+   report for a complete labels/table selection
 8. invalid annotation-target intent
 9. non-blocking labels-layer styling warning
 10. complete request, presented according to cache state
 ```
 
-The first applicable state owns the title, message, and status kind. A cache
-inspection error must include the captured error text. A labels-layer styling
-warning remains non-blocking and must say that Spatial Query can still run
-when the computational request is otherwise valid.
+The first applicable state owns the title, message, and status kind. A live
+canonical-input inspection failure uses:
+
+```text
+title: Labels or Table Not Ready
+kind: error
+message: the captured user-facing labels-source or table-binding validation error
+Run: disabled
+```
+
+If a complete labels/table selection has neither a report nor a captured
+validation error, use the same blocking card with a generic message that the
+current labels and table inputs could not be validated. Do not describe either
+case as an invalid cache. A labels-layer styling warning remains non-blocking
+and must say that Spatial Query can still run when the computational request
+is otherwise valid.
 
 For a complete request, incorporate cache behavior into the same card:
 
@@ -4734,10 +4747,33 @@ recalculated later only when selected. Do not expose the mismatch code in the
 primary status text or imply that every region will be recalculated eagerly.
 The mismatch detail may remain in the tooltip for diagnostics.
 
-This is distinct from a cache inspection exception or a missing report for an
-otherwise complete labels/table selection. In that case the widget cannot
-establish a safe recovery plan, so the exceptional state remains blocking and
-Run stays disabled.
+This is distinct from a live source or table-binding inspection failure.
+`inspect_canonical_cache()` first needs to construct a trustworthy current
+labels-source signature and selected-region table binding. A `ValueError`,
+`TypeError`, or `KeyError` while resolving those live inputs means that no
+`CanonicalCacheReport` can be constructed:
+
+```text
+current labels source and table binding validate
+    → a CanonicalCacheReport is returned
+    → INVALID stored cache remains automatically recoverable
+    → Run stays enabled
+
+current labels source or table binding does not validate
+    → inspection raises before a report can be constructed
+    → no trustworthy source signature or row/instance binding exists
+    → recalculation cannot safely start
+    → show "Labels or Table Not Ready"
+    → Run stays disabled
+```
+
+Examples of the blocking branch include a removed or unreadable selected
+labels element, malformed table linkage metadata, a missing region or instance
+key column, no rows for the selected labels region, and non-integer,
+non-positive, or duplicate region-local instance IDs. Discarding the existing
+cache cannot repair these live input problems. Conversely, malformed managed
+matrix or metadata contents are converted into deterministic mismatches on an
+`INVALID` report and must not enter this blocking branch.
 
 When Slice 7 connects execution, the same label displays busy, cancellation,
 no-result, success, and error messages. Controller-owned execution status
@@ -4751,8 +4787,9 @@ Deliverables:
 - replace `cache_status_label` and `readiness_status_label` with one
   `status_label`;
 - replace the two status-spec builders with one pure unified builder;
-- pass the captured cache-inspection error through the builder rather than
-  constructing an exceptional cache card directly in the widget;
+- rename the captured failure to `canonical_input_inspection_error` and pass it
+  through the builder rather than constructing an exceptional card directly
+  in the widget;
 - retain the existing `_SpatialQueryStatusCardSpec` and shared rendering
   helper;
 - remove duplicate unavailable/required messages and contradictory adjacent
@@ -4764,6 +4801,11 @@ Exit criteria:
 
 - Spatial Query renders exactly one workflow status card;
 - every selection blocker and cache state has one deterministic presentation;
+- a live labels-source or table-binding inspection failure is presented as
+  `Labels or Table Not Ready`, includes the validation message, and disables
+  Run without calling the cache invalid;
+- a returned `INVALID` report remains informational, recoverable, and
+  Run-enabled;
 - a complete rebuild-authorized request never shows a separate success card
   beside a cache warning;
 - first-calculation, reuse, refresh, and rebuild behavior remain clear before
