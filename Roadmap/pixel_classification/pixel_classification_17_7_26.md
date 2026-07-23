@@ -11,14 +11,18 @@ train their first classifier.
 
 The first release should instead optimize for a short, understandable workflow:
 
-1. choose an image, image scale, and marker channels;
-2. create or reload an annotation layer at exactly that image scale;
-3. paint two or more classes;
-4. train a Random Forest directly from the annotated raw marker intensities;
-5. predict at the same selected scale;
-6. review the result in napari;
-7. explicitly write or reload the annotation and prediction Labels state in
-   Zarr.
+1. choose a coordinate system, image, and image scale;
+2. create a new pixel-classification workflow or select an eligible existing
+   workflow from the explicit Harpy sidecar;
+3. restore or select the ordered marker channels;
+4. create or reload the workflow's annotation layer at exactly that image
+   scale;
+5. paint two or more classes;
+6. train a Random Forest directly from the annotated raw marker intensities;
+7. predict at the same selected scale;
+8. review the result in napari;
+9. explicitly write or reload the workflow's annotation and prediction Labels
+   state.
 
 There is no feature-extraction step in this release. There is no pixel-feature
 cache. A user should be able to understand why the classifier produced its
@@ -35,6 +39,8 @@ The initial classifier contract is:
 - one selected SpatialData image element;
 - one selected coordinate system available on that image;
 - one explicitly selected image scale;
+- one active, persistent single-sample workflow identified independently of
+  its display name and Labels element names;
 - one or more selected image channels, with a stable order;
 - one editable annotation raster at the selected scale;
 - annotation and prediction dtype is `uint8`;
@@ -48,24 +54,114 @@ The initial classifier contract is:
 - one prediction raster at the selected scale;
 - annotation and prediction remain separate napari layers and separate
   SpatialData labels elements;
-- annotation and prediction persistence is exposed as one paired Labels-state
-  workflow with explicit write and reload actions;
+- an explicit Harpy sidecar workflow manifest binds the target, channels, class
+  schema, annotation element, optional prediction element, revisions, and
+  provenance;
+- annotation and prediction persistence is exposed through explicit workflow
+  write and reload actions;
 - no intensity normalization in the first implementation;
 - no handcrafted features, CNN features, PCA, projection, or feature cache;
 - no automatic upsampling to `scale0`.
 
-The first usable milestone supports one active classification target. Pooled
-multi-target training is a follow-up slice after the single-target workflow is
-reliable, followed by supported headless training and apply APIs. This is an
+The first usable milestone supports one active single-sample workflow. Pooled
+multi-target training is a follow-up slice after that workflow is reliable,
+followed by supported headless training and apply APIs. This is an
 implementation order, not a permanent product limitation: first prove the
-complete annotation, training, prediction, transform, and persistence contract
-for one target, then compose the same Qt-free core across targets.
+complete annotation, training, prediction, transform, sidecar discovery, and
+persistence contract for one target, then compose the same Qt-free core across
+several selected workflows.
 
 The single-target implementation must keep target identity explicit in its core
 inputs rather than reading it from global widget state. It does not need to
 implement pooled sampling early, but it must avoid an API that can only ever
 describe one hard-coded image. This leaves pooled training additive rather than
 a rewrite.
+
+## Workflow and Sidecar Model
+
+A pixel-classification workflow is the persistent unit that the user creates,
+continues, writes, and reloads. One workflow describes one sample target; it is
+not the pooled experiment and is not synonymous with either Labels element.
+
+The target identity of one workflow is:
+
+```text
+coordinate system
++ image element
++ selected image scale and resolution descriptor
+```
+
+The workflow manifest additionally records:
+
+- a stable `workflow_id`, independent of mutable display and element names;
+- an editable workflow display name;
+- ordered selected channel names;
+- one required annotation Labels element binding;
+- one optional prediction Labels element binding;
+- the shared class schema;
+- annotation, classifier, and prediction revisions and provenance;
+- creation and update timestamps and the workflow schema version.
+
+The annotation and prediction arrays remain normal, user-visible SpatialData
+Labels elements. The workflow manifest lives in an explicit Harpy sidecar and
+owns their association. Element-name conventions help users but never establish
+identity or pairing.
+
+For a local backed SpatialData store, use a visible sibling sidecar by default:
+
+```text
+sample.zarr
+sample.harpy-cache.zarr/
+  pixel_classification/
+    workflows/
+      <workflow_id>/
+        manifest.json
+    classifier_artifacts/       # reserved for later slices
+    feature_caches/             # reserved for later feature enrichment
+```
+
+Workflow manifests are durable project metadata even though they live in the
+Harpy sidecar. A generic feature-cache cleanup action must never delete them.
+Feature arrays remain absent from the first release. If no default writable
+sidecar can be derived, workflow persistence requires an explicit writable
+sidecar location.
+
+The first release enforces a one-to-one ownership relationship: every workflow
+binds exactly one annotation Labels element, and an annotation Labels element
+cannot belong to more than one workflow. It does not allow arbitrary annotation
+and prediction elements to be combined. The prediction binding is absent until
+a prediction destination is created and belongs to the same workflow as its
+annotation.
+
+An existing workflow is eligible for a selected card when its manifest and
+live elements validate against the source SpatialData association, coordinate
+system, image element, and selected-resolution descriptor. Channel selection is
+deliberately not an eligibility key: selecting an existing workflow restores
+its saved channels, and changing them afterward keeps the annotation valid but
+marks its classifier and prediction stale.
+
+The widget discovers eligible workflow manifests after the target grid is
+known:
+
+- no eligible workflow: offer `Create new workflow`;
+- one eligible workflow: preselect it but wait for an explicit reload action;
+- several eligible workflows: require an explicit workflow selection;
+- invalid or incomplete manifest: show it as invalid with an actionable reason
+  and never guess a replacement from element names.
+
+Normal continuation lists sidecar workflows rather than every Labels element,
+because an arbitrary Labels element may be a segmentation mask rather than
+pixel-class annotations. A separate `Attach existing annotation Labels` action
+validates an unregistered element, collects or confirms its class schema,
+optionally attaches a compatible prediction, and creates a new workflow
+manifest. This is also the recovery path when valid Labels elements survive but
+their sidecar workflow manifest is missing.
+
+Multi-sample training later selects several single-sample workflows. Each
+selected coordinate system is represented by a target card similar to the
+Feature Extraction widget. Shared channel and class compatibility is validated
+across those workflow cards before pooled training; the workflows themselves
+remain independently editable and persistable.
 
 ## Answer to the Scale and Rendering Question
 
@@ -191,14 +287,13 @@ References:
 
 The first production workflow should be linear and require few decisions.
 
-### 1. Choose the target
+### 1. Choose the target grid
 
 The user chooses:
 
 - coordinate system;
 - image element;
-- image scale;
-- one or more channels.
+- image scale.
 
 For a single-scale `DataArray`, the only scale is presented as `scale0`. For a
 multiscale `DataTree`, the scale selector lists the actual keys in the element,
@@ -223,7 +318,40 @@ the current trained classifier and prediction. Dirty Labels state must be
 written, explicitly discarded, or retained by cancelling before the target grid
 changes.
 
-### 2. Inspect selected channels
+### 2. Create or select a workflow
+
+After the target grid is valid, the workflow selector offers
+`Create new workflow` plus the eligible manifests discovered from the Harpy
+sidecar. A single eligible workflow is preselected but not automatically
+reloaded. Several eligible workflows require an explicit choice.
+
+Creating a workflow starts with editable defaults:
+
+```text
+Workflow name:     Pixel classification 1
+Annotation element: <image_name>_<scale_key>_pixel_annotations
+Prediction element: <annotation_name>_prediction
+```
+
+Names are normalized through the existing SpatialData element-name validation.
+They never overwrite an existing element silently. The prediction name reserves
+a destination but does not require a prediction element to exist before a
+complete prediction is produced. A manually edited prediction name stops
+following later edits to the annotation-name default.
+
+Selecting an existing workflow restores its saved channel selection, class
+schema, annotation binding, optional prediction binding, and revision status.
+The annotation and prediction choices are constrained by that workflow; the UI
+must not let the user combine an annotation from one workflow with a prediction
+from another. The user still presses `Reload Labels State` before persisted
+arrays replace the working layers.
+
+`Attach existing annotation Labels` is a separate recovery/adoption action, not
+an entry in the normal workflow list. It creates a workflow manifest only after
+the selected Labels element and optional prediction pass target-grid, transform,
+dtype, role, and class-schema validation.
+
+### 3. Inspect selected channels
 
 The user can load selected markers as channel overlays through the existing
 viewer-adapter behavior. Loading an overlay does not alter training state.
@@ -233,17 +361,21 @@ are bound to the source image grid, not to a feature schema.
 
 The channel selector should preserve image channel order by default. The UI
 should show the order because it is the Random Forest feature-column order.
+For a new workflow, the user makes this selection explicitly. For an existing
+workflow, the saved selection is restored first and remains editable.
 
-### 3. Create or reload annotations
+### 4. Create or reload annotations
 
 The user chooses either:
 
-- `Create annotations`; or
-- `Reload Labels State` from the active backed SpatialData Zarr store.
+- create the new workflow's annotation layer; or
+- `Reload Labels State` for the selected existing workflow.
 
 Creating annotations allocates one zero-filled, in-memory `uint8` array with the
 selected `(y, x)` shape and adds it to napari as a single-scale editable Labels
-layer. Annotation does not depend on a cache or trained classifier.
+layer. Annotation does not depend on an extracted-feature cache or trained
+classifier. The sidecar manifest is used for persistent workflow discovery and
+association, not for storing the editable annotation pixels.
 
 Reloading persisted annotations loads their values into an editable working layer.
 The implementation must not rely on mutating a backed Dask/Zarr array directly
@@ -253,7 +385,7 @@ session copy, and `Write Labels State` persists the accepted state.
 Changing the source image or selected scale requires a new compatible
 annotation layer. The implementation must not silently resample annotations.
 
-### 4. Define classes and paint
+### 5. Define classes and paint
 
 The widget provides a small shared class editor:
 
@@ -283,7 +415,7 @@ Annotation edits mark the trained classifier and prediction stale. They do not
 automatically retrain on every brush stroke in the initial release. The user
 presses `Train` explicitly, which keeps expensive work predictable.
 
-### 5. Train
+### 6. Train
 
 Training reads only nonzero annotation positions. For each annotated position,
 the training row is:
@@ -372,7 +504,7 @@ reads only the selected marker channels and source chunks required by candidate
 pixel positions. It must not materialize the complete multiplex image merely to
 gather training rows.
 
-### 6. Predict
+### 7. Predict
 
 `Predict` applies the trained Random Forest to all pixels at the selected image
 scale. Allocate one in-memory `uint8` output array with the selected `(y, x)`
@@ -407,16 +539,18 @@ The prediction appears as a separate, read-only napari Labels layer with the
 same shape and transform as the annotation layer. Prediction never modifies the
 annotation data.
 
-### 7. Write and reload Labels state
+### 8. Write and reload workflow Labels state
 
 Follow the persistence interaction already used by Object Classification, but
-treat the pixel annotation and prediction elements as one UI-level consistency
-unit. The widget exposes two explicit actions:
+treat the selected workflow manifest and its annotation and prediction elements
+as one UI-level consistency unit. The widget exposes two explicit actions:
 
 - `Write Labels State` writes the editable annotation element and any present,
-  complete prediction element to the active backed SpatialData Zarr store;
-- `Reload Labels State` replaces the in-memory annotation and prediction layers
-  with their persisted state from that store.
+  complete prediction element to the active backed SpatialData Zarr store and
+  records their bindings and provenance in the selected workflow manifest;
+- `Reload Labels State` resolves the selected workflow manifest and replaces
+  the in-memory annotation and prediction layers with exactly the SpatialData
+  elements referenced by it.
 
 The annotation and prediction remain distinct single-scale SpatialData labels
 elements with different element names and roles. The annotation element is the
@@ -425,6 +559,14 @@ exists writes annotations only, and reloading a state with no persisted
 prediction restores annotations without creating a prediction layer. If a local
 prediction layer exists but no prediction is present in the persisted state,
 reload removes the local prediction layer.
+
+The sidecar manifest is the authoritative discovery and pairing record. Do not
+use `SpatialData.attrs`, arbitrary Labels `DataArray.attrs`, classifier metadata,
+or matching element-name suffixes as the primary workflow registry. Classifier
+and prediction provenance may reference `workflow_id`, but those references do
+not replace the workflow manifest. When several compatible annotation elements
+exist, `Reload Labels State` acts only on the workflow explicitly selected in
+the workflow selector.
 
 Brush strokes and prediction generation update only the in-memory layers; they
 never write through to Zarr automatically. Annotation edits, class-metadata
@@ -452,10 +594,11 @@ provenance needed to explain that status. Reload must not present such a
 prediction as current. No periodic recovery snapshot is part of the first
 implementation.
 
-Persisted metadata should include:
+The versioned sidecar workflow manifest should include:
 
 - Harpy pixel-classification schema version;
-- role: `annotation` or `prediction`;
+- stable workflow ID and editable display name;
+- source SpatialData path or URI association;
 - source image element name;
 - the selected-resolution descriptor defined below;
 - selected labels shape;
@@ -463,9 +606,12 @@ Persisted metadata should include:
 - ordered channel names;
 - selected-grid-to-image transform description;
 - class IDs, names, and colors;
+- annotation element name, role, and revision;
+- optional prediction element name, role, creation state, and annotation
+  revision used;
 - for predictions, Random Forest parameters and model identity;
 - for predictions, training annotation identity and class counts;
-- creation time;
+- creation and update times;
 - napari-harpy, SpatialData, scikit-learn, NumPy, and Dask versions relevant
   to reproduction.
 
@@ -476,22 +622,28 @@ records the operation.
 
 ## Annotation and Prediction Lifecycle
 
-Annotations and predictions are intentionally separate objects.
+Annotations and predictions are intentionally separate SpatialData objects that
+are associated by one explicit sidecar workflow manifest.
 
 ```text
 source image + selected scale
             |
-            +--> editable annotation layer ----> optional annotation labels element
-            |
-            +--> trained Random Forest
-                       |
-                       +--> read-only prediction layer ----> prediction labels element
+            +--> workflow manifest
+                    |
+                    +--> editable annotation layer ----> annotation labels element
+                    |
+                    +--> trained Random Forest
+                               |
+                               +--> read-only prediction layer
+                                             |
+                                             +--> optional prediction labels element
 ```
 
 ### Annotation identity
 
 An annotation is compatible with a target when all of the following match:
 
+- workflow ID and annotation-element binding;
 - source image element identity;
 - selected-resolution descriptor;
 - selected coordinate system binding;
@@ -505,6 +657,7 @@ subsets on the same grid.
 
 A trained classifier records:
 
+- workflow ID used for the training run;
 - source image and selected-resolution descriptor used for the training run;
 - ordered selected channel names;
 - class schema;
@@ -548,6 +701,7 @@ coordinate-system name or an otherwise unitless transform.
 
 A prediction records:
 
+- owning workflow ID and prediction-element binding;
 - the classifier identity;
 - target source image and selected-resolution descriptor;
 - output shape and dtype;
@@ -560,7 +714,13 @@ array is discarded and cannot be mistaken for a valid prediction.
 
 Included:
 
-- one active classification target;
+- one active single-sample workflow and target card;
+- explicit create/select/reload workflow interaction;
+- one versioned workflow manifest in a visible Harpy sidecar;
+- editable default names for annotation and prediction Labels elements;
+- sidecar-based discovery of eligible workflows and explicit selection when
+  several match;
+- `Attach existing annotation Labels` recovery/adoption;
 - exact scale selection for multiscale images;
 - selected scale shape and downsampling summary;
 - multi-channel raw-intensity input;
@@ -582,7 +742,8 @@ Excluded:
 
 - handcrafted intensity, edge, texture, or morphology features;
 - ConvNeXt, DINO, JAFAR, or other deep features;
-- feature caches or sidecar Zarr stores;
+- extracted-feature raster caches; the small workflow-manifest sidecar is part
+  of the first release;
 - normalization, clipping, log, or asinh transforms;
 - automatic retraining after every brush stroke;
 - confidence/probability-map output;
@@ -612,10 +773,12 @@ Proposed package direction:
 src/napari_harpy/core/pixel_classification/
   __init__.py
   source.py          # image/scale/channel resolution and grid transforms
+  workflow.py        # workflow identity, manifests, eligibility, and validation
+  sidecar.py         # explicit sidecar discovery and manifest IO
   annotations.py     # class schema and annotation validation
   classifier.py      # training-row extraction and Random Forest training
   prediction.py      # tile planning and prediction
-  output.py          # SpatialData labels creation and provenance
+  output.py          # SpatialData Labels creation and workflow provenance
 
 src/napari_harpy/widgets/pixel_classification/
   __init__.py
@@ -691,7 +854,8 @@ Acceptance criteria:
 ### Slice 2: Widget shell and target selection
 
 Register `PixelClassificationWidget` and implement the first real selection
-surface.
+surface as one single-sample target card whose structure can later be repeated
+for several coordinate systems.
 
 Deliver:
 
@@ -700,6 +864,8 @@ Deliver:
 - image selector filtered to the coordinate system;
 - scale selector populated from the selected image;
 - scale summary containing shape, relative spacing, and a recommended marker;
+- an in-memory new-workflow draft with a stable workflow ID, editable display
+  name, and target binding; persisted workflow discovery is added in Slice 6;
 - multi-select channel selector preserving source order;
 - per-channel `Load overlay` action using stable viewer layer names;
 - one status card with the next valid action;
@@ -713,12 +879,17 @@ Acceptance criteria:
   widget;
 - the recommended scale is preselected when the target has no remembered scale
   choice;
-- no feature or cache terminology appears in the UI.
+- the card structure can later represent one independently selected workflow per
+  coordinate system;
+- no feature-extraction or feature-cache terminology appears in the UI.
 
 ### Slice 3: Editable annotation lifecycle and class editor
 
 Deliver:
 
+- keep the editable annotation owned by the active in-memory workflow draft;
+- derive editable default annotation and prediction element names from the
+  selected image and scale;
 - create a zero-filled, single-scale in-memory `uint8` Labels layer at selected
   shape;
 - apply selected-grid and image transforms to the layer;
@@ -731,7 +902,8 @@ Deliver:
   or closing the widget by offering `Discard and continue` or `Cancel`;
 - defer all write and reload actions to Slice 6, where persistence is actually
   implemented;
-- keep annotation available before training and without any cache.
+- keep annotation available before training and without any extracted-feature
+  cache.
 
 Acceptance criteria:
 
@@ -748,6 +920,8 @@ Acceptance criteria:
   requested target change or close;
 - Slice 3 does not show a write option or imply that annotations can already be
   persisted;
+- changing the draft's display or element names does not change its stable
+  workflow ID;
 - predictions cannot write into the annotation layer;
 - channel changes preserve annotations but mark any classifier stale;
 - scale changes never silently resample annotations.
@@ -773,7 +947,7 @@ Deliver:
 - train the fixed Random Forest with `class_weight="balanced_subsample"` in a
   background worker;
 - retain class mapping, channel order, sample counts, parameters, versions, and
-  annotation revision in an immutable training result;
+  workflow ID and annotation revision in an immutable training result;
 - expose clear states: insufficient annotation, ready to train, training,
   trained, stale, and error.
 
@@ -816,6 +990,7 @@ Deliver:
 - show progress and permit cancellation between blocks;
 - add or update one read-only prediction Labels layer with the same transform
   as annotations;
+- bind that prediction to the active workflow and its annotation revision;
 - track prediction freshness against classifier and target revisions;
 - keep annotation and prediction color mappings synchronized by class ID.
 
@@ -839,19 +1014,35 @@ This slice completes the first end-to-end usable milestone.
 
 Deliver:
 
+- resolve `sample.harpy-cache.zarr` as the default sibling for a local backed
+  source named `sample.zarr`, with explicit writable sidecar selection when no
+  default can be used;
+- implement the versioned
+  `pixel_classification/workflows/<workflow_id>/manifest.json` contract;
+- discover and validate eligible workflows from the sidecar after coordinate
+  system, image, and scale selection;
+- expose `Create new workflow`, eligible existing workflow choices, and
+  `Attach existing annotation Labels`;
+- restore saved channels and class schema when an existing workflow is selected;
 - `Write Labels State`, which writes the annotation and any present complete
-  prediction as one UI-level persistence action;
-- `Reload Labels State`, which reloads the annotation and prediction together;
+  prediction and updates the workflow manifest as one UI-level persistence
+  action;
+- `Reload Labels State`, which resolves the selected manifest and reloads its
+  bound annotation and optional prediction together;
 - the same write/reload/discard/cancel interaction pattern as Object
   Classification;
 - upgrade the Slice 3 discard/cancel dirty-state guards to
   write/discard/cancel now that persistence is available;
 - validated, distinct annotation and prediction element names with overwrite
   confirmation;
+- exactly one annotation binding per workflow, no annotation element owned by
+  several workflows, and no arbitrary cross-workflow annotation/prediction
+  combinations;
 - `Labels2DModel.parse(...)` creation from selected-scale arrays;
 - composed transformation from labels intrinsic coordinates to the selected
   coordinate system;
-- Harpy provenance metadata for annotation and prediction roles;
+- sidecar workflow provenance for annotation and prediction roles, revisions,
+  target identity, channels, classes, and model identity;
 - backed `SpatialData.write_element(...)` support;
 - dirty tracking for annotation edits, class-metadata edits, and prediction
   creation, replacement, or removal;
@@ -860,6 +1051,21 @@ Deliver:
 
 Acceptance criteria:
 
+- no eligible workflow offers creation, one is preselected without automatic
+  reload, and several require explicit selection;
+- workflow eligibility uses source association, coordinate system, image, and
+  selected-resolution descriptor but not channel selection;
+- selecting an existing workflow restores its channels; later channel changes
+  preserve annotations and stale the classifier and prediction;
+- reload resolves only the annotation and prediction named by the selected
+  workflow manifest and never guesses a pair from element names;
+- arbitrary SpatialData Labels do not appear as normal workflows;
+- `Attach existing annotation Labels` creates a workflow only after target,
+  transform, dtype, role, and class-schema validation;
+- missing, incomplete, or incompatible manifests are reported as invalid with
+  actionable reasons;
+- workflow discovery and pairing do not depend on `SpatialData.attrs`, custom
+  Labels attrs, or classifier metadata;
 - persisted elements are single-scale `xarray.DataArray` labels, not hidden
   caches;
 - annotations reload into an editable working layer at the same selected grid;
@@ -874,6 +1080,8 @@ Acceptance criteria:
 - dirty state clears only when all elements required by the write succeed;
 - no upsampling occurs during write;
 - annotation and prediction names cannot collide silently;
+- editable element names do not change the stable workflow identity;
+- generic feature-cache cleanup cannot remove workflow manifests;
 - failed writes leave the in-memory working layers intact and the UI
   recoverable;
 - persisted metadata is sufficient to explain the source image, scale, channels,
@@ -888,6 +1096,8 @@ Deliver:
 
 - export the fitted Random Forest and its compatibility metadata in a versioned
   Harpy classifier bundle;
+- record the originating workflow ID and annotation revision, or every
+  contributing workflow ID and revision for a pooled classifier;
 - load and validate a bundle against an active target;
 - match channels by unique name and reorder inputs to the saved model schema;
 - serialize and validate the selected-resolution descriptor without physical
@@ -922,13 +1132,16 @@ bundles, deterministic summaries, and compatibility validation.
 Deliver:
 
 - coordinate-system target cards based on the feature-extraction widget pattern;
-- independent image and scale selection per target;
+- one independently selected eligible single-sample workflow per target card;
+- independent image and scale selection per workflow target;
 - shared channel schema resolved by unique channel names;
 - shared class schema across all annotation layers;
 - deterministic class- and target-balanced sampling;
 - one pooled Random Forest;
 - one active-target prediction at a time;
 - training summary showing contributed pixels by target and class;
+- pooled classifier provenance listing every contributing workflow ID and
+  annotation revision;
 - compatibility checks for channel schema and raw-intensity assumptions.
 
 Targets may have different `(y, x)` shapes and different scale-key strings.
@@ -942,6 +1155,7 @@ Acceptance criteria:
   the validated single-target path;
 - every target contributes through an explicit target descriptor rather than
   hidden widget state;
+- each target descriptor resolves from one selected workflow manifest;
 - channel order and class meaning are identical across targets;
 - sampling is deterministic and its per-target, per-class contribution is
   visible;
@@ -958,8 +1172,9 @@ using pixel-specific target descriptors.
 Deliver:
 
 - immutable explicit descriptors for training and prediction targets, including
-  SpatialData image name, annotation Labels name where applicable, coordinate
-  system, selected-resolution descriptor, and ordered channel names;
+  workflow ID, SpatialData and sidecar associations, image name, annotation
+  Labels name where applicable, coordinate system, selected-resolution
+  descriptor, and ordered channel names;
 - `train_pixel_classifier(...)` accepting one or more training targets and
   returning the same versioned classifier bundle used by the widget;
 - `apply_pixel_classifier(...)` accepting a loaded bundle and one explicit
@@ -1021,31 +1236,41 @@ No SpatialData
   -> Choose coordinate system
   -> Choose image
   -> Choose scale
+  -> Create/select workflow
   -> Choose channels
-  -> Create/reload annotations
+  -> Create/reload workflow annotations
   -> Paint at least two classes
   -> Train
   -> Predict
-  -> Write/reload Labels state
+  -> Write/reload workflow Labels state
 ```
 
 Rules:
 
-- annotation is enabled as soon as target image, scale, and transform are valid;
+- workflow creation or selection is enabled as soon as target image, scale, and
+  transform are valid;
+- annotation creation is enabled for a valid new workflow draft; annotation
+  reload is enabled only for a selected valid persisted workflow;
+- changing channels does not change workflow eligibility or invalidate its
+  annotation binding;
 - training does not depend on prediction or persisted annotations;
 - prediction requires a fresh trained classifier compatible with the target;
 - writing Labels state requires a working annotation layer and includes a
-  prediction only when a complete prediction exists;
+  prediction only when a complete prediction exists; persistent writes also
+  require a selected workflow and writable sidecar destination;
 - reloading Labels state requires a persisted annotation element; a persisted
-  prediction element is optional;
+  prediction element is optional, and both are resolved through the selected
+  workflow manifest;
 - changing only viewer contrast, colormap, opacity, or channel-overlay
   visibility does not stale anything;
 - changing class colors does not stale the model;
 - changing class IDs or semantic class assignment does stale the model;
 - changing selected channels or their order stales model and prediction;
-- changing scale, image, or coordinate system changes the annotation grid and
-  requires an explicit write/discard/cancel decision when Labels state is
-  dirty.
+- changing workflow selection, scale, image, or coordinate system changes the
+  active annotation context and requires an explicit write/discard/cancel
+  decision when Labels state is dirty;
+- changing only the workflow display name or future element-name destination
+  marks workflow metadata dirty but does not stale a compatible classifier.
 
 ## Performance Contract
 
@@ -1077,6 +1302,14 @@ Use focused tests for each slice, following repository test-scope guidance.
 
 Core tests:
 
+- workflow manifest serialization, schema validation, and stable identity;
+- default sidecar and explicit sidecar path resolution;
+- workflow eligibility by source, coordinate system, image, and resolution but
+  not channel selection;
+- zero/one/several eligible-workflow discovery behavior;
+- invalid and incomplete workflow-manifest reporting;
+- exact annotation/prediction association without name-based guessing;
+- adoption and recovery through `Attach existing annotation Labels`;
 - DataArray and DataTree scale discovery;
 - actual scale-key selection;
 - channel selection and stable ordering;
@@ -1114,6 +1347,10 @@ Core tests:
 
 Widget tests:
 
+- new versus existing workflow selection;
+- existing workflow channel and class-schema restoration;
+- several eligible workflows require explicit selection;
+- arbitrary unregistered Labels are excluded from normal workflow choices;
 - target-control gating;
 - scale summary and recommendation heuristic;
 - annotation creation and layer reuse;
@@ -1147,16 +1384,22 @@ the Labels state, and verify world-coordinate alignment.
 
 The first usable release is complete when a user can:
 
-1. select a SpatialData image, an actual multiscale level, and marker channels;
-2. create an editable annotation layer with the selected level's shape;
-3. see that layer correctly aligned over the full-resolution image in napari;
-4. define named classes and paint examples;
-5. train a deterministic Random Forest from raw annotated marker intensities;
-6. predict the complete selected-scale target without loading the full
+1. select a coordinate system, SpatialData image, and actual multiscale level;
+2. create a new workflow or select an eligible workflow discovered from the
+   explicit Harpy sidecar;
+3. select or restore ordered marker channels;
+4. create or reload the workflow's editable annotation layer with the selected
+   level's shape;
+5. see that layer correctly aligned over the full-resolution image in napari;
+6. define named classes and paint examples;
+7. train a deterministic Random Forest from raw annotated marker intensities;
+8. predict the complete selected-scale target without loading the full
    multiplex image into memory;
-7. review a separate aligned prediction layer;
-8. write and reload annotation and prediction as paired, single-scale
-   SpatialData labels elements with correct transformations and provenance.
+9. review a separate aligned prediction layer;
+10. write and reload annotation and prediction as paired, single-scale
+    SpatialData Labels elements whose association and provenance are explicit in
+    the selected workflow manifest.
 
-Deep features, shallow contextual features, and persistent feature caches are
-explicitly postponed until this baseline is usable and benchmarked.
+Deep features, shallow contextual features, and persistent extracted-feature
+raster caches are explicitly postponed until this baseline is usable and
+benchmarked.
