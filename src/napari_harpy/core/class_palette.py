@@ -14,7 +14,8 @@ if TYPE_CHECKING:
     from anndata import AnnData
 
 DEFAULT_UNLABELED_CLASS = 0
-DEFAULT_UNLABELED_COLOR = "#80808099"
+DEFAULT_NEUTRAL_COLOR = "#DCE8F2CC"
+DEFAULT_UNLABELED_COLOR = DEFAULT_NEUTRAL_COLOR
 CategoricalPaletteSource = Literal["stored", "default_missing", "default_invalid"]
 CATEGORICAL_PALETTE_SOURCES: tuple[CategoricalPaletteSource, ...] = (
     "stored",

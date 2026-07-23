@@ -9,10 +9,13 @@ from loguru import logger
 from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 
-from napari_harpy.core.class_palette import default_categorical_colors
+from napari_harpy.core.class_palette import (
+    DEFAULT_NEUTRAL_COLOR,
+    default_categorical_colors,
+)
 
-MISSING_CATEGORICAL_COLOR = "#80808099"
-MISSING_CONTINUOUS_COLOR = "#80808099"
+MISSING_CATEGORICAL_COLOR = DEFAULT_NEUTRAL_COLOR
+MISSING_CONTINUOUS_COLOR = DEFAULT_NEUTRAL_COLOR
 OVERLAY_CONTINUOUS_COLORMAP = "magma"
 STRING_CATEGORICAL_WARNING_MIN_UNIQUE_COUNT = 20
 STRING_CATEGORICAL_WARNING_ROW_COUNT_DIVISOR = 100

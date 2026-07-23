@@ -12,6 +12,10 @@ from napari.utils.colormaps import DirectLabelColormap
 
 import napari_harpy.viewer.labels_colormap as labels_colormap_module
 from napari_harpy.core.annotation import UNLABELED_COLOR
+from napari_harpy.core.class_palette import (
+    DEFAULT_NEUTRAL_COLOR,
+    DEFAULT_UNLABELED_COLOR,
+)
 from napari_harpy.viewer._styling import (
     MISSING_CATEGORICAL_COLOR,
     MISSING_CONTINUOUS_COLOR,
@@ -29,6 +33,14 @@ from napari_harpy.viewer.labels_colormap import (
 
 def _rgba(red: float, green: float, blue: float, alpha: float) -> np.ndarray:
     return np.asarray([red, green, blue, alpha], dtype=np.float64)
+
+
+def test_missing_and_unlabeled_states_share_the_neutral_color() -> None:
+    assert DEFAULT_NEUTRAL_COLOR == "#DCE8F2CC"
+    assert DEFAULT_UNLABELED_COLOR == DEFAULT_NEUTRAL_COLOR
+    assert UNLABELED_COLOR == DEFAULT_NEUTRAL_COLOR
+    assert MISSING_CATEGORICAL_COLOR == DEFAULT_NEUTRAL_COLOR
+    assert MISSING_CONTINUOUS_COLOR == DEFAULT_NEUTRAL_COLOR
 
 
 @pytest.fixture

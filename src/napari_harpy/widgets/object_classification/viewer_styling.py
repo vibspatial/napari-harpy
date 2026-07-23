@@ -24,6 +24,7 @@ from napari_harpy.core.spatialdata import (
     get_table,
     get_table_metadata,
 )
+from napari_harpy.viewer._styling import MISSING_CONTINUOUS_COLOR
 from napari_harpy.viewer.adapter import ViewerAdapter
 from napari_harpy.viewer.labels_colormap import (
     CompactLabelColormap,
@@ -52,7 +53,6 @@ COLOR_BY_OPTIONS = (
     COLOR_BY_PRED_CONFIDENCE,
 )
 
-MISSING_CONTINUOUS_COLOR = "#80808099"
 PRED_CONFIDENCE_COLORMAP = "plasma"
 
 
