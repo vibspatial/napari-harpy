@@ -278,7 +278,7 @@ def test_user_class_color_lookup_rejects_invalid_table_state(sdata_blobs: Spatia
     controller = _make_controller(sdata_blobs, layer)
     feature_rows = _feature_rows({1: None, 5: 4})
 
-    with pytest.raises(viewer_styling_module.ClassStateError, match="categorical integer column"):
+    with pytest.raises(viewer_styling_module.ClassStateError, match="categorical dtype"):
         controller.refresh_layer_colors(feature_rows=feature_rows)
 
     assert layer.colormap is None

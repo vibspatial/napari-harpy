@@ -390,16 +390,15 @@ class ViewerStylingController:
             if observed_class_ids is None:
                 raise ClassStateError(
                     f"Cannot style labels by `{category_column}` because the current feature rows contain "
-                    "non-canonical class values. Rebind or reload the table in the Object Classification widget "
-                    "before styling."
+                    "invalid class values. Class values must be positive integers or missing."
                 )
 
         if table is None or category_column not in table.obs:
             if category_column == USER_CLASS_COLUMN and not observed_class_ids:
                 return {}
             raise ClassStateError(
-                f"Cannot style labels by `{category_column}` because the bound table is not prepared. "
-                "Rebind or reload the table in the Object Classification widget to canonicalize class state."
+                f"Cannot style labels by `{category_column}` because the selected table is unavailable or does "
+                "not contain the required categorical class column."
             )
 
         categories = _read_canonical_class_categories(
@@ -410,8 +409,7 @@ class ViewerStylingController:
         if unknown_observed_classes:
             raise ClassStateError(
                 f"Cannot style labels by `{category_column}` because observed class ids "
-                f"{unknown_observed_classes} are not present in the prepared categorical column. "
-                "Rebind or reload the table in the Object Classification widget to canonicalize class state."
+                f"{unknown_observed_classes} are not declared as categories in the selected table column."
             )
 
         return _read_canonical_class_color_lookup(
@@ -429,16 +427,16 @@ def _read_canonical_class_categories(
 ) -> list[int]:
     if not isinstance(values.dtype, pd.CategoricalDtype):
         raise ClassStateError(
-            f"`{column_name}` must be a categorical integer column before labels can be styled. "
-            "Rebind or reload the table in the Object Classification widget to canonicalize class state."
+            f"`{column_name}` must use a categorical dtype with positive integer categories before labels "
+            "can be styled."
         )
 
     categories: list[int] = []
     for category in values.cat.categories:
         if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
             raise ClassStateError(
-                f"`{column_name}` has non-integer categories. Rebind or reload the table in the Object "
-                "Classification widget to canonicalize class state."
+                f"`{column_name}` categories must be positive integers. "
+                "Rows without a class must be stored as missing values."
             )
         class_id = int(category)
         if class_id <= 0:
@@ -450,8 +448,8 @@ def _read_canonical_class_categories(
 
     if categories != sorted(categories) or len(categories) != len(set(categories)):
         raise ClassStateError(
-            f"`{column_name}` categories are not in canonical sorted order. Rebind or reload the table in the "
-            "Object Classification widget to canonicalize class state."
+            f"`{column_name}` categories are not in canonical ascending order. "
+            "Reload or reselect the table to canonicalize the category order."
         )
     return categories
 
@@ -467,28 +465,26 @@ def _read_canonical_class_color_lookup(
     expected_colors = default_class_colors(categories)
     if stored_color_list is None:
         raise ClassStateError(
-            f"Missing class palette `{colors_key}` for `{column_name}`. Rebind or reload the table in the Object "
-            "Classification widget to regenerate Harpy class state."
+            f"Missing class palette `{colors_key}` for `{column_name}`. "
+            "Reload or reselect the table to regenerate the Object Classification palette."
         )
     if len(stored_color_list) != len(categories):
         raise ClassStateError(
             f"Class palette `{colors_key}` has {len(stored_color_list)} colors, but `{column_name}` has "
-            f"{len(categories)} categories. Rebind or reload the table in the Object Classification widget to "
-            "regenerate Harpy class state."
+            f"{len(categories)} categories. Reload or reselect the table to regenerate the Object Classification "
+            "palette."
         )
     if stored_color_list != expected_colors:
         raise ClassStateError(
             f"Class palette `{colors_key}` no longer matches Harpy default colors for `{column_name}`. "
-            "Rebind or reload the table in the Object Classification widget to regenerate Harpy class state."
+            "Reload or reselect the table to regenerate the Object Classification palette."
         )
 
-    try:
-        return {class_id: _rgba_array(color) for class_id, color in zip(categories, expected_colors, strict=True)}
-    except ValueError as error:
-        raise ClassStateError(
-            f"Class palette `{colors_key}` contains an invalid color. Rebind or reload the table in the Object "
-            "Classification widget to regenerate Harpy class state."
-        ) from error
+    # `default_class_colors()` returns one library-owned valid color per
+    # validated category, and the equality check above proves that the stored
+    # palette matches those colors. A conversion failure here is therefore an
+    # internal programming error rather than recoverable table-state drift.
+    return {class_id: _rgba_array(color) for class_id, color in zip(categories, expected_colors, strict=True)}
 
 
 def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
