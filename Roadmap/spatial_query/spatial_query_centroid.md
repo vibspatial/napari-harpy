@@ -5170,7 +5170,7 @@ Exit criteria:
 
 ### Slice 6k: Missing-value Object Classification class state
 
-**Implementation status: Planned.**
+**Implementation status: Implemented.**
 
 Refactor Object Classification so the absence of a user annotation or
 prediction is represented as missing data rather than the synthetic integer
@@ -5393,10 +5393,226 @@ Exit criteria:
 - table dirty-state and persistence behavior remains component-scoped;
 - Spatial Query still accepts only string-categorical annotation columns.
 
+### Slice 6l: Graceful invalid Object Classification class state
+
+**Implementation status: Planned.**
+
+Keep the strict missing-value class contract introduced in Slice 6k, but make
+invalid existing Object Classification columns a controlled widget validation
+state rather than an uncaught bind-time exception.
+
+This slice does not migrate, normalize, or repair invalid persisted values.
+In particular, it does not convert class `0` to missing:
+
+```text
+select Labels element and table
+    ↓
+validate structural table binding
+    ↓
+inspect existing Object Classification columns without mutation
+    ├── valid
+    │      → bind controllers normally
+    │      → apply the selected Object Classification styling
+    │
+    └── invalid
+           → keep the selected Labels layer loaded
+           → style all foreground labels with the shared neutral color
+           → disable actions that require valid class state
+           → show an actionable status-card error
+           → leave the AnnData table unchanged and clean
+```
+
+#### Canonical column requirements
+
+`user_class` and `pred_class` are categorical columns with integer category
+labels. They are not plain integer columns. Every declared category must be a
+positive integer:
+
+```text
+valid row values
+    positive integer category
+        → assigned class
+    categorical missing value
+        → no assigned class
+
+invalid categories or values
+    0
+    negative integer
+    boolean
+    fractional number
+    string
+    mixed category types
+```
+
+“Positive” is deliberate: describing class IDs as merely non-negative would
+incorrectly admit the unsupported legacy class `0`. Unused category `0` is
+also invalid even when no row currently uses it.
+
+An absent `user_class` column remains valid and means that no user annotation
+column has been created yet.
+
+`pred_class` and `pred_confidence` form one prediction-state pair. Neither
+column being present is valid uninitialized classifier state. If prediction
+state is present, both columns must be present and satisfy:
+
+```text
+pred_class
+    categorical with positive integer categories
+    row value is a positive class or missing
+
+pred_confidence
+    floating-point dtype
+    finite value in [0.0, 1.0] when pred_class is present
+    missing value when pred_class is missing
+```
+
+An integer, boolean, string, object, or mixed `pred_confidence` column is not
+accepted as canonical merely because some values could be coerced to floats.
+Do not use coercion as validation. Positive prediction classes with missing,
+non-finite, or out-of-range confidence, and missing prediction classes with a
+non-missing confidence, are invalid paired state.
+
+Palette validation remains owned by the existing class-palette and styling
+contracts. This slice concerns the canonical representations and paired
+missingness of the three Object Classification `.obs` columns.
+
+#### Read-only pre-bind validation boundary
+
+Add one read-only Object Classification table-state validator before any
+annotation, classifier, persistence, or viewer-styling controller adopts the
+selected table. Prefer a dedicated expected error type so the widget catches
+only this validation outcome rather than broadly swallowing unrelated
+`ValueError` exceptions.
+
+The validator must:
+
+- accept absent optional/uninitialized state as described above;
+- inspect dtypes, categorical categories, row values, and prediction-pair
+  missingness;
+- return normally only for canonical state;
+- raise one column-specific, user-facing validation error for invalid state;
+- never assign to `.obs`, `.uns`, or `.obsm`;
+- never add or remove categories or palette entries;
+- never publish `TableStateChangedEvent`;
+- never mark the table dirty.
+
+Validation must happen before the current bind-time normalization calls. Do
+not implement the feature as a broad `try/except` around sequential controller
+binding: an exception after one controller has adopted the table can otherwise
+leave controller state only partially updated.
+
+The strict core normalization helpers continue to reject invalid class state.
+The widget-level validator and error boundary improve presentation and
+recovery; they do not weaken the canonical write contract or introduce a
+second accepted representation.
+
+#### Widget error state and neutral styling
+
+Track this outcome separately from structural table-binding errors. A table
+can correctly annotate the selected Labels element while still containing an
+invalid Object Classification column:
+
+```text
+table_binding_error
+    → labels/table structural relationship is invalid
+
+object_classification_state_error
+    → structural binding is valid
+    → user_class, pred_class, or pred_confidence is invalid
+```
+
+When class-state validation fails:
+
+- preserve the selected SpatialData, coordinate system, Labels element, and
+  table choices so the UI still identifies the source of the problem;
+- do not expose the invalid table as an effective annotation or classifier
+  binding;
+- keep the primary Labels layer loaded and active;
+- explicitly replace napari's default Labels colormap with neutral styling:
+  label `0` stays transparent and every positive label uses
+  `DEFAULT_NEUTRAL_COLOR`;
+- do not attempt partial user-class, prediction-class, or confidence styling;
+- disable Apply class, Clear class, automatic/manual training, and other
+  operations whose correctness depends on canonical class state;
+- keep table reload or other safe recovery controls available where their
+  existing prerequisites are satisfied;
+- clear the validation error and restore normal binding and styling after a
+  later refresh observes corrected canonical table state.
+
+Neutral fallback is an explicit safe display state, not an interpretation of
+the invalid values. No invalid class is shown as though it were a valid
+annotation or prediction.
+
+#### Status-card messages
+
+Show the error in the normal Object Classification status-card surface rather
+than allowing a traceback to escape through Qt. The title should identify the
+problem as invalid Object Classification table state. The detail must name the
+column and state the exact representation required.
+
+Examples:
+
+```text
+Object Classification State Invalid
+“user_class” must be categorical with positive integer categories.
+Rows without a user class must be stored as missing values.
+```
+
+```text
+Object Classification State Invalid
+“pred_class” must be categorical with positive integer categories.
+Rows without a prediction must be stored as missing values.
+```
+
+```text
+Object Classification State Invalid
+“pred_confidence” must use a floating-point dtype with values between
+0 and 1. Rows without a prediction must have missing confidence.
+```
+
+Where useful, append the observed problem, such as category `0`, an unexpected
+dtype, or mismatched prediction missingness. Do not tell the user that the
+table was repaired, because this slice performs no repair. The error status
+takes precedence over normal selection-ready, classifier-ready, and
+layer-styling messages until the selected table becomes valid.
+
+#### Deliverables
+
+- one read-only validator for existing Object Classification `.obs` class
+  state and prediction-pair consistency;
+- one dedicated expected validation error boundary between table selection
+  and controller binding;
+- widget state and status-card support distinct from structural table-binding
+  and ordinary layer-styling errors;
+- explicit neutral primary-label styling for rejected class state;
+- control enablement that prevents annotation and training against rejected
+  state while retaining safe recovery actions;
+- focused core/controller/widget tests for invalid `user_class`,
+  `pred_class`, and `pred_confidence` representations;
+- no class-zero migration, table mutation, dirty-state publication,
+  persistence write, or Spatial Query contract change.
+
+#### Exit criteria
+
+- selecting a structurally valid table with invalid Object Classification
+  columns never raises an uncaught UI exception;
+- the selected Labels element stays loaded and is neutrally styled rather than
+  retaining napari's default Labels colormap;
+- the status card identifies the invalid column and its expected dtype,
+  positive-category, missing-value, or paired-confidence contract;
+- invalid state disables dependent annotation and classifier actions;
+- inspection and rejection leave `.obs`, `.uns`, `.obsm`, and table dirty
+  state unchanged;
+- category or value `0` is rejected and never interpreted as missing;
+- valid missing-value class state continues through the existing bind,
+  styling, training, annotation, prediction, and persistence paths;
+- correcting or reloading the table allows the widget to recover on its next
+  normal refresh without reconstructing the widget.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6k to the existing core calculation, query, and
+Spatial Query child after Slice 6l to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
