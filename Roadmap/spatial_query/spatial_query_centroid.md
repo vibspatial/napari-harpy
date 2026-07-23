@@ -710,11 +710,11 @@ owns this dependent control order:
 2. Linked table combo.
 3. Target column mode: Existing column or New column.
 4. Existing-column combo or new-column line edit.
-5. Centroid cache status.
+5. One Spatial Query status card combining selection readiness and centroid
+   cache behavior.
 6. Run Spatial Query button.
-7. Query/action status card that reports when calculation is busy.
-8. Write Table State and Reload Table from zarr buttons.
-9. Persistent shared clean/dirty table-state status.
+7. Write Table State and Reload Table from zarr buttons.
+8. Persistent shared clean/dirty table-state status.
 
 The parent coordinates child context changes and cancellation, but each child
 retains its own controller and status-building modules. Spatial Query logic must
@@ -870,9 +870,11 @@ the currently applied primary-layer color-source identity so background table
 events refresh that source only; a widget must not reclaim layer styling merely
 because it received an unrelated refresh callback.
 
-### Centroid status
+### Spatial Query status
 
-The status area reports one of:
+One status card reports both the highest-priority selection/readiness state and
+the centroid-cache behavior Run will use. For a complete request, it reports
+one of:
 
 - Ready: valid cached centroids will be reused;
 - Not calculated: Run will calculate centers from scale0 first;
@@ -4616,10 +4618,152 @@ Exit criteria:
 - Object Classification and Spatial Query present the same labels-reset
   behavior without sharing widget-local state.
 
+### Slice 6h: Unified Spatial Query status card
+
+Replace the separate centroid-cache and Run-readiness cards introduced by the
+Spatial Query shell with one status card. The cache is no longer an independent
+user action: Run automatically reuses, calculates, extends, refreshes, or
+rebuilds centers. Presenting cache state separately can therefore duplicate
+selection blockers or show a warning card beside a successful `Spatial Query
+Ready` card. The unified card must explain one coherent current state.
+
+This slice deliberately supersedes the two-label presentation from Slice 6e.
+It changes presentation only; Run enablement, cache inspection, labels-layer
+lifecycle, controller boundaries, and table dirty state remain unchanged.
+
+Use one widget label, named for the complete workflow rather than one
+subsystem:
+
+```python
+self.status_label = QLabel()
+self.status_label.setObjectName("spatial_query_status_label")
+```
+
+Remove `cache_status_label` and `readiness_status_label`. Place the unified
+status card after the selector form and before the Run button, reusing the
+existing shared status-card styling and word wrapping.
+
+Consolidate the two pure builders into one:
+
+```python
+def build_spatial_query_status_card_spec(
+    *,
+    has_spatialdata: bool,
+    coordinate_system: str | None,
+    saved_shapes_name: str | None,
+    has_unsaved_shapes_changes: bool,
+    labels_name: str | None,
+    table_name: str | None,
+    cache_report: CanonicalCacheReport | None,
+    cache_inspection_error: str | None,
+    target_error: str | None,
+    target_description: str | None,
+    layer_styling_error: str | None,
+) -> _SpatialQueryStatusCardSpec:
+    ...
+```
+
+The builder remains a presentation-only function. It must not inspect
+SpatialData, calculate a digest, mutate widget state, decide whether Run is
+enabled, or own controller messages. The widget continues to derive Run
+enablement from the same validated state and passes already-derived values to
+the builder.
+
+Use deterministic priority for incomplete or exceptional state:
+
+```text
+1. no SpatialData
+2. no coordinate system
+3. no saved Shapes element
+4. dirty Shapes edit session
+5. no labels selection
+6. no linked table
+7. cache inspection error or missing report for a complete labels/table selection
+8. invalid annotation-target intent
+9. non-blocking labels-layer styling warning
+10. complete request, presented according to cache state
+```
+
+The first applicable state owns the title, message, and status kind. A cache
+inspection error must include the captured error text. A labels-layer styling
+warning remains non-blocking and must say that Spatial Query can still run
+when the computational request is otherwise valid.
+
+For a complete request, incorporate cache behavior into the same card:
+
+```text
+VALID
+    → title: Spatial Query Ready
+    → kind: success
+    → say cached centers will be reused
+
+ABSENT
+    → title: Spatial Query Ready
+    → kind: info
+    → say centers will be calculated before querying
+
+PARTIAL
+    → title: Spatial Query Ready
+    → kind: info
+    → say centers for the selected labels region will be added
+
+STALE
+    → title: Spatial Query Ready
+    → kind: warning
+    → say centers for the selected region will be refreshed
+
+INVALID
+    → title: Spatial Query Ready
+    → kind: warning
+    → say the managed centroid cache will be rebuilt conservatively
+    → include the first deterministic mismatch name and existing detail tooltip
+```
+
+Every complete-state card also identifies the saved Shapes element, selected
+labels element, and target-column description. Warning or informational color
+does not imply that Run is disabled: absent, partial, stale, and rebuildable
+invalid reports remain valid Run prerequisites because their recovery is
+automatic.
+
+When Slice 7 connects execution, the same label displays busy, cancellation,
+no-result, success, and error messages. Controller-owned execution status
+temporarily takes presentation precedence over selection/cache readiness.
+After execution finishes or is dismissed, the widget rebuilds the ordinary
+unified status from current state. Do not reintroduce a second execution-only
+status label.
+
+Deliverables:
+
+- replace `cache_status_label` and `readiness_status_label` with one
+  `status_label`;
+- replace the two status-spec builders with one pure unified builder;
+- pass the captured cache-inspection error through the builder rather than
+  constructing an exceptional cache card directly in the widget;
+- retain the existing `_SpatialQueryStatusCardSpec` and shared rendering
+  helper;
+- remove duplicate unavailable/required messages and contradictory adjacent
+  success/warning cards;
+- update focused shell and parent-integration assertions to inspect the unified
+  label.
+
+Exit criteria:
+
+- Spatial Query renders exactly one workflow status card;
+- every selection blocker and cache state has one deterministic presentation;
+- a complete rebuild-authorized request never shows a separate success card
+  beside a cache warning;
+- first-calculation, reuse, refresh, and rebuild behavior remain clear before
+  Run;
+- status rendering performs no cache inspection, hashing, viewer mutation, or
+  table mutation;
+- Run enablement is unchanged by the presentation refactor;
+- the one label is ready to receive Slice 7 execution status without adding a
+  parallel status surface.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6g to the existing core calculation, query, and
+Spatial Query child after Slice 6h to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
