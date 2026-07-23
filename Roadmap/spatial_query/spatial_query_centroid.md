@@ -5168,10 +5168,235 @@ Exit criteria:
 - this slice performs no annotation Apply, table mutation, dirty-state change,
   persistence write, or canonical-cache mutation.
 
+### Slice 6k: Missing-value Object Classification class state
+
+**Implementation status: Planned.**
+
+Refactor Object Classification so the absence of a user annotation or
+prediction is represented as missing data rather than the synthetic integer
+class `0`. This is an Object Classification consistency refactor before the
+Spatial Query execution slice. It does not broaden the Spatial Query target
+column contract.
+
+The canonical class-state representation becomes:
+
+```text
+user_class
+    positive integer categorical value
+        → user-assigned class
+    missing categorical value
+        → unlabelled
+
+pred_class
+    positive integer categorical value
+        → classifier prediction
+    missing categorical value
+        → no prediction
+
+pred_confidence
+    finite floating-point value
+        → confidence belonging to the row's prediction
+    np.nan
+        → no prediction confidence
+```
+
+Use `pd.NA` as the domain-level value assigned when clearing `user_class` or
+`pred_class`. Pandas categorical storage represents missing values through its
+missing code and may expose a version-dependent missing scalar when values are
+read back. Production code and tests must therefore use `isna()`/`notna()`
+rather than identity or equality comparisons with `pd.NA`. Continue using
+`np.nan` for missing `pred_confidence`.
+
+#### Class categories and palettes
+
+Class IDs are positive integers. Boolean values, zero, negative integers,
+fractional numbers, strings, and mixed category types are not valid canonical
+Object Classification class IDs. Missing is not a categorical category:
+
+```text
+before
+    user_class categories → [0, 1, 4]
+    class 0 color          → neutral unlabelled color
+
+after
+    user_class categories → [1, 4]
+    missing values        → neutral unlabelled color
+```
+
+The same rule applies to `pred_class`. The corresponding
+`user_class_colors` and `pred_class_colors` lists contain exactly one color per
+declared positive class category in categorical order. They contain no
+synthetic unlabelled entry. Missing values are rendered with the shared
+`DEFAULT_NEUTRAL_COLOR` outside the stored class palette.
+
+Retain deterministic class-ID coloring: a positive class keeps the color
+returned by `default_labeled_class_color(class_id)` regardless of which other
+class IDs are currently present. Removing an unused category must remove its
+aligned stored palette entry without changing the colors assigned to remaining
+class IDs.
+
+Remove the sentinel-oriented class contract from shared class helpers:
+
+- remove `DEFAULT_UNLABELED_CLASS` and `UNLABELED_CLASS`;
+- stop accepting or forwarding `unlabeled_class` arguments;
+- stop filling missing class values with zero;
+- stop requiring category zero during class-state validation;
+- stop storing an unlabelled color in class palettes;
+- retain a semantic shared neutral/missing color for viewer fallthrough.
+
+Do not change generic categorical palette behavior. This refactor applies to
+the specialized Object Classification class helpers and their consumers.
+
+#### User annotation behavior
+
+The Object Classification annotation boundary accepts either a positive class
+ID or the missing annotation intent. Prefer one explicit domain signature:
+
+```python
+def set_user_class_for_rows(
+    table: AnnData,
+    rows: pd.Series,
+    class_id: int | None,
+) -> None:
+    ...
+```
+
+`class_id=None` means clear the annotation and writes categorical missing
+values to the selected rows. A non-None class ID must be a positive integer and
+is added as a category when necessary. The widget's class editor continues to
+offer positive class IDs only, while Clear passes `None`.
+
+Creating `user_class` on the first effective annotation creates a categorical
+column whose non-target rows are missing and whose categories contain only the
+assigned positive class. Clearing the final use of a class removes that unused
+category and its palette entry. Clearing an already missing row is a no-op.
+
+Propagate the same representation through Object Classification state:
+
+- `current_user_class` returns `None` for an absent column or missing selected
+  value;
+- Clear is enabled only when the selected row has a non-missing class;
+- `UserClassAnnotationChange.class_id` uses `int | None`;
+- row-scoped viewer updates treat `None` as removal from the compact label
+  mapping;
+- layer features retain missing user-class values rather than materializing
+  zero.
+
+#### Training behavior
+
+Training eligibility derives from missingness:
+
+```text
+user_class.notna()
+    → labelled training rows
+
+user_class.isna()
+    → excluded from training
+```
+
+Convert only the selected non-missing class values to the NumPy integer array
+given to the estimator. Do not construct a full integer array filled with a
+sentinel merely to calculate this mask. Training summaries, class-label
+discovery, and insufficient-class validation must all operate on the positive
+non-missing class IDs.
+
+#### Prediction behavior
+
+Prediction helpers continue to update `pred_class` and `pred_confidence` as one
+logical result:
+
+```text
+successful prediction for a row
+    → pred_class = positive integer category
+    → pred_confidence = calculated float
+
+prediction cleared or unavailable for a row
+    → pred_class = pd.NA
+    → pred_confidence = np.nan
+```
+
+Initializing prediction outputs creates an all-missing categorical
+`pred_class` column and an all-`np.nan` floating-point `pred_confidence`
+column. Applying predictions adds the observed positive class categories and
+assigns both values for the prediction scope. Clearing predictions assigns
+both missing values for that scope and removes unused prediction categories
+and aligned colors when applicable.
+
+The prediction coloring path excludes missing rows from the compact mapping
+and uses the shared neutral color as its fallback. Prediction-confidence
+coloring continues to use its existing missing continuous color behavior.
+
+#### Validation and compatibility boundary
+
+This slice intentionally provides no backward compatibility for class `0`.
+There is no load-time migration, dual representation, deprecation period, or
+conversion from zero to missing. An existing `user_class` or `pred_class`
+containing value or category `0` is invalid under the new canonical contract
+and must fail loudly at the Object Classification normalization/validation
+boundary. This is an initial product contract, not a persisted-schema
+migration.
+
+Do not add integer-categorical support to Spatial Query in this slice:
+
+- `get_compatible_spatial_annotation_column_names()` continues to return only
+  categorical columns whose categories are strings;
+- `require_compatible_spatial_annotation_column()` retains the same
+  string-categorical requirement;
+- Spatial Query annotation values remain `str | None`;
+- no `user_class` or `pred_class` special case is added to the Spatial Query
+  widget, core annotation functions, styling helper, or status card;
+- `pred_class` remains classifier-owned and is not made writable by Spatial
+  Query.
+
+Integer-categorical Spatial Query annotation, if adopted later, requires a
+separate explicit product contract. Slice 6k only gives Object Classification
+a semantically consistent missing-value representation that such a future
+integration could reuse.
+
+#### Dirty state and persistence
+
+The table component paths and event boundary do not change:
+
+- user annotation publishes `obs/user_class` and
+  `uns/user_class_colors` when those components actually change;
+- prediction updates publish `obs/pred_class`,
+  `obs/pred_confidence`, and `uns/pred_class_colors` as applicable;
+- categorical missing codes and floating-point `np.nan` values are written and
+  reloaded through the existing component persistence functions;
+- a no-op clear or unchanged prediction state emits no mutation event.
+
+Deliverables:
+
+- missing-value class normalization and validation in the shared class core;
+- `user_class` creation, assignment, clearing, category cleanup, and palette
+  synchronization without a class-zero sentinel;
+- missing-aware Object Classification selection, status, training, annotation,
+  and row-scoped viewer styling;
+- paired missing-state handling for `pred_class` and `pred_confidence`;
+- removal of class-zero constants, branches, palette entries, and tests;
+- focused core, controller, widget, viewer-styling, classifier, and persistence
+  tests for the new canonical representation;
+- no Spatial Query behavior or compatibility changes.
+
+Exit criteria:
+
+- unlabelled `user_class` rows are categorical missing values and class `0`
+  appears nowhere in their values, categories, or stored palette;
+- rows without a prediction have missing `pred_class` and `np.nan`
+  `pred_confidence`;
+- only positive non-missing user classes participate in training;
+- clearing user annotations and predictions produces the canonical missing
+  state and updates viewer styling without a sentinel branch;
+- class palettes align only with real positive categories, while missing rows
+  use the shared neutral color;
+- class-zero input fails loudly and is neither interpreted nor migrated;
+- table dirty-state and persistence behavior remains component-scoped;
+- Spatial Query still accepts only string-categorical annotation columns.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6j to the existing core calculation, query, and
+Spatial Query child after Slice 6k to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
