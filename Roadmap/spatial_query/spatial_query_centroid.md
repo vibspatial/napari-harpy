@@ -4760,10 +4760,119 @@ Exit criteria:
 - the one label is ready to receive Slice 7 execution status without adding a
   parallel status surface.
 
+### Slice 6i: Neutral unannotated primary-label styling
+
+Align the Spatial Query New-column presentation with Object Classification's
+neutral unannotated presentation. The current shell loads the primary labels
+layer through `ViewerAdapter.ensure_labels_loaded()` but leaves napari's
+per-instance default labels colors in place when the configured New column
+does not exist yet. Those colors have no annotation meaning and can suggest
+that instances already belong to distinct annotation categories.
+
+This slice deliberately refines the earlier rule that a New column is not a
+color source before its first effective Apply. The nonexistent column still
+must not be treated as a table-backed color source. Instead, Spatial Query
+applies a viewer-only neutral state:
+
+```text
+New column, or no existing target column selected
+    → load or reuse the primary labels layer
+    → render background label 0 transparently
+    → render every foreground label with the shared missing/unannotated color
+    → do not create an obs column or palette
+
+compatible Existing column selected
+    → use its current categorical values
+    → use its valid stored palette or the shared read-only fallback palette
+
+first effective Apply creates the New column
+    → store the categorical column and its palette atomically
+    → keep that column selected as an Existing target
+    → immediately replace the neutral presentation with table-backed coloring
+```
+
+Keep this as a stateless presentation boundary beside
+`load_and_style_spatial_annotation_labels()` in
+`widgets/spatial_query/viewer_styling.py`. Add a narrowly named helper rather
+than making a nonexistent column look like a `TableColorSourceSpec`, for
+example:
+
+```python
+def load_and_style_unannotated_spatial_annotation_labels(
+    viewer_adapter: ViewerAdapter,
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    labels_name: str,
+) -> LabelsLoadResult:
+    ...
+```
+
+The helper reuses `ViewerAdapter.ensure_labels_loaded()`, the existing labels
+colormap primitives, and the shared categorical missing/unannotated color. It
+then synchronizes the labels display and activates the primary layer. It must
+not import or reuse Object Classification's specialized
+`ViewerStylingController`: that controller owns integer `user_class` and
+classifier semantics, while Spatial Query needs only the same neutral visual
+meaning.
+
+The neutral colormap should use one constant default foreground color rather
+than materializing one value or color per instance. Applying it must not scan
+labels pixels, calculate canonical centers, derive table row mappings, or
+install fake layer features for a column that does not exist.
+
+Styling remains driven by explicit user actions:
+
+- explicitly selecting a labels element applies either its selected Existing
+  column or the neutral New-column presentation;
+- explicitly switching to New column, or entering Existing mode without
+  selecting a compatible column, applies the neutral presentation;
+- explicitly selecting a compatible Existing column applies table-backed
+  coloring immediately;
+- programmatic parent-context, selector, and table refreshes do not reclaim the
+  primary layer's presentation from another workflow;
+- changing only the proposed New-column text does not repeatedly restyle the
+  layer.
+
+The neutral state is strictly viewer-only. It must not:
+
+- create the proposed `.obs` column;
+- create, repair, or remove `<column>_colors` in `.uns`;
+- emit `TableStateChangedEvent`, mark the table dirty, or write persisted data;
+- mutate the canonical-centers cache;
+- establish a fake table-backed color-source identity.
+
+Deliverables:
+
+- a stateless neutral-style helper in the existing Spatial Query
+  `viewer_styling.py` module;
+- Spatial Query control wiring that replaces raw napari labels colors with the
+  neutral presentation whenever an explicit user coloring action has no
+  selected Existing source;
+- immediate transition from neutral to table-backed coloring after the first
+  effective Apply creates the target column;
+- focused tests for transparent background, neutral foreground, primary-layer
+  reuse and activation, no table/cache mutation, explicit Existing/New
+  transitions, and no styling reclamation during programmatic refresh.
+
+Exit criteria:
+
+- a newly selected labels element never shows semantically meaningless
+  per-instance napari colors merely because the target column has not been
+  created;
+- every foreground instance uses the shared missing/unannotated color until an
+  actual compatible annotation column supplies category values;
+- selecting or displaying the neutral state remains read-only and leaves
+  `.obs`, `.uns`, dirty state, persisted state, and the canonical cache
+  unchanged;
+- Existing-column palette behavior remains unchanged;
+- Object Classification and Spatial Query share the neutral visual convention
+  without sharing widget-specific controllers or annotation-domain semantics.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6h to the existing core calculation, query, and
+Spatial Query child after Slice 6i to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
