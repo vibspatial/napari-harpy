@@ -4511,6 +4511,8 @@ Exit criteria:
 
 ### Slice 6g: Spatial Query labels-selection and viewer-layer lifecycle
 
+**Implementation status: Implemented.**
+
 Align Spatial Query with the established Object Classification labels
 selection lifecycle. A labels selection is an explicit request to load and
 display that element in the active coordinate system; it must not survive a
