@@ -5,6 +5,7 @@ from collections.abc import Callable
 from html import unescape
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
@@ -12,6 +13,7 @@ from spatialdata import SpatialData
 from spatialdata.transformations import Identity, set_transformation
 
 import napari_harpy.widgets.spatial_query.widget as widget_module
+from napari_harpy.core.spatial_query import CANONICAL_OBSM_KEY, CanonicalCacheState
 from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
 from napari_harpy.widgets.spatial_query.widget import SpatialQuery
 
@@ -103,7 +105,10 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     assert widget.labels_combo.isEnabled() is False
     assert widget.table_combo.isEnabled() is False
     assert widget.run_button.isEnabled() is False
-    assert "No SpatialData Loaded" in _status_text(widget.readiness_status_label)
+    assert widget.status_label.objectName() == "spatial_query_status_label"
+    assert not hasattr(widget, "cache_status_label")
+    assert not hasattr(widget, "readiness_status_label")
+    assert "No SpatialData Loaded" in _status_text(widget.status_label)
 
 
 def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_action_intents(
@@ -246,7 +251,7 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
     assert widget.selected_column_mode == "new"
     assert widget.selected_column_name is None
     assert widget.run_button.isEnabled() is False
-    assert "already exists" in _status_text(widget.readiness_status_label)
+    assert "already exists" in _status_text(widget.status_label)
 
     widget.new_column_edit.setText("reviewed_annotation")
 
@@ -254,7 +259,7 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
     assert widget.run_button.isEnabled() is True
 
 
-def test_spatial_query_shell_reports_cache_inspection_failure_separately(
+def test_spatial_query_shell_blocks_live_input_inspection_failure(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
@@ -271,8 +276,32 @@ def test_spatial_query_shell_reports_cache_inspection_failure_separately(
 
     assert widget.cache_report is None
     assert widget.run_button.isEnabled() is False
-    assert "Centroid Inspection Error" in _status_text(widget.cache_status_label)
-    assert "invalid current table binding" in _status_text(widget.cache_status_label)
+    status_text = _status_text(widget.status_label)
+    assert "Labels or Table Validation Failed" in status_text
+    assert "invalid current table binding" in status_text
+    assert "cannot calculate centers until this issue is resolved" in status_text
+
+
+def test_spatial_query_shell_keeps_invalid_cache_ready_for_recalculation(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    table.obsm[CANONICAL_OBSM_KEY] = np.zeros((table.n_obs, 3), dtype=np.float64)
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+
+    report = widget.cache_report
+    assert report is not None
+    assert report.state is CanonicalCacheState.INVALID
+    assert widget.run_button.isEnabled() is True
+    status_text = _status_text(widget.status_label)
+    assert "Spatial Query Ready" in status_text
+    assert 'Centers for labels element "blobs_labels" will be recalculated' in status_text
+    assert "Detected:" not in status_text
 
 
 @pytest.mark.parametrize(
@@ -297,7 +326,7 @@ def test_spatial_query_shell_shapes_context_blocks_run(
 
     assert widget.cache_report is not None
     assert widget.run_button.isEnabled() is False
-    assert expected_status in _status_text(widget.readiness_status_label)
+    assert expected_status in _status_text(widget.status_label)
 
 
 def test_spatial_query_shell_coordinate_change_clears_valid_labels_without_reinspection(

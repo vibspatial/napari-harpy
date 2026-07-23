@@ -31,8 +31,7 @@ from napari_harpy.widgets.shared_styles import (
 )
 from napari_harpy.widgets.spatial_query.status_card import (
     _SpatialQueryStatusCardSpec,
-    build_spatial_query_cache_status_card_spec,
-    build_spatial_query_readiness_status_card_spec,
+    build_spatial_query_status_card_spec,
 )
 from napari_harpy.widgets.spatial_query.viewer_styling import load_and_style_spatial_annotation_labels
 
@@ -70,7 +69,7 @@ class SpatialQuery(QWidget):
             has_unsaved_shapes_changes=False,
         )
         self._canonical_cache_report: CanonicalCacheReport | None = None
-        self._canonical_cache_inspection_error: str | None = None
+        self._canonical_input_inspection_error: str | None = None
         self._layer_styling_error: str | None = None
 
         root_layout = QVBoxLayout(self)
@@ -123,10 +122,10 @@ class SpatialQuery(QWidget):
         form_layout.addRow(self.new_column_label, self.new_column_edit)
         root_layout.addLayout(form_layout)
 
-        self.cache_status_label = QLabel()
-        self.cache_status_label.setObjectName("spatial_query_cache_status_label")
-        self.cache_status_label.setWordWrap(True)
-        root_layout.addWidget(self.cache_status_label)
+        self.status_label = QLabel()
+        self.status_label.setObjectName("spatial_query_status_label")
+        self.status_label.setWordWrap(True)
+        root_layout.addWidget(self.status_label)
 
         self.run_button = QPushButton("Run spatial query")
         self.run_button.setObjectName("spatial_query_run_button")
@@ -138,11 +137,6 @@ class SpatialQuery(QWidget):
         )
 
         root_layout.addWidget(self.run_button)
-
-        self.readiness_status_label = QLabel()
-        self.readiness_status_label.setObjectName("spatial_query_readiness_status_label")
-        self.readiness_status_label.setWordWrap(True)
-        root_layout.addWidget(self.readiness_status_label)
 
         self.labels_combo.currentIndexChanged.connect(self._on_labels_changed)
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
@@ -281,7 +275,7 @@ class SpatialQuery(QWidget):
             preferred_new_column=_DEFAULT_NEW_COLUMN_NAME,
         )
         self._canonical_cache_report = None
-        self._canonical_cache_inspection_error = None
+        self._canonical_input_inspection_error = None
         self._layer_styling_error = None
         self._refresh_controls_and_status()
 
@@ -365,7 +359,7 @@ class SpatialQuery(QWidget):
 
     def _inspect_canonical_centers_cache(self) -> None:
         self._canonical_cache_report = None
-        self._canonical_cache_inspection_error = None
+        self._canonical_input_inspection_error = None
         sdata = self.selected_spatialdata
         labels_name = self.selected_labels_name
         table_name = self.selected_table_name
@@ -379,7 +373,7 @@ class SpatialQuery(QWidget):
                 labels_name=labels_name,
             )
         except (KeyError, TypeError, ValueError) as error:
-            self._canonical_cache_inspection_error = str(error)
+            self._canonical_input_inspection_error = str(error)
 
     def _on_labels_changed(self, index: int) -> None:
         del index
@@ -510,35 +504,39 @@ class SpatialQuery(QWidget):
         return column_name, None, f'New column "{column_name}"'
 
     def _refresh_controls_and_status(self) -> None:
+        if (
+            self.selected_labels_name is not None
+            and self.selected_table_name is not None
+            and self._canonical_cache_report is None
+            and self._canonical_input_inspection_error is None
+        ):
+            raise RuntimeError(
+                "Canonical cache inspection produced neither a report nor an error "
+                "for the complete Spatial Query selection."
+            )
+
         column_name, target_error, target_description = self._resolve_target_intent()
         del column_name
         has_report = self._canonical_cache_report is not None
         self.run_button.setEnabled(
             has_report
+            and self._canonical_input_inspection_error is None
             and self._annotation_context.saved_shapes_name is not None
             and not self._annotation_context.has_unsaved_shapes_changes
             and target_error is None
         )
 
-        if self._canonical_cache_inspection_error is not None:
-            cache_status_spec = _SpatialQueryStatusCardSpec(
-                title="Centroid Inspection Error",
-                lines=(self._canonical_cache_inspection_error,),
-                kind="error",
-            )
-        else:
-            cache_status_spec = build_spatial_query_cache_status_card_spec(self._canonical_cache_report)
-        self._apply_status_card_spec(self.cache_status_label, cache_status_spec)
         self._apply_status_card_spec(
-            self.readiness_status_label,
-            build_spatial_query_readiness_status_card_spec(
+            self.status_label,
+            build_spatial_query_status_card_spec(
                 has_spatialdata=self.selected_spatialdata is not None,
                 coordinate_system=self.selected_coordinate_system,
                 saved_shapes_name=self._annotation_context.saved_shapes_name,
                 has_unsaved_shapes_changes=self._annotation_context.has_unsaved_shapes_changes,
                 labels_name=self.selected_labels_name,
                 table_name=self.selected_table_name,
-                has_cache_report=has_report,
+                cache_report=self._canonical_cache_report,
+                canonical_input_inspection_error=self._canonical_input_inspection_error,
                 target_error=target_error,
                 target_description=target_description,
                 layer_styling_error=self._layer_styling_error,

@@ -10,6 +10,9 @@ from napari_harpy.widgets.shared_styles import StatusCardKind, validate_status_c
 _FIRST_CALCULATION_TOOLTIP = (
     "Centers will first be calculated for the selected labels element before the spatial query runs."
 )
+_CENTER_CALCULATION_TOOLTIP = (
+    "Centers will be calculated for the selected labels element before the spatial query runs."
+)
 
 
 @dataclass(frozen=True)
@@ -23,63 +26,7 @@ class _SpatialQueryStatusCardSpec:
         validate_status_card_kind(self.kind)
 
 
-def build_spatial_query_cache_status_card_spec(
-    report: CanonicalCacheReport | None,
-) -> _SpatialQueryStatusCardSpec:
-    """Build the current canonical-cache status presentation."""
-    if report is None:
-        return _SpatialQueryStatusCardSpec(
-            title="Centroids Unavailable",
-            lines=("Choose a supported labels element and linked table.",),
-            kind="warning",
-        )
-
-    labels_name = report.labels_name
-    if report.state is CanonicalCacheState.VALID:
-        return _SpatialQueryStatusCardSpec(
-            title="Centroids Ready",
-            lines=(f'Cached centers for "{labels_name}" will be reused.',),
-            kind="success",
-        )
-    if report.state is CanonicalCacheState.ABSENT:
-        return _SpatialQueryStatusCardSpec(
-            title="Centroids Not Calculated",
-            lines=(f'Run will calculate centers for "{labels_name}" first.',),
-            kind="info",
-            tooltip_message=_FIRST_CALCULATION_TOOLTIP,
-        )
-    if report.state is CanonicalCacheState.PARTIAL:
-        return _SpatialQueryStatusCardSpec(
-            title="Centroids Partial",
-            lines=(f'Run will calculate centers for labels region "{labels_name}".',),
-            kind="info",
-            tooltip_message=_FIRST_CALCULATION_TOOLTIP,
-        )
-    if report.state is CanonicalCacheState.STALE:
-        return _SpatialQueryStatusCardSpec(
-            title="Centroids Stale",
-            lines=(f'Run will refresh centers for labels region "{labels_name}".',),
-            kind="warning",
-            tooltip_message=_FIRST_CALCULATION_TOOLTIP,
-        )
-
-    if report.state is CanonicalCacheState.INVALID:
-        mismatch = report.mismatches[0]
-        mismatch_name = mismatch.code.value.replace("_", " ")
-        return _SpatialQueryStatusCardSpec(
-            title="Centroids Invalid",
-            lines=(
-                f'Run will rebuild the managed centroid cache before querying "{labels_name}".',
-                f"Detected: {mismatch_name}.",
-            ),
-            kind="warning",
-            tooltip_message=mismatch.detail or _FIRST_CALCULATION_TOOLTIP,
-        )
-
-    raise ValueError(f"Unsupported canonical cache state `{report.state}`.")
-
-
-def build_spatial_query_readiness_status_card_spec(
+def build_spatial_query_status_card_spec(
     *,
     has_spatialdata: bool,
     coordinate_system: str | None,
@@ -87,12 +34,13 @@ def build_spatial_query_readiness_status_card_spec(
     has_unsaved_shapes_changes: bool,
     labels_name: str | None,
     table_name: str | None,
-    has_cache_report: bool,
+    cache_report: CanonicalCacheReport | None,
+    canonical_input_inspection_error: str | None,
     target_error: str | None,
     target_description: str | None,
     layer_styling_error: str | None,
 ) -> _SpatialQueryStatusCardSpec:
-    """Build Run readiness from already-derived child state."""
+    """Build the unified Spatial Query status from already-derived child state."""
     if not has_spatialdata:
         return _SpatialQueryStatusCardSpec(
             title="No SpatialData Loaded",
@@ -129,12 +77,19 @@ def build_spatial_query_readiness_status_card_spec(
             lines=(f'No linked table is selected for "{labels_name}".',),
             kind="warning",
         )
-    if not has_cache_report:
+    if cache_report is None:
+        if canonical_input_inspection_error is None:
+            raise ValueError("A missing canonical cache report requires a canonical input inspection error.")
         return _SpatialQueryStatusCardSpec(
-            title="Centroids Unavailable",
-            lines=("Resolve the centroid-cache error before running Spatial Query.",),
+            title="Labels or Table Validation Failed",
+            lines=(
+                canonical_input_inspection_error,
+                "Spatial Query cannot calculate centers until this issue is resolved.",
+            ),
             kind="error",
         )
+    if canonical_input_inspection_error is not None:
+        raise ValueError("A canonical cache report and canonical input inspection error cannot be supplied together.")
     if target_error is not None:
         return _SpatialQueryStatusCardSpec(
             title="Annotation Target Not Ready",
@@ -144,15 +99,56 @@ def build_spatial_query_readiness_status_card_spec(
     if layer_styling_error is not None:
         return _SpatialQueryStatusCardSpec(
             title="Layer Styling Warning",
-            lines=(layer_styling_error,),
+            lines=(layer_styling_error, "Spatial Query can still run."),
             kind="warning",
         )
 
+    cache_line, kind, tooltip_message = _build_ready_cache_status(
+        cache_report,
+        labels_name,
+    )
     return _SpatialQueryStatusCardSpec(
         title="Spatial Query Ready",
         lines=(
             f'Shapes "{saved_shapes_name}" will query labels "{labels_name}".',
             f"Target: {target_description or 'unknown annotation column'}.",
+            cache_line,
         ),
-        kind="success",
+        kind=kind,
+        tooltip_message=tooltip_message,
     )
+
+
+def _build_ready_cache_status(
+    report: CanonicalCacheReport,
+    labels_name: str,
+) -> tuple[str, StatusCardKind, str | None]:
+    if report.state is CanonicalCacheState.VALID:
+        return f'Cached centers for "{labels_name}" will be reused.', "success", None
+    if report.state is CanonicalCacheState.ABSENT:
+        return (
+            f'Centers for labels element "{labels_name}" will be calculated before querying.',
+            "info",
+            _FIRST_CALCULATION_TOOLTIP,
+        )
+    if report.state is CanonicalCacheState.PARTIAL:
+        return (
+            f'Centers for labels element "{labels_name}" will be calculated before querying.',
+            "info",
+            _CENTER_CALCULATION_TOOLTIP,
+        )
+    if report.state is CanonicalCacheState.STALE:
+        return (
+            f'Centers for labels element "{labels_name}" will be refreshed before querying.',
+            "warning",
+            _CENTER_CALCULATION_TOOLTIP,
+        )
+    if report.state is CanonicalCacheState.INVALID:
+        mismatch = report.mismatches[0]
+        return (
+            f'Centers for labels element "{labels_name}" will be recalculated before querying.',
+            "info",
+            mismatch.detail or _CENTER_CALCULATION_TOOLTIP,
+        )
+
+    raise ValueError(f"Unsupported canonical cache state `{report.state}`.")
