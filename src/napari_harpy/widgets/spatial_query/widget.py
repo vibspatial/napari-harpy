@@ -104,6 +104,7 @@ class SpatialQuery(QWidget):
             "spatial_query_existing_column_combo",
             "Select an existing categorical column with string categories.",
         )
+        self.existing_column_combo.setPlaceholderText("Choose an existing column")
         self.new_column_edit = QLineEdit(_DEFAULT_NEW_COLUMN_NAME)
         self.new_column_edit.setObjectName("spatial_query_new_column_edit")
         self.new_column_edit.setAccessibleName("New annotation column name")
@@ -336,18 +337,24 @@ class SpatialQuery(QWidget):
             for column_name in column_names:
                 self.existing_column_combo.addItem(column_name, column_name)
 
-        default_mode: _TargetColumnMode = "existing" if _DEFAULT_NEW_COLUMN_NAME in column_names else "new"
-        next_mode = preferred_mode
-        if next_mode == "existing" and preferred_existing_column not in column_names:
-            next_mode = None
-        if next_mode is None:
-            next_mode = default_mode
+        default_existing_column = _DEFAULT_NEW_COLUMN_NAME if _DEFAULT_NEW_COLUMN_NAME in column_names else None
+        if preferred_mode == "existing" and preferred_existing_column in column_names:
+            next_mode: _TargetColumnMode = "existing"
+            next_existing_column = preferred_existing_column
+        elif preferred_mode != "new" and default_existing_column is not None:
+            next_mode = "existing"
+            next_existing_column = default_existing_column
+        else:
+            next_mode = "new"
+            next_existing_column = None
 
         with QSignalBlocker(self.column_mode_combo):
             self.column_mode_combo.setCurrentIndex(self.column_mode_combo.findData(next_mode))
         with QSignalBlocker(self.existing_column_combo):
-            preferred = preferred_existing_column if next_mode == "existing" else _DEFAULT_NEW_COLUMN_NAME
-            self._select_combo_data(self.existing_column_combo, preferred)
+            next_existing_index = (
+                self.existing_column_combo.findData(next_existing_column) if next_existing_column is not None else -1
+            )
+            self.existing_column_combo.setCurrentIndex(next_existing_index)
         with QSignalBlocker(self.new_column_edit):
             self.new_column_edit.setText(preferred_new_column or _DEFAULT_NEW_COLUMN_NAME)
 
@@ -411,6 +418,9 @@ class SpatialQuery(QWidget):
         self._set_column_control_visibility()
         if self.selected_column_mode == "existing":
             self._apply_existing_column_styling()
+        else:
+            with QSignalBlocker(self.existing_column_combo):
+                self.existing_column_combo.setCurrentIndex(-1)
         self._refresh_controls_and_status()
 
     def _on_existing_column_changed(self, index: int) -> None:
