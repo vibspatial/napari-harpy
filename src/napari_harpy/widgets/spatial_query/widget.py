@@ -13,6 +13,7 @@ from napari_harpy.core.spatial_query import (
     build_canonical_source_signature,
     get_compatible_spatial_annotation_column_names,
     inspect_canonical_cache,
+    require_compatible_spatial_annotation_column,
 )
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
@@ -33,7 +34,10 @@ from napari_harpy.widgets.spatial_query.status_card import (
     _SpatialQueryStatusCardSpec,
     build_spatial_query_status_card_spec,
 )
-from napari_harpy.widgets.spatial_query.viewer_styling import load_and_style_spatial_annotation_labels
+from napari_harpy.widgets.spatial_query.viewer_styling import (
+    load_and_style_spatial_annotation_labels,
+    load_and_style_unannotated_spatial_annotation_labels,
+)
 
 if TYPE_CHECKING:
     import napari
@@ -404,23 +408,26 @@ class SpatialQuery(QWidget):
             preferred_new_column=_DEFAULT_NEW_COLUMN_NAME,
         )
         self._inspect_canonical_centers_cache()
+        # This callback represents an explicit user table choice. Programmatic
+        # table refreshes block the combo signal and therefore do not reclaim
+        # the shared primary layer's presentation.
+        self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
 
     def _on_column_mode_changed(self, index: int) -> None:
         del index
         self._layer_styling_error = None
         self._set_column_control_visibility()
-        if self.selected_column_mode == "existing":
-            self._apply_existing_column_styling()
-        else:
+        if self.selected_column_mode == "new":
             with QSignalBlocker(self.existing_column_combo):
                 self.existing_column_combo.setCurrentIndex(-1)
+        self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
 
     def _on_existing_column_changed(self, index: int) -> None:
         del index
         self._layer_styling_error = None
-        self._apply_existing_column_styling()
+        self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
 
     def _on_new_column_changed(self, text: str) -> None:
@@ -438,12 +445,12 @@ class SpatialQuery(QWidget):
         if sdata is None or coordinate_system is None or labels_name is None:
             return
         try:
-            result = self._app_state.viewer_adapter.ensure_labels_loaded(
-                sdata,
-                labels_name,
-                coordinate_system,
+            load_and_style_unannotated_spatial_annotation_labels(
+                self._app_state.viewer_adapter,
+                sdata=sdata,
+                coordinate_system=coordinate_system,
+                labels_name=labels_name,
             )
-            self._app_state.viewer_adapter.activate_layer(result.layer)
         except (KeyError, TypeError, ValueError) as error:
             self._layer_styling_error = str(error)
 
@@ -500,6 +507,16 @@ class SpatialQuery(QWidget):
         if column_name in (table_metadata.region_key, table_metadata.instance_key):
             return None, f'Annotation column "{column_name}" cannot be a table linkage column.', None
         if column_name in table.obs.columns:
+            try:
+                require_compatible_spatial_annotation_column(table, column_name)
+            except ValueError:
+                return (
+                    None,
+                    f'Annotation column "{column_name}" already exists but cannot be used because Spatial Query '
+                    "requires a categorical column with only string categories. Choose another compatible Existing "
+                    "column or enter a different New-column name.",
+                    None,
+                )
             return None, f'New annotation column "{column_name}" already exists.', None
         return column_name, None, f'New column "{column_name}"'
 

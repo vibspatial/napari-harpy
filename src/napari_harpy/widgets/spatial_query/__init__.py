@@ -8,7 +8,10 @@ from napari_harpy.widgets.spatial_query.controller import (
     SPATIAL_QUERY_IDLE_STATUS,
     SpatialQueryController,
 )
-from napari_harpy.widgets.spatial_query.viewer_styling import load_and_style_spatial_annotation_labels
+from napari_harpy.widgets.spatial_query.viewer_styling import (
+    load_and_style_spatial_annotation_labels,
+    load_and_style_unannotated_spatial_annotation_labels,
+)
 from napari_harpy.widgets.spatial_query.widget import SpatialQuery
 
 __all__ = [
@@ -17,5 +20,6 @@ __all__ = [
     "SpatialQueryController",
     "SpatialQuery",
     "load_and_style_spatial_annotation_labels",
+    "load_and_style_unannotated_spatial_annotation_labels",
     "record_canonical_cache_update",
 ]

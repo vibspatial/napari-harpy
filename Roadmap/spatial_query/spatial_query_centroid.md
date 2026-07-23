@@ -4833,12 +4833,14 @@ Exit criteria:
 
 ### Slice 6i: Neutral unannotated primary-label styling
 
+**Implementation status: Implemented.**
+
 Align the Spatial Query New-column presentation with Object Classification's
-neutral unannotated presentation. The current shell loads the primary labels
-layer through `ViewerAdapter.ensure_labels_loaded()` but leaves napari's
-per-instance default labels colors in place when the configured New column
-does not exist yet. Those colors have no annotation meaning and can suggest
-that instances already belong to distinct annotation categories.
+neutral unannotated presentation. Before this slice, the shell loaded the
+primary labels layer through `ViewerAdapter.ensure_labels_loaded()` but left
+napari's per-instance default labels colors in place when the configured New
+column did not exist yet. Those colors had no annotation meaning and could
+suggest that instances already belonged to distinct annotation categories.
 
 This slice deliberately refines the earlier rule that a New column is not a
 color source before its first effective Apply. The nonexistent column still
@@ -5032,10 +5034,142 @@ Exit criteria:
 - Object Classification and Spatial Query share the neutral visual convention
   without sharing widget-specific controllers or annotation-domain semantics.
 
+### Slice 6j: Empty New-column draft and named-default separation
+
+Separate the preferred conventional Existing-column name from the editable
+New-column value. Slice 6i uses `spatial_annotation` for both roles, which
+produces an avoidable collision when a compatible column already exists and
+the user explicitly switches from Existing to New mode:
+
+```text
+compatible "spatial_annotation" exists
+    → Existing mode initially colors from it
+    ↓ user switches to New mode
+hidden New-column value is also "spatial_annotation"
+    → neutral styling is correct
+    → proposed New target immediately collides with the existing column
+    → Run is disabled for a name the user never entered
+```
+
+Follow the Shapes Annotation naming convention instead. Keep
+`spatial_annotation` as the preferred Existing-column name and as placeholder
+guidance, but do not install it as the `QLineEdit` value:
+
+```text
+New-column QLineEdit
+    text        → ""
+    placeholder → "spatial_annotation"
+
+placeholder text
+    → visual guidance only
+    → is not a selected annotation target
+    → is never passed to validation, query, Apply, or persistence as a value
+```
+
+Use a name that reflects this single remaining role, for example:
+
+```python
+_PREFERRED_ANNOTATION_COLUMN_NAME = "spatial_annotation"
+```
+
+Do not retain a constant whose name or usage implies that the New-column field
+contains a valid default value.
+
+The initial selection contract becomes:
+
+```text
+compatible "spatial_annotation" exists
+    → select Existing mode
+    → select and color from "spatial_annotation"
+    → keep the hidden New-column draft empty
+
+"spatial_annotation" does not exist
+    → select New mode
+    → keep the New-column draft empty
+    → show "spatial_annotation" only as placeholder guidance
+    → apply neutral styling
+    → disable Run until the user enters a valid unused name
+
+"spatial_annotation" exists but is incompatible
+    → exclude it from Existing choices
+    → select New mode with an empty draft
+    → apply neutral styling
+    → do not convert, repair, or overwrite the existing column
+    → explain why it cannot be used
+    → require another compatible Existing column or an explicitly entered,
+      different New-column name
+```
+
+An empty draft normally produces a concise request to enter a New-column name.
+When an incompatible `spatial_annotation` column exists, the empty-state
+message must additionally explain that the conventional column was not
+selected because Spatial Query requires pandas categorical dtype with only
+string categories. Once the user enters a different valid unused name, that
+unrelated incompatible column no longer blocks Run.
+
+Treat entered New-column text as a user draft scoped to its current
+SpatialData/table target:
+
+- switching temporarily between Existing and New modes preserves a non-empty
+  draft;
+- programmatic selector refreshes that retain the same table preserve it;
+- changing or clearing the selected table context clears it rather than
+  carrying a proposed schema change into another table;
+- changing only the draft text updates readiness but does not repeatedly
+  reclaim or restyle the primary labels layer;
+- New mode always uses the neutral presentation, regardless of whether the
+  draft is empty, valid, or temporarily invalid.
+
+Do not introduce a separate draft model or another source of widget state for
+this behavior. The `QLineEdit` owns the draft, while the existing
+signal-blocked selector-refresh paths decide whether its text is preserved or
+cleared.
+
+Slice 7 owns successful consumption of the draft:
+
+```text
+first effective Apply creates the explicitly named New column
+    → store its categorical values and palette atomically
+    → select it as an Existing target
+    → replace neutral styling with table-backed styling
+    → clear the consumed New-column draft
+```
+
+Deliverables:
+
+- split the preferred conventional name from the New-column field value;
+- initialize and reset the New-column field to empty while showing
+  `spatial_annotation` as placeholder guidance;
+- preserve a user-entered draft only while its SpatialData/table target
+  remains current;
+- retain neutral viewer styling throughout New mode;
+- retain actionable incompatible-conventional-column feedback without relying
+  on a prefilled colliding value;
+- focused tests for compatible, absent, and incompatible conventional columns,
+  mode-toggle draft preservation, table-context draft clearing, placeholder
+  non-semantics, and unchanged viewer/table/cache state.
+
+Exit criteria:
+
+- switching from a compatible Existing `spatial_annotation` target to New mode
+  never presents an immediate collision for text the user did not enter;
+- `spatial_annotation` remains the preferred compatible Existing target but is
+  only placeholder guidance in New mode;
+- an empty New-column draft never enables Run or becomes an implicit Apply
+  target;
+- an incompatible existing `spatial_annotation` column remains visible as an
+  actionable validation problem without being coerced or overwritten;
+- explicit New-column drafts survive mode toggles only while they still belong
+  to the same SpatialData/table target;
+- neutral and Existing-column styling behavior from Slice 6i remains
+  unchanged;
+- this slice performs no annotation Apply, table mutation, dirty-state change,
+  persistence write, or canonical-cache mutation.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6i to the existing core calculation, query, and
+Spatial Query child after Slice 6j to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from napari.utils.colormaps import DirectLabelColormap
+
 from napari_harpy.core._color_source import TableColorSourceSpec
 from napari_harpy.core.spatial_query.annotation import require_compatible_spatial_annotation_column
 from napari_harpy.core.spatialdata import get_table
+from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.adapter import ViewerAdapter
 from napari_harpy.viewer.labels_styling import (
     LabelsLoadResult,
@@ -15,6 +18,42 @@ from napari_harpy.viewer.labels_styling import (
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
+
+
+def load_and_style_unannotated_spatial_annotation_labels(
+    viewer_adapter: ViewerAdapter,
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    labels_name: str,
+) -> LabelsLoadResult:
+    """Load, neutrally style, and activate an unannotated primary labels layer."""
+    load_result = viewer_adapter.ensure_labels_loaded(
+        sdata,
+        labels_name,
+        coordinate_system,
+    )
+    # A compact colormap is unnecessary here: `None` is the fallback for every
+    # unmapped foreground label, so this remains a two-entry mapping even for
+    # hundreds of thousands of instances. CompactLabelColormap is reserved for
+    # table-backed styling that needs an explicit label-id -> texture-code map.
+    load_result.layer.colormap = DirectLabelColormap(
+        color_dict={
+            None: MISSING_CATEGORICAL_COLOR,
+            0: "transparent",
+        },
+        background_value=0,
+    )
+    viewer_adapter.sync_labels_display_after_colormap_change(load_result.layer)
+    viewer_adapter.activate_layer(load_result.layer)
+
+    return LabelsLoadResult(
+        layer=load_result.layer,
+        created=load_result.created,
+        value_kind=None,
+        palette_source=None,
+        coercion_applied=False,
+    )
 
 
 def load_and_style_spatial_annotation_labels(

@@ -9,8 +9,12 @@ import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
 
+from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.viewer.adapter import LabelsLayerBinding, ViewerAdapter
-from napari_harpy.widgets.spatial_query.viewer_styling import load_and_style_spatial_annotation_labels
+from napari_harpy.widgets.spatial_query.viewer_styling import (
+    load_and_style_spatial_annotation_labels,
+    load_and_style_unannotated_spatial_annotation_labels,
+)
 
 
 class _EventEmitter:
@@ -54,6 +58,53 @@ def _add_annotation_column(sdata) -> None:
     table = sdata.tables["table"]
     values = np.where(table.obs["instance_id"].to_numpy() % 2 == 0, "even", "odd").astype(object)
     table.obs["annotation"] = pd.Categorical(values, categories=["odd", "even"])
+
+
+def test_unannotated_spatial_annotation_styling_uses_one_neutral_foreground_without_table_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    obs_before = table.obs.copy(deep=True)
+    uns_before = copy.deepcopy(table.uns)
+    viewer = _Viewer()
+    adapter = ViewerAdapter(viewer)
+    synchronized_layers: list[object] = []
+    monkeypatch.setattr(adapter, "sync_labels_display_after_colormap_change", synchronized_layers.append)
+
+    first = load_and_style_unannotated_spatial_annotation_labels(
+        adapter,
+        sdata=sdata_blobs,
+        coordinate_system="global",
+        labels_name="blobs_labels",
+    )
+    second = load_and_style_unannotated_spatial_annotation_labels(
+        adapter,
+        sdata=sdata_blobs,
+        coordinate_system="global",
+        labels_name="blobs_labels",
+    )
+
+    assert first.created is True
+    assert second.created is False
+    assert second.layer is first.layer
+    assert second.value_kind is None
+    assert second.palette_source is None
+    assert second.coercion_applied is False
+    assert viewer.layers == [first.layer]
+    assert viewer.layers.selection.active is first.layer
+    assert synchronized_layers == [first.layer, first.layer]
+    binding = adapter.layer_bindings.get_binding(first.layer)
+    assert isinstance(binding, LabelsLayerBinding)
+    assert binding.labels_role == "primary"
+    assert binding.style_spec is None
+
+    neutral_rgba = np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32)
+    assert np.allclose(first.layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    assert np.allclose(first.layer.colormap.map(1), neutral_rgba)
+    assert np.allclose(first.layer.colormap.map(400_000), neutral_rgba)
+    pd.testing.assert_frame_equal(table.obs, obs_before)
+    assert table.uns == uns_before
 
 
 def test_spatial_annotation_styling_loads_reuses_and_activates_primary_layer_without_table_mutation(

@@ -8,12 +8,14 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.colors import to_rgba
 from qtpy.QtCore import Qt
 from spatialdata import SpatialData
 from spatialdata.transformations import Identity, set_transformation
 
 import napari_harpy.widgets.spatial_query.widget as widget_module
 from napari_harpy.core.spatial_query import CANONICAL_OBSM_KEY, CanonicalCacheState
+from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
 from napari_harpy.widgets.spatial_query.widget import SpatialQuery
 
@@ -149,6 +151,9 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
     assert widget.run_button.isEnabled() is True
     assert inspection_calls == 1
     assert len(viewer.layers) == 1  # Explicit labels selection may claim primary-label styling.
+    neutral_rgba = np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32)
+    assert np.allclose(viewer.layers[0].colormap.map(1), neutral_rgba)
+    assert np.allclose(viewer.layers[0].colormap.map(10_000), neutral_rgba)
 
     widget.new_column_edit.setText("reviewed_annotation")
     assert inspection_calls == 1  # Status rendering reuses the captured report.
@@ -187,6 +192,7 @@ def test_spatial_query_shell_uses_compatible_default_and_styles_only_after_expli
     assert len(viewer.layers) == 1
     assert viewer.layers.selection.active is viewer.layers[0]
     assert viewer.layers[0].name == "blobs_labels"
+    assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
     pd.testing.assert_frame_equal(table.obs, obs_before)
     assert table.uns == uns_before
 
@@ -197,11 +203,13 @@ def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_d
 ) -> None:
     _add_default_annotation_column(sdata_blobs)
     table = sdata_blobs.tables["table"]
+    table.uns["spatial_annotation_colors"] = ["#ff0000"]
     table.obs["old_annotation"] = pd.Categorical(
         ["old"] * table.n_obs,
         categories=["old"],
     )
-    widget = SpatialQuery(_Viewer())
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
     qtbot.addWidget(widget)
     widget.apply_annotation_context(_context(sdata_blobs))
     _select_labels(widget)
@@ -225,11 +233,19 @@ def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_d
 
     assert widget.existing_column_combo.currentIndex() == -1
     assert widget.existing_column_combo.placeholderText() == "Choose an existing column"
+    neutral_rgba = np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32)
+    assert np.allclose(viewer.layers[0].colormap.map(1), neutral_rgba)
 
     widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("existing"))
 
     assert widget.existing_column_combo.currentIndex() == -1
     assert widget.selected_column_name is None
+    assert np.allclose(viewer.layers[0].colormap.map(1), neutral_rgba)
+
+    widget.existing_column_combo.setCurrentIndex(widget.existing_column_combo.findData("spatial_annotation"))
+
+    assert widget.selected_column_name == "spatial_annotation"
+    assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
 
 
 def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
@@ -242,7 +258,8 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
         index=table.obs.index,
         dtype="string",
     )
-    widget = SpatialQuery()
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
     qtbot.addWidget(widget)
 
     widget.apply_annotation_context(_context(sdata_blobs))
@@ -251,7 +268,15 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
     assert widget.selected_column_mode == "new"
     assert widget.selected_column_name is None
     assert widget.run_button.isEnabled() is False
-    assert "already exists" in _status_text(widget.status_label)
+    status_text = _status_text(widget.status_label)
+    assert "already exists but cannot be used" in status_text
+    assert "categorical column with only string categories" in status_text
+    assert "different New-column name" in status_text
+    assert len(viewer.layers) == 1
+    assert np.allclose(
+        viewer.layers[0].colormap.map(1),
+        np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32),
+    )
 
     widget.new_column_edit.setText("reviewed_annotation")
 
