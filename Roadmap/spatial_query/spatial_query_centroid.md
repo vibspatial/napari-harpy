@@ -1891,9 +1891,10 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   default color without changing existing entries;
 - positive-integer category palettes use the shared class-ID palette contract
   and remain aligned to the canonical sorted positive class IDs;
-- missing or invalid palettes are displayed through stable position-based
-  defaults without mutation, then created or repaired only with an effective
-  annotation Apply;
+- missing or invalid palettes are displayed without mutation using:
+  - stable position-based defaults for string categories;
+  - deterministic class-ID defaults for positive-integer categories;
+- the palette is created or repaired only by an effective annotation Apply;
 - adding a category never changes an existing category's resolved color;
 - StringDtype, object/string, plain numeric, boolean, datetime, mixed-object,
   unsupported categorical, and reserved target columns rejected;
@@ -6124,8 +6125,13 @@ removed class loses its aligned palette entry.
 The shared contract is therefore:
 
 ```text
-palette ownership
+user-owned palette ownership
     → identical: valid stored colors are authoritative
+
+prediction palette ownership
+    → pred_class_colors is derived from user_class_colors
+    → shared class IDs use their user-class colors
+    → IDs absent from user_class use class-ID defaults
 
 surviving-category behavior
     → identical: preserve color by category identity
