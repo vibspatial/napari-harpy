@@ -727,8 +727,10 @@ Deliver:
 - add, rename, recolor, and select class IDs in the range `1..255`;
 - show live annotated-pixel counts per class;
 - track annotation revision and dirty state;
-- prompt to write, discard, or cancel when switching target, scale, or closing
-  a dirty Labels state;
+- protect a dirty in-memory annotation when switching target, switching scale,
+  or closing the widget by offering `Discard and continue` or `Cancel`;
+- defer all write and reload actions to Slice 6, where persistence is actually
+  implemented;
 - keep annotation available before training and without any cache.
 
 Acceptance criteria:
@@ -740,6 +742,12 @@ Acceptance criteria:
   background;
 - an explicitly painted Background class behaves like any other trainable class;
 - two classes can be painted and counted;
+- cancelling a dirty-state guard leaves the target and annotation layer
+  unchanged;
+- accepting discard clears the in-memory annotation state and completes the
+  requested target change or close;
+- Slice 3 does not show a write option or imply that annotations can already be
+  persisted;
 - predictions cannot write into the annotation layer;
 - channel changes preserve annotations but mark any classifier stale;
 - scale changes never silently resample annotations.
@@ -836,6 +844,8 @@ Deliver:
 - `Reload Labels State`, which reloads the annotation and prediction together;
 - the same write/reload/discard/cancel interaction pattern as Object
   Classification;
+- upgrade the Slice 3 discard/cancel dirty-state guards to
+  write/discard/cancel now that persistence is available;
 - validated, distinct annotation and prediction element names with overwrite
   confirmation;
 - `Labels2DModel.parse(...)` creation from selected-scale arrays;
