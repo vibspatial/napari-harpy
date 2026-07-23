@@ -937,18 +937,23 @@ The modal dialog contains:
 - number of centroids inside the annotation;
 - explicit Set annotation and Remove annotation modes, with Set selected by
   default;
-- a QLineEdit labeled Annotation value, prefilled with the Shapes element name;
+- a target-typed annotation-value editor: a QLineEdit prefilled with the
+  Shapes element name for string-categorical targets, or a positive-integer
+  editor for positive-integer categorical targets;
 - a live mode-specific summary;
 - a mode-specific primary action and Cancel.
 
 It does not show labels missing from the table, because the centroid-based query
 does not enumerate labels outside the table.
 
-In Set annotation mode, the annotation value is trimmed and must be a non-empty
-string. Unicode and internal spaces are allowed. It is a user-facing category
-value rather than a SpatialData element key, so element-name restrictions do
-not apply. The strings `"None"` and `"nan"` remain ordinary annotation values;
-an empty string remains invalid and none of them acts as a removal sentinel.
+In Set annotation mode, a string-categorical target accepts a trimmed,
+non-empty string. Unicode and internal spaces are allowed. It is a user-facing
+category value rather than a SpatialData element key, so element-name
+restrictions do not apply. The strings `"None"` and `"nan"` remain ordinary
+annotation values; an empty string remains invalid and none of them acts as a
+removal sentinel. A positive-integer categorical target instead accepts a
+positive integer class ID; zero, negative values, booleans, and fractional
+numbers are invalid.
 
 Changing the value updates the summary live. It shows currently missing,
 already equal, and different non-missing values. If different non-missing
@@ -1180,9 +1185,9 @@ Use a pure, testable preparation/apply boundary. Preparation contains:
 - the canonical-center provenance needed for apply-time validation.
 
 A separate pure summarization step classifies the current matched values for a
-candidate string assignment or missing-value removal. Shared table-component
-mutation tokens remain widget/app-state orchestration data and are not embedded
-in the UI-independent domain preparation.
+candidate typed category assignment or missing-value removal. Shared
+table-component mutation tokens remain widget/app-state orchestration data and
+are not embedded in the UI-independent domain preparation.
 
 Apply validates preparation against current state before mutating. If validation
 or assignment fails, restore the entire prior target-column and companion
@@ -1882,20 +1887,23 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - new categorical annotation column with missing non-target rows;
 - compatible string-categorical updates;
 - category addition preserves order/ordered state;
-- valid stored palettes are preserved and extended by one default color without
-  changing existing entries;
+- valid stored string-category palettes are preserved and extended by one
+  default color without changing existing entries;
+- positive-integer category palettes use the shared class-ID palette contract
+  and remain aligned to the canonical sorted positive class IDs;
 - missing or invalid palettes are displayed through stable position-based
   defaults without mutation, then created or repaired only with an effective
   annotation Apply;
 - adding a category never changes an existing category's resolved color;
-- StringDtype, object/string, numeric, boolean, datetime, mixed-object,
-  non-string categorical, and reserved target columns rejected;
+- StringDtype, object/string, plain numeric, boolean, datetime, mixed-object,
+  unsupported categorical, and reserved target columns rejected;
 - set summaries update missing/equal/overwrite counts with the proposed value;
 - removal summaries report already-empty and annotations-to-remove counts;
-- removal writes missing values for categorical columns while preserving dtype
-  and categorical metadata;
-- removal never deletes the column, prunes unused categories, or permits a New
-  column target;
+- removal writes missing values for categorical columns while preserving the
+  target's string or positive-integer value kind;
+- removal never deletes the column or permits a New column target; string
+  targets preserve their declared categories, while positive-integer targets
+  remove unused class categories and realign the class palette;
 - typed strings such as `"None"` and `"nan"` remain literal annotation values;
 - no-op leaves column and palette identity/events/current dirty state unchanged;
 - apply rollback restores both column and palette and prevents partial
@@ -5640,10 +5648,300 @@ class-state status channel.
 - correcting the table and refreshing or reselecting it allows the widget to
   recover without reconstruction.
 
+### Slice 6m: Positive-integer categorical Spatial Annotation
+
+Extend the Spatial Annotation core and Spatial Query selection/styling shell
+before implementing the async Run flow. The purpose is direct schema
+interoperability with Object Classification `user_class`, not broad coercion
+of arbitrary numeric columns:
+
+```text
+Object Classification
+    → user_class is categorical
+    → categories are positive integer class IDs
+    → unlabelled rows are pd.NA
+    → user_class_colors follows class-ID palette semantics
+
+Spatial Query
+    → may select the same existing user_class column
+    → sets positive integer class IDs
+    → removes annotations with pd.NA
+    → preserves the same categorical and palette contract
+```
+
+This slice supersedes the earlier string-only Spatial Annotation boundary.
+String-categorical behavior remains supported; positive-integer categorical
+behavior is added as a second explicit value kind.
+
+#### Compatible target contract
+
+Introduce one explicit annotation value-kind contract:
+
+```python
+SpatialAnnotationValueKind = Literal["string", "positive_integer"]
+SpatialAnnotationValue = str | int | None
+```
+
+An existing target is compatible only when it has pandas categorical dtype and
+one of these representations:
+
+```text
+string
+    every declared category is a string
+    Set accepts a trimmed, non-empty string
+    Remove assigns pd.NA
+
+positive_integer
+    every declared category is an integer greater than zero
+    bool and np.bool_ are not integers for this contract
+    Set accepts an integer greater than zero
+    Remove assigns pd.NA
+```
+
+Plain integer, nullable-integer, floating-point, string/object, boolean,
+datetime, mixed-category, and categorical columns declaring zero or negative
+integer categories remain ineligible. Spatial Query does not coerce an
+existing column into either accepted representation.
+
+The existing-column discovery helper must return both compatible string and
+positive-integer categorical columns in table order, while continuing to
+exclude `region_key` and `instance_key`.
+
+An empty categorical category set is not sufficient by itself to reveal
+whether future values should be strings or integers. Preserve current
+string-target behavior as the generic empty-category fallback. Treat an empty
+`user_class` as `positive_integer`, because that column has an explicit shared
+Object Classification schema. An empty categorical whose category index still
+has an integer dtype may also retain `positive_integer`; do not infer integer
+semantics for an arbitrary empty object-typed categorical column.
+
+The compatibility boundary should expose or retain the resolved value kind so
+preparation, summarization, Apply, dialog construction, and status messages do
+not repeatedly infer it from category contents. Add it to
+`SpatialAnnotationPreparation`; deriving it later is unsafe for empty
+categoricals.
+
+#### Existing versus New targets
+
+This slice adds positive-integer support for existing columns only. New-column
+mode continues to create string-categorical annotation columns:
+
+```text
+Existing string categorical
+    → string annotation editor
+
+Existing positive-integer categorical
+    → positive-integer annotation editor
+
+New column
+    → string annotation editor
+    → new string-categorical column after effective Apply
+```
+
+Do not add a New-column type selector in this slice.
+
+Because New mode remains string-valued, it must not create columns whose names
+carry a conflicting Object Classification schema. Reject `user_class`,
+`pred_class`, and `pred_confidence` as New string-column targets with a
+specific explanation. An absent `user_class` must first be created through
+Object Classification before Spatial Query can select it as an existing
+positive-integer target.
+
+#### Classifier-owned prediction state
+
+`pred_class` is categorical with positive integer categories, but it is not a
+writable Spatial Annotation target. It forms one logical prediction result
+with `pred_confidence`:
+
+```text
+pred_class changed without pred_confidence
+    → prediction-pair missingness or provenance may become invalid
+```
+
+Exclude `pred_class` from compatible-column discovery and reject it explicitly
+at preparation/apply boundaries, even when its dtype and categories would
+otherwise qualify. `pred_confidence` remains ineligible and reserved as well.
+Spatial Query must never create, set, remove, or repair classifier prediction
+outputs.
+
+`user_class` is deliberately different: it is user-authored annotation state
+and is the intended interoperability target.
+
+#### Typed preparation, summary, and Apply
+
+Update the immutable review contract so the reviewed annotation value retains
+its domain type:
+
+```python
+@dataclass(frozen=True)
+class SpatialAnnotationPreparation:
+    ...
+    value_kind: SpatialAnnotationValueKind
+
+
+@dataclass(frozen=True)
+class SpatialAnnotationSummary:
+    annotation_value: SpatialAnnotationValue
+    ...
+```
+
+`None` continues to mean Remove annotation and is never stored as a category.
+For Set:
+
+- `value_kind="string"` trims once and requires a non-empty `str`;
+- `value_kind="positive_integer"` rejects booleans and requires an `int`
+  greater than zero;
+- a value whose type does not match the preparation is rejected before
+  summarization or mutation;
+- equality, missing/equal/other counts, stale-column comparison, no-op
+  detection, and overwrite review use the typed value without string
+  conversion.
+
+Do not accept numeric text such as `"3"` for an integer target in the core
+API. The future dialog owns conversion from its positive-integer control to
+Python `int`; the domain boundary receives an already typed value.
+
+For New mode, preparation fixes `value_kind="string"`. Remove remains
+unavailable for New mode.
+
+#### Positive-integer category and palette updates
+
+The current append-only string-category behavior remains unchanged:
+
+```text
+string Set adds a category
+    → append it
+    → extend the current valid positional palette
+    → never recolor existing categories
+
+string Remove
+    → assign pd.NA
+    → preserve declared string categories and palette
+```
+
+Positive-integer targets instead reuse the Object Classification class-state
+semantics:
+
+```text
+integer Set or Remove
+    → build the complete replacement off-table
+    → collect the positive class IDs still used after replacement
+    → store them as sorted integer categories
+    → generate colors with default_class_colors(sorted_class_ids)
+    → missing rows use the shared neutral color
+```
+
+This is class-ID palette behavior, not positional string-category behavior.
+For example, class `5` receives the deterministic color for class ID `5`, not
+the fifth currently visible category or the next appended string-category
+color.
+
+Removing the last use of an integer class removes that unused category and its
+aligned palette entry, matching Object Classification. Adding a lower class ID
+may reorder the category list, but colors remain tied to class IDs and
+therefore do not change semantically.
+
+Reuse the existing pure class normalization/category/palette helpers where
+they fit. Preserve the existing Spatial Annotation atomicity boundary: compute
+the full replacement column and palette before assignment, then install or
+roll back the `.obs` column and companion `.uns` palette as one consistency
+unit. Do not call a mutating helper early in a way that bypasses rollback.
+
+`SpatialAnnotationApplyResult` and its component-level dirty reporting remain
+unchanged: report the obs mutation and report the palette path only when its
+stored value actually changed.
+
+#### Selection, status, and viewer styling
+
+Update the Spatial Query shell so:
+
+- existing-column tooltips and status text describe categorical string or
+  positive-integer targets;
+- a compatible positive-integer `user_class` appears in the Existing-column
+  dropdown;
+- `pred_class` and `pred_confidence` never appear as writable targets;
+- a named-default incompatibility message states both accepted categorical
+  representations rather than claiming that only strings are supported;
+- the existing generic table-backed labels styling path colors integer
+  categoricals through their stored class palette and renders missing rows
+  with the shared neutral color;
+- selecting or styling a column remains read-only and never repairs its dtype,
+  categories, or palette.
+
+Do not introduce an integer-specific labels-layer implementation. The shared
+categorical compact-colormap path already supports categorical values; this
+slice should extend target validation and write semantics rather than
+duplicate viewer styling.
+
+#### Slice 7 integration boundary
+
+The Apply dialog implemented in Slice 7 must choose its editor from
+`SpatialAnnotationPreparation.value_kind`:
+
+```text
+string
+    → QLineEdit
+    → prefill with the Shapes element name
+    → trim and validate non-empty text
+
+positive_integer
+    → positive-integer control, such as QSpinBox(minimum=1)
+    → do not prefill with the Shapes element name
+
+Remove
+    → hide or disable either Set editor
+    → summarize assignment of pd.NA
+```
+
+After an effective `user_class` Apply, Slice 7 publishes the ordinary
+`TableStateChangedEvent` for `obs/user_class` and
+`uns/user_class_colors` when applicable. Object Classification must recognize
+an external Spatial Query `user_class` mutation for its currently selected
+table, refresh user-class styling/control state, and mark an existing trained
+classifier stale. This is event-mediated table-state interoperability; neither
+widget calls the other directly.
+
+#### Deliverables
+
+- shared string/positive-integer Spatial Annotation value-kind and value
+  aliases;
+- compatible-column validation and discovery for both categorical kinds;
+- explicit `user_class` support and `pred_class`/`pred_confidence` exclusion;
+- value kind captured on `SpatialAnnotationPreparation`;
+- typed summary and Apply validation using `str | int | None`;
+- atomic positive-integer replacement, unused-category cleanup, and
+  class-ID-aligned palette generation;
+- updated Spatial Query selection, readiness text, and existing-column styling
+  behavior;
+- focused core annotation, viewer-styling, and Spatial Query shell tests;
+- Slice 7 dialog and event-consumer requirements aligned to the typed contract;
+- no plain-integer coercion, New-column type selector, prediction-output
+  mutation, or direct widget-to-widget dependency.
+
+#### Exit criteria
+
+- existing categorical string columns retain their current behavior;
+- existing categorical columns with only positive integer categories are
+  discoverable, reviewable, and atomically writable;
+- an existing valid `user_class`, including an all-missing empty-category
+  state, is available to Spatial Query as a positive-integer target;
+- integer Set accepts only positive non-boolean Python integers and Remove
+  stores `pd.NA`;
+- integer category order and `<column>_colors` remain canonical and aligned to
+  class IDs after setting, overwriting, or removing annotations;
+- `pred_class` and `pred_confidence` cannot be selected or mutated through
+  Spatial Query;
+- New mode remains string-categorical and cannot create conflicting
+  Object Classification reserved columns;
+- read-only selection and styling do not mutate or dirty the table;
+- the Slice 7 contract can present the correct typed editor and later notify
+  Object Classification of external `user_class` changes through shared table
+  events.
+
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6l to the existing core calculation, query, and
+Spatial Query child after Slice 6m to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
@@ -5663,11 +5961,15 @@ Deliverables:
   child owns this behavior, matching the Object Classification
   controller-to-widget event boundary;
 - no-result outcome;
-- Apply dialog with explicit Set annotation and Remove annotation modes, live
+- Apply dialog with explicit Set annotation and Remove annotation modes,
+  value-kind-specific string or positive-integer Set controls, live
   mode-specific counts, and mandatory overwrite/removal warnings;
 - main-thread atomic annotation Apply;
 - Spatial Query child-owned publication of the obs path and the palette uns
   path indicated by `SpatialAnnotationApplyResult`;
+- Object Classification consumption of an external Spatial Query
+  `user_class` table-state event for current styling/control refresh and
+  classifier invalidation, without direct widget coupling;
 - targeted primary labels-layer refresh after an effective annotation Apply,
   with missing values rendered through the shared missing/unlabelled color;
 - controller/dialog async tests.
