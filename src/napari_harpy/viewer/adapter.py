@@ -692,7 +692,7 @@ class ViewerAdapter(QObject):
 
     # Emitted when the set/order of live primary Labels layers changes.
     # Used by consumers that depend on the annotation-capable labels-layer
-    # lifecycle, currently ObjectClassificationWidget.
+    # lifecycle, including Object Classification and Spatial Query.
     primary_labels_layers_changed = Signal()
     # Emitted after a primary shapes layer has a Harpy binding while loaded in
     # the viewer. Consumers can rely on the binding registry being ready.

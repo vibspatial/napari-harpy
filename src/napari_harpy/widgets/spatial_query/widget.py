@@ -52,8 +52,8 @@ class SpatialQuery(QWidget):
 
     This independently embeddable child receives coordinate-system and Shapes
     state only through ``apply_annotation_context()``. It owns no worker or
-    table mutation path: Run and Recalculate merely emit parameterless intents
-    for the future execution layer.
+    table mutation path: Run merely emits a parameterless intent for the
+    future execution layer.
     """
 
     run_requested = Signal()
@@ -88,6 +88,7 @@ class SpatialQuery(QWidget):
             "spatial_query_labels_combo",
             "Select a supported 2D labels element.",
         )
+        self.labels_combo.setPlaceholderText("Choose a labels element")
         self.table_combo = self._create_combo(
             "spatial_query_table_combo",
             "Select a table that annotates the labels element.",
@@ -148,9 +149,10 @@ class SpatialQuery(QWidget):
         self.existing_column_combo.currentIndexChanged.connect(self._on_existing_column_changed)
         self.new_column_edit.textChanged.connect(self._on_new_column_changed)
         self.run_button.clicked.connect(self.run_requested.emit)
+        self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
 
         self._set_column_control_visibility()
-        self._refresh_labels(preferred_labels=None)
+        self._refresh_labels()
         self._refresh_tables(preferred_table=None)
         self._refresh_columns(
             preferred_mode=None,
@@ -205,10 +207,10 @@ class SpatialQuery(QWidget):
     def apply_annotation_context(self, context: AnnotationContext) -> None:
         """Adopt parent context, refreshing selectors only when their dependencies change.
 
-        SpatialData identity and coordinate-system changes invalidate the
-        labels/table selection chain and its captured canonical-cache report.
-        Shapes-target and dirty-state changes affect Run readiness only and
-        therefore reuse the current selections and report.
+        SpatialData identity and coordinate-system changes clear the labels
+        selection and its complete dependent state. Shapes-target and
+        dirty-state changes affect Run readiness only and therefore reuse the
+        current selections and report.
         """
         if not isinstance(context, AnnotationContext):
             raise TypeError("Spatial Query requires an AnnotationContext.")
@@ -227,23 +229,11 @@ class SpatialQuery(QWidget):
             self._refresh_controls_and_status()
             return
 
-        preserve_selection = context.sdata is previous_context.sdata
-        preferred_labels = self.selected_labels_name if preserve_selection else None
-        preferred_table = self.selected_table_name if preserve_selection else None
-        preferred_mode = self.selected_column_mode if preserve_selection else None
-        preferred_existing_column = self._selected_existing_column_name() if preserve_selection else None
-        preferred_new_column = self.new_column_edit.text() if preserve_selection else _DEFAULT_NEW_COLUMN_NAME
-
-        self._layer_styling_error = None
-        self._refresh_labels(preferred_labels)
-        self._refresh_tables(preferred_table)
-        self._refresh_columns(
-            preferred_mode=preferred_mode,
-            preferred_existing_column=preferred_existing_column,
-            preferred_new_column=preferred_new_column,
-        )
-        self._inspect_canonical_centers_cache()
-        self._refresh_controls_and_status()
+        # A labels selection describes a layer loaded in one display context.
+        # Repopulate the choices, but require a new explicit choice instead of
+        # carrying that selection into another SpatialData/coordinate system.
+        self._refresh_labels()
+        self._clear_labels_selection_and_dependents()
 
     def _create_combo(self, object_name: str, tooltip: str) -> CompactComboBox:
         combo = CompactComboBox()
@@ -254,7 +244,7 @@ class SpatialQuery(QWidget):
         combo.setToolTip(format_tooltip(tooltip))
         return combo
 
-    def _refresh_labels(self, preferred_labels: str | None) -> None:
+    def _refresh_labels(self) -> None:
         options = []
         sdata = self.selected_spatialdata
         coordinate_system = self.selected_coordinate_system
@@ -264,6 +254,8 @@ class SpatialQuery(QWidget):
                 coordinate_system=coordinate_system,
             )
             for option in candidates:
+                # Expose only labels sources accepted by the canonical-centers
+                # contract; this currently excludes 3D labels.
                 try:
                     build_canonical_source_signature(sdata, option.labels_name)
                 except (KeyError, TypeError, ValueError):
@@ -274,8 +266,41 @@ class SpatialQuery(QWidget):
             self.labels_combo.clear()
             for option in options:
                 self.labels_combo.addItem(option.display_name, option.labels_name)
-            self._select_combo_data(self.labels_combo, preferred_labels)
+            self.labels_combo.setCurrentIndex(-1)
             self.labels_combo.setEnabled(bool(options))
+
+    def _clear_labels_selection_and_dependents(self) -> None:
+        """Clear labels-owned UI state without inspecting or mutating the cache."""
+        with QSignalBlocker(self.labels_combo):
+            self.labels_combo.setCurrentIndex(-1)
+        self._refresh_tables(preferred_table=None)
+        self._refresh_columns(
+            preferred_mode=None,
+            preferred_existing_column=None,
+            preferred_new_column=_DEFAULT_NEW_COLUMN_NAME,
+        )
+        self._canonical_cache_report = None
+        self._canonical_cache_inspection_error = None
+        self._layer_styling_error = None
+        self._refresh_controls_and_status()
+
+    def _on_primary_labels_layers_changed(self) -> None:
+        """Clear the selection when its corresponding primary layer disappears."""
+        sdata = self.selected_spatialdata
+        coordinate_system = self.selected_coordinate_system
+        labels_name = self.selected_labels_name
+        if sdata is None or coordinate_system is None or labels_name is None:
+            return
+
+        loaded_layer = self._app_state.viewer_adapter.get_loaded_primary_labels_layer(
+            sdata,
+            labels_name,
+            coordinate_system,
+        )
+        if loaded_layer is not None:
+            return
+
+        self._clear_labels_selection_and_dependents()
 
     def _refresh_tables(self, preferred_table: str | None) -> None:
         table_names: list[str] = []
@@ -352,9 +377,12 @@ class SpatialQuery(QWidget):
     def _on_labels_changed(self, index: int) -> None:
         del index
         preferred_table = self.selected_table_name
-        preferred_mode = self.selected_column_mode
-        preferred_existing_column = self._selected_existing_column_name()
-        preferred_new_column = self.new_column_edit.text()
+        has_previous_table_context = preferred_table is not None
+        # Column controls configured while no labels/table was selected are
+        # only placeholder defaults, not downstream choices made by the user.
+        preferred_mode = self.selected_column_mode if has_previous_table_context else None
+        preferred_existing_column = self._selected_existing_column_name() if has_previous_table_context else None
+        preferred_new_column = self.new_column_edit.text() if has_previous_table_context else _DEFAULT_NEW_COLUMN_NAME
         self._layer_styling_error = None
         self._refresh_tables(preferred_table)
         self._refresh_columns(
