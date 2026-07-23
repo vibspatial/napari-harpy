@@ -4714,9 +4714,9 @@ STALE
 
 INVALID
     → title: Spatial Query Ready
-    → kind: warning
-    → say the managed centroid cache will be rebuilt conservatively
-    → include the first deterministic mismatch name and existing detail tooltip
+    → kind: info
+    → say centers for the selected labels element will be recalculated before querying
+    → keep technical mismatch detail available only in the tooltip
 ```
 
 Every complete-state card also identifies the saved Shapes element, selected
@@ -4724,6 +4724,20 @@ labels element, and target-column description. Warning or informational color
 does not imply that Run is disabled: absent, partial, stale, and rebuildable
 invalid reports remain valid Run prerequisites because their recovery is
 automatic.
+
+An `INVALID` report is a successfully inspected, automatically recoverable
+cache state; it is not a user-actionable cache error. Run remains enabled. On
+Run, the existing managed cache is treated conservatively, no previously
+stored region is trusted, and centers for the currently selected labels
+element are recalculated before the query continues. Other regions are
+recalculated later only when selected. Do not expose the mismatch code in the
+primary status text or imply that every region will be recalculated eagerly.
+The mismatch detail may remain in the tooltip for diagnostics.
+
+This is distinct from a cache inspection exception or a missing report for an
+otherwise complete labels/table selection. In that case the widget cannot
+establish a safe recovery plan, so the exceptional state remains blocking and
+Run stays disabled.
 
 When Slice 7 connects execution, the same label displays busy, cancellation,
 no-result, success, and error messages. Controller-owned execution status
