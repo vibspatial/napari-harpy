@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
 from spatialdata import SpatialData
+from spatialdata.transformations import Identity, set_transformation
 
 import napari_harpy.widgets.spatial_query.widget as widget_module
 from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
@@ -57,16 +58,28 @@ class _Viewer:
         return layer
 
 
-def _context(sdata: SpatialData, *, dirty: bool = False, create_new: bool = False) -> AnnotationContext:
+def _context(
+    sdata: SpatialData,
+    *,
+    coordinate_system: str = "global",
+    dirty: bool = False,
+    create_new: bool = False,
+) -> AnnotationContext:
     target = (
         ShapesAnnotationTarget.create_new() if create_new else ShapesAnnotationTarget.edit_existing("blobs_circles")
     )
     return AnnotationContext(
         sdata=sdata,
-        coordinate_system="global",
+        coordinate_system=coordinate_system,
         shapes_target=target,
         has_unsaved_shapes_changes=dirty,
     )
+
+
+def _select_labels(widget: SpatialQuery, labels_name: str = "blobs_labels") -> None:
+    index = widget.labels_combo.findData(labels_name)
+    assert index >= 0
+    widget.labels_combo.setCurrentIndex(index)
 
 
 def _add_default_annotation_column(sdata: SpatialData) -> None:
@@ -86,6 +99,7 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     qtbot.addWidget(widget)
 
     assert widget.selected_spatialdata is None
+    assert widget.labels_combo.placeholderText() == "Choose a labels element"
     assert widget.labels_combo.isEnabled() is False
     assert widget.table_combo.isEnabled() is False
     assert widget.run_button.isEnabled() is False
@@ -114,6 +128,14 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
 
     widget.apply_annotation_context(_context(sdata_blobs))
 
+    assert widget.selected_labels_name is None
+    assert widget.selected_table_name is None
+    assert widget.cache_report is None
+    assert inspection_calls == 0
+    assert viewer.layers == []
+
+    _select_labels(widget)
+
     assert widget.selected_labels_name == "blobs_labels"
     assert widget.selected_table_name == "table"
     assert widget.selected_column_mode == "new"
@@ -121,7 +143,7 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
     assert widget.cache_report is not None
     assert widget.run_button.isEnabled() is True
     assert inspection_calls == 1
-    assert viewer.layers == []  # Programmatic context refresh does not claim viewer styling.
+    assert len(viewer.layers) == 1  # Explicit labels selection may claim primary-label styling.
 
     widget.new_column_edit.setText("reviewed_annotation")
     assert inspection_calls == 1  # Status rendering reuses the captured report.
@@ -150,18 +172,59 @@ def test_spatial_query_shell_uses_compatible_default_and_styles_only_after_expli
 
     widget.apply_annotation_context(_context(sdata_blobs))
 
-    assert widget.selected_column_mode == "existing"
-    assert widget.selected_column_name == "spatial_annotation"
+    assert widget.selected_labels_name is None
     assert viewer.layers == []
 
-    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("new"))
-    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("existing"))
+    _select_labels(widget)
 
+    assert widget.selected_column_mode == "existing"
+    assert widget.selected_column_name == "spatial_annotation"
     assert len(viewer.layers) == 1
     assert viewer.layers.selection.active is viewer.layers[0]
     assert viewer.layers[0].name == "blobs_labels"
     pd.testing.assert_frame_equal(table.obs, obs_before)
     assert table.uns == uns_before
+
+
+def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_disappears(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    _add_default_annotation_column(sdata_blobs)
+    table = sdata_blobs.tables["table"]
+    table.obs["old_annotation"] = pd.Categorical(
+        ["old"] * table.n_obs,
+        categories=["old"],
+    )
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+
+    old_index = widget.existing_column_combo.findData("old_annotation")
+    assert old_index >= 0
+    widget.existing_column_combo.setCurrentIndex(old_index)
+    assert widget.selected_column_name == "old_annotation"
+
+    del table.obs["old_annotation"]
+    widget._refresh_columns(
+        preferred_mode="existing",
+        preferred_existing_column="old_annotation",
+        preferred_new_column="spatial_annotation",
+    )
+
+    assert widget.selected_column_mode == "existing"
+    assert widget.selected_column_name == "spatial_annotation"
+
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("new"))
+
+    assert widget.existing_column_combo.currentIndex() == -1
+    assert widget.existing_column_combo.placeholderText() == "Choose an existing column"
+
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("existing"))
+
+    assert widget.existing_column_combo.currentIndex() == -1
+    assert widget.selected_column_name is None
 
 
 def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
@@ -178,6 +241,7 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
     qtbot.addWidget(widget)
 
     widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
 
     assert widget.selected_column_mode == "new"
     assert widget.selected_column_name is None
@@ -203,6 +267,7 @@ def test_spatial_query_shell_reports_cache_inspection_failure_separately(
     qtbot.addWidget(widget)
 
     widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
 
     assert widget.cache_report is None
     assert widget.run_button.isEnabled() is False
@@ -228,7 +293,92 @@ def test_spatial_query_shell_shapes_context_blocks_run(
     qtbot.addWidget(widget)
 
     widget.apply_annotation_context(_context(sdata_blobs, dirty=dirty, create_new=create_new))
+    _select_labels(widget)
 
     assert widget.cache_report is not None
     assert widget.run_button.isEnabled() is False
     assert expected_status in _status_text(widget.readiness_status_label)
+
+
+def test_spatial_query_shell_coordinate_change_clears_valid_labels_without_reinspection(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    inspection_calls = 0
+    real_inspect = widget_module.inspect_canonical_cache
+
+    def record_inspection(*args, **kwargs):
+        nonlocal inspection_calls
+        inspection_calls += 1
+        return real_inspect(*args, **kwargs)
+
+    monkeypatch.setattr(widget_module, "inspect_canonical_cache", record_inspection)
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    assert inspection_calls == 1
+    assert len(viewer.layers) == 1
+
+    set_transformation(
+        sdata_blobs.labels["blobs_labels"],
+        Identity(),
+        to_coordinate_system="shared",
+    )
+    widget.apply_annotation_context(_context(sdata_blobs, coordinate_system="shared"))
+
+    assert widget.labels_combo.isEnabled() is True
+    assert widget.labels_combo.currentIndex() == -1
+    assert widget.labels_combo.currentText() == ""
+    assert widget.labels_combo.placeholderText() == "Choose a labels element"
+    assert widget.selected_labels_name is None
+    assert widget.selected_table_name is None
+    assert widget.cache_report is None
+    assert widget.run_button.isEnabled() is False
+    assert inspection_calls == 1
+
+
+def test_spatial_query_shell_tracks_only_its_selected_primary_labels_layer(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+
+    unrelated_result = widget.app_state.viewer_adapter.ensure_labels_loaded(
+        sdata_blobs,
+        "blobs_multiscale_labels",
+        "global",
+    )
+    assert widget.selected_labels_name is None  # Layer insertion never selects it.
+
+    _select_labels(widget)
+    selected_layer = widget.app_state.viewer_adapter.get_loaded_primary_labels_layer(
+        sdata_blobs,
+        "blobs_labels",
+        "global",
+    )
+    assert selected_layer is not None
+    cache_report = widget.cache_report
+    assert cache_report is not None
+
+    viewer.layers.remove(unrelated_result.layer)
+    viewer.layers.events.removed.emit(unrelated_result.layer)
+
+    assert widget.selected_labels_name == "blobs_labels"
+    assert widget.cache_report is cache_report
+    assert widget.run_button.isEnabled() is True
+
+    viewer.layers.remove(selected_layer)
+    viewer.layers.events.removed.emit(selected_layer)
+
+    assert widget.labels_combo.currentIndex() == -1
+    assert widget.labels_combo.placeholderText() == "Choose a labels element"
+    assert widget.selected_labels_name is None
+    assert widget.selected_table_name is None
+    assert widget.cache_report is None
+    assert widget.run_button.isEnabled() is False

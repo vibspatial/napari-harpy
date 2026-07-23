@@ -268,6 +268,13 @@ def test_annotation_widget_shapes_context_updates_reuse_spatial_query_cache_insp
     spatial_query = parent.spatial_query
 
     assert spatial_query.app_state is parent.app_state
+    assert inspection_count == 0
+    assert spatial_query.selected_labels_name is None
+
+    labels_index = spatial_query.labels_combo.findData("blobs_labels")
+    assert labels_index >= 0
+    spatial_query.labels_combo.setCurrentIndex(labels_index)
+
     assert inspection_count == 1
     cache_report = spatial_query.cache_report
     selected_labels_name = spatial_query.selected_labels_name
@@ -374,7 +381,7 @@ def test_annotation_widget_shapes_selector_defaults_back_to_create_when_existing
     assert widget.name_edit.isHidden() is False
 
 
-def test_annotation_widget_user_coordinate_system_selection_updates_app_state(
+def test_annotation_widget_coordinate_change_updates_app_state_and_clears_spatial_query_labels(
     qtbot,
     monkeypatch,
     sdata_blobs: SpatialData,
@@ -384,10 +391,27 @@ def test_annotation_widget_user_coordinate_system_selection_updates_app_state(
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(sdata_blobs)
     widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    spatial_query = widget._test_parent.spatial_query
+    labels_index = spatial_query.labels_combo.findData("blobs_labels")
+    assert labels_index >= 0
+    spatial_query.labels_combo.setCurrentIndex(labels_index)
+    selected_layer = app_state.viewer_adapter.get_loaded_primary_labels_layer(
+        sdata_blobs,
+        "blobs_labels",
+        "global",
+    )
+    assert selected_layer is not None
+    assert spatial_query.cache_report is not None
+
     widget._test_parent.coordinate_system_combo.setCurrentIndex(1)
 
     assert app_state.coordinate_system == "local"
     assert widget.selected_coordinate_system == "local"
+    assert selected_layer not in viewer.layers
+    assert spatial_query.selected_labels_name is None
+    assert spatial_query.selected_table_name is None
+    assert spatial_query.cache_report is None
+    assert spatial_query.run_button.isEnabled() is False
 
 
 def test_annotation_widget_external_coordinate_system_change_updates_selector(
@@ -647,9 +671,15 @@ def test_annotation_widget_clean_saved_target_change_keeps_saved_layer_without_w
 ) -> None:
     viewer = DummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
-    spatial_query_cache_report = widget._test_parent.spatial_query.cache_report
+    spatial_query = widget._test_parent.spatial_query
+    labels_index = spatial_query.labels_combo.findData("blobs_labels")
+    assert labels_index >= 0
+    spatial_query.labels_combo.setCurrentIndex(labels_index)
+    spatial_query_cache_report = spatial_query.cache_report
+    assert spatial_query_cache_report is not None
     widget.create_layer_button.click()
-    saved_layer = viewer.layers[0]
+    saved_layer = widget._annotation_layer
+    assert saved_layer is not None
     _add_polygon(saved_layer)
     widget.save_shapes_button.click()
 
@@ -671,7 +701,7 @@ def test_annotation_widget_clean_saved_target_change_keeps_saved_layer_without_w
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(saved_layer) is not None
     assert widget._annotation_shapes_name == "blobs_polygons"
     assert widget._annotation_layer is not saved_layer
-    assert len(viewer.layers) == 2
+    assert len([layer for layer in viewer.layers if isinstance(layer, Shapes)]) == 2
 
 
 def test_annotation_widget_clean_existing_target_switch_preserves_layer_order(
