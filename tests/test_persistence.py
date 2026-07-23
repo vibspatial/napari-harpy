@@ -217,20 +217,20 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     index = backed_sdata_blobs["table"].obs.index
 
     backed_sdata_blobs["table"].obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [0] * (backed_sdata_blobs["table"].n_obs - 1) + [2],
-        categories=[0, 2],
+        [pd.NA] * (backed_sdata_blobs["table"].n_obs - 1) + [2],
+        categories=[2],
     )
     backed_sdata_blobs["table"].obs[PRED_CLASS_COLUMN] = pd.Categorical(
-        [0] * (backed_sdata_blobs["table"].n_obs - 1) + [2],
-        categories=[0, 2],
+        [pd.NA] * (backed_sdata_blobs["table"].n_obs - 1) + [2],
+        categories=[2],
     )
     backed_sdata_blobs["table"].obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
-        [0.0] * (backed_sdata_blobs["table"].n_obs - 1) + [0.95],
+        [np.nan] * (backed_sdata_blobs["table"].n_obs - 1) + [0.95],
         index=index,
         dtype="float64",
     )
-    backed_sdata_blobs["table"].uns[USER_CLASS_COLORS_KEY] = ["#111111", "#222222"]
-    backed_sdata_blobs["table"].uns[PRED_CLASS_COLORS_KEY] = ["#111111", "#222222"]
+    backed_sdata_blobs["table"].uns[USER_CLASS_COLORS_KEY] = ["#222222"]
+    backed_sdata_blobs["table"].uns[PRED_CLASS_COLORS_KEY] = ["#222222"]
     backed_sdata_blobs["table"].uns[CLASSIFIER_CONFIG_KEY] = {
         "model_type": "RandomForestClassifier",
         "feature_key": "features_1",
@@ -268,14 +268,16 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
     assert table_path == "tables/table"
     assert USER_CLASS_COLUMN in reread["table"].obs
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 2]
+    assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [2]
+    assert int(reread["table"].obs[USER_CLASS_COLUMN].isna().sum()) == reread["table"].n_obs - 1
     assert reread["table"].obs[USER_CLASS_COLUMN].tolist().count(2) == 1
     assert isinstance(reread["table"].obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(reread["table"].obs[PRED_CLASS_COLUMN].cat.categories) == [0, 2]
+    assert list(reread["table"].obs[PRED_CLASS_COLUMN].cat.categories) == [2]
+    assert int(reread["table"].obs[PRED_CLASS_COLUMN].isna().sum()) == reread["table"].n_obs - 1
     assert reread["table"].obs[PRED_CLASS_COLUMN].tolist().count(2) == 1
     assert reread["table"].obs[PRED_CONFIDENCE_COLUMN].max() == 0.95
-    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == ["#111111", "#222222"]
-    assert list(reread["table"].uns[PRED_CLASS_COLORS_KEY]) == ["#111111", "#222222"]
+    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == ["#222222"]
+    assert list(reread["table"].uns[PRED_CLASS_COLORS_KEY]) == ["#222222"]
     assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["feature_key"] == "features_1"
     assert reread["table"].uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "selected_segmentation_only"
     assert sorted(reread["table"].obsm.keys()) == ["features_1", "features_2"]
@@ -404,11 +406,11 @@ def test_persistence_controller_syncs_multi_region_classifier_config_fields(
     region_values = table.obs["region"].astype("string")
     pred_values = np.where(region_values == "blobs_labels", 1, 2)
 
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[0, 1, 2])
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[0, 1, 2])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[1, 2])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[1, 2])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.87), index=index, dtype="float64")
-    table.uns[USER_CLASS_COLORS_KEY] = ["#000000", "#111111", "#222222"]
-    table.uns[PRED_CLASS_COLORS_KEY] = ["#000000", "#111111", "#222222"]
+    table.uns[USER_CLASS_COLORS_KEY] = ["#111111", "#222222"]
+    table.uns[PRED_CLASS_COLORS_KEY] = ["#111111", "#222222"]
     table.uns[CLASSIFIER_CONFIG_KEY] = {
         "model_type": "RandomForestClassifier",
         "feature_key": "features_1",
@@ -467,7 +469,7 @@ def _write_disk_snapshot_payload(
 ) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict[str, object]]:
     table = backed_sdata_blobs["table"]
     obs = table.obs.copy()
-    obs["disk_user_class"] = pd.Categorical([0] * (table.n_obs - 1) + [7], categories=[0, 7])
+    obs["disk_user_class"] = pd.Categorical([pd.NA] * (table.n_obs - 1) + [7], categories=[7])
 
     obsm = dict(table.obsm)
     obsm["disk_features"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)

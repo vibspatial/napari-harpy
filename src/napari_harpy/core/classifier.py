@@ -12,8 +12,7 @@ import pandas as pd
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from numpy.typing import NDArray
 
-from napari_harpy.core.annotation import UNLABELED_CLASS
-from napari_harpy.core.class_palette import set_class_annotation_state
+from napari_harpy.core.class_palette import normalize_class_values, set_class_annotation_state
 from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
@@ -194,7 +193,9 @@ def _validate_feature_matrix_compatible_with_bundle(
         raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.")
     feature_metadata = _get_feature_metadata(table, feature_key)
     target_source_kind = normalize_feature_matrix_source_kind(feature_metadata)
-    custom_obsm_involved = bundle.source_kind == CUSTOM_OBSM_SOURCE_KIND or target_source_kind == CUSTOM_OBSM_SOURCE_KIND
+    custom_obsm_involved = (
+        bundle.source_kind == CUSTOM_OBSM_SOURCE_KIND or target_source_kind == CUSTOM_OBSM_SOURCE_KIND
+    )
     target_feature_columns = normalize_feature_columns(feature_metadata)
     if target_feature_columns != bundle.feature_columns:
         if custom_obsm_involved:
@@ -387,6 +388,7 @@ def _ensure_prediction_columns(
         table.obs,
         column_name=pred_confidence_column,
     )
+    pred_confidence_values.loc[pred_class_values.isna()] = np.nan
     _set_pred_class_annotation_state(table, pred_class_values, column_name=pred_class_column)
     table.obs[pred_confidence_column] = pred_confidence_values
 
@@ -418,14 +420,15 @@ def _clear_predictions_for_row_positions(
     pred_class_column: str = PRED_CLASS_COLUMN,
     pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
 ) -> None:
-    _set_predictions_for_prediction_rows(
-        table,
-        prediction_table_row_positions,
-        np.full(prediction_table_row_positions.shape, UNLABELED_CLASS, dtype=np.int64),
-        np.full(prediction_table_row_positions.shape, np.nan, dtype=np.float64),
-        pred_class_column=pred_class_column,
-        pred_confidence_column=pred_confidence_column,
+    pred_class_values = _get_pred_class_values(table.obs, column_name=pred_class_column)
+    pred_confidence_values = _get_pred_confidence_values(
+        table.obs,
+        column_name=pred_confidence_column,
     )
+    pred_class_values.iloc[prediction_table_row_positions] = pd.NA
+    pred_confidence_values.iloc[prediction_table_row_positions] = np.nan
+    _set_pred_class_annotation_state(table, pred_class_values, column_name=pred_class_column)
+    table.obs[pred_confidence_column] = pred_confidence_values
 
 
 def _get_pred_class_values(
@@ -434,10 +437,9 @@ def _get_pred_class_values(
     column_name: str = PRED_CLASS_COLUMN,
 ) -> pd.Series:
     if column_name not in obs:
-        return pd.Series(UNLABELED_CLASS, index=obs.index, dtype="int64", name=column_name)
+        return pd.Series(pd.NA, index=obs.index, dtype="Int64", name=column_name)
 
-    values = pd.to_numeric(obs[column_name].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
-    return pd.Series(np.asarray(values, dtype=np.int64), index=obs.index, dtype="int64", name=column_name)
+    return normalize_class_values(obs[column_name], column_name=column_name)
 
 
 def _set_pred_class_annotation_state(

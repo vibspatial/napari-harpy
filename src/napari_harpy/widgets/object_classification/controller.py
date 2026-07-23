@@ -14,7 +14,8 @@ from qtpy.QtCore import QObject, QTimer
 from sklearn.ensemble import RandomForestClassifier
 
 import napari_harpy.core.classifier as _classifier_core
-from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
+from napari_harpy.core.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.class_palette import normalize_class_values
 from napari_harpy.core.classifier import (
     _get_feature_metadata,
     _get_finite_feature_row_mask,
@@ -715,10 +716,10 @@ class ClassifierController:
                 training_blocker_kind="data",
             )
 
-        user_class_values = _get_user_class_values(table.obs, len(table.obs))
-        training_user_class_values = user_class_values[training_scope.table_row_positions]
-        labeled_mask = training_user_class_values != UNLABELED_CLASS
-        class_labels = tuple(sorted(int(value) for value in np.unique(training_user_class_values[labeled_mask])))
+        user_class_values = _get_user_class_values(table.obs)
+        training_user_class_values = user_class_values.iloc[training_scope.table_row_positions]
+        labeled_mask = training_user_class_values.notna().to_numpy()
+        class_labels = tuple(sorted(int(value) for value in training_user_class_values.iloc[labeled_mask].unique()))
         summary = ClassifierPreparationSummary(
             training_scope=training_scope,
             prediction_scope=prediction_scope,
@@ -839,12 +840,12 @@ class ClassifierController:
             )
 
         predict_features = feature_matrix[summary.prediction_scope.table_row_positions]
-        user_class_values = _get_user_class_values(table.obs, len(table.obs))
-        training_user_class_values = user_class_values[summary.training_scope.table_row_positions]
-        labeled_mask = training_user_class_values != UNLABELED_CLASS
+        user_class_values = _get_user_class_values(table.obs)
+        training_user_class_values = user_class_values.iloc[summary.training_scope.table_row_positions]
+        labeled_mask = training_user_class_values.notna().to_numpy()
         labeled_training_positions = summary.training_scope.table_row_positions[labeled_mask]
         train_features = feature_matrix[labeled_training_positions]
-        train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
+        train_labels = training_user_class_values.iloc[labeled_mask].to_numpy(dtype=np.int64)
         return ClassifierJob(
             job_id=job_id,
             feature_key=feature_key,
@@ -1317,27 +1318,8 @@ def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClass
     )
 
 
-def _get_user_class_values(obs: pd.DataFrame, n_obs: int) -> np.ndarray:
+def _get_user_class_values(obs: pd.DataFrame) -> pd.Series:
     if USER_CLASS_COLUMN not in obs:
-        return np.full(n_obs, UNLABELED_CLASS, dtype=np.int64)
+        return pd.Series(pd.NA, index=obs.index, dtype="Int64", name=USER_CLASS_COLUMN)
 
-    values = obs[USER_CLASS_COLUMN]
-    if pd.api.types.is_integer_dtype(values.dtype) and not pd.api.types.is_bool_dtype(values.dtype):
-        # Preferred fast path: normalized user_class values are already integer
-        # class ids, so avoid string conversion and full-column parsing.
-        return values.to_numpy(dtype=np.int64, na_value=UNLABELED_CLASS, copy=False)
-
-    if isinstance(values.dtype, pd.CategoricalDtype):
-        categories = values.cat.categories
-        if pd.api.types.is_integer_dtype(categories.dtype) and not pd.api.types.is_bool_dtype(categories.dtype):
-            # Categorical rows store integer class ids as category labels plus
-            # per-row codes; missing rows have code -1 and stay unlabeled.
-            category_values = categories.to_numpy(dtype=np.int64, copy=False)
-            codes = values.cat.codes.to_numpy(copy=False)
-            user_class_values = np.full(len(values), UNLABELED_CLASS, dtype=np.int64)
-            valid_codes = codes >= 0
-            user_class_values[valid_codes] = category_values[codes[valid_codes]]
-            return user_class_values
-
-    values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
-    return np.asarray(values, dtype=np.int64)
+    return normalize_class_values(obs[USER_CLASS_COLUMN], column_name=USER_CLASS_COLUMN)

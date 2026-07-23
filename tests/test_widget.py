@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 import zarr
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from matplotlib.colors import to_rgba
@@ -26,7 +27,7 @@ import napari_harpy.widgets.object_classification.controller as classifier_modul
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
-from napari_harpy.core.annotation import UNLABELED_COLOR, USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import (
@@ -233,63 +234,63 @@ def _set_feature_metadata(
 def test_get_user_class_values_returns_unlabeled_for_missing_column() -> None:
     obs = pd.DataFrame(index=range(3))
 
-    values = classifier_module._get_user_class_values(obs, n_obs=3)
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([0, 0, 0], dtype=np.int64))
+    assert values.isna().all()
+    assert str(values.dtype) == "Int64"
 
 
 def test_get_user_class_values_uses_integer_dtype_fast_path() -> None:
-    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([0, 2, 5], dtype=np.int64)})
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([1, 2, 5], dtype=np.int64)})
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([0, 2, 5], dtype=np.int64))
+    assert values.tolist() == [1, 2, 5]
 
 
 def test_get_user_class_values_uses_nullable_integer_dtype_fast_path() -> None:
     obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([1, pd.NA, 3], dtype="Int64")})
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([1, 0, 3], dtype=np.int64))
+    assert values.tolist() == [1, pd.NA, 3]
 
 
 def test_get_user_class_values_uses_categorical_integer_fast_path() -> None:
     obs = pd.DataFrame(
         {
             USER_CLASS_COLUMN: pd.Categorical(
-                [0, 2, 1],
-                categories=[0, 1, 2],
+                [pd.NA, 2, 1],
+                categories=[1, 2],
             )
         }
     )
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([0, 2, 1], dtype=np.int64))
+    assert values.tolist() == [pd.NA, 2, 1]
 
 
-def test_get_user_class_values_maps_missing_categorical_codes_to_unlabeled() -> None:
+def test_get_user_class_values_preserves_missing_categorical_values() -> None:
     obs = pd.DataFrame(
         {
             USER_CLASS_COLUMN: pd.Categorical(
                 [1, None, 2],
-                categories=[0, 1, 2],
+                categories=[1, 2],
             )
         }
     )
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([1, 0, 2], dtype=np.int64))
+    assert values.tolist() == [1, pd.NA, 2]
 
 
-def test_get_user_class_values_keeps_legacy_string_fallback() -> None:
+def test_get_user_class_values_rejects_string_class_values() -> None:
     obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series(["1", "bad", None, "3"], dtype="object")})
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
-
-    assert np.array_equal(values, np.array([1, 0, 0, 3], dtype=np.int64))
+    with pytest.raises(ValueError, match="positive integer"):
+        classifier_module._get_user_class_values(obs)
 
 
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
@@ -998,10 +999,10 @@ def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) == 1 else 0 for instance_id in instance_ids],
-        categories=[0, 1],
+        [1 if int(instance_id) == 1 else pd.NA for instance_id in instance_ids],
+        categories=[1],
     )
-    table.uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, "#123456"]
+    table.uns[USER_CLASS_COLORS_KEY] = ["#123456"]
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -1009,16 +1010,16 @@ def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 1])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([1])
     assert widget.warning_status.isHidden()
 
-    table.uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, "#123456"]
+    table.uns[USER_CLASS_COLORS_KEY] = ["#123456"]
     widget._refresh_layer_styling()
 
     assert "Layer Styling Warning" in widget.warning_status.text()
     assert "no longer matches Harpy default colors" in widget.warning_status.text()
 
-    table.uns[USER_CLASS_COLORS_KEY] = default_class_colors([0, 1])
+    table.uns[USER_CLASS_COLORS_KEY] = default_class_colors([1])
     widget._refresh_layer_styling()
 
     assert widget.warning_status.isHidden()
@@ -1031,8 +1032,11 @@ def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     table.uns.pop(_FEATURE_MATRICES_KEY, None)
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -1065,8 +1069,11 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     table = backed_sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     table.uns.pop(_FEATURE_MATRICES_KEY, None)
     layer = make_blobs_labels_layer(backed_sdata_blobs)
@@ -1374,10 +1381,10 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
     _set_feature_metadata(sdata_blobs_multi_region, table_name="table_multi")
     region_values = table.obs["region"].astype("string")
     instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
-    class_values = np.zeros(table.n_obs, dtype=np.int64)
+    class_values = np.full(table.n_obs, pd.NA, dtype=object)
     class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [1, 2])] = 1
     class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [24, 25])] = 2
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical(class_values, categories=[0, 1, 2])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(class_values, categories=[1, 2])
     layer = make_blobs_labels_layer(sdata_blobs_multi_region)
     viewer = DummyViewer(layers=[layer])
 
@@ -1422,8 +1429,11 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     _set_feature_metadata(sdata_blobs)
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -1446,8 +1456,8 @@ def test_widget_disables_retrain_button_when_preparation_is_not_trainable(qtbot,
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 0 for instance_id in instance_ids],
-        categories=[0, 1],
+        [1 if int(instance_id) in {1, 2} else pd.NA for instance_id in instance_ids],
+        categories=[1],
     )
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -1512,8 +1522,11 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     _set_feature_metadata(sdata_blobs)
     training_scope = classifier_module.ResolvedClassifierScope(
@@ -1921,10 +1934,10 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
 
     assert USER_CLASS_COLUMN in table.obs
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [3]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert int(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0]) == 0
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 3])
+    assert pd.isna(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([3])
     assert "adata" not in layer.metadata
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
@@ -1946,7 +1959,7 @@ def test_widget_emits_updated_table_event_when_user_class_is_already_color_sourc
     sdata_blobs: SpatialData,
 ) -> None:
     table = sdata_blobs["table"]
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -2027,9 +2040,9 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0]
-    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0])
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == []
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
+    assert table.uns[USER_CLASS_COLORS_KEY] == []
     assert "Current class: unlabeled." in widget.selection_status.text()
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
@@ -2054,7 +2067,7 @@ def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdat
     table = sdata_blobs["table"]
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
-    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
 
@@ -2446,7 +2459,7 @@ def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwri
     qtbot, monkeypatch, sdata_blobs: SpatialData
 ) -> None:
     table = sdata_blobs["table"]
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     table.uns[USER_CLASS_COLORS_KEY] = ["#ffffffff"]
 
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -2541,9 +2554,9 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
         f'Wrote "table" annotations, predictions, and classifier metadata to "{expected_table_path}".',
     )
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
+    assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
+    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([3])
 
 
 def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -2557,8 +2570,11 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
     )
     _set_feature_metadata(backed_sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
@@ -2571,7 +2587,7 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
 
     widget.retrain_button.click()
     qtbot.waitUntil(
-        lambda: widget._persistence_controller.is_dirty and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
+        lambda: widget._persistence_controller.is_dirty and table.obs[PRED_CLASS_COLUMN].notna().any(),
         timeout=5000,
     )
     sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
@@ -2595,7 +2611,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
 
     table = backed_sdata_blobs["table"]
     disk_obs = table.obs.copy()
-    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     _write_disk_table_state(backed_sdata_blobs, obs=disk_obs, obsm=dict(table.obsm), uns=dict(table.uns))
 
     layer.selected_label = 5
@@ -2615,7 +2631,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
 
     assert widget._persistence_controller.is_dirty is True
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].isna().all()
 
 
 def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
@@ -2664,7 +2680,7 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
     table = backed_sdata_blobs["table"]
     disk_obs = table.obs.copy()
-    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     _write_disk_table_state(backed_sdata_blobs, obs=disk_obs, obsm=dict(table.obsm), uns=dict(table.uns))
 
     layer.selected_label = 5
@@ -2683,8 +2699,8 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
     assert widget._persistence_controller.is_dirty is False
-    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].isna().all()
     _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
 
 
@@ -2700,8 +2716,8 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
 
     obs = table.obs.copy()
     obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [0] * (table.n_obs - 1) + [7],
-        categories=[0, 7],
+        [pd.NA] * (table.n_obs - 1) + [7],
+        categories=[7],
     )
     obsm = dict(table.obsm)
     obsm["disk_features"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
@@ -2717,7 +2733,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
 
     _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 7]
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [7]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
     assert "disk_features" in table.obsm
     feature_matrix_items = [
@@ -2772,8 +2788,11 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     )
     _set_feature_metadata(backed_sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
@@ -2809,7 +2828,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
 
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
     obs = table.obs.copy()
-    obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 7, dtype=np.int64), categories=[0, 7])
+    obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 7, dtype=np.int64), categories=[7])
     obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.77), index=obs.index, dtype="float64")
     obsm = dict(table.obsm)
     uns = dict(table.uns)
@@ -2864,8 +2883,11 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     )
     _set_feature_metadata(sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
 
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -2997,7 +3019,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].notna().any(), timeout=5000)
     qtbot.waitUntil(
         lambda: any(
             isinstance(event, TableStateChangedEvent)
@@ -3010,8 +3032,8 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [0, 1, 2]
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [1, 2]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[24] == 2
     assert "adata" not in layer.metadata
@@ -3052,7 +3074,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].notna().any(), timeout=5000)
 
     assert isinstance(layer.colormap, CompactLabelColormap)
     assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))
@@ -3062,7 +3084,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     assert isinstance(layer.colormap, CompactLabelColormap)
     assert np.allclose(layer.colormap.map(1), layer.colormap.map(5))
     assert np.allclose(layer.colormap.map(24), layer.colormap.map(26))
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([1, 2])
     assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba(default_class_colors([1])[0]), dtype=np.float32))
     assert np.allclose(layer.colormap.map(24), np.asarray(to_rgba(default_class_colors([2])[0]), dtype=np.float32))
     assert PRED_CLASS_COLUMN in layer.features.columns
@@ -3092,7 +3114,9 @@ def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sd
 def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
-    table.obs.loc[mask, USER_CLASS_COLUMN] = pd.Categorical([4], categories=[0, 4])[0]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[4])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[2])
+    table.obs.loc[mask, USER_CLASS_COLUMN] = 4
     table.obs.loc[mask, PRED_CLASS_COLUMN] = 2
     table.obs.loc[mask, PRED_CONFIDENCE_COLUMN] = 0.95
 
@@ -3115,8 +3139,11 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -3150,8 +3177,11 @@ def test_widget_exports_classifier_with_mocked_save_dialog(
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     _set_feature_metadata(sdata_blobs)
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from numbers import Integral
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from napari_harpy.core.class_palette import (
-    DEFAULT_UNLABELED_CLASS,
-    DEFAULT_UNLABELED_COLOR,
     default_class_colors,
     normalize_class_values,
     normalize_color_sequence,
@@ -19,12 +19,10 @@ if TYPE_CHECKING:
 
 USER_CLASS_COLUMN = "user_class"
 USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
-UNLABELED_CLASS = DEFAULT_UNLABELED_CLASS
-UNLABELED_COLOR = DEFAULT_UNLABELED_COLOR
 
 
 def _to_user_class_values(values: pd.Series) -> pd.Series:
-    return normalize_class_values(values, column_name=USER_CLASS_COLUMN, unlabeled_class=UNLABELED_CLASS)
+    return normalize_class_values(values, column_name=USER_CLASS_COLUMN)
 
 
 def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
@@ -34,22 +32,23 @@ def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
         column_name=USER_CLASS_COLUMN,
         colors_key=USER_CLASS_COLORS_KEY,
         warn_on_palette_overwrite=False,
-        unlabeled_class=UNLABELED_CLASS,
-        unlabeled_color=UNLABELED_COLOR,
     )
 
 
-def set_user_class_for_rows(table: AnnData, rows: pd.Series, class_id: int) -> None:
-    """Assign one user class to selected table rows without rewriting valid columns."""
-    class_id = int(class_id)
-    if class_id < UNLABELED_CLASS:
-        raise ValueError("Class ids must be zero or positive integers.")
+def set_user_class_for_rows(table: AnnData, rows: pd.Series, class_id: int | None) -> None:
+    """Assign or clear one user class on selected table rows."""
+    if class_id is not None:
+        if isinstance(class_id, (bool, np.bool_)) or not isinstance(class_id, Integral) or class_id <= 0:
+            raise ValueError("Class ids must be positive integers.")
+        class_id = int(class_id)
 
     row_mask = _coerce_row_mask(rows, table.obs.index)
     if not bool(row_mask.any()):
         return
 
     if USER_CLASS_COLUMN not in table.obs:
+        if class_id is None:
+            return
         _initialize_user_class_column(table, initial_class_id=class_id)
     else:
         categories = _valid_user_class_categories(table.obs[USER_CLASS_COLUMN])
@@ -66,20 +65,20 @@ def set_user_class_for_rows(table: AnnData, rows: pd.Series, class_id: int) -> N
             raise RuntimeError("Unable to normalize `user_class` into a categorical class column.")
 
     selected_values = user_class.loc[row_mask]
+    if class_id is None and bool(selected_values.isna().all()):
+        return
     previous_class_ids = {int(value) for value in selected_values.dropna().unique()}
 
     categories_changed = False
-    if class_id not in categories:
+    if class_id is not None and class_id not in categories:
         categories = sorted({*categories, class_id})
         table.obs[USER_CLASS_COLUMN] = user_class.cat.set_categories(categories)
         user_class = table.obs[USER_CLASS_COLUMN]
         categories_changed = True
 
-    table.obs.loc[row_mask, USER_CLASS_COLUMN] = class_id
+    table.obs.loc[row_mask, USER_CLASS_COLUMN] = pd.NA if class_id is None else class_id
 
-    old_classes_may_be_unused = any(
-        previous_class_id not in {UNLABELED_CLASS, class_id} for previous_class_id in previous_class_ids
-    )
+    old_classes_may_be_unused = any(previous_class_id != class_id for previous_class_id in previous_class_ids)
     if old_classes_may_be_unused:
         user_class = table.obs[USER_CLASS_COLUMN]
         used_categories = _used_user_class_categories(user_class)
@@ -112,9 +111,9 @@ def _normalize_user_class_column(table: AnnData) -> None:
 
 
 def _initialize_user_class_column(table: AnnData, *, initial_class_id: int) -> None:
-    categories = sorted({UNLABELED_CLASS, int(initial_class_id)})
+    categories = [initial_class_id]
     values = pd.Series(
-        pd.Categorical([UNLABELED_CLASS] * len(table.obs), categories=categories),
+        pd.Categorical([pd.NA] * len(table.obs), categories=categories),
         index=table.obs.index,
         name=USER_CLASS_COLUMN,
     )
@@ -128,21 +127,16 @@ def _valid_user_class_categories(values: pd.Series) -> list[int] | None:
 
     categories: list[int] = []
     for category in values.cat.categories:
-        try:
-            class_id = int(category)
-        except (TypeError, ValueError):
+        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
             return None
-        if class_id < UNLABELED_CLASS or category != class_id:
+        class_id = int(category)
+        if class_id <= 0:
             return None
         categories.append(class_id)
 
     if categories != sorted(categories):
         return None
     if len(categories) != len(set(categories)):
-        return None
-    if UNLABELED_CLASS not in categories:
-        return None
-    if bool((values.cat.codes.to_numpy(copy=False) < 0).any()):
         return None
 
     return categories
@@ -153,15 +147,11 @@ def _used_user_class_categories(values: pd.Series) -> list[int]:
     codes = values.cat.codes.to_numpy(copy=False)
     used_codes = {int(code) for code in codes if int(code) >= 0}
     used_categories = {categories[code] for code in used_codes}
-    return sorted({UNLABELED_CLASS, *used_categories})
+    return sorted(used_categories)
 
 
 def _user_class_palette_matches(table: AnnData, categories: list[int]) -> bool:
-    expected_colors = default_class_colors(
-        categories,
-        unlabeled_class=UNLABELED_CLASS,
-        unlabeled_color=UNLABELED_COLOR,
-    )
+    expected_colors = default_class_colors(categories)
     return normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY)) == expected_colors
 
 
@@ -172,6 +162,4 @@ def _sync_user_class_palette_state(table: AnnData, categories: list[int]) -> Non
         column_name=USER_CLASS_COLUMN,
         colors_key=USER_CLASS_COLORS_KEY,
         warn_on_palette_overwrite=False,
-        unlabeled_class=UNLABELED_CLASS,
-        unlabeled_color=UNLABELED_COLOR,
     )

@@ -34,7 +34,6 @@ from napari_harpy._app_state import (
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
 from napari_harpy.core.annotation import (
-    UNLABELED_CLASS,
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
@@ -1210,7 +1209,7 @@ class ObjectClassificationWidget(QWidget):
         has_table = self.selected_table_name is not None and self._table_binding_error is None
         current_user_class = self._annotation_controller.current_user_class
         can_apply = self._annotation_controller.can_annotate
-        can_clear = can_apply and current_user_class not in (None, UNLABELED_CLASS)
+        can_clear = can_apply and current_user_class is not None
 
         self.class_spinbox.setEnabled(has_table)
         self.apply_class_button.setEnabled(can_apply)

@@ -11,11 +11,7 @@ from napari.utils.colormap_backend import get_backend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 
 import napari_harpy.viewer.labels_colormap as labels_colormap_module
-from napari_harpy.core.annotation import UNLABELED_COLOR
-from napari_harpy.core.class_palette import (
-    DEFAULT_NEUTRAL_COLOR,
-    DEFAULT_UNLABELED_COLOR,
-)
+from napari_harpy.core.class_palette import DEFAULT_NEUTRAL_COLOR
 from napari_harpy.viewer._styling import (
     MISSING_CATEGORICAL_COLOR,
     MISSING_CONTINUOUS_COLOR,
@@ -35,10 +31,8 @@ def _rgba(red: float, green: float, blue: float, alpha: float) -> np.ndarray:
     return np.asarray([red, green, blue, alpha], dtype=np.float64)
 
 
-def test_missing_and_unlabeled_states_share_the_neutral_color() -> None:
+def test_missing_states_share_the_neutral_color() -> None:
     assert DEFAULT_NEUTRAL_COLOR == "#DCE8F2CC"
-    assert DEFAULT_UNLABELED_COLOR == DEFAULT_NEUTRAL_COLOR
-    assert UNLABELED_COLOR == DEFAULT_NEUTRAL_COLOR
     assert MISSING_CATEGORICAL_COLOR == DEFAULT_NEUTRAL_COLOR
     assert MISSING_CONTINUOUS_COLOR == DEFAULT_NEUTRAL_COLOR
 
@@ -233,10 +227,10 @@ def test_compact_categorical_labels_mapping_accepts_nontransparent_default_color
         values,
         categories=["a"],
         palette=["#ff0000"],
-        default_color=UNLABELED_COLOR,
+        default_color=DEFAULT_NEUTRAL_COLOR,
     )
 
-    np.testing.assert_allclose(mapping.texture_rgba[mapping.default_texture_code], to_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(mapping.texture_rgba[mapping.default_texture_code], to_rgba(DEFAULT_NEUTRAL_COLOR))
     np.testing.assert_allclose(mapping.texture_rgba[mapping.background_texture_code], np.zeros(4, dtype=np.float32))
 
 
@@ -379,10 +373,10 @@ def test_compact_categorical_label_colormap_from_values_uses_configured_default_
         values,
         categories=["a"],
         palette=["#ff0000"],
-        default_color=UNLABELED_COLOR,
+        default_color=DEFAULT_NEUTRAL_COLOR,
     )
 
-    np.testing.assert_allclose(colormap.map(99), to_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(colormap.map(99), to_rgba(DEFAULT_NEUTRAL_COLOR))
     np.testing.assert_allclose(colormap.map(0), np.zeros(4, dtype=np.float32))
 
 
@@ -393,8 +387,8 @@ def test_compact_categorical_label_colormap_sparse_category_updates_existing_tex
     colormap = compact_categorical_label_colormap_from_values(
         values,
         categories=[0, 1, 2],
-        palette=[UNLABELED_COLOR, "#ff0000", "#0000ff"],
-        default_color=UNLABELED_COLOR,
+        palette=[DEFAULT_NEUTRAL_COLOR, "#ff0000", "#0000ff"],
+        default_color=DEFAULT_NEUTRAL_COLOR,
     )
     original_texture_count = len(colormap._compact_mapping.texture_rgba)
 
@@ -414,8 +408,8 @@ def test_compact_categorical_label_colormap_sparse_remove_uses_default_texture(
     colormap = compact_categorical_label_colormap_from_values(
         values,
         categories=[0, 1, 2],
-        palette=[UNLABELED_COLOR, "#ff0000", "#0000ff"],
-        default_color=UNLABELED_COLOR,
+        palette=[DEFAULT_NEUTRAL_COLOR, "#ff0000", "#0000ff"],
+        default_color=DEFAULT_NEUTRAL_COLOR,
     )
 
     result = colormap.remove_label(5)
@@ -423,7 +417,7 @@ def test_compact_categorical_label_colormap_sparse_remove_uses_default_texture(
     assert result.texture_code == colormap._compact_mapping.default_texture_code
     assert result.texture_table_changed is False
     assert 5 not in colormap._compact_mapping.label_ids
-    np.testing.assert_allclose(colormap.map(5), to_rgba(UNLABELED_COLOR))
+    np.testing.assert_allclose(colormap.map(5), to_rgba(DEFAULT_NEUTRAL_COLOR))
 
 
 def test_compact_categorical_label_colormap_sparse_new_category_appends_texture(
@@ -433,8 +427,8 @@ def test_compact_categorical_label_colormap_sparse_new_category_appends_texture(
     colormap = compact_categorical_label_colormap_from_values(
         values,
         categories=[0, 1],
-        palette=[UNLABELED_COLOR, "#ff0000"],
-        default_color=UNLABELED_COLOR,
+        palette=[DEFAULT_NEUTRAL_COLOR, "#ff0000"],
+        default_color=DEFAULT_NEUTRAL_COLOR,
     )
     original_texture_count = len(colormap._compact_mapping.texture_rgba)
 
@@ -454,15 +448,14 @@ def test_compact_categorical_label_colormap_sparse_update_widens_texture_code_dt
 ) -> None:
     values = pd.Series([1], index=pd.Index([5], name="index"), dtype="int64")
     categories = list(range(300))
-    palette = [UNLABELED_COLOR] + [
-        np.asarray([i / 300.0, 1.0 - (i / 300.0), (i % 11) / 10.0, 1.0])
-        for i in range(1, 300)
+    palette = [DEFAULT_NEUTRAL_COLOR] + [
+        np.asarray([i / 300.0, 1.0 - (i / 300.0), (i % 11) / 10.0, 1.0]) for i in range(1, 300)
     ]
     colormap = compact_categorical_label_colormap_from_values(
         values,
         categories=categories,
         palette=palette,
-        default_color=UNLABELED_COLOR,
+        default_color=DEFAULT_NEUTRAL_COLOR,
     )
     assert colormap._compact_mapping.texture_codes.dtype == np.uint8
 

@@ -87,8 +87,8 @@ def _set_multi_region_feature_metadata(sdata: SpatialData) -> None:
 
 def _set_user_classes(sdata: SpatialData, class_by_instance: dict[int, int], *, table_name: str = "table") -> None:
     table = sdata[table_name]
-    values = np.array([class_by_instance.get(int(instance_id), 0) for instance_id in table.obs["instance_id"]])
-    categories = sorted({0, *values.tolist()})
+    values = [class_by_instance.get(int(instance_id), pd.NA) for instance_id in table.obs["instance_id"]]
+    categories = sorted(set(class_by_instance.values()))
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(values, categories=categories)
 
 
@@ -101,14 +101,11 @@ def _set_user_classes_by_region(
     table = sdata[table_name]
     region_values = table.obs["region"].astype("string").to_numpy()
     instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
-    values = np.array(
-        [
-            class_by_region_instance.get((str(region), int(instance_id)), 0)
-            for region, instance_id in zip(region_values, instance_values, strict=True)
-        ],
-        dtype=np.int64,
-    )
-    categories = sorted({0, *values.tolist()})
+    values = [
+        class_by_region_instance.get((str(region), int(instance_id)), pd.NA)
+        for region, instance_id in zip(region_values, instance_values, strict=True)
+    ]
+    categories = sorted(set(class_by_region_instance.values()))
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(values, categories=categories)
 
 
@@ -164,14 +161,14 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     controller.schedule_retrain(immediate=True)
 
     table = sdata_blobs["table"]
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].notna().any(), timeout=5000)
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     pred_confidence = table.obs.set_index("instance_id")[PRED_CONFIDENCE_COLUMN]
 
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [0, 1, 2]
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [1, 2]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[5] == 1
     assert pred_class.loc[24] == 2
@@ -326,7 +323,7 @@ def test_classifier_controller_blocks_training_without_feature_metadata(sdata_bl
     controller = ClassifierController(debounce_interval_ms=0)
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     table = sdata_blobs["table"]
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
     summary = controller.describe_current_preparation()
 
@@ -500,7 +497,7 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
     )
     _set_invalid_feature_rows_for_region(sdata_blobs_multi_region, region_name="blobs_labels_2")
     table = sdata_blobs_multi_region["table_multi"]
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
     table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
 
@@ -530,9 +527,9 @@ def test_classifier_controller_prediction_scope_all_clears_invalid_rows_in_scope
         timeout=5000,
     )
 
-    assert table.obs.loc[valid_rows, PRED_CLASS_COLUMN].astype("string").ne("0").all()
+    assert table.obs.loc[valid_rows, PRED_CLASS_COLUMN].notna().all()
     assert table.obs.loc[valid_rows, PRED_CONFIDENCE_COLUMN].between(0.0, 1.0).all()
-    assert table.obs.loc[invalid_rows, PRED_CLASS_COLUMN].eq(0).all()
+    assert table.obs.loc[invalid_rows, PRED_CLASS_COLUMN].isna().all()
     assert table.obs.loc[invalid_rows, PRED_CONFIDENCE_COLUMN].isna().all()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "all"
     assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_regions"] == ["blobs_labels", "blobs_labels_2"]
@@ -558,7 +555,7 @@ def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_un
         },
     )
     table = sdata_blobs_multi_region["table_multi"]
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 3, 9])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[3, 9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
     workers: dict[int, _DeferredWorker] = {}
 
@@ -685,9 +682,9 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
     table = sdata_blobs["table"]
 
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert table.obs[PRED_CLASS_COLUMN].eq(0).all()
+    assert table.obs[PRED_CLASS_COLUMN].isna().all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0])
+    assert table.uns[PRED_CLASS_COLORS_KEY] == []
     assert table.uns[CLASSIFIER_CONFIG_KEY]["eligible"] is False
     assert "two labeled classes" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
@@ -716,9 +713,9 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
     controller.schedule_retrain(immediate=True)
 
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert table.obs[PRED_CLASS_COLUMN].eq(0).all()
+    assert table.obs[PRED_CLASS_COLUMN].isna().all()
     assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0])
+    assert table.uns[PRED_CLASS_COLORS_KEY] == []
     assert "rows but the table has" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
 
@@ -1072,7 +1069,7 @@ def test_classifier_controller_reset_after_reload_ignores_late_worker_results(
     table = sdata_blobs["table"]
     disk_predictions = np.full(table.n_obs, 2, dtype=np.int64)
     disk_confidences = np.full(table.n_obs, 0.77, dtype=np.float64)
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(disk_predictions, categories=[0, 2])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(disk_predictions, categories=[2])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
         disk_confidences,
         index=table.obs.index,
