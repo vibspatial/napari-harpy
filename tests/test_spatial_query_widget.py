@@ -113,7 +113,7 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     assert "No SpatialData Loaded" in _status_text(widget.status_label)
 
 
-def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_action_intents(
+def test_spatial_query_shell_requires_an_explicit_new_column_name_and_emits_only_action_intents(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
@@ -146,9 +146,12 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
     assert widget.selected_labels_name == "blobs_labels"
     assert widget.selected_table_name == "table"
     assert widget.selected_column_mode == "new"
-    assert widget.selected_column_name == "spatial_annotation"
+    assert widget.new_column_edit.text() == ""
+    assert widget.new_column_edit.placeholderText() == "spatial_annotation"
+    assert widget.selected_column_name is None
     assert widget.cache_report is not None
-    assert widget.run_button.isEnabled() is True
+    assert widget.run_button.isEnabled() is False
+    assert "Enter a new annotation column name" in _status_text(widget.status_label)
     assert inspection_calls == 1
     assert len(viewer.layers) == 1  # Explicit labels selection may claim primary-label styling.
     neutral_rgba = np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32)
@@ -156,6 +159,8 @@ def test_spatial_query_shell_derives_ready_new_column_state_and_emits_only_actio
     assert np.allclose(viewer.layers[0].colormap.map(10_000), neutral_rgba)
 
     widget.new_column_edit.setText("reviewed_annotation")
+    assert widget.selected_column_name == "reviewed_annotation"
+    assert widget.run_button.isEnabled() is True
     assert inspection_calls == 1  # Status rendering reuses the captured report.
 
     intents: list[str] = []
@@ -193,6 +198,19 @@ def test_spatial_query_shell_uses_compatible_default_and_styles_only_after_expli
     assert viewer.layers.selection.active is viewer.layers[0]
     assert viewer.layers[0].name == "blobs_labels"
     assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    assert widget.new_column_edit.text() == ""
+    assert widget.new_column_edit.placeholderText() == "spatial_annotation"
+
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("new"))
+
+    assert widget.new_column_edit.text() == ""
+    assert widget.selected_column_name is None
+    assert widget.run_button.isEnabled() is False
+    assert "Enter a new annotation column name" in _status_text(widget.status_label)
+    assert np.allclose(
+        viewer.layers[0].colormap.map(1),
+        np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32),
+    )
     pd.testing.assert_frame_equal(table.obs, obs_before)
     assert table.uns == uns_before
 
@@ -218,21 +236,25 @@ def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_d
     assert old_index >= 0
     widget.existing_column_combo.setCurrentIndex(old_index)
     assert widget.selected_column_name == "old_annotation"
+    widget.new_column_edit.setText("draft_annotation")
 
     del table.obs["old_annotation"]
     widget._refresh_columns(
         preferred_mode="existing",
         preferred_existing_column="old_annotation",
-        preferred_new_column="spatial_annotation",
+        preferred_new_column=widget.new_column_edit.text(),
     )
 
     assert widget.selected_column_mode == "existing"
     assert widget.selected_column_name == "spatial_annotation"
+    assert widget.new_column_edit.text() == "draft_annotation"
 
     widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("new"))
 
     assert widget.existing_column_combo.currentIndex() == -1
     assert widget.existing_column_combo.placeholderText() == "Choose an existing column"
+    assert widget.new_column_edit.text() == "draft_annotation"
+    assert widget.selected_column_name == "draft_annotation"
     neutral_rgba = np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32)
     assert np.allclose(viewer.layers[0].colormap.map(1), neutral_rgba)
 
@@ -240,6 +262,7 @@ def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_d
 
     assert widget.existing_column_combo.currentIndex() == -1
     assert widget.selected_column_name is None
+    assert widget.new_column_edit.text() == "draft_annotation"
     assert np.allclose(viewer.layers[0].colormap.map(1), neutral_rgba)
 
     widget.existing_column_combo.setCurrentIndex(widget.existing_column_combo.findData("spatial_annotation"))
@@ -248,7 +271,7 @@ def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_d
     assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
 
 
-def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
+def test_spatial_query_shell_explains_incompatible_preferred_column_with_empty_new_draft(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -266,10 +289,12 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
     _select_labels(widget)
 
     assert widget.selected_column_mode == "new"
+    assert widget.new_column_edit.text() == ""
+    assert widget.new_column_edit.placeholderText() == "spatial_annotation"
     assert widget.selected_column_name is None
     assert widget.run_button.isEnabled() is False
     status_text = _status_text(widget.status_label)
-    assert "already exists but cannot be used" in status_text
+    assert 'Existing annotation column "spatial_annotation" cannot be used' in status_text
     assert "categorical column with only string categories" in status_text
     assert "different New-column name" in status_text
     assert len(viewer.layers) == 1
@@ -282,6 +307,33 @@ def test_spatial_query_shell_blocks_colliding_default_until_new_name_is_valid(
 
     assert widget.selected_column_name == "reviewed_annotation"
     assert widget.run_button.isEnabled() is True
+
+
+def test_spatial_query_shell_clears_new_column_draft_when_table_changes(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    sdata_blobs.tables["second_table"] = sdata_blobs.tables["table"].copy()
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+
+    widget.new_column_edit.setText("draft_annotation")
+    assert widget.selected_column_name == "draft_annotation"
+    assert widget.run_button.isEnabled() is True
+
+    next_table = "table" if widget.selected_table_name == "second_table" else "second_table"
+    next_table_index = widget.table_combo.findData(next_table)
+    assert next_table_index >= 0
+    widget.table_combo.setCurrentIndex(next_table_index)
+
+    assert widget.selected_table_name == next_table
+    assert widget.selected_column_mode == "new"
+    assert widget.new_column_edit.text() == ""
+    assert widget.new_column_edit.placeholderText() == "spatial_annotation"
+    assert widget.selected_column_name is None
+    assert widget.run_button.isEnabled() is False
 
 
 def test_spatial_query_shell_blocks_live_input_inspection_failure(
@@ -318,6 +370,7 @@ def test_spatial_query_shell_keeps_invalid_cache_ready_for_recalculation(
 
     widget.apply_annotation_context(_context(sdata_blobs))
     _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
 
     report = widget.cache_report
     assert report is not None
@@ -411,6 +464,7 @@ def test_spatial_query_shell_tracks_only_its_selected_primary_labels_layer(
     assert widget.selected_labels_name is None  # Layer insertion never selects it.
 
     _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
     selected_layer = widget.app_state.viewer_adapter.get_loaded_primary_labels_layer(
         sdata_blobs,
         "blobs_labels",

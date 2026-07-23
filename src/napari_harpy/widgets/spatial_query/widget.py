@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 type _TargetColumnMode = Literal["existing", "new"]
 
-_DEFAULT_NEW_COLUMN_NAME = "spatial_annotation"
+_PREFERRED_ANNOTATION_COLUMN_NAME = "spatial_annotation"
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _FIELD_MIN_WIDTH = 180
 
@@ -108,9 +108,12 @@ class SpatialQuery(QWidget):
             "Select an existing categorical column with string categories.",
         )
         self.existing_column_combo.setPlaceholderText("Choose an existing column")
-        self.new_column_edit = QLineEdit(_DEFAULT_NEW_COLUMN_NAME)
+        self.new_column_edit = QLineEdit()
         self.new_column_edit.setObjectName("spatial_query_new_column_edit")
         self.new_column_edit.setAccessibleName("New annotation column name")
+        # Suggest the conventional name without turning it into an implicit
+        # schema target; only text entered by the user is validated or applied.
+        self.new_column_edit.setPlaceholderText(_PREFERRED_ANNOTATION_COLUMN_NAME)
         self.new_column_edit.setMinimumWidth(_FIELD_MIN_WIDTH)
         self.new_column_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.new_column_edit.setToolTip(
@@ -156,7 +159,7 @@ class SpatialQuery(QWidget):
         self._refresh_columns(
             preferred_mode=None,
             preferred_existing_column=None,
-            preferred_new_column=_DEFAULT_NEW_COLUMN_NAME,
+            preferred_new_column="",
         )
         self._refresh_controls_and_status()
 
@@ -276,7 +279,7 @@ class SpatialQuery(QWidget):
         self._refresh_columns(
             preferred_mode=None,
             preferred_existing_column=None,
-            preferred_new_column=_DEFAULT_NEW_COLUMN_NAME,
+            preferred_new_column="",
         )
         self._canonical_cache_report = None
         self._canonical_input_inspection_error = None
@@ -335,13 +338,15 @@ class SpatialQuery(QWidget):
             for column_name in column_names:
                 self.existing_column_combo.addItem(column_name, column_name)
 
-        default_existing_column = _DEFAULT_NEW_COLUMN_NAME if _DEFAULT_NEW_COLUMN_NAME in column_names else None
+        preferred_conventional_column = (
+            _PREFERRED_ANNOTATION_COLUMN_NAME if _PREFERRED_ANNOTATION_COLUMN_NAME in column_names else None
+        )
         if preferred_mode == "existing" and preferred_existing_column in column_names:
             next_mode: _TargetColumnMode = "existing"
             next_existing_column = preferred_existing_column
-        elif preferred_mode != "new" and default_existing_column is not None:
+        elif preferred_mode != "new" and preferred_conventional_column is not None:
             next_mode = "existing"
-            next_existing_column = default_existing_column
+            next_existing_column = preferred_conventional_column
         else:
             next_mode = "new"
             next_existing_column = None
@@ -354,7 +359,7 @@ class SpatialQuery(QWidget):
             )
             self.existing_column_combo.setCurrentIndex(next_existing_index)
         with QSignalBlocker(self.new_column_edit):
-            self.new_column_edit.setText(preferred_new_column or _DEFAULT_NEW_COLUMN_NAME)
+            self.new_column_edit.setText(preferred_new_column)
 
         self.column_mode_combo.setEnabled(table_name is not None)
         self.existing_column_combo.setEnabled(bool(column_names))
@@ -381,19 +386,19 @@ class SpatialQuery(QWidget):
 
     def _on_labels_changed(self, index: int) -> None:
         del index
-        preferred_table = self.selected_table_name
-        has_previous_table_context = preferred_table is not None
-        # Column controls configured while no labels/table was selected are
-        # only placeholder defaults, not downstream choices made by the user.
-        preferred_mode = self.selected_column_mode if has_previous_table_context else None
-        preferred_existing_column = self._selected_existing_column_name() if has_previous_table_context else None
-        preferred_new_column = self.new_column_edit.text() if has_previous_table_context else _DEFAULT_NEW_COLUMN_NAME
+        previous_table = self.selected_table_name
+        previous_mode = self.selected_column_mode
+        previous_existing_column = self._selected_existing_column_name()
+        previous_new_column = self.new_column_edit.text()
         self._layer_styling_error = None
-        self._refresh_tables(preferred_table)
+        self._refresh_tables(previous_table)
+        same_table_context = previous_table is not None and self.selected_table_name == previous_table
+        # A New-column draft belongs to its table. Preserve it only when the
+        # refreshed labels selection still resolves to that exact table.
         self._refresh_columns(
-            preferred_mode=preferred_mode,
-            preferred_existing_column=preferred_existing_column,
-            preferred_new_column=preferred_new_column,
+            preferred_mode=previous_mode if same_table_context else None,
+            preferred_existing_column=previous_existing_column if same_table_context else None,
+            preferred_new_column=previous_new_column if same_table_context else "",
         )
         self._inspect_canonical_centers_cache()
         self._apply_explicit_labels_styling()
@@ -405,7 +410,7 @@ class SpatialQuery(QWidget):
         self._refresh_columns(
             preferred_mode=None,
             preferred_existing_column=None,
-            preferred_new_column=_DEFAULT_NEW_COLUMN_NAME,
+            preferred_new_column="",
         )
         self._inspect_canonical_centers_cache()
         # This callback represents an explicit user table choice. Programmatic
@@ -481,6 +486,33 @@ class SpatialQuery(QWidget):
             self._layer_styling_error = str(error)
 
     def _resolve_target_intent(self) -> tuple[str | None, str | None, str | None]:
+        """Resolve the selected Existing or New annotation target.
+
+        For New mode with an empty draft:
+
+        ```text
+        empty draft
+            ↓
+        preferred "spatial_annotation" column exists?
+            ├── no
+            │      → request a New-column name
+            │
+            └── yes
+                   ↓
+               compatible?
+                   ├── yes
+                   │      → request a New-column name because the user
+                   │        explicitly chose New mode
+                   │
+                   └── no
+                          → explain why the conventional column was excluded
+                          → request another Existing column or a different
+                            New-column name
+        ```
+
+        Placeholder text is visual guidance only and never becomes a target
+        value.
+        """
         mode = self.selected_column_mode
         sdata = self.selected_spatialdata
         table_name = self.selected_table_name
@@ -494,15 +526,35 @@ class SpatialQuery(QWidget):
         if mode != "new":
             return None, "Choose Existing column or New column.", None
 
+        table = sdata.tables[table_name]
+        new_column_draft = self.new_column_edit.text()
+        if not new_column_draft.strip():
+            # Placeholder text is not a target value. Still explain when the
+            # conventional column exists but was excluded as incompatible.
+            if _PREFERRED_ANNOTATION_COLUMN_NAME in table.obs.columns:
+                try:
+                    require_compatible_spatial_annotation_column(
+                        table,
+                        _PREFERRED_ANNOTATION_COLUMN_NAME,
+                    )
+                except ValueError:
+                    return (
+                        None,
+                        f'Existing annotation column "{_PREFERRED_ANNOTATION_COLUMN_NAME}" cannot be used because '
+                        "Spatial Query requires a categorical column with only string categories. Choose another "
+                        "compatible Existing column or enter a different New-column name.",
+                        None,
+                    )
+            return None, "Enter a new annotation column name.", None
+
         try:
             column_name = normalize_spatialdata_dataframe_column_name(
-                self.new_column_edit.text(),
+                new_column_draft,
                 "Annotation column name",
             )
         except ValueError as error:
             return None, str(error), None
 
-        table = sdata.tables[table_name]
         table_metadata = get_table_metadata(sdata, table_name)
         if column_name in (table_metadata.region_key, table_metadata.instance_key):
             return None, f'Annotation column "{column_name}" cannot be a table linkage column.', None

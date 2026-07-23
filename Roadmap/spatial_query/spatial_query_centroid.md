@@ -5036,10 +5036,12 @@ Exit criteria:
 
 ### Slice 6j: Empty New-column draft and named-default separation
 
+**Implementation status: Implemented.**
+
 Separate the preferred conventional Existing-column name from the editable
-New-column value. Slice 6i uses `spatial_annotation` for both roles, which
-produces an avoidable collision when a compatible column already exists and
-the user explicitly switches from Existing to New mode:
+New-column value. After Slice 6i, `spatial_annotation` was used for both roles,
+which produced an avoidable collision when a compatible column already
+existed and the user explicitly switched from Existing to New mode:
 
 ```text
 compatible "spatial_annotation" exists
