@@ -1887,13 +1887,12 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - new categorical annotation column with missing non-target rows;
 - compatible string-categorical updates;
 - category addition preserves order/ordered state;
-- valid stored string-category palettes are preserved and extended by one
-  default color without changing existing entries;
-- positive-integer category palettes use the shared class-ID palette contract
-  and remain aligned to the canonical sorted positive class IDs;
-- missing or invalid palettes are displayed without mutation using:
-  - stable position-based defaults for string categories;
-  - deterministic class-ID defaults for positive-integer categories;
+- valid stored string and positive-integer category palettes are preserved and
+  extended by one default color without changing existing entries;
+- positive-integer category order is append-stable and is not sorted or
+  reduced to currently used row values;
+- missing or invalid palettes are displayed through stable position-based
+  defaults without mutation;
 - the palette is created or repaired only by an effective annotation Apply;
 - adding a category never changes an existing category's resolved color;
 - StringDtype, object/string, plain numeric, boolean, datetime, mixed-object,
@@ -1902,9 +1901,9 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - removal summaries report already-empty and annotations-to-remove counts;
 - removal writes missing values for categorical columns while preserving the
   target's string or positive-integer value kind;
-- removal never deletes the column or permits a New column target; string
-  targets preserve their declared categories, while positive-integer targets
-  remove unused class categories and realign the class palette;
+- removal never deletes the column or permits a New column target; string and
+  positive-integer targets both preserve their declared categories and aligned
+  palettes;
 - typed strings such as `"None"` and `"nan"` remain literal annotation values;
 - no-op leaves column and palette identity/events/current dirty state unchanged;
 - apply rollback restores both column and palette and prevents partial
@@ -3233,7 +3232,9 @@ source type. Plain string/object viewer coercion, where still supported outside
 Spatial Query, uses the same append-stable default palette. Object
 Classification retains its specialized integer-class categories, unlabeled
 class, stored `user_class_colors`/`pred_class_colors`, and strict canonical
-palette validation; this slice changes none of those semantics.
+palette validation; this slice changes none of those semantics. Slices 6k and
+6n later replace its unlabeled sentinel and strict sorted/currently-used
+palette lifecycle.
 
 Persistence requires no preparatory change: `write_table_components()` already
 supports explicit top-level uns paths. Creating, repairing, extending, rolling
@@ -5238,11 +5239,12 @@ declared positive class category in categorical order. They contain no
 synthetic unlabelled entry. Missing values are rendered with the shared
 `DEFAULT_NEUTRAL_COLOR` outside the stored class palette.
 
-Retain deterministic class-ID coloring: a positive class keeps the color
-returned by `default_labeled_class_color(class_id)` regardless of which other
-class IDs are currently present. Removing an unused category must remove its
-aligned stored palette entry without changing the colors assigned to remaining
-class IDs.
+Slice 6k initially retained deterministic class-ID coloring and removed unused
+integer categories. Slice 6n deliberately supersedes that write-time palette
+and category lifecycle: declared positive-integer categories become an
+append-and-retain vocabulary, and their stored colors remain aligned by
+category position. Slice 6n does not change this slice's positive-ID,
+missing-value, or neutral-rendering contract.
 
 Remove the sentinel-oriented class contract from shared class helpers:
 
@@ -5651,12 +5653,14 @@ class-state status channel.
 
 ### Slice 6m: Positive-integer categorical Spatial Annotation
 
-**Implementation status: Deferred into Slice 6n.**
+**Implementation status: Deferred into Slice 6o.**
 
 The standalone Slice 6m implementation was reverted. Do not implement this
 slice independently. Its positive-integer target, typed-value, UI, and
-cross-widget requirements are retained below as design input, but Slice 6n is
-the sole implementation boundary and owns the final shared palette contract.
+cross-widget requirements are retained below as design input. Slice 6n first
+establishes the Object Classification categorical-vocabulary contract; Slice
+6o then implements this deferred Spatial Annotation support against that
+foundation.
 
 Extend the Spatial Annotation core and Spatial Query selection/styling shell
 before implementing the async Run flow. The purpose is direct schema
@@ -5668,7 +5672,7 @@ Object Classification
     → user_class is categorical
     → categories are positive integer class IDs
     → unlabelled rows are pd.NA
-    → user_class_colors follows class-ID palette semantics
+    → user_class_colors is aligned with the declared category order
 
 Spatial Query
     → may select the same existing user_class column
@@ -5827,26 +5831,29 @@ string Remove
     → preserve declared string categories and palette
 ```
 
-Positive-integer targets instead reuse the Object Classification class-state
-semantics:
+Positive-integer targets reuse the append-and-retain categorical semantics
+established for Object Classification by Slice 6n:
 
 ```text
-integer Set or Remove
-    → build the complete replacement off-table
-    → collect the positive class IDs still used after replacement
-    → store them as sorted integer categories
-    → missing rows use the shared neutral color
+integer Set adds a category
+    → append it without reordering existing categories
+    → extend the current valid positional palette
+    → never recolor existing categories
+
+integer Remove
+    → assign pd.NA
+    → preserve declared integer categories and palette
 ```
 
-Removing the last use of an integer class removes that unused category and its
-aligned palette entry, matching Object Classification. Adding a lower class ID
-may reorder the category list.
+An integer category is a declared annotation vocabulary entry, not merely a
+summary of currently non-missing row values. Removing the final row using a
+class ID therefore does not remove that category or its durable color.
+Training continues to discover active classes from non-missing row values
+rather than treating unused declared categories as labeled training classes.
 
-The deferred slice does not define how colors survive those category
-transitions. Its original unconditional `default_class_colors(...)`
-regeneration proposal is superseded by Slice 6n. Slice 6n preserves valid
-stored colors by category identity and uses class-ID defaults only for colors
-that cannot be obtained from valid stored state.
+Slice 6n defines this Object Classification category/palette lifecycle. Slice
+6o reuses the same shared append-only palette operations for Spatial
+Annotation rather than introducing an integer-specific reconciliation path.
 
 Reuse the existing pure class normalization/category/palette helpers where
 they fit. Preserve the existing Spatial Annotation atomicity boundary: compute
@@ -5916,8 +5923,8 @@ widget calls the other directly.
 - explicit `user_class` support and `pred_class`/`pred_confidence` exclusion;
 - value kind captured on `SpatialAnnotationPreparation`;
 - typed summary and Apply validation using `str | int | None`;
-- atomic positive-integer replacement, unused-category cleanup, and
-  class-ID-aligned palette generation;
+- atomic positive-integer replacement with append-and-retain categories and
+  an aligned stored palette;
 - updated Spatial Query selection, readiness text, and existing-column styling
   behavior;
 - focused core annotation, viewer-styling, and Spatial Query shell tests;
@@ -5934,8 +5941,8 @@ widget calls the other directly.
   state, is available to Spatial Query as a positive-integer target;
 - integer Set accepts only positive non-boolean Python integers and Remove
   stores `pd.NA`;
-- integer category order and `<column>_colors` remain canonical and aligned to
-  class IDs after setting, overwriting, or removing annotations;
+- integer category order remains append-stable and `<column>_colors` remains
+  aligned after setting, overwriting, or removing annotations;
 - `pred_class` and `pred_confidence` cannot be selected or mutated through
   Spatial Query;
 - New mode remains string-categorical and cannot create conflicting
@@ -5945,57 +5952,62 @@ widget calls the other directly.
   Object Classification of external `user_class` changes through shared table
   events.
 
-### Slice 6n: Unified stored categorical palette lifecycle
+### Slice 6n: Object Classification categorical vocabulary and palette lifecycle
 
-This is the sole implementation boundary for the positive-integer Spatial
-Annotation support deferred from Slice 6m and for the unified palette contract
-used by Spatial Annotation and Object Classification. It must be completed
-before connecting the asynchronous query/Apply flow.
+Refactor Object Classification first, without changing Spatial Query. This
+slice establishes the categorical contract that Slice 6o will later reuse for
+positive-integer Spatial Annotation.
 
-Slice 6n adopts the deferred Slice 6m target contract:
-
-- `SpatialAnnotationValueKind` is
-  `Literal["string", "positive_integer"]`;
-- `SpatialAnnotationValue` is `str | int | None`;
-- existing categorical string and positive-integer columns are supported;
-- an empty `user_class` retains positive-integer semantics;
-- New mode remains string-categorical and cannot create `user_class`,
-  `pred_class`, or `pred_confidence`;
-- `pred_class` and `pred_confidence` remain classifier-owned and cannot be
-  selected or mutated by Spatial Query;
-- preparation captures the resolved value kind;
-- string Set accepts trimmed non-empty text, integer Set accepts a positive
-  non-boolean Python `int`, and Remove stores `pd.NA`;
-- the future Apply dialog selects its editor from the captured value kind;
-- the positive-integer replacement is built off-table and installed through
-  the existing atomic obs/uns assignment boundary.
-
-The detailed compatibility, typed-summary, selection, status, and Slice 7
-event requirements recorded under deferred Slice 6m remain applicable through
-this slice. Slice 6n replaces only its palette proposal and incorporates the
-code required to realize those deferred contracts.
-
-#### Shared stored-palette contract
-
-The AnnData companion palette is authoritative for every supported
-user-owned categorical annotation column when it is structurally valid:
+`user_class` and `pred_class` remain categorical columns with positive integer
+class IDs and `pd.NA` for rows without a class. Their category metadata now
+has the same durable meaning as a string categorical annotation:
 
 ```text
-read categorical column
-    valid stored <column>_colors
+.cat.categories
+    → declared annotation vocabulary and palette order
+
+.uns["<column>_colors"]
+    → colors aligned with that declared order
+```
+
+Declared integer categories are append-only under napari-harpy mutations:
+
+- retain unused categories;
+- never reorder existing categories merely to obtain ascending class IDs;
+- append a class ID when it first enters the declared vocabulary;
+- keep the companion palette aligned with that stored order.
+
+This ordering policy affects representation only. Positive-integer validation
+remains strict, and classifier training continues to discover active class
+labels from non-missing row values rather than from every declared category.
+
+#### User-class stored-palette contract
+
+A structurally valid stored `user_class_colors` palette is authoritative:
+
+```text
+read user_class
+    valid stored user_class_colors
         → use the stored colors
 
     missing or invalid stored palette
-        → calculate a deterministic read-only fallback
+        → calculate a stable position-based fallback
         → do not mutate or dirty the table
 
-effective annotation mutation
-    → preserve colors for categories that remain
-    → remove colors for categories that disappear
-    → assign defaults only to newly introduced categories
-    → write the replacement column and palette atomically
+effective user-class assignment
+    existing class ID
+        → update row values
+        → preserve categories and palette
 
-no effective annotation mutation
+    new class ID
+        → append the ID to .cat.categories
+        → append one stable positional color to user_class_colors
+
+effective user-class removal
+    → assign pd.NA
+    → retain all declared categories and colors
+
+no effective row mutation
     → change neither the column nor its palette
 ```
 
@@ -6003,147 +6015,50 @@ A valid stored positive-integer palette is not required to equal
 `default_class_colors(categories)`. Defaults initialize missing colors; they
 do not override valid user- or table-provided colors.
 
-`pred_class_colors` is the deliberate exception to this general ownership
-rule. It is classifier-derived state rather than an independently user-owned
-palette. Its colors are resolved from the authoritative `user_class_colors`
-mapping as specified under **Prediction palette relationship** below.
+Selecting, binding, and styling remain read-only. A missing or invalid palette
+is repaired only together with an effective user-class mutation. If that
+mutation introduces no category, install the resolved fallback aligned with
+the existing declared order; if it introduces a category, extend the resolved
+fallback by one color. Report the palette component dirty only when its stored
+value actually changes.
 
-The category-to-color lookup used for reconciliation is transient. Persisted
-AnnData state remains conventional:
+#### Append-and-retain category lifecycle
 
-```text
-table.obs[column].cat.categories[i]
-    ↔ table.uns["<column>_colors"][i]
-```
+The previous sorted-and-currently-used class policy is removed. It forced
+integer categories to be deleted, inserted, and reordered and therefore
+required a separate category-identity palette reconciliation algorithm.
 
-For example:
-
-```text
-current categories = [1, 3]
-stored palette     = [pink, cyan]
-temporary lookup  = {1: pink, 3: cyan}
-
-add class 2
-next categories    = [1, 2, 3]
-next palette       = [pink, default_for_class_2, cyan]
-```
-
-The existing stored colors are inputs to reconciliation, not values that are
-regenerated. Defaults are used only when:
-
-- a next category did not exist in the current category-to-color lookup; or
-- the current companion palette is missing or structurally invalid and cannot
-  be trusted as an aligned palette.
-
-If row values change while the declared category set and valid stored palette
-remain unchanged, preserve the palette byte-for-byte and report no palette
-mutation.
-
-#### Reconcile colors by category identity
-
-Do not apply the existing append-only `extend_categorical_palette()` operation
-directly to positive-integer class state. That helper intentionally requires
-the next categories to contain the complete current category prefix:
+Instead, use the existing append-only categorical invariant:
 
 ```text
-string categories
-    current = ["T", "B"]
-    next    = ["T", "B", "NK"]
-    → existing category positions remain unchanged
-    → append one color
+current categories = [3]
+current colors     = [red]
+
+remove the final class-3 row value
+    → categories remain [3]
+    → colors remain [red]
+
+add class 1 later
+    → categories become [3, 1]
+    → colors become [red, next_default_color]
 ```
 
-Object Classification and positive-integer Spatial Annotation use sorted,
-used class IDs and therefore permit insertion, removal, and reordering:
+The stored category order does not need to be numeric. Remove Object
+Classification validation and normalization whose only purpose is to require
+ascending category order or to remove unused categories.
 
-```text
-current categories = [1, 3]
-current colors     = [red, green]
+This representation is safe for classifier behavior:
 
-add class 2
-next categories    = [1, 2, 3]
-next colors        = [red, default_for_class_2, green]
+- categorical row values remain positive integers or missing;
+- training class discovery uses the distinct non-missing values in the
+  selected training rows;
+- an unused declared category is not passed to the estimator as a class;
+- viewer styling maps actual class IDs through the palette aligned with the
+  declared category order.
 
-remove class 1
-next categories    = [2, 3]
-next colors        = [default_for_class_2, green]
-```
-
-An append-only positional operation must reject these transitions; treating
-them as ordinary appends would attach colors to the wrong class IDs. Introduce
-one pure category-identity reconciliation helper instead:
-
-1. validate and align the current palette with the current categories;
-2. build a category-to-color lookup from that aligned state;
-3. iterate over the next categories in their required stored order;
-4. preserve the lookup color for every surviving category;
-5. use the caller-supplied deterministic default for each new category.
-
-The helper must support category insertion, removal, and reordering without
-mutating the table. Callers supply type-appropriate defaults:
-
-- string categoricals use the existing stable positional categorical defaults;
-- positive-integer categoricals use
-  `default_labeled_class_color(class_id)`.
-
-This unifies palette ownership, not category lifecycle. String Spatial
-Annotation continues to append new categories and retain unused declared
-categories. Positive-integer class state continues to store sorted, currently
-used class IDs and remove unused categories.
-
-These lifecycle differences are napari-harpy product decisions, not pandas
-requirements. Pandas categoricals permit arbitrary category order and unused
-declared categories.
-
-Retain unused string categories deliberately. For string annotations,
-`.cat.categories` is a declared annotation vocabulary as well as the alignment
-source for its stored palette:
-
-```text
-categories = ["tumor", "stroma"]
-colors     = [red, green]
-
-remove the last "tumor" row value
-    → assign pd.NA to that row
-    → retain "tumor" in .cat.categories
-    → retain red in <column>_colors
-```
-
-Removing the unused string category would discard the only durable
-`"tumor" → red` association. If `"tumor"` were added later, its positional
-default could differ because it would be appended after the surviving
-categories. Avoid an additional category registry merely to reconstruct
-discarded string colors.
-
-Positive-integer class state retains its existing sorted-and-currently-used
-policy. A positive class ID supplies an inherent identity and a deterministic
-fallback through `default_labeled_class_color(class_id)`, so insertion,
-removal, and reordering can be reconciled without positional ambiguity.
-Surviving integer classes still preserve valid custom stored colors; only a
-removed class loses its aligned palette entry.
-
-The shared contract is therefore:
-
-```text
-user-owned palette ownership
-    → identical: valid stored colors are authoritative
-
-prediction palette ownership
-    → pred_class_colors is derived from user_class_colors
-    → shared class IDs use their user-class colors
-    → IDs absent from user_class use class-ID defaults
-
-surviving-category behavior
-    → identical: preserve color by category identity
-
-string category lifecycle
-    → append new categories
-    → retain unused categories and colors
-
-positive-integer category lifecycle
-    → store sorted currently used class IDs
-    → remove categories and colors that are no longer used
-```
+Because napari-harpy mutations preserve the complete current category prefix,
+the existing append-only palette extension model is sufficient. Do not
+introduce an integer-specific reconciliation helper.
 
 #### Object Classification adoption
 
@@ -6153,20 +6068,171 @@ Update Object Classification so:
   binding, styling, and effective annotation changes;
 - styling validates palette alignment and color validity but no longer
   requires stored colors to equal Harpy defaults;
-- missing or invalid class palettes use deterministic class-ID fallbacks for
+- missing or invalid user-class palettes use stable positional fallbacks for
   display without making an otherwise valid class column unbindable;
 - selecting or rebinding a table never repairs or replaces a palette merely
   because it differs from `default_class_colors(...)`;
-- an effective `user_class` mutation reconciles colors by class ID, drops
-  colors for removed classes, supplies defaults for new classes, and commits
-  the obs/uns pair consistently;
+- an effective `user_class` mutation preserves the complete existing category
+  order and palette, appending one category and color only when a new class ID
+  is introduced;
+- clearing or overwriting the final row that uses a class ID does not remove
+  that declared category or color;
+- read-time validation no longer requires categories to be sorted;
 - the positive-integer dtype, positive-category, missing-value, and
   `pred_confidence` validation introduced by Slices 6k and 6l remains
   unchanged.
 
-The Object Classification widget may continue removing unused integer
-categories and storing them in sorted order. Palette preservation is based on
-class ID, so neither operation recolors surviving classes.
+#### Binding and styling migration
+
+Replace the current mutating Object Classification bind path:
+
+```text
+AnnotationController.bind()
+    → _normalize_existing_annotation_state()
+    → ensure_annotation_column()
+    → _set_user_class_annotation_state()
+    → sync_class_palette_state()
+    → mutate table.uns
+```
+
+with a read-only boundary:
+
+```text
+table binding
+    → validate user_class values and categorical schema
+    → do not normalize category order
+    → do not remove unused categories
+    → do not create, repair, or replace user_class_colors
+
+user_class styling
+    → call the shared read-only categorical palette resolver
+    → valid stored palette: use it
+    → missing/invalid palette: use its positional fallback
+    → mutate neither .obs nor .uns
+```
+
+Remove or replace `_normalize_existing_annotation_state()` so binding never
+reaches a mutating annotation-state or palette-synchronization helper. Existing
+column creation remains lazy: if `user_class` is absent, the first effective
+user annotation creates the column and its aligned palette through the normal
+write path.
+
+Object Classification styling must reuse
+`resolve_table_categorical_palette()` rather than maintain a parallel strict
+palette resolver. Remove the requirement that stored colors equal
+`default_class_colors(categories)`. The blocking table-binding validator
+continues validating the categorical dtype, positive integer categories,
+missing values, and prediction-pair consistency, but palette absence,
+malformation, or disagreement with defaults is not a binding error.
+
+#### Absent color-source presentation
+
+The Object Classification Color-by control continues exposing its fixed
+`user_class`, `pred_class`, and `pred_confidence` modes even when the
+corresponding table columns do not yet exist. Column absence is valid
+uninitialized workflow state, not a styling error and not a reason to create
+table state during binding.
+
+The viewer feature snapshot represents absent sources in memory:
+
+```text
+user_class absent from table.obs
+    → viewer feature rows contain pd.NA
+    → empty user-class color lookup
+    → all instances use the neutral missing color
+
+pred_class absent from table.obs
+    → viewer feature rows contain pd.NA
+    → empty prediction-class color lookup
+    → all instances use the neutral missing color
+
+pred_confidence absent from table.obs
+    → viewer feature rows contain np.nan
+    → all instances use the missing continuous color
+```
+
+These synthesized feature values belong only to napari presentation state.
+They must not be assigned to `table.obs`, written to zarr, or reported as a
+table mutation.
+
+Generalize the existing absent-`user_class` empty-lookup behavior so an absent
+`pred_class` with no observed prediction values also returns an empty lookup
+instead of raising `ClassStateError`. Switching repeatedly among the three
+Color-by modes must therefore remain safe and neutral before annotation or
+prediction state exists.
+
+Creation remains tied to effective domain writes:
+
+```text
+first effective user-class assignment
+    → create user_class and user_class_colors
+
+first successful prediction write
+    → create pred_class, pred_confidence, and pred_class_colors
+
+clear predictions while prediction columns are absent
+    → no-op
+    → create nothing
+```
+
+Consequently, remove the eager prediction-column preparation from
+`ClassifierController.bind()` and from read-only reload adoption. Existing
+prediction state is validated and preserved during those operations; missing
+prediction state remains missing until the classifier produces an effective
+write.
+
+Replace the current eager classifier adoption path explicitly:
+
+```text
+ClassifierController.bind()
+    → do not call _ensure_prediction_columns()
+    → validate existing prediction state if present
+    → leave pred_class and pred_confidence absent when both are absent
+    → preserve existing pred_class category order
+    → do not create or rewrite pred_class_colors
+
+reset_after_reload()
+    → do not call _ensure_prediction_columns()
+    → adopt and validate the reloaded prediction state
+    → leave absent prediction state absent
+    → do not prepare or repair prediction columns or colors
+```
+
+Prediction creation and clearing are effective write boundaries with distinct
+absent-state behavior:
+
+```text
+successful prediction result
+    → create pred_class and pred_confidence if both are absent
+    → retain the existing pred_class vocabulary when present
+    → append newly predicted IDs
+    → write prediction classes and confidence
+    → derive and overwrite pred_class_colors
+    → publish the corresponding table-state event
+
+explicit classifier-driven prediction clearing
+    ├── pred_class and pred_confidence are absent
+    │      → no-op
+    │      → create nothing
+    │      → publish no prediction mutation
+    │
+    └── prediction columns exist
+           → clear the affected values
+           → retain the pred_class vocabulary
+           → derive and overwrite the aligned pred_class_colors
+           → publish the corresponding table-state event
+```
+
+Prediction palette derivation always covers the complete retained
+`pred_class` vocabulary, including categories no longer used by any row. An
+effective clear is a classifier write boundary at which a stale prediction
+palette is synchronized with the current resolved user-class colors.
+
+“Overwrite” describes the resulting consistency contract, not an
+unconditional assignment. If the derived palette equals the stored
+`pred_class_colors`, leave the stored value unchanged and do not report
+`uns/pred_class_colors`. Only a differing derived list is an effective palette
+mutation.
 
 #### Prediction palette relationship
 
@@ -6188,8 +6254,9 @@ pred_class_colors
 the current user-class lookup read-only:
 
 - a structurally valid stored `user_class_colors` supplies its custom colors;
-- a missing or invalid `user_class_colors` supplies deterministic class-ID
-  fallback colors without mutating the table.
+- a missing or invalid `user_class_colors` supplies the stable positional
+  fallback aligned with `user_class.cat.categories`, without mutating the
+  table.
 
 Build the prediction lookup in `pred_class.cat.categories` order. For each
 predicted class ID:
@@ -6205,91 +6272,241 @@ Binding or styling remains read-only: do not replace the stored prediction
 palette and do not mark the table dirty merely because it disagrees with the
 derived lookup.
 
-When an effective prediction result is written, persist the derived colors as
-the aligned `pred_class_colors` companion palette. After that write, generic
-table-backed styling can consume the stored prediction palette and obtain the
-same class-ID colors. Thus an outdated prediction palette is corrected by the
-next effective classifier write, not as a side effect of opening or viewing
-the table.
+Treat `pred_class.cat.categories` as an append-and-retain vocabulary as well.
+An effective prediction write preserves the complete existing category order
+and appends newly observed predicted IDs in deterministic order. It never
+removes a category solely because the current prediction result no longer
+uses it.
+
+On every effective prediction write, rebuild and overwrite the complete
+aligned `pred_class_colors` list from the derived mapping:
+
+```text
+effective prediction result
+    → retain existing pred_class category order
+    → append newly observed predicted IDs
+    → shared ID in user_class
+         → use its resolved user_class color
+    → ID absent from user_class
+         → use default_labeled_class_color(class_id)
+    → overwrite pred_class_colors with the complete aligned list
+```
+
+Record `uns/pred_class_colors` as changed when the resulting stored list
+differs. After that write, generic table-backed styling can consume the stored
+prediction palette and obtain the same class-ID colors. Thus an outdated
+prediction palette is corrected by an effective classifier write, not as a
+side effect of opening or viewing the table.
 
 This keeps the same class ID visually consistent when the user switches
 between `user_class` and `pred_class`, while retaining the standard AnnData
 `pred_class_colors` companion palette for persistence and generic table-backed
 styling.
 
-#### Spatial Annotation adoption
-
-Implement the deferred positive-integer annotation path from Slice 6m using
-the pure category-identity reconciliation from the outset. Do not introduce an
-intermediate implementation that regenerates every class color.
-String-categorical behavior continues through the shared contract without
-changing its append-and-retain category policy.
-
-For either value kind:
-
-- a valid stored palette is preserved;
-- a missing or invalid palette remains a read-only fallback until an effective
-  annotation mutation;
-- the next effective mutation stores or repairs the resolved palette;
-- palette changes are installed and rolled back with the obs replacement;
-- `SpatialAnnotationApplyResult.palette_changed` and the dirty uns path are
-  emitted only when the stored palette actually changes.
-
 #### Deliverables
 
-- the deferred Slice 6m string/positive-integer value-kind, discovery,
-  preparation, typed-summary, Apply, UI-shell, and Slice 7 integration
-  contracts;
-- one core pure helper for reconciling categorical palettes by category
-  identity;
-- shared stored-palette validation and deterministic fallback selection;
+- append-and-retain positive-integer category state for `user_class` and
+  `pred_class`;
+- shared stored-palette validation and stable positional fallback selection
+  for `user_class`;
 - Object Classification read/styling paths that accept valid non-default
   stored class colors;
-- Object Classification user-class mutations that preserve surviving colors;
-- prediction palette derivation from the current user-class color mapping;
-- Spatial Annotation positive-integer Apply using the shared reconciliation
-  contract;
+- Object Classification user-class mutations that append new categories and
+  retain unused categories and colors;
+- neutral viewer presentation for absent user-class and prediction color
+  sources without table-column creation;
+- removal of eager prediction-column creation from binding and read-only
+  reload adoption;
+- prediction display and write-time palette derivation from the current
+  resolved user-class color mapping;
+- effective prediction writes that overwrite the complete aligned
+  `pred_class_colors`;
 - removal of strict default-palette equality checks and now-redundant
-  class-specific palette synchronization code;
-- focused core palette, Object Classification annotation/styling/classifier,
-  and Spatial Annotation tests.
+  sorted/currently-used category normalization;
+- focused core palette and Object Classification
+  annotation/styling/classifier/widget tests.
 
 #### Exit criteria
 
-- existing compatible positive-integer categorical columns, including
-  `user_class`, are discoverable, reviewable, and atomically writable through
-  Spatial Annotation;
-- `pred_class` and `pred_confidence` remain unavailable as writable Spatial
-  Annotation targets;
-- valid stored colors are authoritative for both string and positive-integer
-  categorical annotation columns;
-- adding a lower integer class ID or removing an integer class does not change
-  the colors of surviving class IDs;
 - a valid custom `user_class_colors` palette survives table binding, styling,
-  Object Classification annotation, and Spatial Query annotation;
+  effective assignments of existing classes, and removals;
+- assigning a new user class appends that ID and one color without reordering
+  or recoloring the existing vocabulary;
+- removing the last row value for a user class retains that declared category
+  and color;
+- unused `user_class` categories are ignored by training class discovery;
+- valid positive-integer categorical columns are not rejected merely because
+  their categories are not in ascending numeric order;
+- all three fixed Color-by modes remain safe before their table columns exist
+  and render the corresponding all-missing viewer state neutrally;
+- binding or reloading a table with no prediction columns leaves those columns
+  absent and leaves the table unchanged;
+- clearing predictions while prediction columns are absent is a no-op;
 - `pred_class_colors` uses the corresponding current user-class colors for
   shared class IDs and deterministic class-ID defaults only for predicted IDs
   absent from `user_class`;
 - Object Classification styles predictions through that derived mapping
   without rewriting a stale or disagreeing stored `pred_class_colors` palette
   during binding or display;
-- the next effective prediction write persists the derived mapping as the
-  aligned `pred_class_colors` companion palette;
-- missing or invalid palettes render with deterministic read-only fallbacks
-  and do not block an otherwise valid class-column binding;
-- palette repair happens only with an effective write and is reported through
-  the existing component-level dirty-state contract;
-- removing the last row value for a string category retains that declared
-  category and its color;
-- removing the last use of an integer class removes that class category and
-  its aligned color;
-- string-category append behavior, strict class-value validation, typed dialog
-  integration, and atomic obs/uns assignment retain their guarantees.
+- every effective prediction write overwrites `pred_class_colors` with the
+  complete derived palette aligned to the retained prediction vocabulary;
+- missing or invalid user-class palettes render with a stable positional
+  read-only fallback and do not block an otherwise valid class-column binding;
+- palette writes are reported through the existing component-level
+  dirty-state contract;
+- strict positive-integer and missing-value validation remains unchanged;
+- Slice 6n makes no Spatial Query behavior change.
+
+### Slice 6o: Unified Spatial Annotation categorical palette lifecycle
+
+Implement the positive-integer Spatial Annotation support deferred from Slice
+6m after Slice 6n has established the Object Classification category and
+palette contract. This slice makes Spatial Query and Object Classification
+share one user-owned categorical lifecycle.
+
+#### Shared user-owned categorical contract
+
+String and positive-integer annotation columns differ in accepted value type,
+but not in palette ownership or category lifecycle:
+
+```text
+.cat.categories
+    → declared annotation vocabulary and palette order
+
+.uns["<column>_colors"]
+    → colors aligned with that declared order
+
+valid stored palette
+    → authoritative
+
+missing or invalid stored palette
+    → stable position-based read-only fallback
+    → no mutation during selection or styling
+
+Set existing category
+    → update row values only
+
+Set new category
+    → append category
+    → append one stable positional color
+
+Remove
+    → assign pd.NA
+    → retain categories and colors
+```
+
+Do not sort positive-integer categories, remove unused categories, generate
+ordinary user-owned colors from the numeric class ID, or introduce a
+category-identity reconciliation helper. The complete current category prefix
+is preserved, so the existing append-only categorical palette operations can
+serve both value kinds.
+
+The prediction relationship from Slice 6n remains a classifier-specific
+exception. `pred_class` and `pred_confidence` are not writable Spatial
+Annotation targets.
+
+#### Typed Spatial Annotation adoption
+
+Implement the deferred Slice 6m contract:
+
+- `SpatialAnnotationValueKind` is
+  `Literal["string", "positive_integer"]`;
+- `SpatialAnnotationValue` is `str | int | None`;
+- existing categorical string and positive-integer columns are supported;
+- an empty `user_class` retains positive-integer semantics;
+- New mode remains string-categorical and cannot create `user_class`,
+  `pred_class`, or `pred_confidence`;
+- preparation captures the resolved value kind;
+- string Set accepts trimmed non-empty text;
+- integer Set accepts a positive non-boolean Python `int`;
+- Remove stores `pd.NA`;
+- the future Apply dialog selects its editor from the captured value kind.
+
+Existing positive-integer columns remain strict: plain integer columns,
+booleans, zero, negative IDs, mixed categories, and arbitrary coercion remain
+unsupported. `user_class` is the intended shared writable target.
+
+#### Atomic Apply and dirty-state behavior
+
+Build every replacement column and companion palette off-table. Install or
+roll back `.obs[column]` and `.uns["<column>_colors"]` through the existing
+atomic Spatial Annotation boundary.
+
+For either value kind:
+
+- a valid stored palette is preserved byte-for-byte unless a category is
+  appended;
+- a missing or invalid palette remains a read-only fallback until an effective
+  annotation mutation;
+- the next effective mutation stores or repairs the resolved palette;
+- a no-op changes neither column nor palette;
+- `SpatialAnnotationApplyResult.palette_changed` is true only when the stored
+  palette actually changes;
+- component dirty-state publication includes the palette path only when
+  `palette_changed` is true.
+
+An effective Spatial Query mutation of `user_class` publishes the ordinary
+table-state event. Object Classification consumes that event for current
+styling/control refresh and classifier invalidation without direct
+widget-to-widget coupling.
+
+#### Selection, status, and viewer styling
+
+- compatible-column discovery returns categorical string and positive-integer
+  targets in table order;
+- compatible `user_class` appears as an Existing-column target;
+- `pred_class` and `pred_confidence` never appear as writable targets;
+- status and tooltip text describe both accepted value kinds;
+- generic table-backed Labels styling resolves either kind from the same
+  stored-palette and positional-fallback path;
+- missing values use the shared neutral color;
+- selection and styling never repair the table.
+
+Do not introduce an integer-specific Labels styling implementation. Both value
+kinds continue through the shared compact categorical colormap.
+
+#### Deliverables
+
+- the deferred Slice 6m value-kind, discovery, preparation, typed-summary,
+  Apply, UI-shell, and Slice 7 integration contracts;
+- one shared read-only stored categorical-palette resolver;
+- one shared append-only palette extension path for strings and positive
+  integers;
+- positive-integer Spatial Annotation Apply with retained categories and
+  atomic obs/uns assignment;
+- shared generic Labels styling for both supported categorical kinds;
+- `user_class` event interoperability with Object Classification;
+- focused core Spatial Annotation, palette, viewer-styling, and Spatial Query
+  shell tests;
+- no category-identity reconciliation, unused-category removal,
+  positive-integer category sorting, plain-integer coercion, New-column type
+  selector, prediction-output mutation, or direct widget dependency.
+
+#### Exit criteria
+
+- existing categorical string columns retain their behavior;
+- existing categorical positive-integer columns, including `user_class`, are
+  discoverable, reviewable, and atomically writable;
+- both value kinds use valid stored palettes authoritatively and stable
+  positional fallbacks when those palettes are missing or invalid;
+- assigning a new integer class appends it without reordering or recoloring
+  existing categories;
+- removing the last row using a string or integer category retains that
+  declared category and its color;
+- integer Set accepts only positive non-boolean Python integers and Remove
+  stores `pd.NA`;
+- `pred_class` and `pred_confidence` cannot be selected or mutated through
+  Spatial Query;
+- New mode remains string-categorical and cannot create conflicting Object
+  Classification reserved columns;
+- read-only selection and styling do not mutate or dirty the table;
+- no-op and palette dirty-state reporting remain exact;
+- the Slice 7 dialog and event contracts support the captured value kind.
 
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6n to the existing core calculation, query, and
+Spatial Query child after Slice 6o to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
@@ -6451,9 +6668,13 @@ Completion additionally requires:
   as one atomic obs/uns consistency unit;
 - annotation coloring reuses the generic compact table-backed labels styling,
   preserves valid stored colors, derives stable defaults by category position
-  for strings and by class ID for positive integers, and reconciles palettes by
-  category identity so insertion, removal, or reordering never recolors a
-  surviving category;
+  for user-owned string and positive-integer categoricals, and preserves their
+  append-only declared category vocabulary so later mutations never recolor an
+  existing category;
+- Object Classification derives prediction colors from `user_class_colors`
+  for shared class IDs, uses class-ID defaults only for predicted IDs absent
+  from `user_class`, and overwrites the aligned `pred_class_colors` on each
+  effective prediction write;
 - missing or invalid `<column>_colors` state is not mutated merely for viewer
   display, but is stored or repaired with the next effective annotation Apply
   and recorded through the corresponding dirty uns path;
