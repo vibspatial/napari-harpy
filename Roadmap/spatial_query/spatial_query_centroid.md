@@ -4620,6 +4620,8 @@ Exit criteria:
 
 ### Slice 6h: Unified Spatial Query status card
 
+**Implementation status: Implemented.**
+
 Replace the separate centroid-cache and Run-readiness cards introduced by the
 Spatial Query shell with one status card. The cache is no longer an independent
 user action: Run automatically reuses, calculates, extends, refreshes, or
@@ -4678,8 +4680,7 @@ Use deterministic priority for incomplete or exceptional state:
 4. dirty Shapes edit session
 5. no labels selection
 6. no linked table
-7. live labels-source or table-binding inspection failure, or an unavailable
-   report for a complete labels/table selection
+7. live labels-source or table-binding inspection failure
 8. invalid annotation-target intent
 9. non-blocking labels-layer styling warning
 10. complete request, presented according to cache state
@@ -4689,18 +4690,24 @@ The first applicable state owns the title, message, and status kind. A live
 canonical-input inspection failure uses:
 
 ```text
-title: Labels or Table Not Ready
+title: Labels or Table Validation Failed
 kind: error
 message: the captured user-facing labels-source or table-binding validation error
+consequence: Spatial Query cannot calculate centers until this issue is resolved
 Run: disabled
 ```
 
-If a complete labels/table selection has neither a report nor a captured
-validation error, use the same blocking card with a generic message that the
-current labels and table inputs could not be validated. Do not describe either
-case as an invalid cache. A labels-layer styling warning remains non-blocking
-and must say that Spatial Query can still run when the computational request
-is otherwise valid.
+For a complete labels/table selection, the widget must supply exactly one
+inspection outcome: either a `CanonicalCacheReport` or
+`canonical_input_inspection_error`. Supplying neither is an inconsistent
+internal orchestration state, not a user-facing cache condition.
+`SpatialQuery._refresh_controls_and_status()` must fail loudly with
+`RuntimeError` before deriving Run enablement or invoking the presentation-only
+builder. As a secondary function-contract safeguard, the builder also rejects
+both inconsistent argument combinations with `ValueError`: neither outcome
+supplied, or both a report and an error supplied. A labels-layer styling
+warning remains non-blocking and must say that Spatial Query can still run when
+the computational request is otherwise valid.
 
 For a complete request, incorporate cache behavior into the same card:
 
@@ -4763,7 +4770,8 @@ current labels source or table binding does not validate
     → inspection raises before a report can be constructed
     → no trustworthy source signature or row/instance binding exists
     → recalculation cannot safely start
-    → show "Labels or Table Not Ready"
+    → show "Labels or Table Validation Failed"
+    → explain that centers cannot be calculated until the issue is resolved
     → Run stays disabled
 ```
 
@@ -4790,6 +4798,12 @@ Deliverables:
 - rename the captured failure to `canonical_input_inspection_error` and pass it
   through the builder rather than constructing an exceptional card directly
   in the widget;
+- make `_refresh_controls_and_status()` fail loudly before status rendering
+  when a complete labels/table selection supplies neither a cache report nor a
+  canonical-input inspection error;
+- make the pure builder explicitly require exactly one of `cache_report` and
+  `canonical_input_inspection_error` after labels and table selection are
+  complete;
 - retain the existing `_SpatialQueryStatusCardSpec` and shared rendering
   helper;
 - remove duplicate unavailable/required messages and contradictory adjacent
@@ -4802,8 +4816,9 @@ Exit criteria:
 - Spatial Query renders exactly one workflow status card;
 - every selection blocker and cache state has one deterministic presentation;
 - a live labels-source or table-binding inspection failure is presented as
-  `Labels or Table Not Ready`, includes the validation message, and disables
-  Run without calling the cache invalid;
+  `Labels or Table Validation Failed`, includes the validation message and its
+  consequence for center calculation, and disables Run without calling the
+  cache invalid;
 - a returned `INVALID` report remains informational, recoverable, and
   Run-enabled;
 - a complete rebuild-authorized request never shows a separate success card
