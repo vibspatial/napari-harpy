@@ -5976,8 +5976,8 @@ code required to realize those deferred contracts.
 
 #### Shared stored-palette contract
 
-The AnnData companion palette is authoritative for every supported categorical
-annotation column when it is structurally valid:
+The AnnData companion palette is authoritative for every supported
+user-owned categorical annotation column when it is structurally valid:
 
 ```text
 read categorical column
@@ -6001,6 +6001,11 @@ no effective annotation mutation
 A valid stored positive-integer palette is not required to equal
 `default_class_colors(categories)`. Defaults initialize missing colors; they
 do not override valid user- or table-provided colors.
+
+`pred_class_colors` is the deliberate exception to this general ownership
+rule. It is classifier-derived state rather than an independently user-owned
+palette. Its colors are resolved from the authoritative `user_class_colors`
+mapping as specified under **Prediction palette relationship** below.
 
 The category-to-color lookup used for reconciliation is transient. Persisted
 AnnData state remains conventional:
@@ -6159,12 +6164,47 @@ class ID, so neither operation recolors surviving classes.
 
 #### Prediction palette relationship
 
-`pred_class` remains classifier-owned and read-only to Spatial Query. When an
-effective prediction result is written, build its aligned
-`pred_class_colors` from the current `user_class` category-to-color lookup for
-shared class IDs. If a required user-class color is unavailable because the
-source palette is missing or invalid, use the deterministic default for that
-class ID.
+`user_class_colors` is the authoritative user-owned class palette.
+`pred_class_colors` is classifier-derived state and is not independently
+authoritative:
+
+```text
+user_class_colors
+    → authoritative user-owned class palette
+
+pred_class_colors
+    → classifier-derived palette
+    → colors shared class IDs from user_class_colors
+    → uses the deterministic class-ID default for IDs absent from user_class
+```
+
+`pred_class` remains classifier-owned and read-only to Spatial Query. Resolve
+the current user-class lookup read-only:
+
+- a structurally valid stored `user_class_colors` supplies its custom colors;
+- a missing or invalid `user_class_colors` supplies deterministic class-ID
+  fallback colors without mutating the table.
+
+Build the prediction lookup in `pred_class.cat.categories` order. For each
+predicted class ID:
+
+- reuse the resolved user-class color when that class ID exists in
+  `user_class`; or
+- use `default_labeled_class_color(class_id)` when that class ID is absent
+  from `user_class`.
+
+Object Classification must use this derived lookup for prediction styling,
+even when an existing structurally valid `pred_class_colors` differs from it.
+Binding or styling remains read-only: do not replace the stored prediction
+palette and do not mark the table dirty merely because it disagrees with the
+derived lookup.
+
+When an effective prediction result is written, persist the derived colors as
+the aligned `pred_class_colors` companion palette. After that write, generic
+table-backed styling can consume the stored prediction palette and obtain the
+same class-ID colors. Thus an outdated prediction palette is corrected by the
+next effective classifier write, not as a side effect of opening or viewing
+the table.
 
 This keeps the same class ID visually consistent when the user switches
 between `user_class` and `pred_class`, while retaining the standard AnnData
@@ -6222,7 +6262,13 @@ For either value kind:
 - a valid custom `user_class_colors` palette survives table binding, styling,
   Object Classification annotation, and Spatial Query annotation;
 - `pred_class_colors` uses the corresponding current user-class colors for
-  shared class IDs;
+  shared class IDs and deterministic class-ID defaults only for predicted IDs
+  absent from `user_class`;
+- Object Classification styles predictions through that derived mapping
+  without rewriting a stale or disagreeing stored `pred_class_colors` palette
+  during binding or display;
+- the next effective prediction write persists the derived mapping as the
+  aligned `pred_class_colors` companion palette;
 - missing or invalid palettes render with deterministic read-only fallbacks
   and do not block an otherwise valid class-column binding;
 - palette repair happens only with an effective write and is reported through
