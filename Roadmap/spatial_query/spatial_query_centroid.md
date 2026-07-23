@@ -5415,9 +5415,10 @@ inspect existing Object Classification columns without mutation
     │      → apply the selected Object Classification styling
     │
     └── invalid
+           → do not bind the selected table to any controller
            → keep the selected Labels layer loaded
            → style all foreground labels with the shared neutral color
-           → disable actions that require valid class state
+           → disable every table-dependent action
            → show an actionable status-card error
            → leave the AnnData table unchanged and clean
 ```
@@ -5506,68 +5507,89 @@ The widget-level validator and error boundary improve presentation and
 recovery; they do not weaken the canonical write contract or introduce a
 second accepted representation.
 
-#### Widget error state and neutral styling
+#### All-or-nothing table binding and neutral styling
 
-Track this outcome separately from structural table-binding errors. A table
-can correctly annotate the selected Labels element while still containing an
-invalid Object Classification column:
+Treat Object Classification state validation as part of the existing table
+binding decision. Do not introduce separate “operational table” and
+“persistence table” concepts, and do not add a second persistent widget error
+field solely for this validation:
 
 ```text
-table_binding_error
-    → labels/table structural relationship is invalid
-
-object_classification_state_error
-    → structural binding is valid
-    → user_class, pred_class, or pred_confidence is invalid
+_validate_selected_table_binding()
+    ↓
+validate labels/table structural relationship
+    ↓
+validate Object Classification columns
+    ├── both valid
+    │      → effective_table_name = selected_table_name
+    │
+    └── either invalid
+           → effective_table_name = None
+           → store the user-facing explanation in _table_binding_error
 ```
 
-When class-state validation fails:
+The selected table name remains visible in the combo so the UI identifies the
+source of the problem, but every table-dependent controller receives
+`table_name=None`. This is one rejected binding, not two partial bindings.
+
+When the binding is rejected because class-state validation fails:
 
 - preserve the selected SpatialData, coordinate system, Labels element, and
   table choices so the UI still identifies the source of the problem;
-- do not expose the invalid table as an effective annotation or classifier
-  binding;
+- do not expose the invalid table to the annotation, classifier,
+  viewer-styling, or persistence controller;
 - keep the primary Labels layer loaded and active;
 - explicitly replace napari's default Labels colormap with neutral styling:
   label `0` stays transparent and every positive label uses
   `DEFAULT_NEUTRAL_COLOR`;
 - do not attempt partial user-class, prediction-class, or confidence styling;
-- disable Apply class, Clear class, automatic/manual training, and other
-  operations whose correctness depends on canonical class state;
-- keep table reload or other safe recovery controls available where their
-  existing prerequisites are satisfied;
+- disable Apply class, Clear class, color-by selection, automatic/manual
+  training, classifier export, feature-metadata registration, Write Table
+  State, Reload Table State, and every other table-dependent action;
 - clear the validation error and restore normal binding and styling after a
-  later refresh observes corrected canonical table state.
+  later normal refresh or table reselection observes corrected canonical
+  table state.
 
 Neutral fallback is an explicit safe display state, not an interpretation of
 the invalid values. No invalid class is shown as though it were a valid
 annotation or prediction.
 
+Disabling Reload Table State is an accepted consequence of the single-binding
+model. Reloading an invalid persisted table would not repair it, while
+preserving a special persistence-only binding for the narrower case where
+memory is invalid but disk is valid would add disproportionate state and
+control complexity. The user must correct the table through its owning
+workflow and then refresh or reselect it.
+
 #### Status-card messages
 
-Show the error in the normal Object Classification status-card surface rather
-than allowing a traceback to escape through Qt. The title should identify the
-problem as invalid Object Classification table state. The detail must name the
-column and state the exact representation required.
+Show the error in the existing Object Classification selection status card
+rather than allowing a traceback to escape through Qt. The existing
+table-binding-error branch should use an error title such as
+`Table Binding Invalid`. The detail must identify Object Classification state,
+name the invalid column, and state the exact representation required.
 
 Examples:
 
 ```text
-Object Classification State Invalid
-“user_class” must be categorical with positive integer categories.
+Table Binding Invalid
+Object Classification state is invalid: “user_class” must be categorical
+with positive integer categories.
 Rows without a user class must be stored as missing values.
 ```
 
 ```text
-Object Classification State Invalid
-“pred_class” must be categorical with positive integer categories.
+Table Binding Invalid
+Object Classification state is invalid: “pred_class” must be categorical
+with positive integer categories.
 Rows without a prediction must be stored as missing values.
 ```
 
 ```text
-Object Classification State Invalid
-“pred_confidence” must use a floating-point dtype with values between
-0 and 1. Rows without a prediction must have missing confidence.
+Table Binding Invalid
+Object Classification state is invalid: “pred_confidence” must use a
+floating-point dtype with values between 0 and 1.
+Rows without a prediction must have missing confidence.
 ```
 
 Where useful, append the observed problem, such as category `0`, an unexpected
@@ -5576,19 +5598,26 @@ table was repaired, because this slice performs no repair. The error status
 takes precedence over normal selection-ready, classifier-ready, and
 layer-styling messages until the selected table becomes valid.
 
+Reuse the existing table-binding status path: the read-only validator supplies
+the column-specific explanation stored in `_table_binding_error`, and the
+existing selection/status-card refresh displays it. Do not create a parallel
+class-state status channel.
+
 #### Deliverables
 
 - one read-only validator for existing Object Classification `.obs` class
   state and prediction-pair consistency;
-- one dedicated expected validation error boundary between table selection
-  and controller binding;
-- widget state and status-card support distinct from structural table-binding
-  and ordinary layer-styling errors;
+- integration of that validator into the existing selected-table binding
+  validation before any controller adopts the table;
+- one existing `_table_binding_error` and `effective_table_name` path covering
+  both structural and Object Classification state rejection;
 - explicit neutral primary-label styling for rejected class state;
-- control enablement that prevents annotation and training against rejected
-  state while retaining safe recovery actions;
+- control enablement that prevents every table-dependent action against
+  rejected state;
 - focused core/controller/widget tests for invalid `user_class`,
   `pred_class`, and `pred_confidence` representations;
+- no separate operational/persistence table bindings, persistence-only
+  recovery path, or additional persistent class-state error field;
 - no class-zero migration, table mutation, dirty-state publication,
   persistence write, or Spatial Query contract change.
 
@@ -5600,14 +5629,16 @@ layer-styling messages until the selected table becomes valid.
   retaining napari's default Labels colormap;
 - the status card identifies the invalid column and its expected dtype,
   positive-category, missing-value, or paired-confidence contract;
-- invalid state disables dependent annotation and classifier actions;
+- invalid state produces `effective_table_name=None` for every table-dependent
+  controller and disables annotation, classifier, styling-selection, and
+  persistence actions;
 - inspection and rejection leave `.obs`, `.uns`, `.obsm`, and table dirty
   state unchanged;
 - category or value `0` is rejected and never interpreted as missing;
 - valid missing-value class state continues through the existing bind,
   styling, training, annotation, prediction, and persistence paths;
-- correcting or reloading the table allows the widget to recover on its next
-  normal refresh without reconstructing the widget.
+- correcting the table and refreshing or reselecting it allows the widget to
+  recover without reconstruction.
 
 ### Slice 7: Async calculate-query-review-apply flow
 
