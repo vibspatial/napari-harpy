@@ -99,7 +99,7 @@ def test_canonical_cache_update_round_trips_as_one_dirty_consistency_unit(
     controller.write_table_state()
     reopened = read_zarr(backed_sdata_blobs.path)
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
     assert (
         inspect_canonical_cache(reopened, table_name="table", labels_name="blobs_labels").state
         is CanonicalCacheState.VALID
@@ -135,7 +135,7 @@ def test_failed_second_canonical_write_acknowledges_neither_path(
 
     controller.reload_table_state()
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
     assert (
         inspect_canonical_cache(
             backed_sdata_blobs,
@@ -154,19 +154,19 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
     controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
 
     _record_mutation(app_state, sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
 
     controller.bind(backed_sdata_blobs, "table")
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
 
     controller.bind(sdata_blobs, "table")
 
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
 
 
 def test_persistence_controller_reads_dirty_state_from_shared_app_state(sdata_blobs: SpatialData) -> None:
@@ -174,11 +174,11 @@ def test_persistence_controller_reads_dirty_state_from_shared_app_state(sdata_bl
     controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
 
     _record_mutation(app_state, sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
 
 
 def test_persistence_controller_can_write_table_state_requires_backed_dirty_table(
@@ -195,13 +195,13 @@ def test_persistence_controller_can_write_table_state_requires_backed_dirty_tabl
     controller.bind(backed_sdata_blobs, "table")
 
     assert controller.can_sync is True
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
     assert controller.can_write_table_state is False
 
     _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
     assert controller.can_sync is True
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
     assert controller.can_write_table_state is True
 
     snapshot = app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table")
@@ -304,7 +304,7 @@ def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
         TableComponentPath("uns", (_FEATURE_MATRICES_KEY, feature_key)),
     )
 
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
 
     table_path = controller.write_table_state()
     reread = read_zarr(backed_sdata_blobs.path)
@@ -313,7 +313,7 @@ def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
     assert table_path == "tables/table"
     assert metadata["source_kind"] == CUSTOM_OBSM_SOURCE_KIND
     assert list(metadata["feature_columns"]) == feature_columns
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
 
 
 def test_persistence_controller_creates_and_removes_nested_uns_entry(
@@ -521,11 +521,11 @@ def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs
     controller.bind(backed_sdata_blobs, "table")
     _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
 
     controller.write_table_state()
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
 
 
 def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blobs: SpatialData) -> None:
@@ -535,11 +535,11 @@ def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blo
     _write_disk_snapshot_payload(backed_sdata_blobs)
     _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
 
-    assert controller.is_dirty is True
+    assert controller.has_unsynced_table_changes is True
 
     controller.reload_table_state()
 
-    assert controller.is_dirty is False
+    assert controller.has_unsynced_table_changes is False
 
 
 def test_persistence_controller_reloads_obsm_key_written_directly_to_disk_group(

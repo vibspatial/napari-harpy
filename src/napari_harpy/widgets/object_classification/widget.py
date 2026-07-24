@@ -1405,8 +1405,8 @@ class ObjectClassificationWidget(QWidget):
         else:
             table_store_path = self._persistence_controller.selected_table_store_path
             destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
-            is_dirty = self._persistence_controller.is_dirty
-            if is_dirty:
+            has_unsynced_table_changes = self._persistence_controller.has_unsynced_table_changes
+            if has_unsynced_table_changes:
                 sync_tooltip = (
                     f'Write annotations, predictions, and classifier metadata for "{self.selected_table_name}" '
                     f'to "{destination}".'
@@ -1419,7 +1419,7 @@ class ObjectClassificationWidget(QWidget):
                 f'Discard the current in-memory "{self.selected_table_name}" table state and reload the table from '
                 f'"{destination}".'
             )
-            if is_dirty:
+            if has_unsynced_table_changes:
                 sync_tooltip += " Unsynced local in-memory table changes are present."
                 reload_tooltip += " Unsynced local in-memory table changes would be discarded."
 
@@ -1573,7 +1573,7 @@ class ObjectClassificationWidget(QWidget):
         return True
 
     def _reload_from_zarr(self) -> None:
-        if not self._persistence_controller.is_dirty:
+        if not self._persistence_controller.has_unsynced_table_changes:
             self._reload_selected_table_from_zarr()
             return
 

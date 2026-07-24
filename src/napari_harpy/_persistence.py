@@ -40,7 +40,7 @@ class PersistenceController:
     @property
     def can_write_table_state(self) -> bool:
         """Return whether the selected table has local changes that can be written."""
-        return self.can_sync and self.is_dirty
+        return self.can_sync and self.has_unsynced_table_changes
 
     @property
     def can_reload(self) -> bool:
@@ -48,7 +48,7 @@ class PersistenceController:
         return self.can_sync
 
     @property
-    def is_dirty(self) -> bool:
+    def has_unsynced_table_changes(self) -> bool:
         """Return whether the selected table has unsynced component mutations."""
         return self._app_state.is_table_dirty(self._selected_spatialdata, self._selected_table_name)
 
