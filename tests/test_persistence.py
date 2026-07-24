@@ -11,7 +11,6 @@ from spatialdata.models import TableModel
 
 import napari_harpy.core.persistence as persistence_module
 from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
-from napari_harpy._persistence import PersistenceController
 from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND, register_feature_matrix_metadata
 from napari_harpy.core.object_classification.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.persistence import TableComponentPath
@@ -31,6 +30,7 @@ from napari_harpy.widgets.object_classification.controller import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
+from napari_harpy.widgets.persistence.controller import PersistenceController
 from napari_harpy.widgets.spatial_query.cache_state import record_canonical_cache_update
 
 

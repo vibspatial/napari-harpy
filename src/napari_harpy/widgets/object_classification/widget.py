@@ -31,7 +31,6 @@ from napari_harpy._app_state import (
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
 from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
@@ -90,6 +89,7 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
     ClassStateError,
     ViewerStylingController,
 )
+from napari_harpy.widgets.persistence.controller import PersistenceController
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )

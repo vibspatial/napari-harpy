@@ -1,3 +1,5 @@
+"""Widget-layer orchestration for shared table persistence."""
+
 from __future__ import annotations
 
 from pathlib import Path
