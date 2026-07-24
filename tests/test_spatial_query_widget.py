@@ -215,6 +215,57 @@ def test_spatial_query_shell_uses_compatible_default_and_styles_only_after_expli
     assert table.uns == uns_before
 
 
+def test_spatial_query_shell_lists_user_class_but_excludes_classifier_outputs(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    table.obs["user_class"] = pd.Categorical([1] * table.n_obs, categories=[1])
+    table.uns["user_class_colors"] = ["#ff0000"]
+    table.obs["pred_class"] = pd.Categorical([1] * table.n_obs, categories=[1])
+    table.obs["pred_confidence"] = np.ones(table.n_obs, dtype=np.float64)
+    obs_before = table.obs.copy(deep=True)
+    uns_before = copy.deepcopy(table.uns)
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
+    qtbot.addWidget(widget)
+
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+
+    available_columns = [
+        widget.existing_column_combo.itemData(index) for index in range(widget.existing_column_combo.count())
+    ]
+    assert "user_class" in available_columns
+    assert "pred_class" not in available_columns
+    assert "pred_confidence" not in available_columns
+
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("existing"))
+    widget.existing_column_combo.setCurrentIndex(widget.existing_column_combo.findData("user_class"))
+
+    assert widget.selected_column_name == "user_class"
+    assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+    pd.testing.assert_frame_equal(table.obs, obs_before)
+    assert table.uns == uns_before
+
+
+def test_spatial_query_shell_rejects_reserved_object_classification_new_columns(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+
+    for column_name in ("user_class", "pred_class", "pred_confidence"):
+        widget.new_column_edit.setText(column_name)
+        assert widget.selected_column_name is None
+        assert widget.run_button.isEnabled() is False
+        status_text = _status_text(widget.status_label)
+        assert f'New annotation column "{column_name}" is reserved for Object Classification' in status_text
+
+
 def test_spatial_query_shell_uses_named_default_when_preferred_existing_column_disappears(
     qtbot,
     sdata_blobs: SpatialData,
@@ -295,7 +346,7 @@ def test_spatial_query_shell_explains_incompatible_preferred_column_with_empty_n
     assert widget.run_button.isEnabled() is False
     status_text = _status_text(widget.status_label)
     assert 'Existing annotation column "spatial_annotation" cannot be used' in status_text
-    assert "categorical column with only string categories" in status_text
+    assert "categorical column containing only strings or positive integers" in status_text
     assert "different New-column name" in status_text
     assert len(viewer.layers) == 1
     assert np.allclose(
