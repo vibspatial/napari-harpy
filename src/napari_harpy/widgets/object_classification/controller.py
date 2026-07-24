@@ -17,6 +17,7 @@ import napari_harpy.core.classifier as _classifier_core
 from napari_harpy.core.annotation import USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import normalize_class_values
 from napari_harpy.core.classifier import (
+    PredictionStateChange,
     _get_feature_metadata,
     _get_finite_feature_row_mask,
     _normalize_prediction_regions,
@@ -376,10 +377,10 @@ class ClassifierController:
     ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs.
 
-        When a table is bound, prediction columns are prepared immediately:
-        existing ``pred_class`` values are normalized to Harpy's canonical
-        categorical integer state and palette, or all-unlabeled prediction
-        state is created when predictions are absent.
+        Binding is read-only with respect to prediction state. Existing
+        prediction columns are validated by the widget's table-state boundary,
+        while absent prediction columns remain absent until a successful
+        prediction write creates them.
         """
         if self._is_shutdown:
             return False
@@ -416,8 +417,6 @@ class ClassifierController:
             self._is_dirty = False
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return context_changed
-
-        self._ensure_prediction_columns(table)
 
         self._update_idle_status()
         return context_changed
@@ -534,7 +533,6 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return
 
-        self._ensure_prediction_columns(table)
         self._is_dirty = False
         self._update_status_from_reloaded_table(table)
 
@@ -866,8 +864,10 @@ class ClassifierController:
             self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
             return
 
-        self._ensure_prediction_columns(table)
-        self._clear_predictions_for_prediction_regions(table, job.prediction_scope.regions)
+        prediction_state_change = self._clear_predictions_for_prediction_regions(
+            table,
+            job.prediction_scope.regions,
+        )
 
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
             feature_key=job.feature_key,
@@ -877,7 +877,10 @@ class ClassifierController:
             trained_at=None,
         )
         self._clear_model_snapshot("the latest classifier inputs are not trainable")
-        self._notify_prediction_table_state_changed(job.prediction_scope.regions)
+        self._notify_prediction_table_state_changed(
+            job.prediction_scope.regions,
+            prediction_state_change,
+        )
         self._is_dirty = True
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
 
@@ -892,7 +895,6 @@ class ClassifierController:
         if table is None:
             return
 
-        self._ensure_prediction_columns(table)
         apply_result = _classifier_core._write_classifier_predictions(
             table,
             table_name=result.table_name,
@@ -912,7 +914,10 @@ class ClassifierController:
         )
         table.uns[CLASSIFIER_CONFIG_KEY] = classifier_config
         self._store_model_snapshot(table, result, classifier_config)
-        self._notify_prediction_table_state_changed(result.prediction_scope.regions)
+        self._notify_prediction_table_state_changed(
+            result.prediction_scope.regions,
+            apply_result.prediction_state_change,
+        )
         self._is_dirty = False
         self._set_status(
             f"Classifier: model is up to date. Updated predictions for {apply_result.n_predicted_rows} objects.",
@@ -1075,23 +1080,24 @@ class ClassifierController:
 
         return get_table(self._selected_spatialdata, self._selected_table_name)
 
-    def _ensure_prediction_columns(self, table: AnnData) -> None:
-        _classifier_core._ensure_prediction_columns(table)
-
     def _clear_predictions_for_prediction_regions(
         self,
         table: AnnData,
         prediction_regions: tuple[str, ...],
-    ) -> None:
+    ) -> PredictionStateChange:
         if self._selected_table_metadata is None:
-            return
+            return PredictionStateChange(
+                pred_class_changed=False,
+                pred_confidence_changed=False,
+                palette_changed=False,
+            )
 
         prediction_table_row_positions = _resolve_region_row_positions(
             table.obs,
             self._selected_table_metadata.region_key,
             prediction_regions,
         )
-        _classifier_core._clear_predictions_for_row_positions(
+        return _classifier_core._clear_predictions_for_row_positions(
             table,
             prediction_table_row_positions,
         )
@@ -1154,23 +1160,30 @@ class ClassifierController:
                 )
             )
 
-    def _notify_prediction_table_state_changed(self, regions: tuple[str, ...]) -> None:
+    def _notify_prediction_table_state_changed(
+        self,
+        regions: tuple[str, ...],
+        prediction_state_change: PredictionStateChange,
+    ) -> None:
         if self._is_shutdown:
             return
 
+        changed_paths = {
+            TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+        }
+        if prediction_state_change.pred_class_changed:
+            changed_paths.add(TableComponentPath("obs", (PRED_CLASS_COLUMN,)))
+        if prediction_state_change.pred_confidence_changed:
+            changed_paths.add(TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)))
+        if prediction_state_change.palette_changed:
+            changed_paths.add(TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)))
+
         self._notify_table_state_changed(
-            frozenset(
-                {
-                    TableComponentPath("obs", (PRED_CLASS_COLUMN,)),
-                    TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)),
-                    TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)),
-                    TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
-                }
-            ),
+            frozenset(changed_paths),
             regions=regions,
             source="object_classification_inference",
         )
-        if self._on_prediction_state_changed is not None:
+        if prediction_state_change.changed and self._on_prediction_state_changed is not None:
             self._on_prediction_state_changed()
 
     def _update_idle_status(self, *, reason: str | None = None) -> None:
