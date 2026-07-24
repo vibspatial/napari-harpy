@@ -157,11 +157,47 @@ def test_spatial_annotation_styling_loads_reuses_and_activates_primary_layer_wit
     assert table.uns == uns_before
 
 
+def test_spatial_annotation_styling_supports_positive_integer_categories_without_table_mutation(
+    sdata_blobs,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    instance_ids = table.obs["instance_id"].to_numpy()
+    values = np.where(instance_ids % 2 == 0, 3, 1).astype(object)
+    values[0] = pd.NA
+    table.obs["user_class"] = pd.Categorical(values, categories=[3, 1])
+    table.uns["user_class_colors"] = ["#ff0000", "#00ff00"]
+    obs_before = table.obs.copy(deep=True)
+    uns_before = copy.deepcopy(table.uns)
+    viewer = _Viewer()
+
+    result = load_and_style_spatial_annotation_labels(
+        ViewerAdapter(viewer),
+        sdata=sdata_blobs,
+        coordinate_system="global",
+        labels_name="blobs_labels",
+        table_name="table",
+        column_name="user_class",
+    )
+
+    class_three_instance = int(table.obs.loc[table.obs["user_class"] == 3, "instance_id"].iloc[0])
+    class_one_instance = int(table.obs.loc[table.obs["user_class"] == 1, "instance_id"].iloc[0])
+    missing_instance = int(table.obs["instance_id"].iloc[0])
+    assert result.palette_source == "stored"
+    assert np.allclose(result.layer.colormap.map(class_three_instance), np.asarray(to_rgba("#ff0000")))
+    assert np.allclose(result.layer.colormap.map(class_one_instance), np.asarray(to_rgba("#00ff00")))
+    assert np.allclose(
+        result.layer.colormap.map(missing_instance),
+        np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR)),
+    )
+    pd.testing.assert_frame_equal(table.obs, obs_before)
+    assert table.uns == uns_before
+
+
 @pytest.mark.parametrize(
     "values",
     [
         pd.Series(["odd", "even"], dtype="string"),
-        pd.Series(pd.Categorical([1, 2], categories=[1, 2])),
+        pd.Series(pd.Categorical([0, 0], categories=[0])),
     ],
 )
 def test_spatial_annotation_styling_rejects_incompatible_column_before_loading(
@@ -177,7 +213,7 @@ def test_spatial_annotation_styling_rejects_incompatible_column_before_loading(
     viewer = _Viewer()
     adapter = ViewerAdapter(viewer)
 
-    with pytest.raises(ValueError, match="must be categorical|only string categories"):
+    with pytest.raises(ValueError, match="must be categorical|only string categories or positive integer categories"):
         load_and_style_spatial_annotation_labels(
             adapter,
             sdata=sdata_blobs,

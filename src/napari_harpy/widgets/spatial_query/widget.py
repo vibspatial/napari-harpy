@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtWidgets import QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.object_classification.classifier import (
+    PRED_CLASS_COLUMN,
+    PRED_CONFIDENCE_COLUMN,
+)
 from napari_harpy.core.spatial_query import (
     CanonicalCacheReport,
     build_canonical_source_signature,
@@ -45,7 +51,28 @@ if TYPE_CHECKING:
 
 type _TargetColumnMode = Literal["existing", "new"]
 
+
+@dataclass(frozen=True)
+class _AnnotationTargetResolution:
+    mode: _TargetColumnMode | None
+    column_name: str | None
+    error: str | None
+
+    @property
+    def is_ready(self) -> bool:
+        return self.error is None
+
+    @property
+    def description(self) -> str | None:
+        if self.mode is None or self.column_name is None:
+            return None
+
+        label = "Existing" if self.mode == "existing" else "New"
+        return f'{label} column "{self.column_name}"'
+
+
 _PREFERRED_ANNOTATION_COLUMN_NAME = "spatial_annotation"
+_OBJECT_CLASSIFICATION_COLUMNS = frozenset((USER_CLASS_COLUMN, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN))
 _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
 _FIELD_MIN_WIDTH = 180
 
@@ -105,7 +132,7 @@ class SpatialQuery(QWidget):
 
         self.existing_column_combo = self._create_combo(
             "spatial_query_existing_column_combo",
-            "Select an existing categorical column with string categories.",
+            "Select an existing categorical column with string or positive-integer categories.",
         )
         self.existing_column_combo.setPlaceholderText("Choose an existing column")
         self.new_column_edit = QLineEdit()
@@ -117,7 +144,9 @@ class SpatialQuery(QWidget):
         self.new_column_edit.setMinimumWidth(_FIELD_MIN_WIDTH)
         self.new_column_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
         self.new_column_edit.setToolTip(
-            format_tooltip("Enter a new categorical annotation column. It is created only after an effective Apply.")
+            format_tooltip(
+                "Enter a new string-categorical annotation column. It is created only after an effective Apply."
+            )
         )
 
         self.existing_column_label = create_form_label("Existing column")
@@ -198,8 +227,8 @@ class SpatialQuery(QWidget):
 
     @property
     def selected_column_name(self) -> str | None:
-        column_name, error, _description = self._resolve_target_intent()
-        return column_name if error is None else None
+        resolution = self._resolve_annotation_target()
+        return resolution.column_name if resolution.is_ready else None
 
     @property
     def cache_report(self) -> CanonicalCacheReport | None:
@@ -485,7 +514,7 @@ class SpatialQuery(QWidget):
         except (KeyError, TypeError, ValueError) as error:
             self._layer_styling_error = str(error)
 
-    def _resolve_target_intent(self) -> tuple[str | None, str | None, str | None]:
+    def _resolve_annotation_target(self) -> _AnnotationTargetResolution:
         """Resolve the selected Existing or New annotation target.
 
         For New mode with an empty draft:
@@ -517,14 +546,30 @@ class SpatialQuery(QWidget):
         sdata = self.selected_spatialdata
         table_name = self.selected_table_name
         if table_name is None or sdata is None:
-            return None, "Choose a linked table before configuring the annotation target.", None
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error="Choose a linked table before configuring the annotation target.",
+            )
         if mode == "existing":
             column_name = self._selected_existing_column_name()
             if column_name is None:
-                return None, "Choose a compatible existing categorical column.", None
-            return column_name, None, f'Existing column "{column_name}"'
+                return _AnnotationTargetResolution(
+                    mode=None,
+                    column_name=None,
+                    error="Choose a compatible existing categorical column.",
+                )
+            return _AnnotationTargetResolution(
+                mode=mode,
+                column_name=column_name,
+                error=None,
+            )
         if mode != "new":
-            return None, "Choose Existing column or New column.", None
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error="Choose Existing column or New column.",
+            )
 
         table = sdata.tables[table_name]
         new_column_draft = self.new_column_edit.text()
@@ -538,14 +583,20 @@ class SpatialQuery(QWidget):
                         _PREFERRED_ANNOTATION_COLUMN_NAME,
                     )
                 except ValueError:
-                    return (
-                        None,
-                        f'Existing annotation column "{_PREFERRED_ANNOTATION_COLUMN_NAME}" cannot be used because '
-                        "Spatial Query requires a categorical column with only string categories. Choose another "
-                        "compatible Existing column or enter a different New-column name.",
-                        None,
+                    return _AnnotationTargetResolution(
+                        mode=None,
+                        column_name=None,
+                        error=(
+                            f'Existing annotation column "{_PREFERRED_ANNOTATION_COLUMN_NAME}" cannot be used because '
+                            "Spatial Query requires a categorical column containing only strings or positive "
+                            "integers. Choose another compatible Existing column or enter a different New-column name."
+                        ),
                     )
-            return None, "Enter a new annotation column name.", None
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error="Enter a new annotation column name.",
+            )
 
         try:
             column_name = normalize_spatialdata_dataframe_column_name(
@@ -553,24 +604,51 @@ class SpatialQuery(QWidget):
                 "Annotation column name",
             )
         except ValueError as error:
-            return None, str(error), None
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error=str(error),
+            )
 
         table_metadata = get_table_metadata(sdata, table_name)
         if column_name in (table_metadata.region_key, table_metadata.instance_key):
-            return None, f'Annotation column "{column_name}" cannot be a table linkage column.', None
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error=f'Annotation column "{column_name}" cannot be a table linkage column.',
+            )
+        if column_name in _OBJECT_CLASSIFICATION_COLUMNS:
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error=(
+                    f'New annotation column "{column_name}" is reserved for Object Classification and cannot be '
+                    "created by Spatial Query."
+                ),
+            )
         if column_name in table.obs.columns:
             try:
                 require_compatible_spatial_annotation_column(table, column_name)
             except ValueError:
-                return (
-                    None,
-                    f'Annotation column "{column_name}" already exists but cannot be used because Spatial Query '
-                    "requires a categorical column with only string categories. Choose another compatible Existing "
-                    "column or enter a different New-column name.",
-                    None,
+                return _AnnotationTargetResolution(
+                    mode=None,
+                    column_name=None,
+                    error=(
+                        f'Annotation column "{column_name}" already exists but cannot be used because Spatial Query '
+                        "requires a categorical column containing only strings or positive integers. Choose another "
+                        "compatible Existing column or enter a different New-column name."
+                    ),
                 )
-            return None, f'New annotation column "{column_name}" already exists.', None
-        return column_name, None, f'New column "{column_name}"'
+            return _AnnotationTargetResolution(
+                mode=None,
+                column_name=None,
+                error=f'New annotation column "{column_name}" already exists.',
+            )
+        return _AnnotationTargetResolution(
+            mode=mode,
+            column_name=column_name,
+            error=None,
+        )
 
     def _refresh_controls_and_status(self) -> None:
         if (
@@ -584,15 +662,14 @@ class SpatialQuery(QWidget):
                 "for the complete Spatial Query selection."
             )
 
-        column_name, target_error, target_description = self._resolve_target_intent()
-        del column_name
+        target_resolution = self._resolve_annotation_target()
         has_report = self._canonical_cache_report is not None
         self.run_button.setEnabled(
             has_report
             and self._canonical_input_inspection_error is None
             and self._annotation_context.saved_shapes_name is not None
             and not self._annotation_context.has_unsaved_shapes_changes
-            and target_error is None
+            and target_resolution.is_ready
         )
 
         self._apply_status_card_spec(
@@ -606,8 +683,8 @@ class SpatialQuery(QWidget):
                 table_name=self.selected_table_name,
                 cache_report=self._canonical_cache_report,
                 canonical_input_inspection_error=self._canonical_input_inspection_error,
-                target_error=target_error,
-                target_description=target_description,
+                target_error=target_resolution.error,
+                target_description=target_resolution.description,
                 layer_styling_error=self._layer_styling_error,
             ),
         )

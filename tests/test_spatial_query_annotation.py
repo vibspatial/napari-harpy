@@ -29,9 +29,18 @@ def test_compatible_annotation_column_discovery_uses_shared_contract_and_table_o
     table.obs["plain_string"] = pd.Series(["A"] * table.n_obs, index=table.obs.index, dtype="string")
     table.obs["integer_category"] = pd.Categorical([1] * table.n_obs, categories=[1])
     table.obs["empty"] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
+    table.obs["user_class"] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
+    table.obs["pred_class"] = pd.Categorical([1] * table.n_obs, categories=[1])
+    table.obs["pred_confidence"] = pd.Categorical(["high"] * table.n_obs, categories=["high"])
+    table.obs["invalid_integer_category"] = pd.Categorical([0] * table.n_obs, categories=[0])
     table.obs[1] = pd.Categorical(["ignored"] * table.n_obs, categories=["ignored"])
 
-    assert get_compatible_spatial_annotation_column_names(sdata_blobs, "table") == ["first", "empty"]
+    assert get_compatible_spatial_annotation_column_names(sdata_blobs, "table") == [
+        "first",
+        "integer_category",
+        "empty",
+        "user_class",
+    ]
 
 
 def test_existing_annotation_set_extends_category_and_valid_palette_stably(
@@ -63,6 +72,138 @@ def test_existing_annotation_set_extends_category_and_valid_palette_stably(
     assert list(table.obs["annotation"].cat.categories) == ["A", "B", "C"]
     assert table.obs["annotation"].cat.ordered
     assert table.uns["annotation_colors"] == ["#112233", "#445566", default_labeled_class_color(3)]
+
+
+def test_positive_integer_annotation_appends_and_retains_vocabulary_and_palette(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    query_result = _query_result(sdata_blobs, matched_binding_positions=(0, 1, 2))
+    values = [pd.NA] * table.n_obs
+    values[:3] = [3, 1, 1]
+    table.obs["user_class"] = pd.Categorical(values, categories=[3, 1])
+    table.uns["user_class_colors"] = ["#112233", "#445566"]
+
+    preparation = prepare_spatial_annotation(
+        sdata_blobs,
+        query_result=query_result,
+        column_name="user_class",
+        column_mode="existing",
+    )
+    summary = summarize_spatial_annotation(preparation, 2)
+    result = apply_spatial_annotation(sdata_blobs, preparation, summary)
+
+    assert preparation.value_kind == "positive_integer"
+    assert summary.annotation_value == 2
+    assert table.obs["user_class"].iloc[:3].tolist() == [2, 2, 2]
+    assert list(table.obs["user_class"].cat.categories) == [3, 1, 2]
+    assert table.uns["user_class_colors"] == ["#112233", "#445566", default_labeled_class_color(3)]
+    assert result.annotation_changed and result.palette_changed
+
+    removal_preparation = prepare_spatial_annotation(
+        sdata_blobs,
+        query_result=query_result,
+        column_name="user_class",
+        column_mode="existing",
+    )
+    removal_summary = summarize_spatial_annotation(removal_preparation, None)
+    removal_result = apply_spatial_annotation(
+        sdata_blobs,
+        removal_preparation,
+        removal_summary,
+    )
+
+    assert table.obs["user_class"].iloc[:3].isna().all()
+    assert list(table.obs["user_class"].cat.categories) == [3, 1, 2]
+    assert table.uns["user_class_colors"] == ["#112233", "#445566", default_labeled_class_color(3)]
+    assert removal_result.annotation_changed
+    assert removal_result.palette_changed is False
+
+
+def test_empty_user_class_retains_positive_integer_semantics_on_first_apply(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    query_result = _query_result(sdata_blobs, matched_binding_positions=(0, 2))
+    table.obs["user_class"] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
+
+    preparation = prepare_spatial_annotation(
+        sdata_blobs,
+        query_result=query_result,
+        column_name="user_class",
+        column_mode="existing",
+    )
+    summary = summarize_spatial_annotation(preparation, 4)
+    result = apply_spatial_annotation(sdata_blobs, preparation, summary)
+
+    assert preparation.value_kind == "positive_integer"
+    assert table.obs["user_class"].iloc[[0, 2]].tolist() == [4, 4]
+    assert table.obs["user_class"].drop(table.obs.index[[0, 2]]).isna().all()
+    assert list(table.obs["user_class"].cat.categories) == [4]
+    assert table.uns["user_class_colors"] == default_categorical_colors(1)
+    assert result.annotation_changed and result.palette_changed
+
+
+def test_annotation_summary_value_must_match_the_prepared_value_kind(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    query_result = _query_result(sdata_blobs, matched_binding_positions=(0,))
+    table.obs["string_annotation"] = pd.Categorical(["A"] * table.n_obs, categories=["A"])
+    table.obs["integer_annotation"] = pd.Categorical([1] * table.n_obs, categories=[1])
+
+    string_preparation = prepare_spatial_annotation(
+        sdata_blobs,
+        query_result=query_result,
+        column_name="string_annotation",
+        column_mode="existing",
+    )
+    integer_preparation = prepare_spatial_annotation(
+        sdata_blobs,
+        query_result=query_result,
+        column_name="integer_annotation",
+        column_mode="existing",
+    )
+
+    assert string_preparation.value_kind == "string"
+    assert integer_preparation.value_kind == "positive_integer"
+    with pytest.raises(TypeError, match="require a string"):
+        summarize_spatial_annotation(string_preparation, 2)
+    with pytest.raises(TypeError, match="require a Python int"):
+        summarize_spatial_annotation(integer_preparation, "2")
+    with pytest.raises(ValueError, match="must be positive"):
+        summarize_spatial_annotation(integer_preparation, 0)
+    with pytest.raises(TypeError, match="require a Python int"):
+        summarize_spatial_annotation(integer_preparation, True)
+    with pytest.raises(TypeError, match="require a Python int"):
+        summarize_spatial_annotation(integer_preparation, np.int64(2))
+
+
+def test_prediction_columns_and_new_object_classification_columns_are_rejected(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    query_result = _query_result(sdata_blobs, matched_binding_positions=(0,))
+    table.obs["pred_class"] = pd.Categorical([1] * table.n_obs, categories=[1])
+
+    with pytest.raises(ValueError, match="classifier-owned"):
+        prepare_spatial_annotation(
+            sdata_blobs,
+            query_result=query_result,
+            column_name="pred_class",
+            column_mode="existing",
+        )
+
+    for column_name in ("user_class", "pred_class", "pred_confidence"):
+        if column_name in table.obs:
+            table.obs.pop(column_name)
+        with pytest.raises(ValueError, match="reserved for Object Classification"):
+            prepare_spatial_annotation(
+                sdata_blobs,
+                query_result=query_result,
+                column_name=column_name,
+                column_mode="new",
+            )
 
 
 @pytest.mark.parametrize(
