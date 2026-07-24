@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from numbers import Integral
 from typing import TYPE_CHECKING
 
@@ -7,11 +8,11 @@ import numpy as np
 import pandas as pd
 
 from napari_harpy.core.class_palette import (
-    default_class_colors,
+    default_categorical_colors,
+    extend_categorical_palette,
     normalize_class_values,
     normalize_color_sequence,
-    set_class_annotation_state,
-    sync_class_palette_state,
+    resolve_table_categorical_palette,
 )
 
 if TYPE_CHECKING:
@@ -21,22 +22,62 @@ USER_CLASS_COLUMN = "user_class"
 USER_CLASS_COLORS_KEY = f"{USER_CLASS_COLUMN}_colors"
 
 
+@dataclass(frozen=True)
+class UserClassStateChange:
+    """Describe the effective user-class column and palette mutations."""
+
+    user_class_changed: bool
+    palette_changed: bool
+
+    @property
+    def changed(self) -> bool:
+        return self.user_class_changed or self.palette_changed
+
+
 def _to_user_class_values(values: pd.Series) -> pd.Series:
     return normalize_class_values(values, column_name=USER_CLASS_COLUMN)
 
 
-def _set_user_class_annotation_state(table: AnnData, values: pd.Series) -> None:
-    set_class_annotation_state(
-        table,
-        values,
-        column_name=USER_CLASS_COLUMN,
-        colors_key=USER_CLASS_COLORS_KEY,
-        warn_on_palette_overwrite=False,
-    )
+def set_user_class_for_rows(
+    table: AnnData,
+    rows: pd.Series,
+    class_id: int | None,
+) -> UserClassStateChange:
+    """Assign or clear a user class for selected observation rows.
 
+    Parameters
+    ----------
+    table
+        AnnData table whose in-memory ``user_class`` column and companion
+        ``user_class_colors`` palette may be mutated.
+    rows
+        Boolean Series selecting rows by ``table.obs`` index. The mask is
+        aligned to the current observation index before assignment.
+    class_id
+        Positive non-boolean integer to assign, or ``None`` to remove the
+        annotation by assigning ``pd.NA``.
 
-def set_user_class_for_rows(table: AnnData, rows: pd.Series, class_id: int | None) -> None:
-    """Assign or clear one user class on selected table rows."""
+    Returns
+    -------
+    UserClassStateChange
+        Flags identifying whether the ``user_class`` observation column and
+        its stored palette changed.
+
+    Raises
+    ------
+    TypeError
+        If ``rows`` is not a Boolean pandas Series.
+    ValueError
+        If ``class_id`` is not a positive integer, the row mask contains
+        missing values, or an existing ``user_class`` column violates the
+        positive-integer categorical contract.
+
+    Notes
+    -----
+    This function mutates only the in-memory AnnData table. Its caller owns
+    dirty-state publication and persistence. An empty selection, clearing an
+    absent column, or assigning values already present is a no-op.
+    """
     if class_id is not None:
         if isinstance(class_id, (bool, np.bool_)) or not isinstance(class_id, Integral) or class_id <= 0:
             raise ValueError("Class ids must be positive integers.")
@@ -44,51 +85,77 @@ def set_user_class_for_rows(table: AnnData, rows: pd.Series, class_id: int | Non
 
     row_mask = _coerce_row_mask(rows, table.obs.index)
     if not bool(row_mask.any()):
-        return
+        return UserClassStateChange(
+            user_class_changed=False,
+            palette_changed=False,
+        )
 
     if USER_CLASS_COLUMN not in table.obs:
         if class_id is None:
-            return
-        _initialize_user_class_column(table, initial_class_id=class_id)
-    else:
-        categories = _valid_user_class_categories(table.obs[USER_CLASS_COLUMN])
-        if categories is None:
-            _normalize_user_class_column(table)
+            return UserClassStateChange(
+                user_class_changed=False,
+                palette_changed=False,
+            )
+
+        replacement = pd.Series(
+            pd.Categorical([pd.NA] * table.n_obs, categories=[class_id]),
+            index=table.obs.index,
+            name=USER_CLASS_COLUMN,
+        )
+        replacement.loc[row_mask] = class_id
+        table.obs[USER_CLASS_COLUMN] = replacement
+        table.uns[USER_CLASS_COLORS_KEY] = default_categorical_colors(1)
+        return UserClassStateChange(
+            user_class_changed=True,
+            palette_changed=True,
+        )
 
     user_class = table.obs[USER_CLASS_COLUMN]
     categories = _valid_user_class_categories(user_class)
-    if categories is None:  # pragma: no cover - defensive: normalization above should recover.
-        _normalize_user_class_column(table)
-        user_class = table.obs[USER_CLASS_COLUMN]
-        categories = _valid_user_class_categories(user_class)
-        if categories is None:
-            raise RuntimeError("Unable to normalize `user_class` into a categorical class column.")
+    if categories is None:
+        raise ValueError(
+            f"`{USER_CLASS_COLUMN}` must use a categorical dtype with positive integer categories before annotation."
+        )
 
     selected_values = user_class.loc[row_mask]
     if class_id is None and bool(selected_values.isna().all()):
-        return
-    previous_class_ids = {int(value) for value in selected_values.dropna().unique()}
+        return UserClassStateChange(
+            user_class_changed=False,
+            palette_changed=False,
+        )
+    if class_id is not None and bool(selected_values.eq(class_id).all()):
+        return UserClassStateChange(
+            user_class_changed=False,
+            palette_changed=False,
+        )
 
-    categories_changed = False
+    _, resolved_palette = resolve_table_categorical_palette(
+        table=table,
+        column_name=USER_CLASS_COLUMN,
+        categories=categories,
+    )
+    next_categories = list(categories)
+    replacement = user_class.copy()
     if class_id is not None and class_id not in categories:
-        categories = sorted({*categories, class_id})
-        table.obs[USER_CLASS_COLUMN] = user_class.cat.set_categories(categories)
-        user_class = table.obs[USER_CLASS_COLUMN]
-        categories_changed = True
+        next_categories.append(class_id)
+        replacement = replacement.cat.add_categories([class_id])
 
-    table.obs.loc[row_mask, USER_CLASS_COLUMN] = pd.NA if class_id is None else class_id
+    replacement.loc[row_mask] = pd.NA if class_id is None else class_id
+    next_palette = extend_categorical_palette(
+        resolved_palette,
+        current_categories=categories,
+        next_categories=next_categories,
+    )
+    stored_palette = normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY))
+    palette_changed = stored_palette != next_palette
 
-    old_classes_may_be_unused = any(previous_class_id != class_id for previous_class_id in previous_class_ids)
-    if old_classes_may_be_unused:
-        user_class = table.obs[USER_CLASS_COLUMN]
-        used_categories = _used_user_class_categories(user_class)
-        if used_categories != categories:
-            categories = used_categories
-            table.obs[USER_CLASS_COLUMN] = user_class.cat.set_categories(categories)
-            categories_changed = True
-
-    if categories_changed or not _user_class_palette_matches(table, categories):
-        _sync_user_class_palette_state(table, categories)
+    table.obs[USER_CLASS_COLUMN] = replacement
+    if palette_changed:
+        table.uns[USER_CLASS_COLORS_KEY] = next_palette
+    return UserClassStateChange(
+        user_class_changed=True,
+        palette_changed=palette_changed,
+    )
 
 
 def _coerce_row_mask(rows: pd.Series, index: pd.Index) -> pd.Series:
@@ -105,22 +172,6 @@ def _coerce_row_mask(rows: pd.Series, index: pd.Index) -> pd.Series:
     return row_mask.astype(bool)
 
 
-def _normalize_user_class_column(table: AnnData) -> None:
-    values = _to_user_class_values(table.obs[USER_CLASS_COLUMN])
-    _set_user_class_annotation_state(table, values)
-
-
-def _initialize_user_class_column(table: AnnData, *, initial_class_id: int) -> None:
-    categories = [initial_class_id]
-    values = pd.Series(
-        pd.Categorical([pd.NA] * len(table.obs), categories=categories),
-        index=table.obs.index,
-        name=USER_CLASS_COLUMN,
-    )
-    table.obs[USER_CLASS_COLUMN] = values
-    _sync_user_class_palette_state(table, categories)
-
-
 def _valid_user_class_categories(values: pd.Series) -> list[int] | None:
     if not isinstance(values.dtype, pd.CategoricalDtype):
         return None
@@ -134,32 +185,4 @@ def _valid_user_class_categories(values: pd.Series) -> list[int] | None:
             return None
         categories.append(class_id)
 
-    if categories != sorted(categories):
-        return None
-    if len(categories) != len(set(categories)):
-        return None
-
     return categories
-
-
-def _used_user_class_categories(values: pd.Series) -> list[int]:
-    categories = [int(category) for category in values.cat.categories]
-    codes = values.cat.codes.to_numpy(copy=False)
-    used_codes = {int(code) for code in codes if int(code) >= 0}
-    used_categories = {categories[code] for code in used_codes}
-    return sorted(used_categories)
-
-
-def _user_class_palette_matches(table: AnnData, categories: list[int]) -> bool:
-    expected_colors = default_class_colors(categories)
-    return normalize_color_sequence(table.uns.get(USER_CLASS_COLORS_KEY)) == expected_colors
-
-
-def _sync_user_class_palette_state(table: AnnData, categories: list[int]) -> None:
-    sync_class_palette_state(
-        table,
-        categories=categories,
-        column_name=USER_CLASS_COLUMN,
-        colors_key=USER_CLASS_COLORS_KEY,
-        warn_on_palette_overwrite=False,
-    )
