@@ -2,49 +2,23 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pandas as pd
 import pytest
 
 from napari_harpy.core.class_palette import (
-    backfill_missing_class_colors,
+    GODSNOT_102,
     default_categorical_colors,
     default_class_colors,
     default_labeled_class_color,
     extend_categorical_palette,
-    normalize_color_sequence,
     resolve_table_categorical_palette,
-    set_class_obs_state,
-    stored_palette_to_lookup,
     validate_categorical_palette_source,
 )
 
 
-def test_set_class_obs_state_normalizes_values_and_categories() -> None:
-    values = pd.Series([7, pd.NA, 3, 7], index=["a", "b", "c", "d"], dtype="Int64", name="pred_class")
-    table = type("DummyTable", (), {"obs": pd.DataFrame(index=values.index)})()
-
-    categories = set_class_obs_state(table, values, column_name="pred_class")
-    categorical_series = table.obs["pred_class"]
-
-    assert categorical_series.isna().tolist() == [False, True, False, False]
-    assert categorical_series.dropna().astype("int64").tolist() == [7, 3, 7]
-    assert categories == [3, 7]
-    assert list(categorical_series.cat.categories) == [3, 7]
-
-
-@pytest.mark.parametrize(
-    "values",
-    [
-        pd.Series([0, 1], dtype="int64"),
-        pd.Series(["1", "2"], dtype="string"),
-        pd.Series([True, False], dtype="bool"),
-    ],
-)
-def test_set_class_obs_state_rejects_noncanonical_class_values(values: pd.Series) -> None:
-    table = type("DummyTable", (), {"obs": pd.DataFrame(index=values.index)})()
-
-    with pytest.raises(ValueError, match="positive integer"):
-        set_class_obs_state(table, values, column_name="pred_class")
+def test_godsnot_palette_is_explicit_and_excludes_black() -> None:
+    assert len(GODSNOT_102) == 102
+    assert GODSNOT_102[0] == "#FFFF00"
+    assert "#000000" not in GODSNOT_102
 
 
 def test_default_class_colors_are_stable_for_shared_class_ids() -> None:
@@ -55,8 +29,8 @@ def test_default_class_colors_are_stable_for_shared_class_ids() -> None:
     assert user_palette[2] == pred_palette[1]
 
 
-@pytest.mark.parametrize("current_length", [10, 20, 28, 102])
-def test_default_categorical_colors_are_append_stable_across_palette_thresholds(current_length: int) -> None:
+@pytest.mark.parametrize("current_length", [1, 10, 101, 102, 103])
+def test_default_categorical_colors_are_append_stable(current_length: int) -> None:
     current = default_categorical_colors(current_length)
     extended = default_categorical_colors(current_length + 1)
 
@@ -64,8 +38,9 @@ def test_default_categorical_colors_are_append_stable_across_palette_thresholds(
     assert extended[-1] == default_labeled_class_color(current_length + 1)
 
 
-def test_default_categorical_colors_match_stable_colors_for_every_palette_family() -> None:
-    assert default_categorical_colors(103) == [default_labeled_class_color(position) for position in range(1, 104)]
+def test_default_colors_cycle_after_the_complete_palette() -> None:
+    assert default_categorical_colors(103) == [*GODSNOT_102, GODSNOT_102[0]]
+    assert default_labeled_class_color(103) == GODSNOT_102[0]
 
 
 def test_resolve_table_categorical_palette_preserves_valid_stored_colors_without_mutation() -> None:
@@ -154,15 +129,3 @@ def test_validate_categorical_palette_source_rejects_unknown_value() -> None:
     assert validate_categorical_palette_source("stored") == "stored"
     with pytest.raises(ValueError, match="Invalid categorical palette source"):
         validate_categorical_palette_source("generated")
-
-
-def test_stored_palette_lookup_backfills_missing_class_ids_without_overwriting_existing_colors() -> None:
-    stored_colors = normalize_color_sequence(["#ff0000"])
-
-    lookup = stored_palette_to_lookup([3], stored_colors)
-    filled_lookup = backfill_missing_class_colors(lookup, [3, 7])
-
-    assert filled_lookup[3] == "#ff0000"
-    assert filled_lookup[7] == default_labeled_class_color(7)
-    assert 7 in filled_lookup
-    assert filled_lookup[7] != "#ff0000"
