@@ -6440,6 +6440,31 @@ Do not move shared palette helpers into the new package merely because Object
 Classification currently consumes them. Spatial Query and its later Spatial
 Annotation integration also depend on those contracts.
 
+`normalize_feature_columns()` currently lives in `core/classifier_export.py`,
+although it validates shared Harpy feature-matrix metadata and is consumed by
+`core/feature_matrix_metadata.py`. Moving `classifier_export.py` into the
+Object Classification package without correcting that ownership would make a
+shared core module depend on an Object Classification implementation module.
+
+Move the helper as part of this package reorganization:
+
+```text
+core/classifier_export.py::normalize_feature_columns()
+    → core/feature_matrix_metadata.py::normalize_feature_columns()
+```
+
+Then import it from the shared feature-matrix module in:
+
+- `core/object_classification/classifier_export.py`;
+- `core/object_classification/classifier.py`;
+- the Object Classification controller;
+- shared feature-matrix metadata inspection and its focused tests.
+
+This is a pure ownership and import-path change. Preserve the helper's existing
+arguments, return value, validation, and error behavior. After the move,
+`core/feature_matrix_metadata.py` must not import anything from
+`core/object_classification/`.
+
 #### Import and API migration
 
 Update all internal consumers to the canonical package paths, including:
@@ -6487,6 +6512,9 @@ distinguished from semantic regressions.
 - the new `core/object_classification/` package;
 - migration of Object Classification annotation, classifier, and classifier
   export modules;
+- shared ownership of `normalize_feature_columns()` in
+  `core/feature_matrix_metadata.py`, with Object Classification importing it
+  from that module;
 - canonical imports throughout source and focused tests;
 - removal of the three old top-level domain module files;
 - focused annotation, classifier, headless, and Object Classification widget
@@ -6505,6 +6533,8 @@ distinguished from semantic regressions.
   styling, export, and headless behavior remain unchanged;
 - shared palette, feature, persistence, SpatialData, and validation modules
   remain outside the domain package;
+- `core/feature_matrix_metadata.py` owns `normalize_feature_columns()` and has
+  no dependency on `core/object_classification/`;
 - focused affected tests and linting pass.
 
 ### Slice 6p: Unified Spatial Annotation categorical palette lifecycle
