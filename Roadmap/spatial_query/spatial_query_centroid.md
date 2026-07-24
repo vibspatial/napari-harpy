@@ -5739,11 +5739,11 @@ Object Classification schema. An empty categorical whose category index still
 has an integer dtype may also retain `positive_integer`; do not infer integer
 semantics for an arbitrary empty object-typed categorical column.
 
-The compatibility boundary should expose or retain the resolved value kind so
-preparation, summarization, Apply, dialog construction, and status messages do
-not repeatedly infer it from category contents. Add it to
-`SpatialAnnotationPreparation`; deriving it later is unsafe for empty
-categoricals.
+Expose the resolved value kind as a
+`SpatialAnnotationPreparation.value_kind` property derived from the captured
+categorical values and column name. Do not store it as a second field. The
+column name preserves the explicit empty-`user_class` contract, while an
+integer-typed empty category index preserves other known integer targets.
 
 #### Existing versus New targets
 
@@ -5800,7 +5800,10 @@ its domain type:
 @dataclass(frozen=True)
 class SpatialAnnotationPreparation:
     ...
-    value_kind: SpatialAnnotationValueKind
+
+    @property
+    def value_kind(self) -> SpatialAnnotationValueKind:
+        ...
 
 
 @dataclass(frozen=True)
@@ -5825,8 +5828,8 @@ Do not accept numeric text such as `"3"` for an integer target in the core
 API. The future dialog owns conversion from its positive-integer control to
 Python `int`; the domain boundary receives an already typed value.
 
-For New mode, preparation fixes `value_kind="string"`. Remove remains
-unavailable for New mode.
+For New mode, the empty captured categorical values resolve the
+`value_kind` property to `"string"`. Remove remains unavailable for New mode.
 
 #### Positive-integer category and palette updates
 
@@ -5933,7 +5936,7 @@ widget calls the other directly.
   aliases;
 - compatible-column validation and discovery for both categorical kinds;
 - explicit `user_class` support and `pred_class`/`pred_confidence` exclusion;
-- value kind captured on `SpatialAnnotationPreparation`;
+- value kind derived through `SpatialAnnotationPreparation.value_kind`;
 - typed summary and Apply validation using `str | int | None`;
 - atomic positive-integer replacement with append-and-retain categories and
   an aligned stored palette;
@@ -6543,6 +6546,8 @@ distinguished from semantic regressions.
 
 ### Slice 6p: Unified Spatial Annotation categorical palette lifecycle
 
+**Implementation status: Implemented.**
+
 Implement the positive-integer Spatial Annotation support deferred from Slice
 6m after Slice 6n has established the Object Classification category and
 palette contract. This slice makes Spatial Query and Object Classification
@@ -6600,17 +6605,19 @@ Implement the deferred Slice 6m contract:
 - an empty `user_class` retains positive-integer semantics;
 - New mode remains string-categorical and cannot create `user_class`,
   `pred_class`, or `pred_confidence`;
-- preparation captures the resolved value kind;
+- preparation exposes the resolved value kind as a property derived from its
+  captured categorical values and column name;
 - string Set accepts trimmed non-empty text;
 - integer Set accepts a positive non-boolean Python `int`;
 - Remove stores `pd.NA`;
-- the future Apply dialog selects its editor from the captured value kind.
+- the future Apply dialog selects its editor from
+  `SpatialAnnotationPreparation.value_kind`.
 
 Use one small validation/resolution boundary rather than introducing another
 target dataclass:
 
 ```python
-def resolve_spatial_annotation_value_kind(
+def validate_and_resolve_spatial_annotation_value_kind(
     values: pd.Series,
     *,
     column_name: str,
@@ -6620,10 +6627,11 @@ def resolve_spatial_annotation_value_kind(
 
 This helper validates the categorical representation and returns the resolved
 kind. Compatible-column discovery, existing-column validation, preparation,
-and styling reuse that boundary. `SpatialAnnotationPreparation` captures the
-returned kind once so summarization and Apply do not infer it again. An empty
-`user_class` resolves to `positive_integer`; an arbitrary empty object-backed
-categorical retains the existing string fallback.
+and styling reuse that boundary. `SpatialAnnotationPreparation.value_kind`
+applies it to the captured categorical snapshot rather than duplicating the
+result in stored state. An empty `user_class` resolves to `positive_integer`;
+an arbitrary empty object-backed categorical retains the existing string
+fallback.
 
 Existing positive-integer columns remain strict: plain integer columns,
 booleans, zero, negative IDs, mixed categories, and arbitrary coercion remain
@@ -6720,8 +6728,8 @@ kinds continue through the shared compact categorical colormap.
 
 - the deferred Slice 6m value-kind, discovery, preparation, typed-summary,
   Apply, and UI-shell contracts;
-- one small categorical value-kind resolver, with the resolved kind captured
-  on `SpatialAnnotationPreparation`;
+- one small categorical value-kind resolver used by the derived
+  `SpatialAnnotationPreparation.value_kind` property;
 - reuse of the existing shared read-only stored categorical-palette resolver
   and append-only palette extension path for strings and positive integers;
 - positive-integer Spatial Annotation Apply with retained categories and
@@ -6757,7 +6765,7 @@ kinds continue through the shared compact categorical colormap.
 - read-only selection and styling do not mutate or dirty the table;
 - no-op and palette dirty-state reporting remain exact;
 - the Slice 7 dialog, event-producer, and event-consumer contracts support the
-  captured value kind without being implemented in Slice 6p.
+  preparation's derived value kind without being implemented in Slice 6p.
 
 ### Slice 7: Async calculate-query-review-apply flow
 
