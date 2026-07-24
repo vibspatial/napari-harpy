@@ -26,21 +26,24 @@ import napari_harpy.widgets.object_classification.controller as classifier_modul
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
-from napari_harpy.core.annotation import (
-    USER_CLASS_COLORS_KEY,
-    USER_CLASS_COLUMN,
-    UserClassStateChange,
-)
 from napari_harpy.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_categorical_colors,
     default_class_colors,
 )
-from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
     HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     register_feature_matrix_metadata,
+)
+from napari_harpy.core.object_classification.annotation import (
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+    UserClassStateChange,
+)
+from napari_harpy.core.object_classification.classifier_export import (
+    DEFAULT_CLASSIFIER_EXPORT_SUFFIX,
+    read_classifier_export_bundle,
 )
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption

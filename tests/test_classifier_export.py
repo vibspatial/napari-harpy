@@ -4,7 +4,10 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from napari_harpy.core.classifier_export import CLASSIFIER_EXPORT_SCHEMA_VERSION, ClassifierExportBundle
+from napari_harpy.core.object_classification.classifier_export import (
+    CLASSIFIER_EXPORT_SCHEMA_VERSION,
+    ClassifierExportBundle,
+)
 
 _MISSING = object()
 

@@ -11,16 +11,16 @@ from napari.utils.colormaps import DirectLabelColormap
 from spatialdata import SpatialData
 
 import napari_harpy.widgets.object_classification.viewer_styling as viewer_styling_module
-from napari_harpy.core.annotation import (
-    USER_CLASS_COLORS_KEY,
-    USER_CLASS_COLUMN,
-    UserClassStateChange,
-)
 from napari_harpy.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_categorical_colors,
     default_class_colors,
     default_labeled_class_color,
+)
+from napari_harpy.core.object_classification.annotation import (
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+    UserClassStateChange,
 )
 from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange

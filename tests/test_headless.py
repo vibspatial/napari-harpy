@@ -12,19 +12,19 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.transformations import Identity, set_transformation
 
 from napari_harpy import headless
-from napari_harpy.core.classifier import (
+from napari_harpy.core.feature_matrix_metadata import (
+    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+    register_feature_matrix_metadata,
+)
+from napari_harpy.core.object_classification.classifier import (
     CLASSIFIER_APPLY_CONFIG_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.core.classifier_export import (
+from napari_harpy.core.object_classification.classifier_export import (
     CLASSIFIER_EXPORT_SCHEMA_VERSION,
     ClassifierExportBundle,
     write_classifier_export_bundle,
-)
-from napari_harpy.core.feature_matrix_metadata import (
-    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
-    register_feature_matrix_metadata,
 )
 
 _FEATURE_MATRICES_KEY = "feature_matrices"

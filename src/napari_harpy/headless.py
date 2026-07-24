@@ -7,18 +7,6 @@ from typing import TYPE_CHECKING
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
-from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY
-from napari_harpy.core.classifier import (
-    CLASSIFIER_APPLY_CONFIG_KEY,
-    CLASSIFIER_CONFIG_KEY,
-    ClassifierApplyResult,
-    _validate_feature_matrix_compatible_with_bundle,
-)
-from napari_harpy.core.classifier import apply_classifier as _apply_classifier
-from napari_harpy.core.classifier_export import (
-    ClassifierExportBundle,
-    read_classifier_export_bundle,
-)
 from napari_harpy.core.feature_extraction import (
     FeatureExtractionTriplet,
     _normalize_triplets,
@@ -28,6 +16,18 @@ from napari_harpy.core.feature_extraction import (
     _resolve_harpy_labels_name_parameter,
 )
 from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLORS_KEY
+from napari_harpy.core.object_classification.classifier import (
+    CLASSIFIER_APPLY_CONFIG_KEY,
+    CLASSIFIER_CONFIG_KEY,
+    ClassifierApplyResult,
+    _validate_feature_matrix_compatible_with_bundle,
+)
+from napari_harpy.core.object_classification.classifier import apply_classifier as _apply_classifier
+from napari_harpy.core.object_classification.classifier_export import (
+    ClassifierExportBundle,
+    read_classifier_export_bundle,
+)
 from napari_harpy.core.persistence import write_table_prediction_state
 from napari_harpy.core.spatialdata import _get_element_coordinate_systems, get_table
 from napari_harpy.core.validation import normalize_spatialdata_name

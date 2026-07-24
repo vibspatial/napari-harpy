@@ -12,18 +12,19 @@ import pandas as pd
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from numpy.typing import NDArray
 
-from napari_harpy.core.annotation import USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import (
     default_labeled_class_color,
     normalize_color_sequence,
     resolve_table_categorical_palette,
 )
-from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
+    normalize_feature_columns,
     normalize_feature_matrix,
     normalize_feature_matrix_source_kind,
 )
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.object_classification.classifier_export import ClassifierExportBundle
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 

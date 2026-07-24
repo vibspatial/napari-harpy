@@ -6,13 +6,13 @@ import anndata as ad
 import pandas as pd
 import pytest
 
-from napari_harpy.core.annotation import (
+from napari_harpy.core.class_palette import default_categorical_colors
+from napari_harpy.core.object_classification.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
     UserClassStateChange,
     set_user_class_for_rows,
 )
-from napari_harpy.core.class_palette import default_categorical_colors
 
 
 def _make_table(

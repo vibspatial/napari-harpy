@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import numpy as np
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
-from napari_harpy.core.classifier_export import normalize_feature_columns
-
 try:
     from scipy.sparse import issparse
 except ImportError:  # pragma: no cover - scipy is expected in the plugin env
@@ -94,6 +92,25 @@ class FeatureMatrixMetadataState:
     def is_custom_obsm(self) -> bool:
         """Return whether metadata declares custom `.obsm` registration."""
         return self.source_kind == CUSTOM_OBSM_SOURCE_KIND
+
+
+def normalize_feature_columns(feature_metadata: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the required feature column schema from Harpy feature metadata."""
+    raw_columns = feature_metadata.get("feature_columns")
+    ndim = getattr(raw_columns, "ndim", None)
+    if ndim is not None and ndim != 1:
+        raise ValueError("Feature metadata `feature_columns` must be a 1-dimensional sequence.")
+    if hasattr(raw_columns, "tolist") and not isinstance(raw_columns, str):
+        raw_columns = raw_columns.tolist()
+    if isinstance(raw_columns, str) or not isinstance(raw_columns, Sequence):
+        raise ValueError("Feature metadata `feature_columns` must be a sequence.")
+
+    columns = tuple(str(value) for value in raw_columns)
+    if not columns:
+        raise ValueError("Feature metadata must contain at least one `feature_columns` entry.")
+    if any(not column for column in columns):
+        raise ValueError("Feature metadata `feature_columns` must not contain empty strings.")
+    return columns
 
 
 def normalize_feature_matrix(feature_matrix: Any, n_obs: int, *, copy: bool = True) -> Any:

@@ -33,20 +33,20 @@ from napari_harpy._app_state import (
 )
 from napari_harpy._persistence import PersistenceController
 from napari_harpy._resources import get_logo_path
-from napari_harpy.core.annotation import (
-    USER_CLASS_COLORS_KEY,
-    USER_CLASS_COLUMN,
-)
-from napari_harpy.core.classifier import (
-    ObjectClassificationStateError,
-    validate_object_classification_table_state,
-)
-from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
     inspect_feature_matrix_metadata,
     register_feature_matrix_metadata,
 )
+from napari_harpy.core.object_classification.annotation import (
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+)
+from napari_harpy.core.object_classification.classifier import (
+    ObjectClassificationStateError,
+    validate_object_classification_table_state,
+)
+from napari_harpy.core.object_classification.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import (
     SpatialDataLabelsOption,

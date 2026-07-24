@@ -13,29 +13,29 @@ import pandas as pd
 from qtpy.QtCore import QObject, QTimer
 from sklearn.ensemble import RandomForestClassifier
 
-import napari_harpy.core.classifier as _classifier_core
-from napari_harpy.core.annotation import USER_CLASS_COLUMN
+import napari_harpy.core.object_classification.classifier as _classifier_core
 from napari_harpy.core.class_palette import normalize_class_values
-from napari_harpy.core.classifier import (
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    FeatureMatrixMetadataState,
+    inspect_feature_matrix_metadata,
+    normalize_feature_columns,
+    normalize_feature_matrix,
+    normalize_feature_matrix_source_kind,
+)
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.object_classification.classifier import (
     PredictionStateChange,
     _get_feature_metadata,
     _get_finite_feature_row_mask,
     _normalize_prediction_regions,
     _resolve_region_row_positions,
 )
-from napari_harpy.core.classifier_export import (
+from napari_harpy.core.object_classification.classifier_export import (
     ClassifierExportBundle,
     ClassifierModelSnapshot,
     build_classifier_export_bundle,
-    normalize_feature_columns,
     write_classifier_export_bundle,
-)
-from napari_harpy.core.feature_matrix_metadata import (
-    CUSTOM_OBSM_SOURCE_KIND,
-    FeatureMatrixMetadataState,
-    inspect_feature_matrix_metadata,
-    normalize_feature_matrix,
-    normalize_feature_matrix_source_kind,
 )
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata

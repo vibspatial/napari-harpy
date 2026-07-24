@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from napari_harpy.core.annotation import (
+from napari_harpy.core.object_classification.annotation import (
     USER_CLASS_COLUMN,
     UserClassStateChange,
     _to_user_class_values,

@@ -8,14 +8,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 
-from napari_harpy.core.annotation import (
-    USER_CLASS_COLUMN,
-)
 from napari_harpy.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_labeled_class_color,
     normalize_class_values,
     resolve_table_categorical_palette,
+)
+from napari_harpy.core.object_classification.annotation import (
+    USER_CLASS_COLUMN,
 )
 from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
