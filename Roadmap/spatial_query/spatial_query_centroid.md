@@ -6827,7 +6827,44 @@ blocking calculation path on the main thread if state changed.
 
 #### Controller phases
 
-Extend the existing controller to support exactly:
+Extend the existing controller through this public widget-facing boundary:
+
+```python
+class SpatialQueryController:
+    def __init__(
+        self,
+        *,
+        on_state_changed: Callable[[], None] | None = None,
+        on_centers_ready: Callable[[CanonicalCentersResult], None] | None = None,
+        on_query_ready: Callable[[CanonicalCenterQueryResult], None] | None = None,
+    ) -> None:
+        ...
+
+    def start_spatial_query(
+        self,
+        sdata: SpatialData,
+        report: CanonicalCacheReport,
+        *,
+        shapes_name: str,
+        coordinate_system: str,
+    ) -> bool:
+        ...
+```
+
+`start_spatial_query()` allocates the one operation ID and selects the valid
+cache or calculation path from the supplied fresh report. It returns `False`
+without changing state when the controller is shut down or another operation
+is active. Otherwise it accepts the operation and returns `True`, including
+when a synchronous valid-cache/query-request preflight subsequently reports an
+error through normal controller status.
+
+The annotation target does not belong in `SpatialQueryController`. The child
+retains its captured target mode and column name in the immutable Run intent
+and pairs them with the accepted query result in Slice 7b. Do not add target
+fields to the controller, `CanonicalCenterQueryRequest`, or
+`CanonicalCenterQueryResult`.
+
+The controller worker phases are exactly:
 
 ```python
 SpatialQueryWorkerPhase = Literal[
@@ -6996,12 +7033,19 @@ If `matched_instance_count == 0`:
 - do not open a dialog or mutate annotation state;
 - retain any accepted canonical cache update and its dirty paths.
 
-Otherwise, pass the result and captured annotation target to Slice 7b.
+If one or more instances match, Slice 7a calls the child's
+`_on_query_ready()` callback through `on_query_ready` and shows a stable
+`N instance centroids found` success outcome without mutating annotation
+state. Slice 7b extends that same child callback to prepare and open the review
+dialog. Do not add a temporary Qt signal, operation-result wrapper, or
+operation ID field to the domain query result for this handoff.
 
 #### Deliverables
 
 - `read_canonical_centers_from_cache()` with reuse from the synchronous ensure;
 - one child-owned `SpatialQueryController`;
+- the exact `start_spatial_query()`, `on_centers_ready`, and `on_query_ready`
+  widget/controller boundary;
 - one operation ID across optional center calculation and containment query;
 - a mutation-free containment worker wrapper;
 - main-thread request construction and cache application;
@@ -7030,6 +7074,8 @@ Otherwise, pass the result and captured annotation target to Slice 7b.
 - cancellation after cache application retains that useful dirty cache but
   cannot open a late dialog;
 - a zero-match result produces no annotation preparation or mutation.
+- a non-empty result reaches the child exactly once through `on_query_ready`
+  and remains mutation-free until Slice 7b extends that callback.
 
 ### Slice 7b: Spatial annotation review, apply, and publication
 
