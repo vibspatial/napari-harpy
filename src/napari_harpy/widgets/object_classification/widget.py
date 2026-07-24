@@ -1050,21 +1050,21 @@ class ObjectClassificationWidget(QWidget):
         The method also:
 
         - validates whether the selected table can annotate the selected labels layer
-          and contains canonical Object Classification state
+          and contains valid Object Classification state
         - propagates that effective binding to annotation, classifier, styling,
           and persistence controllers
-        - lets annotation/classifier controllers canonicalize existing class
-          state: existing ``user_class`` is adopted without creating it when
-          absent, while prediction columns are prepared for ``pred_class``
+        - adopts existing class and prediction state read-only; missing
+          ``user_class`` and prediction columns remain absent until an
+          effective annotation or classifier write creates them
         - marks classifier outputs dirty when the classifier selection context
           changed in a way that invalidates them
         - re-applies layer styling and refreshes the user-facing status cards
 
-        Downstream styling deliberately does not repair class columns or
-        palettes. If ``user_class``/``pred_class`` or their stored palettes
-        drift after this binding/adoption step, styling raises a
-        ``ClassStateError`` and the widget surfaces that message in the shared
-        warning status card.
+        Downstream styling never mutates class columns or palettes. A missing
+        or invalid ``user_class_colors`` palette receives a read-only display
+        fallback. Prediction colors are derived read-only from the resolved
+        user palette and class-id defaults. Invalid class-column structure is
+        surfaced through the widget's table-binding status card.
         """
         self._table_binding_error = self._validate_selected_table_binding()
         effective_table_name = None if self._table_binding_error is not None else self.selected_table_name
@@ -1691,13 +1691,13 @@ class ObjectClassificationWidget(QWidget):
         self._update_annotation_controls()
 
     def _on_annotation_changed(self, change: UserClassAnnotationChange) -> None:
+        changed_paths: set[TableComponentPath] = set()
+        if change.state_change.user_class_changed:
+            changed_paths.add(TableComponentPath("obs", (USER_CLASS_COLUMN,)))
+        if change.state_change.palette_changed:
+            changed_paths.add(TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)))
         self._record_table_mutation(
-            frozenset(
-                {
-                    TableComponentPath("obs", (USER_CLASS_COLUMN,)),
-                    TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)),
-                }
-            ),
+            frozenset(changed_paths),
             regions=() if self.selected_segmentation_name is None else (self.selected_segmentation_name,),
             change_kind=("updated" if change.user_class_was_available_as_color_source else "created"),
             source="object_classification_annotation",
