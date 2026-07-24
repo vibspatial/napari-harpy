@@ -914,8 +914,10 @@ centers for absent, partial, stale, or invalid states before querying.
    busy without a progress bar or percentage. Selection changes invalidate the
    operation ID.
 8. The main-thread controller accepts the query result only for the current
-   operation ID, revalidates the captured request, and resolves returned IDs to
-   current table rows using `region_key` and `instance_key`.
+   operation ID. The Spatial Query child then calls
+   `prepare_spatial_annotation()`, which resolves returned IDs to current table
+   rows through the selected-region `region_key` and `instance_key` binding and
+   validates the current canonical-center provenance.
 9. If no centroids match, show No instance centroids found in the
    annotation and make no annotation-column changes.
 10. Otherwise open the Apply Spatial Annotation dialog.
@@ -970,17 +972,21 @@ It does not roll back a canonical-center cache updated earlier in the Run flow.
 
 Immediately before Apply, revalidate:
 
-- SpatialData, Shapes, labels, coordinate system, table, and target intent;
+- SpatialData, labels, table, and target intent;
 - table linkage and row identities;
-- the Shapes geometry and element-to-element transformation against the query
-  snapshot retained by the controller;
 - the canonical source, binding, selected-region metadata, and center rows
   against the exact `CanonicalCentersResult` used by the query;
 - target-column values used for the displayed counts.
 
-If only target values changed, refresh counts and require confirmation of the
-updated summary. If source geometry, transform, centers, binding, selection, or
-table identity changed, discard the result and require a new query.
+The immutable query request already contains the Polygon and affine snapshots
+used by the worker. Normal Shapes edits, Shapes-target changes, coordinate
+system changes, and dirty-session transitions invalidate the active operation
+before a result can be accepted. Do not add a second Shapes geometry digest or
+transformation comparison at Apply time.
+
+If only target values changed, rebuild the preparation, refresh counts, and
+require confirmation of the updated summary. If centers, binding, selection,
+or table identity changed, discard the result and require a new query.
 
 ### Successful apply
 
@@ -1631,7 +1637,7 @@ After Run is requested, the execution flow performs one synchronous preflight
 before starting any worker. It rejects the intent when the Shapes geometry is
 invalid, empty, unsupported, or cannot be unioned; Shapes or labels is no
 longer available in the selected coordinate system; or the required transform
-is missing, non-finite, unsupported, or non-invertible. Once Slice 7 connects
+is missing, non-finite, unsupported, or non-invertible. Once Slice 7a connects
 execution, an active calculation or query also disables Run until that
 operation finishes or is cancelled.
 
@@ -2553,7 +2559,7 @@ Exit criteria:
 Slice 1b calculates the values consumed by Slice 1a and supplies the blocking,
 UI-independent ensure operation. The thin background calculation boundary and
 late-result safety remain Slice 2 responsibilities; complete query-controller
-orchestration remains Slice 7.
+orchestration remains Slice 7a.
 
 Deliverables:
 
@@ -4358,7 +4364,7 @@ Deliverables:
 
 The action controls in this shell validate state and emit intent only. They do
 not calculate centers, run a query, open a review dialog, mutate a table, or
-publish dirty state; those execution paths belong to Slice 7. The existing
+publish dirty state; those execution paths belong to Slices 7a and 7b. The existing
 `SpatialQueryController` is deliberately not constructed or driven by this
 shell.
 
@@ -4805,7 +4811,7 @@ cache cannot repair these live input problems. Conversely, malformed managed
 matrix or metadata contents are converted into deterministic mismatches on an
 `INVALID` report and must not enter this blocking branch.
 
-When Slice 7 connects execution, the same label displays busy, cancellation,
+When Slice 7a connects execution, the same label displays busy, cancellation,
 no-result, success, and error messages. Controller-owned execution status
 temporarily takes presentation precedence over selection/cache readiness.
 After execution finishes or is dismissed, the widget rebuilds the ordinary
@@ -4850,7 +4856,7 @@ Exit criteria:
 - status rendering performs no cache inspection, hashing, viewer mutation, or
   table mutation;
 - Run enablement is unchanged by the presentation refactor;
-- the one label is ready to receive Slice 7 execution status without adding a
+- the one label is ready to receive Slice 7a execution status without adding a
   parallel status surface.
 
 ### Slice 6i: Neutral unannotated primary-label styling
@@ -4880,7 +4886,7 @@ compatible Existing column selected
     → use its current categorical values
     → use its valid stored palette or the shared read-only fallback palette
 
-Slice 7: first effective Apply creates the New column
+Slice 7b: first effective Apply creates the New column
     → store the categorical column and its palette atomically
     → keep that column selected as an Existing target
     → immediately replace the neutral presentation with table-backed coloring
@@ -4991,7 +4997,7 @@ Slice 6i
     → apply neutral or Existing-column styling from explicit selection actions
     → expose the styling paths needed after a later annotation Apply
 
-Slice 7
+Slice 7b
     → perform the first effective annotation Apply
     → create the New categorical column and palette atomically
     → retain that column as the selected Existing target
@@ -4999,9 +5005,9 @@ Slice 7
 ```
 
 Slice 6i does not introduce or simulate annotation Apply merely to demonstrate
-the final transition. Slice 7 owns that operational transition because it owns
+the final transition. Slice 7b owns that operational transition because it owns
 the review-and-Apply flow. Slice 6i only establishes and tests the presentation
-helpers and selection-driven behavior that Slice 7 will consume.
+helpers and selection-driven behavior that Slice 7b will consume.
 
 Styling remains driven by explicit user actions:
 
@@ -5050,7 +5056,7 @@ Exit criteria:
   coerced or overwritten, keeps Run disabled while its name collides with the
   proposed New target, and produces an actionable compatibility message;
 - Existing-column palette behavior remains unchanged;
-- the helper and control boundaries required for Slice 7 to replace neutral
+- the helper and control boundaries required for Slice 7b to replace neutral
   styling after the first effective Apply are available without Slice 6i
   implementing Apply itself;
 - Object Classification and Spatial Query share the neutral visual convention
@@ -5149,7 +5155,7 @@ this behavior. The `QLineEdit` owns the draft, while the existing
 signal-blocked selector-refresh paths decide whether its text is preserved or
 cleared.
 
-Slice 7 owns successful consumption of the draft:
+Slice 7b owns successful consumption of the draft:
 
 ```text
 first effective Apply creates the explicitly named New column
@@ -5902,9 +5908,9 @@ categorical compact-colormap path already supports categorical values; this
 slice should extend target validation and write semantics rather than
 duplicate viewer styling.
 
-#### Slice 7 integration boundary
+#### Slice 7b/7c integration boundary
 
-The Apply dialog implemented in Slice 7 must choose its editor from
+The Apply dialog implemented in Slice 7b must choose its editor from
 `SpatialAnnotationPreparation.value_kind`:
 
 ```text
@@ -5922,13 +5928,13 @@ Remove
     → summarize assignment of pd.NA
 ```
 
-After an effective `user_class` Apply, Slice 7 publishes the ordinary
+After an effective `user_class` Apply, Slice 7b publishes the ordinary
 `TableStateChangedEvent` for `obs/user_class` and
 `uns/user_class_colors` when applicable. Object Classification must recognize
 an external Spatial Query `user_class` mutation for its currently selected
-table, refresh user-class styling/control state, and mark an existing trained
-classifier stale. This is event-mediated table-state interoperability; neither
-widget calls the other directly.
+table through the Slice 7c consumer, refresh user-class styling/control state,
+and mark an existing trained classifier stale. This is event-mediated
+table-state interoperability; neither widget calls the other directly.
 
 #### Deliverables
 
@@ -5943,7 +5949,8 @@ widget calls the other directly.
 - updated Spatial Query selection, readiness text, and existing-column styling
   behavior;
 - focused core annotation, viewer-styling, and Spatial Query shell tests;
-- Slice 7 dialog and event-consumer requirements aligned to the typed contract;
+- Slice 7b dialog/producer and Slice 7c event-consumer requirements aligned to
+  the typed contract;
 - no plain-integer coercion, New-column type selector, prediction-output
   mutation, or direct widget-to-widget dependency.
 
@@ -5963,9 +5970,9 @@ widget calls the other directly.
 - New mode remains string-categorical and cannot create conflicting
   Object Classification reserved columns;
 - read-only selection and styling do not mutate or dirty the table;
-- the Slice 7 contract can present the correct typed editor and later notify
-  Object Classification of external `user_class` changes through shared table
-  events.
+- the Slice 7b/7c contracts can present the correct typed editor and later
+  notify Object Classification of external `user_class` changes through shared
+  table events.
 
 ### Slice 6n: Object Classification categorical vocabulary and palette lifecycle
 
@@ -6670,7 +6677,7 @@ For either value kind:
 - component dirty-state publication includes the palette path only when
   `palette_changed` is true.
 
-#### Slice 6p and Slice 7 ownership boundary
+#### Slice 6p and Slice 7b/7c ownership boundary
 
 Slice 6p implements the typed domain and widget-shell support:
 
@@ -6685,7 +6692,7 @@ contract. Use the exact event source:
 source = "spatial_query_annotation"
 ```
 
-Slice 7 implements both sides of this contract:
+Slice 7b publishes and Slice 7c consumes this contract:
 
 ```text
 effective Spatial Query user_class Apply
@@ -6704,8 +6711,8 @@ selected SpatialData object and table when the changed paths include
 continues through the existing direct annotation callback and must not be
 handled a second time by this external-event path.
 
-Slice 7 also owns the Set/Remove review dialog, chooses its editor from the
-captured `SpatialAnnotationPreparation.value_kind`, and implements the
+Slice 7b also owns the Set/Remove review dialog and chooses its editor from the
+captured `SpatialAnnotationPreparation.value_kind`. Slice 7c implements the
 consumer refresh and classifier lifecycle. Slice 6p does not publish or
 consume the event, implement query orchestration, or call the dialog.
 
@@ -6737,7 +6744,7 @@ kinds continue through the shared compact categorical colormap.
 - shared generic Labels styling for both supported categorical kinds;
 - the documented future `source="spatial_query_annotation"` event contract,
   with both publication and Object Classification consumption deferred to
-  Slice 7;
+  Slices 7b and 7c;
 - focused core Spatial Annotation, palette, viewer-styling, and Spatial Query
   shell tests;
 - no category-identity reconciliation, unused-category removal,
@@ -6764,120 +6771,478 @@ kinds continue through the shared compact categorical colormap.
   Classification reserved columns;
 - read-only selection and styling do not mutate or dirty the table;
 - no-op and palette dirty-state reporting remain exact;
-- the Slice 7 dialog, event-producer, and event-consumer contracts support the
+- the Slice 7b dialog/producer and Slice 7c consumer contracts support the
   preparation's derived value kind without being implemented in Slice 6p.
 
-### Slice 7: Async calculate-query-review-apply flow
+### Slice 7a: Two-phase async calculate-query flow
 
-This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6p to the existing core calculation, query, and
-annotation APIs.
+#### Responsibility boundary
 
-Deliverables:
+This slice connects the existing cache and containment domain operations to the
+integrated Spatial Query child. It ends with an accepted
+`CanonicalCenterQueryResult` or a no-result/error outcome. It does not open the
+review dialog, mutate annotation columns, or implement Object Classification
+event consumption.
 
-- worker orchestration with one monotonically increasing operation ID
-  spanning an optional centroid-calculation phase and a spatial-query phase;
-- textual busy status, cancellation, cleanup, and error routing;
-- main-thread cache update/revalidation;
-- Spatial Query child-owned shared-state publication after an accepted cache
-  update. The controller returns `CanonicalCentersResult` through
-  `on_centers_ready` and remains unaware of `HarpyAppState`; the child uses the
-  parent Annotation widget's shared app state to translate an actual
-  `result.cache_update` into one `TableStateChangedEvent` for
-  `CANONICAL_CACHE_PATHS` and calls `record_table_mutation(event)`;
-- move the temporary `record_canonical_cache_update()` adapter into the Spatial
-  Query child's accepted-centers callback and remove `cache_state.py` once the
-  child owns this behavior, matching the Object Classification
-  controller-to-widget event boundary;
-- no-result outcome;
-- Apply dialog with explicit Set annotation and Remove annotation modes,
-  value-kind-specific string or positive-integer Set controls, live
-  mode-specific counts, and mandatory overwrite/removal warnings;
-- main-thread atomic annotation Apply;
-- Spatial Query child-owned publication of the obs path and the palette uns
-  path indicated by `SpatialAnnotationApplyResult`;
-- publication of an effective `user_class` Apply with
-  `source="spatial_query_annotation"`;
-- Object Classification consumption of that event for the current SpatialData
-  object and table when its paths include `obs/user_class`: validate current
-  table state, perform a full user-class control and Labels styling refresh,
-  mark the classifier stale, and schedule retraining when Auto-train is
-  enabled;
-- no double handling of Object Classification's own
-  `source="object_classification_annotation"` event and no direct widget
-  coupling;
-- targeted primary labels-layer refresh after an effective annotation Apply,
-  with missing values rendered through the shared missing/unlabelled color;
-- controller/dialog async tests.
+`SpatialQuery` owns one `SpatialQueryController`. `AnnotationWidget` continues
+to own and publish the final `AnnotationContext`, but it does not mediate
+controller callbacks or worker results. The controller remains unaware of
+`HarpyAppState`, table dirty state, status-card widgets, and annotation Apply.
 
-The centroid-calculation phase is:
+The child captures one immutable Run intent after performing a fresh cache
+inspection. That intent contains the exact current:
 
-    worker: calculate_canonical_centers()
+- SpatialData object identity;
+- saved Shapes name and coordinate system;
+- labels and table names;
+- resolved Existing/New annotation target mode and column name;
+- `CanonicalCacheReport`.
+
+The controller receives the calculation/query inputs from that captured
+intent. Worker completion never rereads combo-box values or silently adopts a
+new parent context.
+
+#### Valid-cache read boundary
+
+Add one small core operation that consumes an already-inspected valid report:
+
+```python
+def read_canonical_centers_from_cache(
+    sdata: SpatialData,
+    report: CanonicalCacheReport,
+) -> CanonicalCentersResult:
+    ...
+```
+
+It requires `report.state is CanonicalCacheState.VALID`, reads the selected
+rows from the managed canonical matrix, and returns
+`CanonicalCentersResult(cache_update=None)`. It does not inspect again,
+recalculate the instance-set digest, read labels pixels, mutate the cache, or
+publish shared state.
+
+Refactor the synchronous `ensure_canonical_centers()` valid branch to reuse
+this operation. The async Run path must not call `ensure_canonical_centers()`
+after its fresh inspection: doing so would repeat inspection and could enter a
+blocking calculation path on the main thread if state changed.
+
+#### Controller phases
+
+Extend the existing controller to support exactly:
+
+```python
+SpatialQueryWorkerPhase = Literal[
+    "canonical_centers",
+    "containment_query",
+]
+```
+
+One monotonically increasing operation ID governs both phases. Do not
+introduce separate center and query job IDs.
+
+The complete valid-cache path is:
+
+```text
+main thread
+    fresh inspect_canonical_cache()
+        ↓ VALID
+    read_canonical_centers_from_cache(report)
         ↓
-    main thread: accept and apply cache payload
-        ↓ success
-    AnnotationWidget
-        ↓ delegates accepted result to embedded child
-    SpatialQuery._on_canonical_centers_ready(result)
-        ↓ result.cache_update is not None
-    record one TableStateChangedEvent for both canonical paths
+    build_canonical_center_query_request()
         ↓
-    HarpyAppState marks the canonical consistency unit dirty
-
-It is skipped when the selected-region cache is already valid. Valid cache
-reuse, cancellation, worker failure, or rejected payloads never publish a
-canonical table mutation event.
-
-The spatial-query phase is:
-
-    worker: evaluate canonical centers against the Shapes geometry
+worker
+    evaluate_canonical_center_query()
         ↓
-    main thread: accept result and open the review dialog
+main thread
+    accept only the current operation ID
+```
 
-After an effective reviewed Apply to `user_class`, the cross-widget flow is:
+The calculation path is:
 
-    Spatial Query records source="spatial_query_annotation"
-        → obs/user_class
-        → uns/user_class_colors only when palette_changed is true
+```text
+main thread
+    fresh inspect_canonical_cache()
+        ↓ ABSENT / PARTIAL / STALE / INVALID
+worker
+    calculate_canonical_centers()
+    return CanonicalCacheUpdatePayload
         ↓
-    Object Classification receives the current-table event
+main thread
+    accept only the current operation ID
+    apply_canonical_cache_update()
+    construct CanonicalCentersResult
         ↓
-    validate the current table state
+    build_canonical_center_query_request()
         ↓
-    refresh user-class controls and Labels styling
+worker
+    evaluate_canonical_center_query()
         ↓
-    mark the classifier stale
+main thread
+    accept only the same current operation ID
+```
+
+`build_canonical_center_query_request()` remains a main-thread preflight. It
+validates and snapshots the selected saved Polygon geometries and the
+element-to-element affine before the containment worker starts. The worker
+receives only the immutable `CanonicalCenterQueryRequest` and performs no Qt,
+napari-layer, SpatialData, or AnnData mutation.
+
+The existing `on_centers_ready` callback fires for either reused or newly
+accepted centers. The Spatial Query child handles it directly. When
+`result.cache_update is not None`, the child constructs one
+`TableStateChangedEvent` for `CANONICAL_CACHE_PATHS`, maps the update action to
+the existing change kind, and calls its shared app state's
+`record_table_mutation()`. Reused centers publish nothing.
+
+Move this behavior out of the temporary
+`record_canonical_cache_update()`/`cache_state.py` adapter once the child owns
+the callback. The controller must never import or receive `HarpyAppState`.
+
+#### Invalidation and status
+
+Follow the existing best-effort worker cancellation contract:
+
+- `worker.quit()` requests cancellation but is not treated as hard Dask
+  interruption;
+- clear the active phase immediately;
+- ignore every late `returned`, `errored`, or `finished` signal whose operation
+  ID and phase are no longer active;
+- never accept a center payload or query result after invalidation.
+
+Invalidate active work when:
+
+- SpatialData, coordinate system, or parent Shapes target changes;
+- the selected Shapes session becomes dirty;
+- labels, table, target mode, target column, or New-column draft changes;
+- the selected primary Labels layer is removed;
+- a newer Run starts;
+- relevant table reload replaces the operation's table state;
+- the child or parent is destroyed.
+
+Run is disabled while either worker phase is active. Do not add a progress
+percentage, progress bar, scheduler diagnostics, performance telemetry, or a
+separate Cancel button. Selection/context invalidation and teardown use the
+controller's existing cancellation boundary.
+
+The one Spatial Query status card temporarily gives execution state priority:
+
+```text
+canonical_centers
+    → Calculating centers for "<labels>"
+
+containment_query
+    → Querying centers inside "<shapes>"
+```
+
+Worker/preflight failures become stable user-facing errors without a traceback.
+After cleanup, the controls return to a usable state.
+
+#### Accepted query and no-result boundary
+
+The controller calls the child only for a current accepted
+`CanonicalCenterQueryResult`. The child compares its retained Run intent with
+the current parent and selector context before proceeding.
+
+If `matched_instance_count == 0`:
+
+- show a neutral `No instance centroids found` outcome;
+- do not call `prepare_spatial_annotation()`;
+- do not open a dialog or mutate annotation state;
+- retain any accepted canonical cache update and its dirty paths.
+
+Otherwise, pass the result and captured annotation target to Slice 7b.
+
+#### Deliverables
+
+- `read_canonical_centers_from_cache()` with reuse from the synchronous ensure;
+- one child-owned `SpatialQueryController`;
+- one operation ID across optional center calculation and containment query;
+- a mutation-free containment worker wrapper;
+- main-thread request construction and cache application;
+- child-owned canonical cache event publication and removal of
+  `cache_state.py`;
+- unified busy, cancelled, no-result, success, and error status;
+- focused core cache-read, controller phase-transition, late-signal, widget
+  invalidation, cache-event, and no-result tests.
+
+#### Exit criteria
+
+- each Run performs exactly one fresh cache inspection and one instance-set
+  digest calculation before either reuse or calculation;
+- valid reuse never starts labels I/O or mutates/publishes cache state;
+- labels aggregation and containment evaluation both run off the Qt main
+  thread;
+- only the current operation ID can apply a cache payload or deliver a query
+  result;
+- accepted cache mutation is published by the child exactly once and before
+  the containment result is reviewed;
+- cancellation after cache application retains that useful dirty cache but
+  cannot open a late dialog;
+- a zero-match result produces no annotation preparation or mutation.
+
+### Slice 7b: Spatial annotation review, apply, and publication
+
+#### Responsibility boundary
+
+This slice consumes a non-empty current `CanonicalCenterQueryResult` accepted
+by Slice 7a. It owns the modal review UI, main-thread atomic annotation Apply,
+shared table-state publication, and immediate Spatial Query Labels styling. It
+does not perform worker computation or directly call Object Classification.
+
+The Spatial Query child uses the annotation mode and column name captured in
+the Run intent. It must not replace them with selector values read after the
+worker completed.
+
+#### Preparation and dialog contract
+
+Before opening the dialog, call:
+
+```python
+prepare_spatial_annotation(
+    sdata,
+    query_result=query_result,
+    column_name=captured_column_name,
+    column_mode=captured_column_mode,
+)
+```
+
+This is the authoritative transition from matching instance IDs to current
+table rows and current target values. It also validates the exact canonical
+centers and binding retained by the query result.
+
+Implement the review UI in a focused Spatial Query dialog module with a small
+boundary equivalent to:
+
+```python
+def review_spatial_annotation(
+    parent: QWidget,
+    preparation: SpatialAnnotationPreparation,
+    *,
+    shapes_name: str,
+    initial_annotation_value: SpatialAnnotationValue | None = None,
+    refreshed_review: bool = False,
+) -> SpatialAnnotationSummary | None:
+    ...
+```
+
+The dialog is mutation-free. It calls `summarize_spatial_annotation()`
+repeatedly as the user changes Set/Remove mode or edits the value and returns
+the exact accepted `SpatialAnnotationSummary`. `None` means Cancel.
+
+The dialog displays:
+
+- saved Shapes, labels, table, and target-column names;
+- the `Centroid inside annotation` inclusion rule;
+- eligible and matched instance counts;
+- explicit Set annotation and Remove annotation modes;
+- current missing, already equal, different, overwrite, and removal counts
+  appropriate to the selected mode;
+- mandatory textual overwrite/removal warnings;
+- one explicit mode-specific primary action and Cancel.
+
+Editor selection follows `preparation.value_kind`:
+
+```text
+string
+    → QLineEdit
+    → first review defaults to the Shapes element name
+    → trim and require a non-empty string
+
+positive_integer
+    → QSpinBox or equivalent integer-only editor
+    → minimum 1
+    → no Shapes-name default
+
+Remove
+    → hide or disable the Set editor
+    → summarize annotation_value=None
+```
+
+Remove remains unavailable for `column_mode="new"`. The strings `"None"` and
+`"nan"` are ordinary string categories and never removal sentinels.
+
+#### Apply and changed-review handling
+
+After dialog acceptance, call `apply_spatial_annotation()` on the main thread
+with the exact preparation and reviewed summary.
+
+If it raises `SpatialAnnotationColumnChangedError`, do not apply using newly
+observed values silently. Rebuild the preparation from the same accepted query
+result, recompute the summary for the same proposed Set/Remove value, and open
+a refreshed review that clearly states that table values changed and the
+counts must be confirmed again.
+
+If preparation or Apply reports outdated canonical centers, binding, table
+identity, or target availability, discard the result and require a new Run.
+Normal Shapes edits and context changes have already invalidated the operation;
+do not add a second Shapes geometry hash or affine comparison here.
+
+Cancel, a no-op summary, failed preparation, and rejected Apply publish no
+annotation event. A cache update accepted earlier remains dirty and is not
+rolled back.
+
+#### Effective mutation publication
+
+After an effective `SpatialAnnotationApplyResult`, construct one event:
+
+```text
+source
+    → "spatial_query_annotation"
+
+paths
+    → obs/<column>
+    → uns/<column>_colors only when palette_changed is true
+
+regions
+    → selected labels name
+
+change kind
+    → created for the first New-column Apply
+    → updated for Existing Set or Remove
+```
+
+Call `HarpyAppState.record_table_mutation()` exactly once. The core annotation
+operation remains unaware of Qt, app state, dirty tracking, and persistence.
+
+The source is used for every effective Spatial Query annotation, not only
+`user_class`. Consumers decide whether the affected column is relevant.
+
+After publication:
+
+- refresh the selected primary Labels layer through the existing generic
+  table-backed Spatial Annotation styling path;
+- render missing values with the shared neutral color;
+- leave unrelated layers and color sources untouched;
+- update the unified status with the applied/removed count.
+
+For the first effective New-column Apply:
+
+```text
+create column and palette atomically
+    ↓
+publish the table mutation
+    ↓
+refresh compatible Existing-column choices
+    ↓
+select the created column as an Existing target
+    ↓
+clear the consumed New-column draft
+    ↓
+replace neutral styling with table-backed styling
+```
+
+Signal blocking must prevent this programmatic promotion from launching a
+second query or invalidating the already completed Apply.
+
+#### Deliverables
+
+- value-kind-aware review dialog and live summary presentation;
+- changed-value re-review loop;
+- main-thread use of the existing atomic Apply domain operation;
+- exact child-owned annotation event construction;
+- effective Apply status and targeted Labels styling;
+- New-column promotion and draft consumption;
+- focused dialog, widget Apply, no-op, cancellation, outdated-result,
+  event-path, palette-path, styling, and promotion tests.
+
+#### Exit criteria
+
+- every effective mutation is preceded by review of the exact affected,
+  overwrite, or removal counts;
+- target values changed after review can never be applied without a second
+  confirmation;
+- no dialog path mutates the table directly;
+- Apply either installs the complete obs/palette consistency unit or restores
+  the previous state;
+- no-op, Cancel, stale, and error outcomes publish no annotation event;
+- an effective Apply publishes exactly one event with only paths that actually
+  changed;
+- New mode becomes the newly created Existing target only after successful
+  effective Apply;
+- immediate Spatial Query coloring reflects the accepted in-memory table.
+
+### Slice 7c: Object Classification consumption of Spatial Query annotations
+
+#### Responsibility boundary
+
+This slice implements the deferred cross-widget consumer for effective Spatial
+Query writes to `user_class`. Communication remains exclusively through
+`HarpyAppState.table_state_changed`; neither widget imports, stores, or calls
+the other.
+
+Extend Object Classification's existing table-state handler with a distinct
+external-annotation branch. It accepts an event only when:
+
+- `event.source == "spatial_query_annotation"`;
+- `event.sdata is selected_spatialdata`;
+- `event.table_name == selected_table_name`;
+- `event.paths` includes `TableComponentPath("obs", ("user_class",))`.
+
+The optional `uns/user_class_colors` path is consumed through the current live
+table state but is not required: an effective annotation may change values
+without changing the already-valid palette.
+
+Do not require the selected segmentation to appear in `event.regions`.
+`user_class` is a classifier input and a change in another region of the same
+table may still affect table-wide training. The consumer therefore performs a
+safe full current-table refresh rather than the row-scoped optimization used
+when Object Classification itself knows the edited instance.
+
+#### Consumer flow
+
+```text
+Spatial Query records source="spatial_query_annotation"
+    → obs/user_class
+    → optional uns/user_class_colors
         ↓
-    schedule retraining when Auto-train is enabled
+Object Classification accepts the current-table event
+        ↓
+validate current table binding and Object Classification state
+        ↓
+refresh user-class controls and full Labels styling
+        ↓
+mark the classifier stale
+        ↓
+schedule retraining only when Auto-train is enabled
+```
 
-`TableStateChangedEvent` identifies component paths and affected regions
-rather than individual instance IDs. The external consumer therefore performs
-the safe full styling/control refresh and does not attempt the row-scoped
-viewer optimization used when Object Classification itself knows the edited
-instance.
+If current table validation fails:
 
-The same operation ID governs both phases; do not introduce a separate
-job-ID concept. The controller also records which phase owns the active worker.
-Cancellation, selection changes, reload, a newer operation, or parent/child
-shutdown invalidate that operation ID, and every late signal from either phase
-is ignored. A parent context change or the selected Shapes session becoming
-dirty has the same invalidating effect.
+- preserve the selected Labels layer;
+- apply the existing neutral invalid-table styling;
+- show the existing table-binding error;
+- do not schedule retraining.
 
-Exit criteria:
+The consumer does not publish another table event. In particular,
+`source="object_classification_annotation"` continues through the existing
+direct `_on_annotation_changed()` path and must not enter this external event
+branch. This prevents duplicate styling, duplicate dirty-state tokens, and
+duplicate retraining requests.
 
-- napari remains responsive during global aggregation;
-- cancel/stale/error paths cannot update the cache, open late dialogs, or annotate;
-- the Spatial Query child, not `SpatialQueryController`, owns construction and
-  publication of the accepted canonical `TableStateChangedEvent` through the
-  parent Annotation widget's shared app state;
-- cache update and annotation application are visibly distinct state
-  changes;
-- an effective `user_class` Apply publishes exactly one
-  `source="spatial_query_annotation"` event, and Object Classification handles
-  it without reprocessing its own annotation events;
-- the external event refreshes current user-class state, invalidates the
-  classifier, and schedules retraining only when Auto-train is enabled;
-- users always see affected and overwrite counts before annotation mutation.
+The event carries component paths and regions, not individual instance IDs.
+Do not attempt to synthesize `UserClassAnnotationChange` or reuse the
+single-instance row-scoped styling optimization.
+
+#### Deliverables
+
+- Object Classification external Spatial Query event branch;
+- current-table binding/state validation and full control/styling refresh;
+- classifier invalidation and conditional Auto-train scheduling;
+- source/path/identity guards and feedback-loop prevention;
+- focused current/other table, current/other SpatialData, missing palette path,
+  invalid table, Auto-train on/off, own-source, and no-republication tests.
+
+#### Exit criteria
+
+- an effective current-table Spatial Query `user_class` Apply refreshes Object
+  Classification without direct widget coupling;
+- valid external changes always mark the classifier stale;
+- Auto-train schedules exactly once only when enabled and the refreshed table
+  remains valid;
+- palette-only or unrelated-column events do not invalidate the classifier;
+- other datasets and tables are ignored;
+- Object Classification's own annotation event is not handled twice;
+- consuming an external event never records another mutation or changes shared
+  dirty paths.
 
 ### Slice 8: Persistence UX and cross-widget synchronization
 
@@ -6885,7 +7250,7 @@ Deliverables:
 
 - the parent Annotation widget, including its Spatial Query child, Viewer, and
   remaining cross-widget refresh behavior consuming `table_state_changed`
-  without feedback loops, extending rather than reimplementing the Slice 7
+  without feedback loops, extending rather than reimplementing the Slice 7c
   `user_class` event integration;
 - shared primary-label color-source ownership implementing the rule that the
   most recent explicit coloring action controls the layer, so later unrelated
