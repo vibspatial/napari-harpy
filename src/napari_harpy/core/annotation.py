@@ -111,11 +111,7 @@ def set_user_class_for_rows(
         )
 
     user_class = table.obs[USER_CLASS_COLUMN]
-    categories = _valid_user_class_categories(user_class)
-    if categories is None:
-        raise ValueError(
-            f"`{USER_CLASS_COLUMN}` must use a categorical dtype with positive integer categories before annotation."
-        )
+    categories = _read_user_class_categories(user_class)
 
     selected_values = user_class.loc[row_mask]
     if class_id is None and bool(selected_values.isna().all()):
@@ -172,17 +168,23 @@ def _coerce_row_mask(rows: pd.Series, index: pd.Index) -> pd.Series:
     return row_mask.astype(bool)
 
 
-def _valid_user_class_categories(values: pd.Series) -> list[int] | None:
+def _read_user_class_categories(values: pd.Series) -> list[int]:
     if not isinstance(values.dtype, pd.CategoricalDtype):
-        return None
+        raise ValueError(
+            f"`{USER_CLASS_COLUMN}` must use a categorical dtype with positive integer categories before annotation."
+        )
 
     categories: list[int] = []
     for category in values.cat.categories:
-        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
-            return None
-        class_id = int(category)
-        if class_id <= 0:
-            return None
-        categories.append(class_id)
+        if (
+            isinstance(category, (bool, np.bool_))
+            or not isinstance(category, (int, np.integer))
+            or int(category) <= 0
+        ):
+            raise ValueError(
+                f"`{USER_CLASS_COLUMN}` must use a categorical dtype with positive integer categories before "
+                "annotation."
+            )
+        categories.append(int(category))
 
     return categories
