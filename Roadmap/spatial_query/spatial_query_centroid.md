@@ -4,9 +4,9 @@
 
 Final product specification and implementation plan.
 
-Canonical metadata/cache lifecycle (Slice 1a) and blocking Harpy centroid
-construction/cache ensure (Slice 1b) are implemented. Later slices remain
-planned.
+Implementation is complete through Slice 6n, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 6o
+and later slices remain planned.
 
 This document supersedes the raster-overlap query algorithm described in
 spatial_query.md. It retains the agreed user interface, table mutation,
@@ -3142,11 +3142,10 @@ Query child styling controller, and future categorical color panels. It does
 not implement a color panel or Spatial Query child and never mutates `.obs`,
 `.uns`, dirty state, or persisted data.
 
-The current generic palette fallback lives in `viewer/_styling.py` and derives
-all colors from `default_categorical_colors(len(categories))`. Its palette
-family can change as the category count crosses a threshold. Slice 5 must not
-import that viewer implementation or duplicate it in the UI-independent
-annotation domain.
+Before this shared foundation, the generic palette fallback lived in
+`viewer/_styling.py` and derived colors from a category-count-dependent palette
+policy. Slice 5 must not import that viewer implementation or duplicate it in
+the UI-independent annotation domain.
 
 Introducing append-stable defaults has one intentional viewer compatibility
 effect: an existing generic Labels or Shapes visualization with no valid stored
@@ -3165,15 +3164,28 @@ so category position is stable:
 
     def default_categorical_colors(length: int) -> list[str]:
         return [
-            default_labeled_class_color(position + 1)
-            for position in range(length)
+            default_labeled_class_color(position)
+            for position in range(1, length + 1)
         ]
 
-Break the current internal call cycle by having
-`default_labeled_class_color()` select directly from the private base-palette
-resolver rather than calling `default_categorical_colors()`. The color returned
-for every existing positive Object Classification class ID must remain
-unchanged.
+Use one explicit immutable `GODSNOT_102` palette adapted from
+<https://godsnotwheregodsnot.blogspot.com/2012/09/color-distribution-methodology.html>.
+Black is intentionally excluded because black is commonly used for annotation
+outlines and backgrounds. Both category-position defaults and positive
+class-ID defaults select from this palette. Values beyond its 102 entries
+cycle from the beginning:
+
+    def default_labeled_class_color(class_id: int) -> str:
+        if class_id <= 0:
+            raise ValueError("Class ids must be positive integers.")
+
+        return GODSNOT_102[(class_id - 1) % len(GODSNOT_102)]
+
+This explicit palette supersedes the earlier Matplotlib-cycle and Scanpy
+20/28/102 palette-family selection. `core/class_palette.py` no longer imports
+Scanpy palettes. The deliberate default-color migration may change unstored or
+invalid-palette fallbacks and newly created or extended palettes. Valid stored
+palettes remain authoritative and unchanged.
 
 Move the pure standard AnnData categorical-palette inspection from
 `viewer/_styling.py` into the core palette API. Its source classification
@@ -3270,8 +3282,8 @@ events, dirty tracking, or widget orchestration in this slice.
 
 #### Exit criteria
 
-- appending categories across the Matplotlib-cycle, 20, 28, and 102 category
-  thresholds never changes any existing position's color;
+- appending categories through and beyond the 102-color cycle never changes
+  any existing position's color;
 - valid stored palettes and their order are returned unchanged;
 - missing and invalid palettes resolve deterministically without mutating the
   table;
@@ -5653,13 +5665,13 @@ class-state status channel.
 
 ### Slice 6m: Positive-integer categorical Spatial Annotation
 
-**Implementation status: Deferred into Slice 6o.**
+**Implementation status: Deferred into Slice 6p.**
 
 The standalone Slice 6m implementation was reverted. Do not implement this
 slice independently. Its positive-integer target, typed-value, UI, and
 cross-widget requirements are retained below as design input. Slice 6n first
 establishes the Object Classification categorical-vocabulary contract; Slice
-6o then implements this deferred Spatial Annotation support against that
+6p then implements this deferred Spatial Annotation support against that
 foundation.
 
 Extend the Spatial Annotation core and Spatial Query selection/styling shell
@@ -5852,7 +5864,7 @@ Training continues to discover active classes from non-missing row values
 rather than treating unused declared categories as labeled training classes.
 
 Slice 6n defines this Object Classification category/palette lifecycle. Slice
-6o reuses the same shared append-only palette operations for Spatial
+6p reuses the same shared append-only palette operations for Spatial
 Annotation rather than introducing an integer-specific reconciliation path.
 
 Reuse the existing pure class normalization/category/palette helpers where
@@ -5954,8 +5966,10 @@ widget calls the other directly.
 
 ### Slice 6n: Object Classification categorical vocabulary and palette lifecycle
 
+**Implementation status: Implemented.**
+
 Refactor Object Classification first, without changing Spatial Query. This
-slice establishes the categorical contract that Slice 6o will later reuse for
+slice establishes the categorical contract that Slice 6p will later reuse for
 positive-integer Spatial Annotation.
 
 `user_class` and `pred_class` remain categorical columns with positive integer
@@ -6357,7 +6371,143 @@ styling.
 - strict positive-integer and missing-value validation remains unchanged;
 - Slice 6n makes no Spatial Query behavior change.
 
-### Slice 6o: Unified Spatial Annotation categorical palette lifecycle
+### Slice 6o: Object Classification core package organization
+
+Reorganize the Object Classification core into one domain package, mirroring
+the existing `core/spatial_query/` organization. This is a behavior-preserving
+housekeeping slice: it changes module ownership and import paths without
+changing annotation, classifier, palette, persistence, headless, or viewer
+behavior.
+
+#### Package boundary
+
+Create:
+
+```text
+src/napari_harpy/core/object_classification/
+    __init__.py
+    annotation.py
+    classifier.py
+    classifier_export.py
+```
+
+Move the existing modules according to domain ownership:
+
+```text
+core/annotation.py
+    → core/object_classification/annotation.py
+
+core/classifier.py
+    → core/object_classification/classifier.py
+
+core/classifier_export.py
+    → core/object_classification/classifier_export.py
+```
+
+`annotation.py` belongs in this package because it owns the
+Object Classification-specific `user_class` column, companion palette, and
+row-assignment mutation. `classifier.py` and `classifier_export.py` own
+classifier preparation, prediction-state mutation, and artifact contracts.
+
+Keep genuinely shared infrastructure at the top-level core boundary:
+
+```text
+core/class_palette.py
+    → shared categorical palette mechanics
+
+core/_color_source.py
+    → shared viewer color-source mechanics
+
+core/feature_extraction.py
+core/feature_matrix_metadata.py
+core/persistence.py
+core/spatialdata.py
+core/validation.py
+    → shared workflow infrastructure
+```
+
+The dependency direction must remain:
+
+```text
+core/object_classification/
+    → may import shared core modules
+
+shared core modules
+    → must not depend on Object Classification implementation modules
+```
+
+Do not move shared palette helpers into the new package merely because Object
+Classification currently consumes them. Spatial Query and its later Spatial
+Annotation integration also depend on those contracts.
+
+#### Import and API migration
+
+Update all internal consumers to the canonical package paths, including:
+
+- Object Classification controllers, annotation controllers, viewer styling,
+  and widgets;
+- `napari_harpy.headless` classifier entry points;
+- core Object Classification modules importing one another;
+- focused tests and fixtures.
+
+The public headless function names, arguments, return values, persistence
+behavior, and classifier artifact format remain unchanged. Only their internal
+imports move.
+
+Use `core/object_classification/__init__.py` only for deliberate domain-level
+exports. Internal implementation helpers remain imported from their defining
+modules; do not turn the package initializer into a broad wildcard facade.
+
+The old `core.annotation`, `core.classifier`, and `core.classifier_export`
+module paths are internal pre-release organization and do not require
+compatibility shims. Remove the old files after every consumer has migrated
+rather than retaining duplicate re-export modules.
+
+#### Behavior-preserving constraints
+
+This slice must not change:
+
+- the Slice 6n append-and-retain categorical vocabulary;
+- user-owned `user_class_colors` authority and fallback behavior;
+- classifier-derived `pred_class_colors` behavior;
+- lazy creation of annotation and prediction columns;
+- prediction clearing, mutation reporting, or viewer-refresh callbacks;
+- `ClassifierApplyResult`, export-bundle, or classifier configuration
+  semantics;
+- table dirty-state paths or zarr persistence layout;
+- Object Classification widget selection, status, or styling behavior;
+- Spatial Query behavior.
+
+Avoid opportunistic renaming or logic cleanup during the move. Any discovered
+behavioral improvement should be handled separately so import failures can be
+distinguished from semantic regressions.
+
+#### Deliverables
+
+- the new `core/object_classification/` package;
+- migration of Object Classification annotation, classifier, and classifier
+  export modules;
+- canonical imports throughout source and focused tests;
+- removal of the three old top-level domain module files;
+- focused annotation, classifier, headless, and Object Classification widget
+  verification;
+- lint and import/compilation verification for the moved and directly affected
+  modules.
+
+#### Exit criteria
+
+- no source or test import refers to `napari_harpy.core.annotation`,
+  `napari_harpy.core.classifier`, or
+  `napari_harpy.core.classifier_export`;
+- the old top-level files no longer exist;
+- the new package has no circular imports;
+- Object Classification annotation, inference, palette, persistence, viewer
+  styling, export, and headless behavior remain unchanged;
+- shared palette, feature, persistence, SpatialData, and validation modules
+  remain outside the domain package;
+- focused affected tests and linting pass.
+
+### Slice 6p: Unified Spatial Annotation categorical palette lifecycle
 
 Implement the positive-integer Spatial Annotation support deferred from Slice
 6m after Slice 6n has established the Object Classification category and
@@ -6506,7 +6656,7 @@ kinds continue through the shared compact categorical colormap.
 ### Slice 7: Async calculate-query-review-apply flow
 
 This slice connects the validated action intents exposed by the integrated
-Spatial Query child after Slice 6o to the existing core calculation, query, and
+Spatial Query child after Slice 6p to the existing core calculation, query, and
 annotation APIs.
 
 Deliverables:
