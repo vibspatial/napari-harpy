@@ -6606,15 +6606,48 @@ Implement the deferred Slice 6m contract:
 - Remove stores `pd.NA`;
 - the future Apply dialog selects its editor from the captured value kind.
 
+Use one small validation/resolution boundary rather than introducing another
+target dataclass:
+
+```python
+def resolve_spatial_annotation_value_kind(
+    values: pd.Series,
+    *,
+    column_name: str,
+) -> SpatialAnnotationValueKind:
+    ...
+```
+
+This helper validates the categorical representation and returns the resolved
+kind. Compatible-column discovery, existing-column validation, preparation,
+and styling reuse that boundary. `SpatialAnnotationPreparation` captures the
+returned kind once so summarization and Apply do not infer it again. An empty
+`user_class` resolves to `positive_integer`; an arbitrary empty object-backed
+categorical retains the existing string fallback.
+
 Existing positive-integer columns remain strict: plain integer columns,
 booleans, zero, negative IDs, mixed categories, and arbitrary coercion remain
 unsupported. `user_class` is the intended shared writable target.
+
+Reuse the canonical `USER_CLASS_COLUMN`, `PRED_CLASS_COLUMN`, and
+`PRED_CONFIDENCE_COLUMN` names from the Object Classification core package.
+Do not duplicate these reserved names in Spatial Query or introduce a generic
+column-ownership registry. This dependency is intentional: Spatial Query
+explicitly interoperates with the user-authored `user_class` state while
+respecting classifier ownership of the prediction pair.
 
 #### Atomic Apply and dirty-state behavior
 
 Build every replacement column and companion palette off-table. Install or
 roll back `.obs[column]` and `.uns["<column>_colors"]` through the existing
 atomic Spatial Annotation boundary.
+
+Reuse the existing pure `resolve_table_categorical_palette()` and
+`extend_categorical_palette()` helpers from `core/class_palette.py`. Sharing
+the categorical lifecycle does not require a shared mutating annotation
+helper: Object Classification and Spatial Annotation have different row
+selection and atomicity boundaries. Spatial Annotation therefore keeps its
+existing prepare-off-table and atomic obs/uns assignment path.
 
 For either value kind:
 
@@ -6629,10 +6662,44 @@ For either value kind:
 - component dirty-state publication includes the palette path only when
   `palette_changed` is true.
 
-An effective Spatial Query mutation of `user_class` publishes the ordinary
-table-state event. Object Classification consumes that event for current
-styling/control refresh and classifier invalidation without direct
-widget-to-widget coupling.
+#### Slice 6p and Slice 7 ownership boundary
+
+Slice 6p implements the typed domain and widget-shell support:
+
+- compatible-column discovery and value-kind capture;
+- typed preparation, summary, and atomic Apply;
+- status, tooltip, and viewer-styling support.
+
+Slice 6p documents, but does not implement, the future cross-widget event
+contract. Use the exact event source:
+
+```python
+source = "spatial_query_annotation"
+```
+
+Slice 7 implements both sides of this contract:
+
+```text
+effective Spatial Query user_class Apply
+    ↓
+record TableStateChangedEvent
+    → source = "spatial_query_annotation"
+    → obs/user_class
+    → uns/user_class_colors only when palette_changed is true
+    ↓
+Object Classification consumes the shared event
+```
+
+The Object Classification consumer accepts this source only for the currently
+selected SpatialData object and table when the changed paths include
+`obs/user_class`. Its own `source="object_classification_annotation"` event
+continues through the existing direct annotation callback and must not be
+handled a second time by this external-event path.
+
+Slice 7 also owns the Set/Remove review dialog, chooses its editor from the
+captured `SpatialAnnotationPreparation.value_kind`, and implements the
+consumer refresh and classifier lifecycle. Slice 6p does not publish or
+consume the event, implement query orchestration, or call the dialog.
 
 #### Selection, status, and viewer styling
 
@@ -6652,19 +6719,23 @@ kinds continue through the shared compact categorical colormap.
 #### Deliverables
 
 - the deferred Slice 6m value-kind, discovery, preparation, typed-summary,
-  Apply, UI-shell, and Slice 7 integration contracts;
-- one shared read-only stored categorical-palette resolver;
-- one shared append-only palette extension path for strings and positive
-  integers;
+  Apply, and UI-shell contracts;
+- one small categorical value-kind resolver, with the resolved kind captured
+  on `SpatialAnnotationPreparation`;
+- reuse of the existing shared read-only stored categorical-palette resolver
+  and append-only palette extension path for strings and positive integers;
 - positive-integer Spatial Annotation Apply with retained categories and
   atomic obs/uns assignment;
 - shared generic Labels styling for both supported categorical kinds;
-- `user_class` event interoperability with Object Classification;
+- the documented future `source="spatial_query_annotation"` event contract,
+  with both publication and Object Classification consumption deferred to
+  Slice 7;
 - focused core Spatial Annotation, palette, viewer-styling, and Spatial Query
   shell tests;
 - no category-identity reconciliation, unused-category removal,
   positive-integer category sorting, plain-integer coercion, New-column type
-  selector, prediction-output mutation, or direct widget dependency.
+  selector, shared mutating annotation helper, prediction-output mutation, or
+  direct widget dependency.
 
 #### Exit criteria
 
@@ -6685,7 +6756,8 @@ kinds continue through the shared compact categorical colormap.
   Classification reserved columns;
 - read-only selection and styling do not mutate or dirty the table;
 - no-op and palette dirty-state reporting remain exact;
-- the Slice 7 dialog and event contracts support the captured value kind.
+- the Slice 7 dialog, event-producer, and event-consumer contracts support the
+  captured value kind without being implemented in Slice 6p.
 
 ### Slice 7: Async calculate-query-review-apply flow
 
@@ -6716,9 +6788,16 @@ Deliverables:
 - main-thread atomic annotation Apply;
 - Spatial Query child-owned publication of the obs path and the palette uns
   path indicated by `SpatialAnnotationApplyResult`;
-- Object Classification consumption of an external Spatial Query
-  `user_class` table-state event for current styling/control refresh and
-  classifier invalidation, without direct widget coupling;
+- publication of an effective `user_class` Apply with
+  `source="spatial_query_annotation"`;
+- Object Classification consumption of that event for the current SpatialData
+  object and table when its paths include `obs/user_class`: validate current
+  table state, perform a full user-class control and Labels styling refresh,
+  mark the classifier stale, and schedule retraining when Auto-train is
+  enabled;
+- no double handling of Object Classification's own
+  `source="object_classification_annotation"` event and no direct widget
+  coupling;
 - targeted primary labels-layer refresh after an effective annotation Apply,
   with missing values rendered through the shared missing/unlabelled color;
 - controller/dialog async tests.
@@ -6747,6 +6826,28 @@ The spatial-query phase is:
         ↓
     main thread: accept result and open the review dialog
 
+After an effective reviewed Apply to `user_class`, the cross-widget flow is:
+
+    Spatial Query records source="spatial_query_annotation"
+        → obs/user_class
+        → uns/user_class_colors only when palette_changed is true
+        ↓
+    Object Classification receives the current-table event
+        ↓
+    validate the current table state
+        ↓
+    refresh user-class controls and Labels styling
+        ↓
+    mark the classifier stale
+        ↓
+    schedule retraining when Auto-train is enabled
+
+`TableStateChangedEvent` identifies component paths and affected regions
+rather than individual instance IDs. The external consumer therefore performs
+the safe full styling/control refresh and does not attempt the row-scoped
+viewer optimization used when Object Classification itself knows the edited
+instance.
+
 The same operation ID governs both phases; do not introduce a separate
 job-ID concept. The controller also records which phase owns the active worker.
 Cancellation, selection changes, reload, a newer operation, or parent/child
@@ -6763,6 +6864,11 @@ Exit criteria:
   parent Annotation widget's shared app state;
 - cache update and annotation application are visibly distinct state
   changes;
+- an effective `user_class` Apply publishes exactly one
+  `source="spatial_query_annotation"` event, and Object Classification handles
+  it without reprocessing its own annotation events;
+- the external event refreshes current user-class state, invalidates the
+  classifier, and schedules retraining only when Auto-train is enabled;
 - users always see affected and overwrite counts before annotation mutation.
 
 ### Slice 8: Persistence UX and cross-widget synchronization
@@ -6770,8 +6876,9 @@ Exit criteria:
 Deliverables:
 
 - the parent Annotation widget, including its Spatial Query child, Viewer, and
-  Object Classification targeted refresh behavior consuming
-  `table_state_changed` without feedback loops;
+  remaining cross-widget refresh behavior consuming `table_state_changed`
+  without feedback loops, extending rather than reimplementing the Slice 7
+  `user_class` event integration;
 - shared primary-label color-source ownership implementing the rule that the
   most recent explicit coloring action controls the layer, so later unrelated
   table events cannot let another widget silently reclaim its styling;
