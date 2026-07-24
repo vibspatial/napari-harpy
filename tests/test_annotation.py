@@ -6,9 +6,13 @@ import anndata as ad
 import pandas as pd
 import pytest
 
-import napari_harpy.core.annotation as annotation_module
-from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN, set_user_class_for_rows
-from napari_harpy.core.class_palette import default_class_colors
+from napari_harpy.core.annotation import (
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+    UserClassStateChange,
+    set_user_class_for_rows,
+)
+from napari_harpy.core.class_palette import default_categorical_colors
 
 
 def _make_table(
@@ -43,69 +47,99 @@ def _assert_user_classes(table: ad.AnnData, expected: list[int | None], categori
     assert list(values.cat.categories) == categories
 
 
-def test_set_user_class_for_rows_existing_class_updates_only_rows_without_full_normalization(monkeypatch) -> None:
-    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_class_colors([1]))
+def test_set_user_class_for_rows_existing_class_preserves_valid_palette() -> None:
+    colors = ["#123456"]
+    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=colors)
 
-    def fail_full_normalization(*args, **kwargs) -> None:
-        del args, kwargs
-        raise AssertionError("existing-class row edit should not use full normalization")
-
-    def fail_palette_sync(*args, **kwargs) -> None:
-        del args, kwargs
-        raise AssertionError("existing-class row edit should not resync an already valid palette")
-
-    monkeypatch.setattr(annotation_module, "_set_user_class_annotation_state", fail_full_normalization)
-    monkeypatch.setattr(annotation_module, "sync_class_palette_state", fail_palette_sync)
-
-    set_user_class_for_rows(table, _row_mask(table, "cell_2"), 1)
+    state_change = set_user_class_for_rows(table, _row_mask(table, "cell_2"), 1)
 
     _assert_user_classes(table, [None, 1, 1], [1])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([1])
+    assert table.uns[USER_CLASS_COLORS_KEY] == colors
+    assert state_change == UserClassStateChange(
+        user_class_changed=True,
+        palette_changed=False,
+    )
 
 
-def test_set_user_class_for_rows_adds_new_category_and_updates_selected_rows_only() -> None:
-    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_class_colors([1]))
+def test_set_user_class_for_rows_appends_new_category_and_preserves_existing_color() -> None:
+    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=["#123456"])
 
-    set_user_class_for_rows(table, _row_mask(table, "cell_0"), 3)
+    state_change = set_user_class_for_rows(table, _row_mask(table, "cell_0"), 3)
 
     _assert_user_classes(table, [3, 1, None], [1, 3])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([1, 3])
+    assert table.uns[USER_CLASS_COLORS_KEY] == ["#123456", default_categorical_colors(2)[1]]
+    assert state_change == UserClassStateChange(
+        user_class_changed=True,
+        palette_changed=True,
+    )
+
+
+def test_set_user_class_for_rows_preserves_nonascending_category_order() -> None:
+    colors = ["#123456", "#654321"]
+    table = _make_table([3, 1, pd.NA], categories=[3, 1], colors=colors)
+
+    set_user_class_for_rows(table, _row_mask(table, "cell_2"), 2)
+
+    _assert_user_classes(table, [3, 1, 2], [3, 1, 2])
+    assert table.uns[USER_CLASS_COLORS_KEY] == [*colors, default_categorical_colors(3)[2]]
+
+
+def test_set_user_class_for_rows_same_value_is_a_no_op() -> None:
+    colors = ["#123456"]
+    table = _make_table([1, pd.NA, pd.NA], categories=[1], colors=colors)
+    previous = table.obs[USER_CLASS_COLUMN]
+
+    state_change = set_user_class_for_rows(table, _row_mask(table, "cell_0"), 1)
+
+    assert table.obs[USER_CLASS_COLUMN] is previous
+    assert table.uns[USER_CLASS_COLORS_KEY] == colors
+    assert state_change == UserClassStateChange(
+        user_class_changed=False,
+        palette_changed=False,
+    )
 
 
 def test_set_user_class_for_rows_initializes_missing_column() -> None:
     table = _make_table()
 
-    set_user_class_for_rows(table, _row_mask(table, "cell_1"), 3)
+    state_change = set_user_class_for_rows(table, _row_mask(table, "cell_1"), 3)
 
     _assert_user_classes(table, [None, 3, None], [3])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([3])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_categorical_colors(1)
+    assert state_change == UserClassStateChange(
+        user_class_changed=True,
+        palette_changed=True,
+    )
 
 
-def test_set_user_class_for_rows_clearing_only_labeled_object_removes_unused_category() -> None:
-    table = _make_table([pd.NA, 3, pd.NA], categories=[3], colors=default_class_colors([3]))
+def test_set_user_class_for_rows_clearing_only_labeled_object_retains_vocabulary() -> None:
+    colors = ["#123456"]
+    table = _make_table([pd.NA, 3, pd.NA], categories=[3], colors=colors)
 
-    set_user_class_for_rows(table, _row_mask(table, "cell_1"), None)
+    state_change = set_user_class_for_rows(table, _row_mask(table, "cell_1"), None)
 
-    _assert_user_classes(table, [None, None, None], [])
-    assert table.uns[USER_CLASS_COLORS_KEY] == []
+    _assert_user_classes(table, [None, None, None], [3])
+    assert table.uns[USER_CLASS_COLORS_KEY] == colors
+    assert state_change == UserClassStateChange(
+        user_class_changed=True,
+        palette_changed=False,
+    )
 
 
-def test_set_user_class_for_rows_replaces_category_when_previous_class_becomes_unused() -> None:
-    table = _make_table([pd.NA, 3, pd.NA], categories=[3], colors=default_class_colors([3]))
+def test_set_user_class_for_rows_retains_unused_category_when_replacing_class() -> None:
+    table = _make_table([pd.NA, 3, pd.NA], categories=[3], colors=["#123456"])
 
     set_user_class_for_rows(table, _row_mask(table, "cell_1"), 4)
 
-    _assert_user_classes(table, [None, 4, None], [4])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([4])
+    _assert_user_classes(table, [None, 4, None], [3, 4])
+    assert table.uns[USER_CLASS_COLORS_KEY] == ["#123456", default_categorical_colors(2)[1]]
 
 
-def test_set_user_class_for_rows_recovers_non_categorical_state() -> None:
+def test_set_user_class_for_rows_rejects_non_categorical_state() -> None:
     table = _make_table(pd.Series([2, pd.NA, pd.NA], dtype="Int64"))
 
-    set_user_class_for_rows(table, _row_mask(table, "cell_1"), 4)
-
-    _assert_user_classes(table, [2, 4, None], [2, 4])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([2, 4])
+    with pytest.raises(ValueError, match="categorical dtype"):
+        set_user_class_for_rows(table, _row_mask(table, "cell_1"), 4)
 
 
 def test_set_user_class_for_rows_rejects_legacy_class_zero() -> None:
@@ -118,14 +152,18 @@ def test_set_user_class_for_rows_rejects_legacy_class_zero() -> None:
 def test_set_user_class_for_rows_resyncs_misaligned_palette() -> None:
     table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=["#ffffffff", "#000000ff"])
 
-    set_user_class_for_rows(table, _row_mask(table, "cell_2"), 1)
+    state_change = set_user_class_for_rows(table, _row_mask(table, "cell_2"), 1)
 
     _assert_user_classes(table, [None, 1, 1], [1])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([1])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_categorical_colors(1)
+    assert state_change == UserClassStateChange(
+        user_class_changed=True,
+        palette_changed=True,
+    )
 
 
 def test_set_user_class_for_rows_rejects_non_series_row_mask() -> None:
-    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_class_colors([1]))
+    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_categorical_colors(1))
 
     try:
         set_user_class_for_rows(table, [True, False, False], 2)
@@ -136,7 +174,7 @@ def test_set_user_class_for_rows_rejects_non_series_row_mask() -> None:
 
 
 def test_set_user_class_for_rows_rejects_missing_row_mask_values() -> None:
-    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_class_colors([1]))
+    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_categorical_colors(1))
     rows = pd.Series([True, pd.NA, False], index=table.obs.index, dtype="boolean")
 
     try:
@@ -148,7 +186,7 @@ def test_set_user_class_for_rows_rejects_missing_row_mask_values() -> None:
 
 
 def test_set_user_class_for_rows_rejects_non_boolean_row_mask() -> None:
-    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_class_colors([1]))
+    table = _make_table([pd.NA, 1, pd.NA], categories=[1], colors=default_categorical_colors(1))
     rows = pd.Series([1, 0, 0], index=table.obs.index)
 
     try:
