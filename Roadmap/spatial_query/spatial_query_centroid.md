@@ -6373,6 +6373,8 @@ styling.
 
 ### Slice 6o: Object Classification core package organization
 
+**Implementation status: Implemented.**
+
 Reorganize the Object Classification core into one domain package, mirroring
 the existing `core/spatial_query/` organization. This is a behavior-preserving
 housekeeping slice: it changes module ownership and import paths without
@@ -6460,8 +6462,10 @@ Then import it from the shared feature-matrix module in:
 - the Object Classification controller;
 - shared feature-matrix metadata inspection and its focused tests.
 
-This is a pure ownership and import-path change. Preserve the helper's existing
-arguments, return value, validation, and error behavior. After the move,
+This is an ownership and import-path change. Preserve the helper's existing
+arguments, return value, and validation behavior. Because it now belongs to
+shared feature-matrix metadata, validation messages refer to
+`Feature metadata` rather than `Classifier export metadata`. After the move,
 `core/feature_matrix_metadata.py` must not import anything from
 `core/object_classification/`.
 
