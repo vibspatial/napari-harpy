@@ -55,11 +55,12 @@ def load_and_style_spatial_annotation_labels(
 ) -> LabelsLoadResult:
     """Load, style, and activate the primary labels layer for annotation.
 
-    The categorical string column is validated before the viewer is changed.
-    Styling delegates table-binding validation, palette resolution, and
-    labels-feature construction to the generic table-backed labels styling
-    API. It changes only napari layer presentation state: it does not mutate
-    the table, its persisted state, or the canonical-center cache.
+    The categorical string or positive-integer column is validated before the
+    viewer is changed. Styling delegates table-binding validation, palette
+    resolution, and labels-feature construction to the generic table-backed
+    labels styling API. It changes only napari layer presentation state: it
+    does not mutate the table, its persisted state, or the canonical-center
+    cache.
 
     Parameters
     ----------
@@ -75,7 +76,8 @@ def load_and_style_spatial_annotation_labels(
     table_name
         Name of the table containing the annotation column.
     column_name
-        Existing categorical string observation column used for coloring.
+        Existing categorical string or positive-integer observation column
+        used for coloring.
 
     Returns
     -------

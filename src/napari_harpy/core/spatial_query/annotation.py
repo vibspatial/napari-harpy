@@ -15,6 +15,11 @@ from napari_harpy.core.class_palette import (
     normalize_color_sequence,
     resolve_table_categorical_palette,
 )
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.object_classification.classifier import (
+    PRED_CLASS_COLUMN,
+    PRED_CONFIDENCE_COLUMN,
+)
 from napari_harpy.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
     CANONICAL_OBSM_KEY,
@@ -35,6 +40,11 @@ if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 type SpatialAnnotationColumnMode = Literal["existing", "new"]
+type SpatialAnnotationValueKind = Literal["string", "positive_integer"]
+type SpatialAnnotationValue = str | int | None
+
+_CLASSIFIER_OWNED_COLUMNS = frozenset((PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN))
+_OBJECT_CLASSIFICATION_COLUMNS = frozenset((USER_CLASS_COLUMN, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN))
 
 
 class SpatialAnnotationColumnChangedError(ValueError):
@@ -73,12 +83,17 @@ class SpatialAnnotationPreparation:
             raise TypeError("Spatial annotation current values must be a pandas Series.")
         if len(self.current_values) != len(row_positions):
             raise ValueError("Spatial annotation current values must match the queried instance count.")
-        if not isinstance(self.current_values.dtype, pd.CategoricalDtype):
-            raise ValueError("Spatial annotation current values must be categorical.")
-        if any(not isinstance(category, str) for category in self.current_values.cat.categories):
-            raise ValueError("Spatial annotation current values must contain only string categories.")
         object.__setattr__(self, "row_positions", row_positions)
         object.__setattr__(self, "current_values", self.current_values.copy(deep=True))
+        _ = self.value_kind
+
+    @property
+    def value_kind(self) -> SpatialAnnotationValueKind:
+        """Return the annotation kind represented by the captured column."""
+        return validate_and_resolve_spatial_annotation_value_kind(
+            self.current_values,
+            column_name=self.column_name,
+        )
 
     @property
     def binding(self) -> CanonicalRegionBinding:
@@ -93,10 +108,11 @@ class SpatialAnnotationSummary:
     Parameters
     ----------
     annotation_value
-        Normalized string category for Set annotation. ``None`` is the domain
-        sentinel for Remove annotation: Apply clears the matched categorical
-        values with ``pd.NA``. ``None`` itself is not stored, and the strings
-        ``"None"`` and ``"nan"`` remain ordinary annotation categories.
+        Normalized string or positive integer category for Set annotation.
+        ``None`` is the domain sentinel for Remove annotation: Apply clears
+        the matched categorical values with ``pd.NA``. ``None`` itself is not
+        stored, and the strings ``"None"`` and ``"nan"`` remain ordinary
+        annotation categories.
     matched_count
         Total number of matched rows included in the review.
     current_missing_count
@@ -109,7 +125,7 @@ class SpatialAnnotationSummary:
         existing non-missing annotations that Remove would clear.
     """
 
-    annotation_value: str | None
+    annotation_value: SpatialAnnotationValue
     matched_count: int
     current_missing_count: int
     current_equal_count: int
@@ -118,11 +134,14 @@ class SpatialAnnotationSummary:
     def __post_init__(self) -> None:
         annotation_value = self.annotation_value
         if annotation_value is not None:
-            if not isinstance(annotation_value, str):
-                raise TypeError("Spatial annotation value must be a string or None.")
-            annotation_value = annotation_value.strip()
-            if not annotation_value:
-                raise ValueError("Spatial annotation value must not be empty.")
+            if isinstance(annotation_value, str):
+                annotation_value = annotation_value.strip()
+                if not annotation_value:
+                    raise ValueError("Spatial annotation string value must not be empty.")
+            elif isinstance(annotation_value, bool) or not isinstance(annotation_value, int):
+                raise TypeError("Spatial annotation value must be a string, positive integer, or None.")
+            elif annotation_value <= 0:
+                raise ValueError("Spatial annotation integer value must be positive.")
             object.__setattr__(self, "annotation_value", annotation_value)
 
         counts = (
@@ -211,6 +230,11 @@ def prepare_spatial_annotation(
         current_column = require_compatible_spatial_annotation_column(table, normalized_column_name)
         current_values = current_column.iloc[row_positions].copy(deep=True)
     else:
+        if normalized_column_name in _OBJECT_CLASSIFICATION_COLUMNS:
+            raise ValueError(
+                f"New annotation column `{normalized_column_name}` is reserved for Object Classification "
+                "and cannot be created by Spatial Query."
+            )
         if normalized_column_name in table.obs.columns:
             raise ValueError(f"New annotation column `{normalized_column_name}` already exists.")
         current_values = pd.Series(
@@ -230,7 +254,7 @@ def prepare_spatial_annotation(
 
 def summarize_spatial_annotation(
     preparation: SpatialAnnotationPreparation,
-    annotation_value: str | None,
+    annotation_value: SpatialAnnotationValue,
 ) -> SpatialAnnotationSummary:
     """Summarize a proposed Set or Remove action without mutation."""
     if not isinstance(preparation, SpatialAnnotationPreparation):
@@ -240,11 +264,19 @@ def summarize_spatial_annotation(
 
     normalized_value = annotation_value
     if normalized_value is not None:
-        if not isinstance(normalized_value, str):
-            raise TypeError("Spatial annotation value must be a string or None.")
-        normalized_value = normalized_value.strip()
-        if not normalized_value:
-            raise ValueError("Spatial annotation value must not be empty.")
+        if preparation.value_kind == "string":
+            if not isinstance(normalized_value, str):
+                raise TypeError("String spatial annotation targets require a string value or None.")
+            normalized_value = normalized_value.strip()
+            if not normalized_value:
+                raise ValueError("Spatial annotation string value must not be empty.")
+        elif preparation.value_kind == "positive_integer":
+            if isinstance(normalized_value, bool) or not isinstance(normalized_value, int):
+                raise TypeError("Positive-integer spatial annotation targets require a Python int or None.")
+            if normalized_value <= 0:
+                raise ValueError("Spatial annotation integer value must be positive.")
+        else:  # pragma: no cover - guarded by SpatialAnnotationPreparation
+            raise ValueError(f"Unsupported spatial annotation value kind: {preparation.value_kind!r}.")
 
     missing = preparation.current_values.isna().to_numpy(dtype=bool)
     if normalized_value is None:
@@ -303,9 +335,23 @@ def apply_spatial_annotation(
     current_column: pd.Series | None = None
     if preparation.column_mode == "existing":
         current_column = require_compatible_spatial_annotation_column(table, preparation.column_name)
+        current_value_kind = validate_and_resolve_spatial_annotation_value_kind(
+            current_column,
+            column_name=preparation.column_name,
+        )
+        if current_value_kind != preparation.value_kind:
+            raise SpatialAnnotationColumnChangedError(
+                "The annotation column value kind changed while the annotation was being reviewed."
+            )
         _require_unchanged_existing_column(preparation, current_column)
-    elif preparation.column_name in table.obs.columns:
-        raise ValueError(f"New annotation column `{preparation.column_name}` already exists.")
+    else:
+        if preparation.column_name in _OBJECT_CLASSIFICATION_COLUMNS:
+            raise ValueError(
+                f"New annotation column `{preparation.column_name}` is reserved for Object Classification "
+                "and cannot be created by Spatial Query."
+            )
+        if preparation.column_name in table.obs.columns:
+            raise ValueError(f"New annotation column `{preparation.column_name}` already exists.")
 
     fresh_summary = summarize_spatial_annotation(preparation, expected_summary.annotation_value)
     if fresh_summary != expected_summary:
@@ -313,12 +359,16 @@ def apply_spatial_annotation(
     if fresh_summary.changed_count == 0:
         return SpatialAnnotationApplyResult(annotation_changed=False, palette_changed=False)
 
+    # Build the complete replacement column and optional companion palette
+    # off-table. This phase reads the live AnnData state but does not mutate it.
     replacement, palette, palette_changed = _build_annotation_replacement(
         table,
         preparation,
         current_column,
         fresh_summary,
     )
+    # This is the AnnData mutation boundary: install the prepared `.obs`
+    # column and `.uns` palette as one unit, rolling both back on failure.
     _assign_annotation_column_and_palette_atomically(
         table,
         column_name=preparation.column_name,
@@ -357,11 +407,47 @@ def require_compatible_spatial_annotation_column(table: AnnData, column_name: st
     if column_name not in table.obs.columns:
         raise ValueError(f"Existing annotation column `{column_name}` is not present.")
     values = table.obs[column_name]
+    validate_and_resolve_spatial_annotation_value_kind(values, column_name=column_name)
+    return values
+
+
+def validate_and_resolve_spatial_annotation_value_kind(
+    values: pd.Series,
+    *,
+    column_name: str,
+) -> SpatialAnnotationValueKind:
+    """Validate a categorical annotation column and return its value kind."""
+    if column_name in _CLASSIFIER_OWNED_COLUMNS:
+        raise ValueError(
+            f"Existing annotation column `{column_name}` is classifier-owned and cannot be modified by Spatial Query."
+        )
+    if not isinstance(values, pd.Series):
+        raise TypeError("Spatial annotation values must be a pandas Series.")
     if not isinstance(values.dtype, pd.CategoricalDtype):
         raise ValueError(f"Existing annotation column `{column_name}` must be categorical.")
-    if not _is_compatible_spatial_annotation_column(values):
-        raise ValueError(f"Existing annotation column `{column_name}` must contain only string categories.")
-    return values
+
+    categories = values.cat.categories
+    # `user_class` has a fixed positive-integer schema. Handle it before the
+    # generic empty-category fallback because an empty categorical commonly
+    # has object-typed categories and would otherwise be misclassified as a
+    # string target. `all([])` intentionally accepts that empty vocabulary,
+    # while a non-empty string or invalid integer vocabulary still fails.
+    if column_name == USER_CLASS_COLUMN:
+        if all(_is_positive_integer_category(category) for category in categories):
+            return "positive_integer"
+        raise ValueError(f"Existing annotation column `{column_name}` must contain only positive integer categories.")
+    if len(categories) == 0:
+        if pd.api.types.is_integer_dtype(categories.dtype) and not pd.api.types.is_bool_dtype(categories.dtype):
+            return "positive_integer"
+        return "string"
+    if all(isinstance(category, str) for category in categories):
+        return "string"
+    if all(_is_positive_integer_category(category) for category in categories):
+        return "positive_integer"
+    raise ValueError(
+        f"Existing annotation column `{column_name}` must contain only string categories "
+        "or positive integer categories."
+    )
 
 
 def get_compatible_spatial_annotation_column_names(
@@ -371,20 +457,28 @@ def get_compatible_spatial_annotation_column_names(
     """Return compatible existing annotation columns in table order."""
     table = sdata.tables[table_name]
     table_metadata = get_table_metadata(sdata, table_name)
-    excluded_columns = {table_metadata.region_key, table_metadata.instance_key}
-    return [
-        column_name
-        for column_name in table.obs.columns
-        if isinstance(column_name, str)
-        and column_name not in excluded_columns
-        and _is_compatible_spatial_annotation_column(table.obs[column_name])
-    ]
+    excluded_columns = {
+        table_metadata.region_key,
+        table_metadata.instance_key,
+        *_CLASSIFIER_OWNED_COLUMNS,
+    }
+    compatible_columns: list[str] = []
+    for column_name in table.obs.columns:
+        if not isinstance(column_name, str) or column_name in excluded_columns:
+            continue
+        try:
+            validate_and_resolve_spatial_annotation_value_kind(
+                table.obs[column_name],
+                column_name=column_name,
+            )
+        except (TypeError, ValueError):
+            continue
+        compatible_columns.append(column_name)
+    return compatible_columns
 
 
-def _is_compatible_spatial_annotation_column(values: pd.Series) -> bool:
-    return isinstance(values.dtype, pd.CategoricalDtype) and all(
-        isinstance(category, str) for category in values.cat.categories
-    )
+def _is_positive_integer_category(value: object) -> bool:
+    return not isinstance(value, (bool, np.bool_)) and isinstance(value, (int, np.integer)) and int(value) > 0
 
 
 def _resolve_query_row_positions(

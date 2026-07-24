@@ -7,11 +7,14 @@ from napari_harpy.core.spatial_query.annotation import (
     SpatialAnnotationPreparation,
     SpatialAnnotationQueryOutdatedError,
     SpatialAnnotationSummary,
+    SpatialAnnotationValue,
+    SpatialAnnotationValueKind,
     apply_spatial_annotation,
     get_compatible_spatial_annotation_column_names,
     prepare_spatial_annotation,
     require_compatible_spatial_annotation_column,
     summarize_spatial_annotation,
+    validate_and_resolve_spatial_annotation_value_kind,
 )
 from napari_harpy.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
@@ -86,6 +89,8 @@ __all__ = [
     "SpatialAnnotationPreparation",
     "SpatialAnnotationQueryOutdatedError",
     "SpatialAnnotationSummary",
+    "SpatialAnnotationValue",
+    "SpatialAnnotationValueKind",
     "apply_canonical_cache_update",
     "apply_spatial_annotation",
     "build_canonical_cache_update_payload",
@@ -104,4 +109,5 @@ __all__ = [
     "prepare_spatial_annotation",
     "require_compatible_spatial_annotation_column",
     "summarize_spatial_annotation",
+    "validate_and_resolve_spatial_annotation_value_kind",
 ]
