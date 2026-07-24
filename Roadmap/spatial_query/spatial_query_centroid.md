@@ -6839,6 +6839,54 @@ SpatialQueryWorkerPhase = Literal[
 One monotonically increasing operation ID governs both phases. Do not
 introduce separate center and query job IDs.
 
+The controller has one strict active-work invariant:
+
+```text
+at most one logical operation is active
+    ↓
+at most one worker belonging to that operation is active
+```
+
+A Run request received while an operation is active returns `False` and makes
+no state change. It does not cancel, replace, or allocate a new operation ID.
+Run is also disabled in the UI while either phase is active, but the controller
+enforces this independently so queued clicks or programmatic calls cannot
+create concurrent work.
+
+The no-cache path uses two sequential workers, not two independently
+user-controlled jobs:
+
+```text
+one Run / one operation ID
+    ↓
+canonical-centers worker
+    ↓ returned payload accepted
+main-thread cache update
+    ↓ update succeeds
+containment-query worker
+```
+
+The containment worker is created only after the canonical-centers result is
+accepted for the current operation ID and the main-thread cache update
+succeeds. A cancelled, stale, errored, or rejected center result never starts
+the query phase.
+
+The phase handoff replaces the active canonical-centers phase with the
+containment-query phase before starting the second worker. Both operation ID
+and expected phase guard every signal. Consequently, a late `finished` signal
+from the first worker cannot clear or otherwise affect the already-installed
+second worker:
+
+```text
+canonical-centers worker emits returned
+    ↓
+controller accepts and installs containment-query as the active phase
+    ↓
+old canonical-centers worker emits finished
+    ↓ phase mismatch
+ignore the old finished signal
+```
+
 The complete valid-cache path is:
 
 ```text
@@ -6914,7 +6962,6 @@ Invalidate active work when:
 - the selected Shapes session becomes dirty;
 - labels, table, target mode, target column, or New-column draft changes;
 - the selected primary Labels layer is removed;
-- a newer Run starts;
 - relevant table reload replaces the operation's table state;
 - the child or parent is destroyed.
 
@@ -6971,8 +7018,13 @@ Otherwise, pass the result and captured annotation target to Slice 7b.
 - valid reuse never starts labels I/O or mutates/publishes cache state;
 - labels aggregation and containment evaluation both run off the Qt main
   thread;
+- a second Run request cannot replace an active operation or allocate another
+  worker;
+- the two no-cache workers never overlap and remain phases of one operation;
 - only the current operation ID can apply a cache payload or deliver a query
   result;
+- a late signal from the completed center phase cannot clear or mutate the
+  active query phase;
 - accepted cache mutation is published by the child exactly once and before
   the containment result is reviewed;
 - cancellation after cache application retains that useful dirty cache but
