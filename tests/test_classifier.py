@@ -8,8 +8,9 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
+import napari_harpy.core.classifier as classifier_core
 import napari_harpy.widgets.object_classification.controller as classifier_module
-from napari_harpy.core.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
 from napari_harpy.core.class_palette import default_class_colors
 from napari_harpy.core.classifier import (
     ObjectClassificationStateError,
@@ -17,6 +18,7 @@ from napari_harpy.core.classifier import (
 )
 from napari_harpy.core.classifier_export import read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND, FeatureMatrixMetadataState
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -28,15 +30,36 @@ from napari_harpy.widgets.object_classification.controller import (
 _FEATURE_MATRICES_KEY = "feature_matrices"
 
 
-def test_object_classification_state_validation_is_read_only_for_canonical_columns(
+def test_update_table_prediction_state_rejects_rows_outside_clear_scope(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+
+    with pytest.raises(ValueError, match="subset of clear row positions"):
+        classifier_core._update_table_prediction_state(
+            table,
+            clear_row_positions=np.array([0], dtype=np.int64),
+            prediction_row_positions=np.array([1], dtype=np.int64),
+            pred_classes=np.array([1], dtype=np.int64),
+            pred_confidences=np.array([0.9], dtype=np.float64),
+            pred_class_column=PRED_CLASS_COLUMN,
+            pred_confidence_column=PRED_CONFIDENCE_COLUMN,
+        )
+
+    assert PRED_CLASS_COLUMN not in table.obs
+    assert PRED_CONFIDENCE_COLUMN not in table.obs
+    assert PRED_CLASS_COLORS_KEY not in table.uns
+
+
+def test_object_classification_state_validation_is_read_only_for_valid_columns(
     sdata_blobs: SpatialData,
 ) -> None:
     table = sdata_blobs["table"]
     user_values = [1, pd.NA, 2, *([pd.NA] * (table.n_obs - 3))]
     pred_values = [2, pd.NA, 1, *([pd.NA] * (table.n_obs - 3))]
     confidence_values = [0.8, np.nan, 0.7, *([np.nan] * (table.n_obs - 3))]
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical(user_values, categories=[1, 2])
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[1, 2])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(user_values, categories=[2, 1, 7])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(pred_values, categories=[2, 1, 9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
         confidence_values,
         index=table.obs.index,
@@ -228,6 +251,8 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
     _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    user_colors = ["#123456", "#abcdef"]
+    sdata_blobs["table"].uns[USER_CLASS_COLORS_KEY] = user_colors
     table_state_changes: list[str] = []
     prediction_state_changes: list[str] = []
 
@@ -240,14 +265,17 @@ def test_classifier_controller_trains_on_labeled_rows_and_predicts_active_object
     controller.schedule_retrain(immediate=True)
 
     table = sdata_blobs["table"]
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].notna().any(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: PRED_CLASS_COLUMN in table.obs and table.obs[PRED_CLASS_COLUMN].notna().any(),
+        timeout=5000,
+    )
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     pred_confidence = table.obs.set_index("instance_id")[PRED_CONFIDENCE_COLUMN]
 
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [1, 2]
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([1, 2])
+    assert table.uns[PRED_CLASS_COLORS_KEY] == user_colors
     assert pred_class.loc[1] == 1
     assert pred_class.loc[5] == 1
     assert pred_class.loc[24] == 2
@@ -671,6 +699,8 @@ def test_classifier_controller_default_prediction_scope_leaves_hidden_regions_un
     assert table.obs.loc[selected_rows, PRED_CONFIDENCE_COLUMN].eq(0.88).all()
     assert table.obs.loc[hidden_rows, PRED_CLASS_COLUMN].astype("string").eq("9").all()
     assert table.obs.loc[hidden_rows, PRED_CONFIDENCE_COLUMN].eq(0.55).all()
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [3, 9]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([3, 9])
     assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_scope"] == "selected_segmentation_only"
     assert table.uns[CLASSIFIER_CONFIG_KEY]["prediction_regions"] == ["blobs_labels"]
     assert table.uns[CLASSIFIER_CONFIG_KEY]["n_predicted_rows"] == int(selected_rows.sum())
@@ -741,7 +771,7 @@ def test_classifier_controller_can_retrain_requires_trainable_preparation(sdata_
     assert controller.can_retrain is True
 
 
-def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled(
+def test_classifier_controller_does_not_create_absent_predictions_when_only_one_class_is_labeled(
     qtbot, sdata_blobs: SpatialData
 ) -> None:
     _set_deterministic_features(sdata_blobs)
@@ -760,17 +790,63 @@ def test_classifier_controller_resets_predictions_when_only_one_class_is_labeled
 
     table = sdata_blobs["table"]
 
-    assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert table.obs[PRED_CLASS_COLUMN].isna().all()
-    assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
-    assert table.uns[PRED_CLASS_COLORS_KEY] == []
+    assert PRED_CLASS_COLUMN not in table.obs
+    assert PRED_CONFIDENCE_COLUMN not in table.obs
+    assert PRED_CLASS_COLORS_KEY not in table.uns
     assert table.uns[CLASSIFIER_CONFIG_KEY]["eligible"] is False
     assert "two labeled classes" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
     assert len(table_state_changes) == 1
     assert table_state_changes[0].regions == ("blobs_labels",)
     assert table_state_changes[0].source == "object_classification_inference"
-    assert prediction_state_changes == ["changed"]
+    assert table_state_changes[0].paths == frozenset(
+        {
+            TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+        }
+    )
+    assert prediction_state_changes == []
+
+
+def test_classifier_controller_clears_existing_predictions_without_removing_vocabulary(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1})
+    table = sdata_blobs["table"]
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(
+        np.full(table.n_obs, 7, dtype=np.int64),
+        categories=[7, 1],
+    )
+    table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
+        np.full(table.n_obs, 0.5, dtype=np.float64),
+        index=table.obs.index,
+    )
+    table.uns[PRED_CLASS_COLORS_KEY] = ["#000000", "#000000"]
+    table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
+
+    controller = ClassifierController(
+        debounce_interval_ms=0,
+        on_table_state_changed=table_state_changes.append,
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller.schedule_retrain(immediate=True)
+
+    assert table.obs[PRED_CLASS_COLUMN].isna().all()
+    assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [7, 1]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == [
+        default_class_colors([7])[0],
+        default_class_colors([1])[0],
+    ]
+    assert table_state_changes[0].paths == frozenset(
+        {
+            TableComponentPath("obs", (PRED_CLASS_COLUMN,)),
+            TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)),
+            TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)),
+            TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+        }
+    )
 
 
 def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch, sdata_blobs: SpatialData) -> None:
@@ -791,10 +867,9 @@ def test_classifier_controller_validates_feature_matrix_shape(qtbot, monkeypatch
     controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
     controller.schedule_retrain(immediate=True)
 
-    assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert table.obs[PRED_CLASS_COLUMN].isna().all()
-    assert table.obs[PRED_CONFIDENCE_COLUMN].isna().all()
-    assert table.uns[PRED_CLASS_COLORS_KEY] == []
+    assert PRED_CLASS_COLUMN not in table.obs
+    assert PRED_CONFIDENCE_COLUMN not in table.obs
+    assert PRED_CLASS_COLORS_KEY not in table.uns
     assert "rows but the table has" in table.uns[CLASSIFIER_CONFIG_KEY]["reason"]
     assert controller.status_kind == "warning"
 
@@ -837,7 +912,12 @@ def test_classifier_controller_drops_stale_results(qtbot, monkeypatch, sdata_blo
 
     table = sdata_blobs["table"]
     qtbot.waitUntil(
-        lambda: table.obs[PRED_CLASS_COLUMN].nunique() == 1 and table.obs[PRED_CLASS_COLUMN].iloc[0] == 2, timeout=5000
+        lambda: (
+            PRED_CLASS_COLUMN in table.obs
+            and table.obs[PRED_CLASS_COLUMN].nunique() == 1
+            and table.obs[PRED_CLASS_COLUMN].iloc[0] == 2
+        ),
+        timeout=5000,
     )
 
     assert call_log == [1, 2]
@@ -878,6 +958,10 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     context_changed = controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
 
     assert context_changed is True
+    table = sdata_blobs["table"]
+    assert PRED_CLASS_COLUMN not in table.obs
+    assert PRED_CONFIDENCE_COLUMN not in table.obs
+    assert PRED_CLASS_COLORS_KEY not in table.uns
     assert controller.is_dirty is False
     assert controller.status_message == "Classifier: model is up to date."
     assert call_log == []
