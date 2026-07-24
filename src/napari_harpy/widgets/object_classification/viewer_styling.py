@@ -9,14 +9,13 @@ import pandas as pd
 from matplotlib.colors import to_rgba
 
 from napari_harpy.core.annotation import (
-    USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
 from napari_harpy.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
-    default_class_colors,
+    default_labeled_class_color,
     normalize_class_values,
-    normalize_color_sequence,
+    resolve_table_categorical_palette,
 )
 from napari_harpy.core.spatialdata import (
     SpatialDataTableMetadata,
@@ -32,7 +31,6 @@ from napari_harpy.viewer.labels_colormap import (
 )
 from napari_harpy.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
 from napari_harpy.widgets.object_classification.controller import (
-    PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
@@ -56,7 +54,7 @@ PRED_CONFIDENCE_COLORMAP = "plasma"
 
 
 class ClassStateError(ValueError):
-    """Raised when object-classification class state is not canonical for styling."""
+    """Raised when Object Classification class state is invalid for styling."""
 
 
 class ViewerStylingController:
@@ -150,21 +148,18 @@ class ViewerStylingController:
         else:
             class_values_by_instance = feature_rows[self._color_by]
             category_column = USER_CLASS_COLUMN
-            colors_key = USER_CLASS_COLORS_KEY
             if self._color_by == COLOR_BY_PRED_CLASS:
                 category_column = PRED_CLASS_COLUMN
-                colors_key = PRED_CLASS_COLORS_KEY
 
             # Object-classification values are class ids, not colors. Resolve
             # them through the class palette stored in table `.uns`; generic
             # styled-labels coloring intentionally uses a separate color path.
             class_color_lookup = self._get_class_color_lookup(
                 category_column=category_column,
-                colors_key=colors_key,
                 observed_class_values=class_values_by_instance,
             )
 
-            categories = sorted(class_color_lookup)
+            categories = list(class_color_lookup)
             class_values = pd.Series(
                 pd.Categorical(
                     class_values_by_instance,
@@ -299,7 +294,6 @@ class ViewerStylingController:
 
         return self._get_class_color_lookup(
             category_column=USER_CLASS_COLUMN,
-            colors_key=USER_CLASS_COLORS_KEY,
         )
 
     def _get_bound_table(self) -> AnnData | None:
@@ -370,19 +364,9 @@ class ViewerStylingController:
         self,
         *,
         category_column: str,
-        colors_key: str,
         observed_class_values: pd.Series | None = None,
     ) -> dict[int, np.ndarray]:
-        """Read the canonical class-id -> RGBA lookup for a prepared class column.
-
-        Object-classification binding/adoption owns normalization of external
-        class columns and palettes. Once styling runs, this path is intentionally
-        strict: it validates that the bound table still contains Harpy's
-        canonical categorical column and default palette, and raises an
-        actionable ``ClassStateError`` instead of silently repairing drift.
-        This keeps styling read-only with respect to class metadata and makes
-        post-bind table edits visible to the widget warning status card.
-        """
+        """Build the complete class-id-to-RGBA lookup used for labels-layer styling without mutating table state."""
         table = self._get_bound_table()
         observed_class_ids: set[int] = set()
         if observed_class_values is not None:
@@ -394,14 +378,14 @@ class ViewerStylingController:
                 )
 
         if table is None or category_column not in table.obs:
-            if category_column == USER_CLASS_COLUMN and not observed_class_ids:
+            if not observed_class_ids:
                 return {}
             raise ClassStateError(
                 f"Cannot style labels by `{category_column}` because the selected table is unavailable or does "
                 "not contain the required categorical class column."
             )
 
-        categories = _read_canonical_class_categories(
+        categories = _read_class_categories(
             table.obs[category_column],
             column_name=category_column,
         )
@@ -412,15 +396,24 @@ class ViewerStylingController:
                 f"{unknown_observed_classes} are not declared as categories in the selected table column."
             )
 
-        return _read_canonical_class_color_lookup(
-            categories,
-            table.uns.get(colors_key),
-            colors_key=colors_key,
+        if category_column == PRED_CLASS_COLUMN:
+            return _read_prediction_class_color_lookup(table, categories)
+
+        if category_column != USER_CLASS_COLUMN:
+            raise ValueError(f"Unsupported Object Classification category column `{category_column}`.")
+
+        _, colors = resolve_table_categorical_palette(
+            table=table,
             column_name=category_column,
+            categories=categories,
         )
+        return {
+            class_id: _rgba_array(color)
+            for class_id, color in zip(categories, colors, strict=True)
+        }
 
 
-def _read_canonical_class_categories(
+def _read_class_categories(
     values: pd.Series,
     *,
     column_name: str,
@@ -446,45 +439,43 @@ def _read_canonical_class_categories(
             )
         categories.append(class_id)
 
-    if categories != sorted(categories) or len(categories) != len(set(categories)):
-        raise ClassStateError(
-            f"`{column_name}` categories are not in canonical ascending order. "
-            "Reload or reselect the table to canonicalize the category order."
-        )
     return categories
 
 
-def _read_canonical_class_color_lookup(
-    categories: list[int],
-    stored_colors: Any,
-    *,
-    column_name: str,
-    colors_key: str,
+def _read_prediction_class_color_lookup(
+    table: AnnData,
+    pred_categories: list[int],
 ) -> dict[int, np.ndarray]:
-    stored_color_list = normalize_color_sequence(stored_colors)
-    expected_colors = default_class_colors(categories)
-    if stored_color_list is None:
-        raise ClassStateError(
-            f"Missing class palette `{colors_key}` for `{column_name}`. "
-            "Reload or reselect the table to regenerate the Object Classification palette."
-        )
-    if len(stored_color_list) != len(categories):
-        raise ClassStateError(
-            f"Class palette `{colors_key}` has {len(stored_color_list)} colors, but `{column_name}` has "
-            f"{len(categories)} categories. Reload or reselect the table to regenerate the Object Classification "
-            "palette."
-        )
-    if stored_color_list != expected_colors:
-        raise ClassStateError(
-            f"Class palette `{colors_key}` no longer matches Harpy default colors for `{column_name}`. "
-            "Reload or reselect the table to regenerate the Object Classification palette."
-        )
+    """Derive prediction colors without reading stored ``pred_class_colors``.
 
-    # `default_class_colors()` returns one library-owned valid color per
-    # validated category, and the equality check above proves that the stored
-    # palette matches those colors. A conversion failure here is therefore an
-    # internal programming error rather than recoverable table-state drift.
-    return {class_id: _rgba_array(color) for class_id, color in zip(categories, expected_colors, strict=True)}
+    ``user_class_colors`` is the user-owned color authority. Prediction
+    classes that occur in the user-class vocabulary reuse those colors, while
+    prediction-only classes receive deterministic defaults.
+
+    Classifier write operations persist the same derived result in
+    ``pred_class_colors`` for AnnData persistence and external consumers.
+    Viewer styling deliberately derives the lookup again instead of treating
+    that stored, classifier-derived palette as a second color authority. This
+    also keeps display colors aligned with the current user-class palette when
+    the stored prediction palette is missing or temporarily stale.
+    """
+    user_color_lookup: dict[int, str] = {}
+    if USER_CLASS_COLUMN in table.obs:
+        user_categories = _read_class_categories(
+            table.obs[USER_CLASS_COLUMN],
+            column_name=USER_CLASS_COLUMN,
+        )
+        _, user_colors = resolve_table_categorical_palette(
+            table=table,
+            column_name=USER_CLASS_COLUMN,
+            categories=user_categories,
+        )
+        user_color_lookup = dict(zip(user_categories, user_colors, strict=True))
+
+    return {
+        class_id: _rgba_array(user_color_lookup.get(class_id, default_labeled_class_color(class_id)))
+        for class_id in pred_categories
+    }
 
 
 def _to_numeric_values(values: pd.Series, column_name: str) -> pd.Series:
