@@ -21,14 +21,21 @@ from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
 
 import napari_harpy._app_state as app_state_module
-import napari_harpy.core.class_palette as class_palette_module
 import napari_harpy.widgets.object_classification.annotation_controller as annotation_module
 import napari_harpy.widgets.object_classification.controller as classifier_module
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
-from napari_harpy.core.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
-from napari_harpy.core.class_palette import DEFAULT_NEUTRAL_COLOR, default_class_colors
+from napari_harpy.core.annotation import (
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+    UserClassStateChange,
+)
+from napari_harpy.core.class_palette import (
+    DEFAULT_NEUTRAL_COLOR,
+    default_categorical_colors,
+    default_class_colors,
+)
 from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
@@ -1053,7 +1060,7 @@ def test_widget_feature_matrix_registration_button_enables_for_unregistered_matr
     assert widget.warning_status.isHidden()
 
 
-def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
+def test_widget_preserves_valid_custom_user_class_palette_during_binding_and_styling(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1071,19 +1078,9 @@ def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([1])
+    assert table.uns[USER_CLASS_COLORS_KEY] == ["#123456"]
     assert widget.warning_status.isHidden()
-
-    table.uns[USER_CLASS_COLORS_KEY] = ["#123456"]
-    widget._refresh_layer_styling()
-
-    assert "Layer Styling Warning" in widget.warning_status.text()
-    assert "no longer matches Harpy default colors" in widget.warning_status.text()
-
-    table.uns[USER_CLASS_COLORS_KEY] = default_class_colors([1])
-    widget._refresh_layer_styling()
-
-    assert widget.warning_status.isHidden()
+    np.testing.assert_allclose(layer.colormap.map(1), np.asarray(to_rgba("#123456"), dtype=np.float32))
 
 
 def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata(
@@ -1998,7 +1995,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [3]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert pd.isna(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0])
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([3])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_categorical_colors(1)
     assert "adata" not in layer.metadata
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
@@ -2101,9 +2098,9 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == []
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [2]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
-    assert table.uns[USER_CLASS_COLORS_KEY] == []
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_categorical_colors(1)
     assert "Current class: unlabeled." in widget.selection_status.text()
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
@@ -2275,6 +2272,10 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
     sdata_blobs: SpatialData,
 ) -> None:
     def run_annotation_in_color_mode(color_by: str) -> None:
+        table = sdata_blobs["table"]
+        if USER_CLASS_COLUMN in table.obs:
+            table.obs.pop(USER_CLASS_COLUMN)
+        table.uns.pop(USER_CLASS_COLORS_KEY, None)
         layer = make_blobs_labels_layer(sdata_blobs)
         viewer = DummyViewer(layers=[layer])
         widget = HarpyWidget(viewer)
@@ -2419,6 +2420,10 @@ def test_widget_annotation_defers_classifier_controls_until_selection_status(qtb
         annotation_module.UserClassAnnotationChange(
             instance_id=5,
             class_id=4,
+            state_change=UserClassStateChange(
+                user_class_changed=True,
+                palette_changed=False,
+            ),
             user_class_was_available_as_color_source=True,
         )
     )
@@ -2516,29 +2521,6 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert refresh_calls == []
 
 
-def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwritten(
-    qtbot, monkeypatch, sdata_blobs: SpatialData
-) -> None:
-    table = sdata_blobs["table"]
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
-    table.uns[USER_CLASS_COLORS_KEY] = ["#ffffffff"]
-
-    layer = make_blobs_labels_layer(sdata_blobs)
-    viewer = DummyViewer(layers=[layer])
-    warnings: list[str] = []
-
-    class DummyLogger:
-        def warning(self, message: str) -> None:
-            warnings.append(message)
-
-    monkeypatch.setattr(class_palette_module, "logger", DummyLogger())
-    widget = HarpyWidget(viewer)
-    qtbot.addWidget(widget)
-    select_segmentation(widget)
-
-    assert warnings == []
-
-
 def test_widget_disables_sync_for_clean_backed_spatialdata(qtbot, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -2617,7 +2599,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
     assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([3])
+    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_categorical_colors(1)
 
 
 def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -3080,7 +3062,10 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].notna().any(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: PRED_CLASS_COLUMN in table.obs and table.obs[PRED_CLASS_COLUMN].notna().any(),
+        timeout=5000,
+    )
     qtbot.waitUntil(
         lambda: any(
             isinstance(event, TableStateChangedEvent)
@@ -3135,7 +3120,10 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].notna().any(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: PRED_CLASS_COLUMN in table.obs and table.obs[PRED_CLASS_COLUMN].notna().any(),
+        timeout=5000,
+    )
 
     assert isinstance(layer.colormap, CompactLabelColormap)
     assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))

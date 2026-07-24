@@ -14,8 +14,14 @@ import napari_harpy.widgets.object_classification.viewer_styling as viewer_styli
 from napari_harpy.core.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
+    UserClassStateChange,
 )
-from napari_harpy.core.class_palette import DEFAULT_NEUTRAL_COLOR, default_class_colors
+from napari_harpy.core.class_palette import (
+    DEFAULT_NEUTRAL_COLOR,
+    default_categorical_colors,
+    default_class_colors,
+    default_labeled_class_color,
+)
 from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
 from napari_harpy.widgets.object_classification.controller import (
@@ -28,6 +34,20 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
     COLOR_BY_PRED_CONFIDENCE,
     ViewerStylingController,
 )
+
+
+def _user_class_annotation_change(
+    instance_id: int,
+    class_id: int | None,
+) -> UserClassAnnotationChange:
+    return UserClassAnnotationChange(
+        instance_id=instance_id,
+        class_id=class_id,
+        state_change=UserClassStateChange(
+            user_class_changed=True,
+            palette_changed=False,
+        ),
+    )
 
 
 class _FakeEventEmitter:
@@ -167,7 +187,7 @@ def _expected_class_rgba(class_id: int) -> np.ndarray:
 
 def test_user_class_annotation_change_rejects_negative_class_id() -> None:
     with pytest.raises(ValueError, match="positive"):
-        UserClassAnnotationChange(instance_id=5, class_id=-1)
+        _user_class_annotation_change(instance_id=5, class_id=-1)
 
 
 def test_refresh_reuses_one_region_feature_snapshot(monkeypatch: pytest.MonkeyPatch, sdata_blobs: SpatialData) -> None:
@@ -218,6 +238,21 @@ def test_user_class_color_lookup_uses_valid_categorical_without_full_normalizati
     np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(DEFAULT_NEUTRAL_COLOR))
 
 
+def test_user_class_coloring_uses_missing_palette_fallback_without_table_mutation(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[4, 7])
+    table = sdata_blobs["table"]
+    table.uns.pop(USER_CLASS_COLORS_KEY)
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+
+    controller.refresh_layer_colors(feature_rows=_feature_rows({5: 4}))
+
+    assert USER_CLASS_COLORS_KEY not in table.uns
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba(default_categorical_colors(2)[0]))
+
+
 def test_all_unlabeled_user_class_coloring_force_syncs_after_full_repaint(sdata_blobs: SpatialData) -> None:
     _set_user_classes(sdata_blobs, {}, categories=[])
     layer = _FakeLabelsLayer()
@@ -230,6 +265,24 @@ def test_all_unlabeled_user_class_coloring_force_syncs_after_full_repaint(sdata_
     assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(DEFAULT_NEUTRAL_COLOR))
+
+
+def test_absent_class_and_prediction_sources_remain_read_only_and_neutral(
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+
+    controller.refresh()
+    controller.set_color_by(COLOR_BY_PRED_CLASS)
+    controller.set_color_by(COLOR_BY_PRED_CONFIDENCE)
+
+    assert USER_CLASS_COLUMN not in table.obs
+    assert PRED_CLASS_COLUMN not in table.obs
+    assert PRED_CONFIDENCE_COLUMN not in table.obs
+    assert PRED_CLASS_COLORS_KEY not in table.uns
+    assert isinstance(layer.colormap, CompactLabelColormap)
 
 
 def test_pred_class_color_lookup_uses_valid_categorical_without_full_normalization(
@@ -256,6 +309,34 @@ def test_pred_class_color_lookup_uses_valid_categorical_without_full_normalizati
     assert isinstance(layer.colormap, CompactLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(1), _expected_rgba(DEFAULT_NEUTRAL_COLOR))
     np.testing.assert_allclose(layer.colormap.map(5), _expected_class_rgba(2))
+
+
+def test_pred_class_coloring_derives_shared_colors_from_user_palette(
+    sdata_blobs: SpatialData,
+) -> None:
+    _set_user_classes(sdata_blobs, {5: 4}, categories=[4], colors=["#123456"])
+    _set_pred_classes(
+        sdata_blobs,
+        {5: 4, 6: 7},
+        categories=[4, 7],
+        colors=["#000000", "#000000"],
+    )
+    table = sdata_blobs["table"]
+    previous_pred_palette = list(table.uns[PRED_CLASS_COLORS_KEY])
+    layer = _FakeLabelsLayer()
+    controller = _make_controller(sdata_blobs, layer)
+    controller.set_color_by(COLOR_BY_PRED_CLASS)
+
+    controller.refresh_layer_colors(
+        feature_rows=_feature_rows(
+            {5: 4, 6: None},
+            pred_class_by_instance={5: 4, 6: 7},
+        )
+    )
+
+    np.testing.assert_allclose(layer.colormap.map(5), _expected_rgba("#123456"))
+    np.testing.assert_allclose(layer.colormap.map(6), _expected_rgba(default_labeled_class_color(7)))
+    assert table.uns[PRED_CLASS_COLORS_KEY] == previous_pred_palette
 
 
 def test_class_value_reader_uses_vectorized_integer_fast_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -377,7 +458,9 @@ def test_row_scoped_user_class_annotation_inserts_compact_label_and_refreshes_la
 
     monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
-    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=6, class_id=4))
+    handled = controller.refresh_user_class_colormap_and_feature(
+        _user_class_annotation_change(instance_id=6, class_id=4)
+    )
 
     assert handled is True
     assert layer.colormap is original_colormap
@@ -411,7 +494,7 @@ def test_row_scoped_user_class_annotation_clear_removes_compact_label_and_refres
     monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
     handled = controller.refresh_user_class_colormap_and_feature(
-        UserClassAnnotationChange(instance_id=5, class_id=None)
+        _user_class_annotation_change(instance_id=5, class_id=None)
     )
 
     assert handled is True
@@ -438,7 +521,9 @@ def test_row_scoped_user_class_annotation_updates_existing_compact_label(
     original_colormap = layer.colormap
     _set_user_classes(sdata_blobs, {5: 7}, categories=[4, 7], colors=colors)
 
-    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=7))
+    handled = controller.refresh_user_class_colormap_and_feature(
+        _user_class_annotation_change(instance_id=5, class_id=7)
+    )
 
     assert handled is True
     assert layer.colormap is original_colormap
@@ -464,7 +549,9 @@ def test_row_scoped_user_class_annotation_appends_new_class_texture(
     original_texture_count = len(layer.colormap._compact_mapping.texture_rgba)
     _set_user_classes(sdata_blobs, {5: 4, 6: 9}, categories=[4, 9], colors=updated_colors)
 
-    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=6, class_id=9))
+    handled = controller.refresh_user_class_colormap_and_feature(
+        _user_class_annotation_change(instance_id=6, class_id=9)
+    )
 
     assert handled is True
     assert layer.refresh_kwargs == [{"extent": False}]
@@ -496,7 +583,9 @@ def test_row_scoped_user_class_annotation_requires_compact_colormap(
     )
 
     with pytest.raises(RuntimeError, match="CompactLabelColormap"):
-        controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=5, class_id=4))
+        controller.refresh_user_class_colormap_and_feature(
+            _user_class_annotation_change(instance_id=5, class_id=4)
+        )
 
     assert layer.refresh_count == 0
     assert layer.events.colormap.call_count == 0
@@ -526,7 +615,9 @@ def test_row_scoped_user_class_feature_only_refresh_keeps_prediction_colormap(
 
     monkeypatch.setattr(controller, "_get_region_feature_rows", fail_full_feature_rows)
 
-    handled = controller.refresh_user_class_feature_only(UserClassAnnotationChange(instance_id=6, class_id=4))
+    handled = controller.refresh_user_class_feature_only(
+        _user_class_annotation_change(instance_id=6, class_id=4)
+    )
 
     assert handled is True
     assert layer.colormap is original_colormap
@@ -545,7 +636,9 @@ def test_row_scoped_user_class_annotation_returns_false_for_missing_feature_row(
     original_color_keys = set(layer.colormap.color_dict)
     original_features = layer.features.copy()
 
-    handled = controller.refresh_user_class_colormap_and_feature(UserClassAnnotationChange(instance_id=99, class_id=4))
+    handled = controller.refresh_user_class_colormap_and_feature(
+        _user_class_annotation_change(instance_id=99, class_id=4)
+    )
 
     assert handled is False
     assert set(layer.colormap.color_dict) == original_color_keys
