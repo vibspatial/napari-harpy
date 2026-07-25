@@ -7346,6 +7346,85 @@ single-instance row-scoped styling optimization.
 - consuming an external event never records another mutation or changes shared
   dirty paths.
 
+### Slice 7d: User-facing annotation terminology
+
+#### Responsibility boundary
+
+Spatial Query remains the internal domain and architectural name, but it is
+not the workflow users need to understand. From the user's perspective, the
+selected saved Shapes element determines which labeled objects receive an
+annotation. This slice updates only the visible execution action and status
+language; it does not rename Python modules, classes, methods, controller
+phases, events, tests, or roadmap concepts.
+
+The primary action becomes:
+
+```text
+Start Spatial Query
+    → Review Annotation
+```
+
+`Review Annotation` is deliberate: the action finds the matching labeled
+objects and opens the review step, but does not mutate the table before the
+user accepts that review.
+
+#### Execution-status language
+
+Replace the developer-facing execution titles with:
+
+```text
+worker active
+    → Preparing Annotation
+
+worker or preflight error
+    → Annotation Preparation Failed
+
+query work finished
+    → Annotation Preparation Complete
+```
+
+Ordinary visible controller messages must describe labeled objects and the
+annotation workflow rather than cache, canonical-center, centroid, containment,
+or Spatial Query implementation details. Use language equivalent to:
+
+```text
+canonical-center calculation
+    → Preparing labeled objects from "<labels>" for annotation.
+
+containment query
+    → Finding labeled objects inside "<shapes>".
+
+non-empty result
+    → <N> labeled object(s) ready for annotation.
+
+zero-match result
+    → No labeled objects were found inside the selected shapes.
+```
+
+Failures retain the useful underlying error detail, but their user-facing
+title and leading message describe an annotation-preparation failure. Applied
+and removed annotation outcomes continue to report the effective mutation
+implemented by Slice 7b; they must not be relabeled as merely query completion.
+
+#### Deliverables
+
+- `Review Annotation` as the Spatial Query child's primary action text;
+- annotation-oriented running, failure, and completion status-card titles;
+- annotation-oriented center-calculation, geometry-evaluation, match, and
+  no-match messages;
+- focused status-card and widget/controller message tests updated to assert the
+  user-facing terminology.
+
+#### Exit criteria
+
+- the visible Run workflow does not require the user to understand the term
+  Spatial Query;
+- ordinary execution messages do not expose centroid or canonical-cache
+  implementation terminology;
+- the primary action does not imply that clicking it immediately mutates the
+  table;
+- internal Spatial Query APIs and architectural terminology remain unchanged.
+
 ### Slice 8: Persistence UX and cross-widget synchronization
 
 Deliverables:
