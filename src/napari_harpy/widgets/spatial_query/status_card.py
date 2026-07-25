@@ -26,6 +26,28 @@ class _SpatialQueryStatusCardSpec:
         validate_status_card_kind(self.kind)
 
 
+def build_spatial_query_execution_status_card_spec(
+    *,
+    message: str,
+    kind: StatusCardKind,
+    is_running: bool,
+) -> _SpatialQueryStatusCardSpec:
+    """Build the temporary execution outcome shown by the unified status card."""
+    if not isinstance(message, str) or not message:
+        raise ValueError("Spatial Query execution status requires a non-empty message.")
+    if is_running:
+        title = "Spatial Query Running"
+    elif kind == "error":
+        title = "Spatial Query Failed"
+    else:
+        title = "Spatial Query Complete"
+    return _SpatialQueryStatusCardSpec(
+        title=title,
+        lines=(message,),
+        kind=kind,
+    )
+
+
 def build_spatial_query_status_card_spec(
     *,
     has_spatialdata: bool,

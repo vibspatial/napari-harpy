@@ -685,8 +685,8 @@ class SpatialQuery(QWidget):
         if intent is None or not self._run_intent_matches_current_selection(intent):
             self._invalidate_run()
             return
-        # Slice 7a deliberately ends here. The retained controller result and
-        # captured target intent become the review inputs in the next slice.
+        # Slice 7a deliberately ends here. This accepted callback result and
+        # the captured target intent become the review inputs in the next slice.
 
     def _run_intent_matches_current_selection(self, intent: _SpatialQueryRunIntent) -> bool:
         target = self._resolve_annotation_target()
