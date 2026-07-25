@@ -51,6 +51,7 @@ from napari_harpy.core.spatial_query.canonical_models import (
 from napari_harpy.core.spatial_query.centroids import (
     calculate_canonical_centers,
     ensure_canonical_centers,
+    read_canonical_centers_from_cache,
 )
 from napari_harpy.core.spatial_query.query import (
     build_canonical_center_query_request,
@@ -107,6 +108,7 @@ __all__ = [
     "get_compatible_spatial_annotation_column_names",
     "parse_canonical_metadata",
     "prepare_spatial_annotation",
+    "read_canonical_centers_from_cache",
     "require_compatible_spatial_annotation_column",
     "summarize_spatial_annotation",
     "validate_and_resolve_spatial_annotation_value_kind",
