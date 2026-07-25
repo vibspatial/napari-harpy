@@ -2865,15 +2865,17 @@ Deliverables:
 - clear mismatch/recalculation data for later controller and widget consumers;
 - canonical cache lifecycle and backed-zarr tests.
 
-The implemented public contracts are:
+The implemented shared consistency contract is:
 
     CANONICAL_CACHE_PATHS
         # obsm/spatial_canonical plus its nested uns metadata path
 
-    record_canonical_cache_update(app_state, sdata, result)
-        # accepted controller-result consumer; reuse returns None
-
-The shared-state integration function lives outside the Qt-independent core.
+The Spatial Query child owns construction and publication of the corresponding
+`TableStateChangedEvent` from its controller's accepted
+`CanonicalCentersResult`. Reused centers have no cache update and therefore
+publish nothing. The earlier temporary
+`record_canonical_cache_update()`/`cache_state.py` adapter was removed when
+Slice 7a connected this callback directly.
 
 The accepted cache-update flow is:
 
@@ -6776,6 +6778,8 @@ kinds continue through the shared compact categorical colormap.
 
 ### Slice 7a: Two-phase async calculate-query flow
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 This slice connects the existing cache and containment domain operations to the
@@ -6795,12 +6799,12 @@ inspection. That intent contains the exact current:
 - SpatialData object identity;
 - saved Shapes name and coordinate system;
 - labels and table names;
-- resolved Existing/New annotation target mode and column name;
-- `CanonicalCacheReport`.
+- resolved Existing/New annotation target mode and column name.
 
-The controller receives the calculation/query inputs from that captured
-intent. Worker completion never rereads combo-box values or silently adopts a
-new parent context.
+The fresh `CanonicalCacheReport` is passed directly to the controller rather
+than retained in the Run intent. The controller receives the calculation/query
+inputs accepted by the same Run. Worker completion never rereads combo-box
+values or silently adopts a new parent context.
 
 #### Valid-cache read boundary
 
