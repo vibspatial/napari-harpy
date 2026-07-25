@@ -51,6 +51,26 @@ def calculate_canonical_centers(
     )
 
 
+def read_canonical_centers_from_cache(
+    sdata: SpatialData,
+    report: CanonicalCacheReport,
+) -> CanonicalCentersResult:
+    """Read selected-region centers from an already-inspected valid cache."""
+    if not isinstance(report, CanonicalCacheReport):
+        raise TypeError("Canonical cache reading requires a CanonicalCacheReport.")
+    if report.state is not CanonicalCacheState.VALID:
+        raise ValueError("Canonical cache reading requires a valid cache report.")
+
+    table = sdata.tables[report.table_name]
+    centers = np.asarray(table.obsm[CANONICAL_OBSM_KEY])[report.binding.row_positions]
+    return CanonicalCentersResult(
+        source_signature=report.source_signature,
+        binding=report.binding,
+        centers=centers,
+        cache_update=None,
+    )
+
+
 def ensure_canonical_centers(
     sdata: SpatialData,
     *,
@@ -68,14 +88,7 @@ def ensure_canonical_centers(
         labels_name=labels_name,
     )
     if report.state is CanonicalCacheState.VALID and not force_recalculation:
-        table = sdata.tables[table_name]
-        centers = np.asarray(table.obsm[CANONICAL_OBSM_KEY])[report.binding.row_positions]
-        return CanonicalCentersResult(
-            source_signature=report.source_signature,
-            binding=report.binding,
-            centers=centers,
-            cache_update=None,
-        )
+        return read_canonical_centers_from_cache(sdata, report)
 
     payload = calculate_canonical_centers(sdata, report)
     cache_update = apply_canonical_cache_update(sdata, payload)
@@ -122,9 +135,7 @@ def _calculate_centers_with_raster_aggregator(
     coordinate_columns = [0, 1, 2]
     expected_columns = [*coordinate_columns, binding.instance_key]
     if result.columns.tolist() != expected_columns:
-        raise ValueError(
-            "RasterAggregator center_of_mass must return z, y, x, and instance ID columns in that order."
-        )
+        raise ValueError("RasterAggregator center_of_mass must return z, y, x, and instance ID columns in that order.")
 
     output_ids = result[binding.instance_key].to_numpy()
     if output_ids.dtype != binding.instance_ids.dtype or not np.array_equal(output_ids, binding.instance_ids):
