@@ -27,6 +27,16 @@ Prefer focused commands such as:
 
 Run linting only on the changed or directly affected files where possible.
 
+## Code explanation references
+
+When explaining or reviewing repository code:
+
+- Include clickable Markdown links with the exact current line number for the functions, branches, and call sites central to the explanation.
+- For event flows, link each material step to its implementation rather than linking only the containing class or module.
+- Re-check line numbers against the current working tree immediately before responding because edits may move them.
+- Use absolute paths with one starting line, not line ranges.
+- Do not overload explanations with links to incidental symbols.
+
 ## Codex config
 Repository-local Codex settings for this project live in `.codex/config.toml`.
 
