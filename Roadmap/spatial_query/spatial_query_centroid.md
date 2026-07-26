@@ -45,17 +45,17 @@ annotation:
 3. select a labels element in the same SpatialData object and selected
    coordinate system;
 4. select a table that annotates that labels element;
-5. select an existing compatible AnnData.obs column or configure a new one,
-   defaulting to spatial_annotation;
-6. run a centroid-containment spatial query;
-7. transparently calculate and cache canonical centers first when they are not
+5. select an existing compatible AnnData.obs column or explicitly name a new
+   one;
+6. choose Set annotation or Remove annotation and provide the typed annotation
+   value required by Set;
+7. click Apply Annotation, which runs the centroid-containment query and
+   applies the captured annotation intent as one operation;
+8. transparently calculate and cache canonical centers first when they are not
    already valid and reusable;
-8. review the affected instances and any values that will be overwritten or
-   removed;
-9. choose Set annotation or Remove annotation; Set defaults the annotation
-   value to the Shapes element name;
-10. apply the string value or missing annotation state to the matching table
-    rows;
+9. after a successful query, immediately set the captured string or positive
+   integer value, or clear the matching rows to missing for Remove;
+10. report the exact changed, overwritten, unchanged, or removed counts;
 11. visualize the selected annotation column on the primary labels layer and
     refresh that visualization after an effective annotation change;
 12. explicitly write or reload the shared table state when working with the
@@ -68,7 +68,7 @@ composes two children with separate responsibilities:
         ├── ShapesAnnotation
         │     create, edit, validate, save, and discard polygon annotations
         └── SpatialQuery
-              select labels/table/target, query centers, review, apply, and
+              select labels/table/target/value, query centers, apply, and
               visualize table annotations
 
 The parent owns the shared SpatialData, coordinate-system, and selected-Shapes
@@ -99,12 +99,14 @@ results, or confuse in-memory state with persisted state.
   transformed into that frame.
 - **Validated reuse:** a matrix named spatial_canonical is not trusted without
   matching metadata and source/coverage validation.
-- **Preview before annotation mutation:** spatial querying does not change the
-  annotation column. The user reviews affected and overwritten counts before
-  applying.
+- **Explicit one-step mutation intent:** the user selects Set or Remove and the
+  complete typed annotation value before starting work. A successful query
+  applies that captured intent immediately and reports the exact outcome.
 - **No silent data loss:** overwriting values, rebuilding a mismatched managed
-  cache, reloading a dirty table, and leaving a dirty dataset are reported
-  explicitly.
+  cache, reloading a dirty table, and leaving a dirty dataset have explicit
+  semantics and user-facing feedback. The widget warns before Apply Annotation
+  that Set replaces different existing values and reports the exact
+  overwrite/removal counts afterward.
 - **One shared table state:** all Harpy widgets see the same in-memory AnnData
   and the same per-table dirty marker.
 - **One primary labels presentation:** Spatial Query reuses the primary labels
@@ -234,11 +236,12 @@ layers.
 
 If the Shapes Annotation child has an open dirty edit session for the selected
 Shapes element, the parent must not let the Spatial Query child silently query
-the last saved geometry. Run is blocked with guidance to save or discard the
-shape edits. Because both children belong to the same parent, this is a direct
-parent-to-child context contract rather than cross-widget dirty-session state.
-After a successful Shapes Annotation save, the parent refreshes the Spatial
-Query child and the new in-memory geometry becomes queryable.
+the last saved geometry. Apply Annotation is blocked with guidance to save or
+discard the shape edits. Because both children belong to the same parent, this
+is a direct parent-to-child context contract rather than cross-widget
+dirty-session state. After a successful Shapes Annotation save, the parent
+refreshes the Spatial Query child and the new in-memory geometry becomes
+queryable.
 
 The current AnnData object is authoritative for spatial_canonical and its
 metadata. Persisted zarr state becomes authoritative again only after an
@@ -381,7 +384,8 @@ centers still scans all scale0 chunks lazily.
 - creation, extension, and persistence of the standard
   `AnnData.uns["<column>_colors"]` palette associated with an effectively
   mutated spatial-annotation column;
-- mandatory overwrite/removal disclosure and confirmation;
+- explicit overwrite/removal semantics before execution and exact outcome
+  disclosure afterward;
 - asynchronous center calculation and query execution, cancellation, textual
   busy status, and stale-result protection;
 - per-table shared clean/dirty state;
@@ -640,7 +644,7 @@ The cache inspector returns one of these typed states for the selected region:
 - invalid: matrix/metadata is malformed, contradictory, unsupported, or only
   one managed component exists.
 
-Run behavior:
+Apply Annotation cache behavior:
 
 - valid: reuse immediately;
 - absent or partial: calculate the selected region, apply the cache update atomically, then
@@ -654,8 +658,8 @@ Run behavior:
   source signature. If an all-regions inconsistency prevents that proof,
   rebuild a selected-region-only cache rather than carrying the entry forward.
 
-The widget shows the current state before Run, including First query will
-calculate centroids when appropriate.
+The widget shows the current state before Apply Annotation, including that
+centers will first be calculated when appropriate.
 
 ### Atomic cache update
 
@@ -673,13 +677,12 @@ If validation or the cache update fails:
 - restore the complete prior obsm value and metadata registry;
 - emit no accepted mutation event;
 - leave dirty state unchanged;
-- do not continue to the annotation dialog.
+- do not continue to annotation Apply.
 
 A successful cache create, extend, refresh, or rebuild changes table state and
 therefore marks the shared table dirty. This remains true if the query finds no
-instances or the user later cancels the Apply dialog. The cache is useful
-derived data, but it is still an in-memory table change that must be written to
-persist.
+instances or the subsequent annotation Apply fails. The cache is useful derived
+data, but it is still an in-memory table change that must be written to persist.
 
 ## User Experience
 
@@ -710,11 +713,13 @@ owns this dependent control order:
 2. Linked table combo.
 3. Target column mode: Existing column or New column.
 4. Existing-column combo or new-column line edit.
-5. One Spatial Query status card combining selection readiness and centroid
+5. Annotation action: Set annotation or Remove annotation.
+6. A target-typed annotation-value editor for Set.
+7. One Spatial Query status card combining selection readiness and centroid
    cache behavior.
-6. Run Spatial Query button.
-7. Write Table State and Reload Table from zarr buttons.
-8. Persistent shared clean/dirty table-state status.
+8. Apply Annotation button.
+9. Write Table State and Reload Table from zarr buttons.
+10. Persistent shared clean/dirty table-state status.
 
 The parent coordinates child context changes and cancellation, but each child
 retains its own controller and status-building modules. Spatial Query logic must
@@ -736,10 +741,13 @@ selections survive refreshes.
   coordinate system.
 - Table choices include only tables whose SpatialData TableModel metadata
   declares the selected labels element as an annotated region.
-- Existing-column choices include only pandas categorical annotation columns
-  whose categories are all strings, and exclude region_key and instance_key.
+- Existing-column choices include only supported pandas categorical annotation
+  columns whose declared categories are all strings or all positive integers,
+  and exclude region_key, instance_key, and classifier-owned prediction
+  outputs.
 - Changing an upstream selection refreshes downstream options, closes pending
-  dialogs, and cancels or invalidates active work.
+  annotation-value drafts where their target identity changed, and cancels or
+  invalidates active work.
 - Preserve a downstream selection if its stable identity remains valid, except
   across an accepted coordinate-system change. That transition deliberately
   clears the Spatial Query labels selection and all dependent state even when
@@ -760,10 +768,11 @@ coordinate-aware widgets.
 
 If spatial_annotation already exists and is a compatible categorical target,
 default to Existing column and select it. If it is absent, default to New
-column with spatial_annotation prefilled. If it exists but is incompatible,
-exclude it from the Existing-column choices and explain that Spatial Query will
-neither convert nor overwrite it; the user must select another eligible
-categorical column or enter a different non-colliding New column name.
+column with an empty draft and show spatial_annotation only as placeholder
+guidance. If it exists but is incompatible, exclude it from the
+Existing-column choices and explain that Spatial Query will neither convert nor
+overwrite it; the user must select another eligible categorical column or enter
+a different non-colliding New column name.
 
 A new column name:
 
@@ -771,16 +780,18 @@ A new column name:
 - must pass SpatialData dataframe-column-name validation;
 - must not equal region_key or instance_key;
 - must not collide with an existing obs column;
-- is not created until the user confirms Apply with at least one changed row.
+- is not created until a successful query produces at least one effective
+  annotation change.
 
 An existing target column is compatible only when it uses
-`pd.CategoricalDtype` and all declared categories are strings. An empty
-categorical category set is valid. Missing row values are valid and mean that
-those rows are not annotated. Preserve the categorical `ordered` flag and
-category order.
+`pd.CategoricalDtype` and its declared categories satisfy the implemented
+string or positive-integer value-kind contract. Missing row values are valid
+and mean that those rows are not annotated. Preserve the categorical `ordered`
+flag and category order. Empty `user_class` retains its explicit
+positive-integer schema; New columns remain string-categorical.
 
-StringDtype, object/string, numeric, boolean, datetime, mixed-object, and
-non-string categorical columns are not writable and must never be converted
+StringDtype, object/string, plain numeric, boolean, datetime, mixed-object, and
+unsupported categorical columns are not writable and must never be converted
 implicitly. Spatial Query supports convenience creation through New column,
 but it does not normalize an existing user-owned column into its required
 categorical contract.
@@ -789,6 +800,39 @@ Remove annotation is available only for an existing compatible target column.
 It clears the matching row values to the column's missing state; it never
 deletes the obs column. New column plus Remove annotation is invalid because it
 would create no useful state.
+
+### Annotation action and value
+
+Set and Remove are configured in the Spatial Query child before work starts.
+Set requires a value whose type matches the selected target:
+
+```text
+Existing string categorical
+    → trimmed non-empty string editor
+
+Existing positive-integer categorical
+    → positive-integer editor
+
+New column
+    → trimmed non-empty string editor
+
+Remove
+    → no value editor
+    → Existing targets only
+```
+
+The value is an explicit input and is never inferred from the Shapes name.
+Empty string, `"None"`, and `"nan"` are not removal controls: the first is
+invalid and the latter two remain literal string categories. The complete
+action and normalized typed value are captured with the accepted Run intent.
+Changing either while work is active invalidates that operation.
+
+Set always assigns the captured value to every matched row, replacing a
+different existing value where present. The UI states this overwrite behavior
+before Apply Annotation is enabled. Remove assigns `pd.NA` to every matched
+row. Exact changed, overwritten, unchanged, and removed counts are calculated
+after the query and reported after the atomic operation; there is no second
+confirmation dialog.
 
 ### Annotation visualization
 
@@ -873,32 +917,36 @@ because it received an unrelated refresh callback.
 ### Spatial Query status
 
 One status card reports both the highest-priority selection/readiness state and
-the centroid-cache behavior Run will use. For a complete request, it reports
-one of:
+the centroid-cache behavior Apply Annotation will use. For a complete request,
+it reports one of:
 
 - Ready: valid cached centroids will be reused;
-- Not calculated: Run will calculate centers from scale0 first;
-- Partial: Run will calculate centers for this labels region;
-- Stale: Run will refresh centers for this labels region;
-- Invalid: Run will report the mismatch and rebuild centroid data;
+- Not calculated: Apply Annotation will calculate centers from scale0 first;
+- Partial: Apply Annotation will calculate centers for this labels region;
+- Stale: Apply Annotation will refresh centers for this labels region;
+- Invalid: Apply Annotation will report the mismatch and rebuild centroid data;
 - Running: calculating centroids;
 - Running: querying centroids.
 
 The tooltip explains in user-facing terms that centers will first be
-calculated for the selected labels element before the spatial query runs. The
-UI does not expose a manual Recalculate action. Run owns the complete automatic
-cache lifecycle: it reuses a valid report and calculates, refreshes, or rebuilds
-centers for absent, partial, stale, or invalid states before querying.
+calculated for the selected labels element before annotation is applied. The
+UI does not expose a manual Recalculate action. Apply Annotation owns the
+complete automatic cache lifecycle: it reuses a valid report and calculates,
+refreshes, or rebuilds centers for absent, partial, stale, or invalid states
+before querying.
 
-### Run and result flow
+### Apply Annotation flow
 
-1. The user configures a complete valid selection.
-2. Run Spatial Query becomes enabled for valid, absent, partial, stale, and
-   rebuildable-invalid cache states.
-3. Clicking Run performs a fresh selected-region cache inspection, including
-   one instance-set digest, then captures an immutable request containing stable
-   source identities, selected coordinate system, table linkage, target intent,
-   cache state, structural signatures, and one operation ID.
+1. The user configures a complete valid selection, Set/Remove action, and
+   target-typed annotation value.
+2. Apply Annotation becomes enabled for valid, absent, partial, stale, and
+   rebuildable-invalid cache states only when that complete mutation intent is
+   valid.
+3. Clicking Apply Annotation performs a fresh selected-region cache inspection,
+   including one instance-set digest, then captures an immutable request
+   containing stable source identities, selected coordinate system, table
+   linkage, target intent, normalized annotation value, cache state,
+   structural signatures, and one operation ID.
 4. A valid cache supplies the selected rows of `spatial_canonical` directly and
    skips centroid calculation. If the cache is absent, partial, stale, or
    rebuildable-invalid, a worker calculates centers for all rows of the selected
@@ -920,63 +968,58 @@ centers for absent, partial, stale, or invalid states before querying.
    validates the current canonical-center provenance.
 9. If no centroids match, show No instance centroids found in the
    annotation and make no annotation-column changes.
-10. Otherwise open the Apply Spatial Annotation dialog.
+10. Otherwise summarize the captured Set/Remove value and immediately call
+    `apply_spatial_annotation()` on the main thread.
+11. After an effective mutation, publish one table-state event, refresh
+    table-backed Labels styling, and report the exact changed, overwritten,
+    unchanged, or removed counts.
 
 Cancellation before the cache update makes no changes. If a newly calculated
 cache was already applied before the query phase is cancelled or invalidated,
-that useful cache remains in memory and remains dirty, but no result dialog or
-annotation mutation follows. Cancelling the Apply dialog likewise leaves an
-already-applied cache intact.
+that useful cache remains in memory and remains dirty, but no annotation
+mutation follows.
 
-### Apply Spatial Annotation dialog
+### Immediate annotation Apply
 
-The modal dialog contains:
+The Spatial Query child captures the normalized annotation value together with
+the accepted Shapes, labels, table, target mode, and target-column identities.
+Worker completion never rereads a newer editor value or silently adopts a new
+Set/Remove action. The existing input-change handlers invalidate the operation
+when any captured input changes before query acceptance.
 
-- annotation source name;
-- labels element, table, and target column;
-- inclusion rule: Centroid inside annotation;
-- number of eligible instances in the selected table region;
-- number of centroids inside the annotation;
-- explicit Set annotation and Remove annotation modes, with Set selected by
-  default;
-- a target-typed annotation-value editor: a QLineEdit prefilled with the
-  Shapes element name for string-categorical targets, or a positive-integer
-  editor for positive-integer categorical targets;
-- a live mode-specific summary;
-- a mode-specific primary action and Cancel.
+For a non-empty accepted query result, perform this sequence synchronously on
+the main thread:
 
-It does not show labels missing from the table, because the centroid-based query
-does not enumerate labels outside the table.
+```text
+prepare_spatial_annotation(
+    accepted query result,
+    captured column mode,
+    captured column name,
+)
+    ↓
+summarize_spatial_annotation(
+    preparation,
+    captured typed annotation value,
+)
+    ↓
+apply_spatial_annotation(
+    preparation,
+    exact summary,
+)
+```
 
-In Set annotation mode, a string-categorical target accepts a trimmed,
-non-empty string. Unicode and internal spaces are allowed. It is a user-facing
-category value rather than a SpatialData element key, so element-name
-restrictions do not apply. The strings `"None"` and `"nan"` remain ordinary
-annotation values; an empty string remains invalid and none of them acts as a
-removal sentinel. A positive-integer categorical target instead accepts a
-positive integer class ID; zero, negative values, booleans, and fractional
-numbers are invalid.
+The summary remains an immutable domain consistency input and post-operation
+outcome source; it is not a second user confirmation. There is no modal review
+UI, refreshed-review loop, dialog-owned value editor, or widget-local pending
+review state.
 
-Changing the value updates the summary live. It shows currently missing,
-already equal, and different non-missing values. If different non-missing
-values will be replaced, the dialog shows a prominent mandatory warning and
-uses explicit action text such as Overwrite 12 and apply to 35.
-
-In Remove annotation mode, the annotation-value field is disabled or hidden.
-The summary shows Already empty and Annotations to remove. The dialog shows a
-prominent removal warning and uses explicit primary action text such as Remove
-annotation from 35. Remove annotation is disabled for New column targets.
-
-Cancel closes the dialog without creating or changing the annotation column.
-It does not roll back a canonical-center cache updated earlier in the Run flow.
-
-Immediately before Apply, revalidate:
+Immediately before mutation, `apply_spatial_annotation()` revalidates:
 
 - SpatialData, labels, table, and target intent;
 - table linkage and row identities;
 - the canonical source, binding, selected-region metadata, and center rows
   against the exact `CanonicalCentersResult` used by the query;
-- target-column values used for the displayed counts.
+- target-column values captured during immediate preparation.
 
 The immutable query request already contains the Polygon and affine snapshots
 used by the worker. Normal Shapes edits, Shapes-target changes, coordinate
@@ -984,9 +1027,11 @@ system changes, and dirty-session transitions invalidate the active operation
 before a result can be accepted. Do not add a second Shapes geometry digest or
 transformation comparison at Apply time.
 
-If only target values changed, rebuild the preparation, refresh counts, and
-require confirmation of the updated summary. If centers, binding, selection,
-or table identity changed, discard the result and require a new query.
+If target values, centers, binding, selection, or table identity changed,
+discard the result without mutation, show an actionable annotation failure,
+and require the user to click Apply Annotation again. Do not automatically
+rebuild preparation, retry Apply, or adopt newer state under the already
+accepted intent.
 
 ### Successful apply
 
@@ -1009,12 +1054,12 @@ Applying is one main-thread, all-or-nothing obs mutation:
 - preserve the compatible target dtype;
 - update each matching row at most once.
 
-A new target column is categorical. Non-target rows are missing, the applied
-string value is its first category, and `<column>_colors` contains its first
-stable default color. Removal never creates or deletes a column, category, or
-palette entry.
+A new target column is string-categorical. Non-target rows are missing, the
+applied string value is its first category, and `<column>_colors` contains its
+first stable default color. Removal never creates or deletes a column,
+category, or palette entry.
 
-If every matching row already has the requested string value, or every matching
+If every matching row already has the requested typed value, or every matching
 row is already missing during removal, report a no-op. Do not replace the
 column object, emit an annotation mutation event, or alter dirty state. Any
 dirty state caused earlier by cache creation remains.
@@ -1030,13 +1075,14 @@ After an effective annotation mutation:
 - show updated, overwritten, and unchanged counts.
 
 Spatial Query deliberately provides no operation-specific Undo command. The
-review dialog, mandatory overwrite/removal confirmation, and atomic Apply are
-the primary safeguards. An incorrect annotation can be corrected by another
-Set annotation operation or cleared through Remove annotation. Unpersisted
-table changes can also be discarded through the existing Reload Table from
-zarr workflow, with its normal warning that all covered dirty table components
-are replaced. This keeps annotation state, dirty tracking, and recovery within
-the shared persistence model rather than introducing widget-local history.
+explicit Set/Remove controls, target-typed value validation, standing overwrite
+semantics, exact post-operation counts, and atomic Apply are the primary
+safeguards. An incorrect annotation can be corrected by another Set annotation
+operation or cleared through Remove annotation. Unpersisted table changes can
+also be discarded through the existing Reload Table from zarr workflow, with
+its normal warning that all covered dirty table components are replaced. This
+keeps annotation state, dirty tracking, and recovery within the shared
+persistence model rather than introducing widget-local history.
 
 ## Canonical Center Calculation
 
@@ -1103,7 +1149,7 @@ main-thread domain operation.
   current.
 - `worker.quit()` is best-effort invalidation, not hard interruption of Harpy's
   synchronous calculation. The underlying calculation may finish, but its
-  result cannot update the cache, open a later dialog, or mutate a table.
+  result cannot update the cache or apply an annotation after invalidation.
 - Do not add a Dask cancellation token, scheduler callback, concurrency policy,
   task diagnostics, progress bar, percentage, or performance telemetry.
 - While current work is running, show a textual busy message in the status card.
@@ -1160,7 +1206,7 @@ queries against the same labels/table region should be snappy.
 
 ### Stale-result protection
 
-Every Run has a monotonically increasing operation ID and captured
+Every Apply Annotation operation has a monotonically increasing operation ID and captured
 source identities/structural signatures. Discard all worker output if, while it
 runs:
 
@@ -1174,9 +1220,9 @@ runs:
 - a newer query starts;
 - the widget closes.
 
-For simplicity and predictable side effects, a stale Run applies neither its
-cache payload nor its query result, even when center calculation itself would
-still be reusable. A later Run may recalculate.
+For simplicity and predictable side effects, a stale operation applies neither
+its cache payload nor its query result, even when center calculation itself
+would still be reusable. A later Apply Annotation may recalculate.
 
 Worker completion callbacks perform UI and table work on the main thread only.
 
@@ -1588,7 +1634,7 @@ generic persistence layer cannot substantiate a narrower semantic scope. A
 known uns-only metadata reload reports `regions=()`. HarpyAppState clears only
 dirty paths covered by those paths. Unrelated dirty paths remain present.
 Before a full-table reload, invalidate active center calculations, queries, and
-Apply dialogs.
+pending annotation operations.
 Canonical metadata is parsed and validated before the later canonical
 integration accepts a reloaded canonical consistency unit.
 
@@ -1603,8 +1649,8 @@ After success:
   clean because it covers every supported component;
 - show the source path and outcome.
 
-Late worker results created before reload must never update a cache, open a
-dialog, or mutate the reloaded table.
+Late worker results created before reload must never update a cache or mutate
+the reloaded table.
 
 ### Leaving a dirty dataset
 
@@ -1653,7 +1699,7 @@ Runtime outcomes are distinct:
 - stale cache detected: informational refresh state;
 - invalid/corrupt managed cache: mismatch report followed by recalculation and
   replacement only after a valid result is available;
-- overwrite: mandatory confirmation warning;
+- overwrite: explicit pre-execution semantics and exact post-operation count;
 - cancellation or stale result: neutral/cancelled state;
 - Dask, zarr, transform, geometry, aggregation, persistence, or validation
   failure: error with retry/recovery guidance.
@@ -1664,7 +1710,8 @@ user-facing message.
 ## Accessibility and Interaction Quality
 
 - Controls have visible labels, accessible names, and logical keyboard order.
-- Enter applies only when validation passes; Escape cancels.
+- Enter activates Apply Annotation only when the complete selection, action,
+  and typed value are valid.
 - Warning meaning uses text/icon as well as color.
 - Status cards are word-wrapped and copyable where practical.
 - Long names are elided visually and shown fully in tooltips.
@@ -1753,27 +1800,23 @@ The corresponding widget composition is:
             widget.py
             controller.py
             viewer_styling.py
-            dialogs.py
             status_card.py
 
             widget.py
                 embedded SpatialQuery child
-                labels/table/target selectors, cache status, busy state,
-                and persistence actions
+                labels/table/target/action/value selectors, cache status,
+                busy state, annotation Apply/publication, and persistence
+                actions
 
             controller.py
                 binding/cache validation
                 worker lifecycle and operation IDs
                 stale-result handling
-                cache update and annotation apply orchestration
+                cache update and containment-query orchestration
 
             viewer_styling.py
                 thin primary-layer binding and generic annotation-column
                 styling orchestration; no classifier-specific class semantics
-
-            dialogs.py
-                cache mismatch reporting
-                Apply Spatial Annotation dialog
 
             status_card.py
                 pure status-card specification builders
@@ -1924,7 +1967,7 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - result accepted only for unchanged request;
 - every selection/source-signature invalidation drops late results;
 - older run cannot supersede newer run;
-- cancellation prevents cache update/dialog/mutation;
+- cancellation prevents cache update or annotation mutation;
 - reload freezes and invalidates pending work;
 - worker errors restore usable controls and give feedback;
 - cleanup disconnects workers/signals when widget closes.
@@ -1945,12 +1988,12 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - dirty Shapes session blocker;
 - all centroid cache status states and phase text;
 - invalid-cache mismatch reporting and automatic rebuild state;
-- result dialog contents and centroid predicate wording;
-- live Set/Remove summaries and value validation;
-- mandatory overwrite/removal warnings and explicit action text;
+- inline Set/Remove controls and target-typed value validation;
+- changing the action or value invalidates active work;
+- standing overwrite/removal semantics and exact post-operation counts;
 - Remove annotation disables the value field and is unavailable for New column;
 - no-result flow does not change annotation column;
-- cancel after cache update leaves cache dirty state visible;
+- annotation failure after cache update leaves cache dirty state visible;
 - apply states and summaries;
 - shared dirty indicator across widgets;
 - write enabled only for backed dirty table;
@@ -3313,9 +3356,9 @@ events, dirty tracking, or widget orchestration in this slice.
 
 Slice 5 is a UI-independent table-domain slice. It owns exact row resolution,
 target-column validation, live conflict summaries, and atomic apply/rollback.
-It does not own dialog lifecycle, operation IDs, Shapes selection freshness, or
-table-state event publication; those are controller/widget responsibilities
-when the domain API is integrated.
+It does not own widget input controls, operation IDs, Shapes selection
+freshness, or table-state event publication; those are controller/widget
+responsibilities when the domain API is integrated.
 
 Apply-time validation nevertheless proves that the query is still valid for
 the current selected table region and canonical cache. It uses concrete source,
@@ -3387,7 +3430,7 @@ wrapper dataclass:
 
 
     class SpatialAnnotationColumnChangedError(ValueError):
-        """The reviewed column values changed and counts must be refreshed."""
+        """The prepared column values changed before Apply."""
 
 
     class SpatialAnnotationQueryOutdatedError(ValueError):
@@ -3438,11 +3481,11 @@ The public core operations are:
     ) -> SpatialAnnotationApplyResult:
         ...
 
-Preparation and summarization never mutate SpatialData or AnnData. The dialog
-can call `summarize_spatial_annotation()` repeatedly as the user edits the
-string value or switches between Set and Remove without resolving table rows
-again. `annotation_value=None` is an internal domain value meaning Remove
-annotation; the UI never asks the user to type a sentinel.
+Preparation and summarization never mutate SpatialData or AnnData. The
+one-step widget calls `summarize_spatial_annotation()` after the query using
+the Set/Remove value captured before work started. `annotation_value=None` is
+an internal domain value meaning Remove annotation; the UI never asks the user
+to type a sentinel.
 
 Apply reports whether the obs column and associated palette actually changed.
 The widget uses those booleans to publish only the corresponding shared table
@@ -3466,7 +3509,7 @@ instance IDs in other regions remain valid and cannot receive this annotation.
 
 The resolved row positions and current target values are copied into the
 preparation. An empty query result does not create a preparation for Apply; the
-controller reports the no-result outcome before opening the dialog.
+controller reports the no-result outcome directly.
 
 #### Target validation and summaries
 
@@ -3501,10 +3544,10 @@ and `overwrite_count == current_other_count`. For Remove annotation,
 `current_equal_count == 0`, missing rows remain unchanged, and
 `removal_count == current_other_count`.
 
-Changing the proposed string or switching action is a pure O(number of matched
-rows) summary calculation. The UI requires explicit overwrite confirmation
-when `overwrite_count > 0` and explicit removal confirmation when
-`removal_count > 0`.
+Changing the proposed typed value or switching action is a pure O(number of
+matched rows) summary calculation. In the one-step workflow those inputs are
+captured before the query, and the resulting counts provide exact
+post-operation feedback rather than a second confirmation step.
 
 #### Apply-time freshness and atomic mutation
 
@@ -3523,20 +3566,18 @@ table/cache inspection without reading labels pixels and requires:
    match the preparation;
 6. a freshly computed summary to equal `expected_summary`.
 
-Palette metadata does not affect query membership or overwrite/removal counts,
-so a palette-only change while the dialog is open does not invalidate the
-reviewed annotation. Apply reads the current palette immediately before
-mutation, preserves it when valid, and resolves missing or invalid state through
-the palette policy above. It must never overwrite a newer valid palette with an
-older dialog snapshot.
+Palette metadata does not affect query membership or overwrite/removal counts.
+Apply reads the current palette immediately before mutation, preserves it when
+valid, and resolves missing or invalid state through the palette policy above.
+It must never overwrite a newer valid palette with an older snapshot.
 
-If only relevant target values changed while the review dialog was open, Apply
-raises `SpatialAnnotationColumnChangedError` without mutation. The controller
-rebuilds the preparation and summary, updates the dialog, and requires
-confirmation again. A changed source, binding, or cache raises
-`SpatialAnnotationQueryOutdatedError` and requires a new query. An absent or
-incompatible target follows normal target-validation handling without mutating
-the table.
+If relevant target values change between immediate preparation and Apply,
+Apply raises `SpatialAnnotationColumnChangedError` without mutation. The widget
+reports the failure and requires a new Apply Annotation action; it does not
+retry against newly observed state. A changed source, binding, or cache raises
+`SpatialAnnotationQueryOutdatedError` and likewise requires a new query. An
+absent or incompatible target follows normal target-validation handling
+without mutating the table.
 
 For an effective mutation, construct the complete replacement target Series
 off-table. Existing compatible dtype, categorical order, and categorical
@@ -3571,9 +3612,10 @@ values in an existing column reports `change_kind="updated"`.
 #### Recovery boundary
 
 Spatial Query does not maintain widget-local annotation history and exposes no
-operation-specific Undo command. The review dialog and mandatory overwrite
-confirmation are the user-facing safeguards; atomic Apply and rollback protect
-against partial failure.
+operation-specific Undo command. Explicit Set/Remove inputs, visible overwrite
+semantics, exact outcome counts, and the shared reload workflow are the
+user-facing safeguards; atomic Apply and rollback protect against partial
+failure.
 
 After Apply, the annotation is an ordinary shared in-memory table mutation. A
 user can correct it with another annotation Apply, persist it through Write
@@ -3603,7 +3645,7 @@ canonical cache.
   annotation column or companion palette;
 - all effective mutations assign one completed annotation-column/palette
   consistency unit atomically;
-- displayed counts are the exact counts accepted by Apply;
+- reported counts are the exact counts accepted by Apply;
 - apply rejects any changed binding, canonical-center snapshot, or relevant
   target-column state;
 - an effective Apply produces one ordinary dirty obs mutation, additionally
@@ -4365,8 +4407,8 @@ Deliverables:
 - status cards, tooltips, accessible names, and focused selector/state tests.
 
 The action controls in this shell validate state and emit intent only. They do
-not calculate centers, run a query, open a review dialog, mutate a table, or
-publish dirty state; those execution paths belong to Slices 7a and 7b. The existing
+not calculate centers, run a query, mutate a table, or publish dirty state;
+those execution paths belong to Slices 7a and 7b. The existing
 `SpatialQueryController` is deliberately not constructed or driven by this
 shell.
 
@@ -4405,7 +4447,7 @@ a separate dock. Construct both children with the same napari viewer so they
 resolve the same per-viewer `HarpyAppState`.
 
 This slice wires shared selection and dirty-session context only. It does not
-yet implement asynchronous calculate-query-review-apply execution.
+yet implement asynchronous calculate-query-apply execution.
 
 Use the parent's existing final-context publication as the only Spatial Query
 context input:
@@ -4536,7 +4578,7 @@ Exit criteria:
 - parent context changes consistently refresh or invalidate dependent Spatial
   Query selections and intent;
 - Spatial Query action signals remain execution-free and cause no calculation,
-  query, dialog, table mutation, or dirty-state publication in this slice;
+  query, table mutation, or dirty-state publication in this slice;
 - the existing Shapes Annotation workflow remains behaviorally unchanged;
 - integration itself does not calculate centers, run a query, apply an
   annotation, or dirty a table.
@@ -5008,7 +5050,7 @@ Slice 7b
 
 Slice 6i does not introduce or simulate annotation Apply merely to demonstrate
 the final transition. Slice 7b owns that operational transition because it owns
-the review-and-Apply flow. Slice 6i only establishes and tests the presentation
+the query-and-Apply flow. Slice 6i only establishes and tests the presentation
 helpers and selection-driven behavior that Slice 7b will consume.
 
 Styling remains driven by explicit user actions:
@@ -5801,8 +5843,8 @@ and is the intended interoperability target.
 
 #### Typed preparation, summary, and Apply
 
-Update the immutable review contract so the reviewed annotation value retains
-its domain type:
+Update the immutable annotation contract so the captured annotation value
+retains its domain type:
 
 ```python
 @dataclass(frozen=True)
@@ -5829,12 +5871,12 @@ For Set:
 - a value whose type does not match the preparation is rejected before
   summarization or mutation;
 - equality, missing/equal/other counts, stale-column comparison, no-op
-  detection, and overwrite review use the typed value without string
+  detection, and overwrite outcome reporting use the typed value without string
   conversion.
 
 Do not accept numeric text such as `"3"` for an integer target in the core
-API. The future dialog owns conversion from its positive-integer control to
-Python `int`; the domain boundary receives an already typed value.
+API. The future widget editor owns conversion from its positive-integer control
+to Python `int`; the domain boundary receives an already typed value.
 
 For New mode, the empty captured categorical values resolve the
 `value_kind` property to `"string"`. Remove remains unavailable for New mode.
@@ -5912,23 +5954,25 @@ duplicate viewer styling.
 
 #### Slice 7b/7c integration boundary
 
-The Apply dialog implemented in Slice 7b must choose its editor from
-`SpatialAnnotationPreparation.value_kind`:
+The inline Set/Remove controls implemented in Slice 7b must choose their editor
+from the selected target's resolved value kind:
 
 ```text
 string
     → QLineEdit
-    → prefill with the Shapes element name
     → trim and validate non-empty text
 
 positive_integer
     → positive-integer control, such as QSpinBox(minimum=1)
-    → do not prefill with the Shapes element name
 
 Remove
     → hide or disable either Set editor
-    → summarize assignment of pd.NA
+    → capture assignment of pd.NA
 ```
+
+The normalized typed value is captured before the asynchronous query and
+applied immediately after a non-empty accepted result. It is never reread from
+the editor at worker completion.
 
 After an effective `user_class` Apply, Slice 7b publishes the ordinary
 `TableStateChangedEvent` for `obs/user_class` and
@@ -5951,8 +5995,8 @@ table-state interoperability; neither widget calls the other directly.
 - updated Spatial Query selection, readiness text, and existing-column styling
   behavior;
 - focused core annotation, viewer-styling, and Spatial Query shell tests;
-- Slice 7b dialog/producer and Slice 7c event-consumer requirements aligned to
-  the typed contract;
+- Slice 7b inline-input/producer and Slice 7c event-consumer requirements
+  aligned to the typed contract;
 - no plain-integer coercion, New-column type selector, prediction-output
   mutation, or direct widget-to-widget dependency.
 
@@ -5960,7 +6004,7 @@ table-state interoperability; neither widget calls the other directly.
 
 - existing categorical string columns retain their current behavior;
 - existing categorical columns with only positive integer categories are
-  discoverable, reviewable, and atomically writable;
+  discoverable and atomically writable;
 - an existing valid `user_class`, including an all-missing empty-category
   state, is available to Spatial Query as a positive-integer target;
 - integer Set accepts only positive non-boolean Python integers and Remove
@@ -5972,9 +6016,9 @@ table-state interoperability; neither widget calls the other directly.
 - New mode remains string-categorical and cannot create conflicting
   Object Classification reserved columns;
 - read-only selection and styling do not mutate or dirty the table;
-- the Slice 7b/7c contracts can present the correct typed editor and later
-  notify Object Classification of external `user_class` changes through shared
-  table events.
+- the Slice 7b/7c contracts can present and capture the correct typed editor
+  value and later notify Object Classification of external `user_class`
+  changes through shared table events.
 
 ### Slice 6n: Object Classification categorical vocabulary and palette lifecycle
 
@@ -6619,7 +6663,8 @@ Implement the deferred Slice 6m contract:
 - string Set accepts trimmed non-empty text;
 - integer Set accepts a positive non-boolean Python `int`;
 - Remove stores `pd.NA`;
-- the future Apply dialog selects its editor from
+- the future inline annotation controls select their editor from
+  the same shared target value-kind resolver later reflected by
   `SpatialAnnotationPreparation.value_kind`.
 
 Use one small validation/resolution boundary rather than introducing another
@@ -6713,10 +6758,10 @@ selected SpatialData object and table when the changed paths include
 continues through the existing direct annotation callback and must not be
 handled a second time by this external-event path.
 
-Slice 7b also owns the Set/Remove review dialog and chooses its editor from the
-captured `SpatialAnnotationPreparation.value_kind`. Slice 7c implements the
-consumer refresh and classifier lifecycle. Slice 6p does not publish or
-consume the event, implement query orchestration, or call the dialog.
+Slice 7b also owns the inline Set/Remove controls and chooses its editor from
+the selected target's resolved value kind. Slice 7c implements the consumer
+refresh and classifier lifecycle. Slice 6p does not publish or consume the
+event or implement query orchestration.
 
 #### Selection, status, and viewer styling
 
@@ -6758,7 +6803,7 @@ kinds continue through the shared compact categorical colormap.
 
 - existing categorical string columns retain their behavior;
 - existing categorical positive-integer columns, including `user_class`, are
-  discoverable, reviewable, and atomically writable;
+  discoverable and atomically writable;
 - both value kinds use valid stored palettes authoritatively and stable
   positional fallbacks when those palettes are missing or invalid;
 - assigning a new integer class appends it without reordering or recoloring
@@ -6773,8 +6818,8 @@ kinds continue through the shared compact categorical colormap.
   Classification reserved columns;
 - read-only selection and styling do not mutate or dirty the table;
 - no-op and palette dirty-state reporting remain exact;
-- the Slice 7b dialog/producer and Slice 7c consumer contracts support the
-  preparation's derived value kind without being implemented in Slice 6p.
+- the Slice 7b inline-input/producer and Slice 7c consumer contracts support
+  the preparation's derived value kind without being implemented in Slice 6p.
 
 ### Slice 7a: Two-phase async calculate-query flow
 
@@ -6785,8 +6830,8 @@ kinds continue through the shared compact categorical colormap.
 This slice connects the existing cache and containment domain operations to the
 integrated Spatial Query child. It ends with an accepted
 `CanonicalCenterQueryResult` or a no-result/error outcome. It does not open the
-review dialog, mutate annotation columns, or implement Object Classification
-event consumption.
+annotation mutation boundary or implement Object Classification event
+consumption.
 
 `SpatialQuery` owns one `SpatialQueryController`. `AnnotationWidget` continues
 to own and publish the final `AnnotationContext`, but it does not mediate
@@ -6864,9 +6909,10 @@ error through normal controller status.
 
 The annotation target does not belong in `SpatialQueryController`. The child
 retains its captured target mode and column name in the immutable Run intent
-and pairs them with the accepted query result in Slice 7b. Do not add target
-fields to the controller, `CanonicalCenterQueryRequest`, or
-`CanonicalCenterQueryResult`.
+and pairs them with the accepted query result in Slice 7b. Slice 7b extends
+that child-owned intent with the Set/Remove action and typed value; neither the
+target nor annotation intent belongs in the controller,
+`CanonicalCenterQueryRequest`, or `CanonicalCenterQueryResult`.
 
 The controller worker phases are exactly:
 
@@ -7002,6 +7048,7 @@ Invalidate active work when:
 - SpatialData, coordinate system, or parent Shapes target changes;
 - the selected Shapes session becomes dirty;
 - labels, table, target mode, target column, or New-column draft changes;
+- after Slice 7b, the Set/Remove action or annotation value changes;
 - the selected primary Labels layer is removed;
 - relevant table reload replaces the operation's table state;
 - the child or parent is destroyed.
@@ -7034,15 +7081,16 @@ If `matched_instance_count == 0`:
 
 - show a neutral `No instance centroids found` outcome;
 - do not call `prepare_spatial_annotation()`;
-- do not open a dialog or mutate annotation state;
+- do not mutate annotation state;
 - retain any accepted canonical cache update and its dirty paths.
 
 If one or more instances match, Slice 7a calls the child's
 `_on_query_ready()` callback through `on_query_ready` and shows a stable
 `N instance centroids found` success outcome without mutating annotation
-state. Slice 7b extends that same child callback to prepare and open the review
-dialog. Do not add a temporary Qt signal, operation-result wrapper, or
-operation ID field to the domain query result for this handoff.
+state. Slice 7b extends that same child callback to prepare and immediately
+apply the captured annotation intent. Do not add a temporary Qt signal,
+operation-result wrapper, or operation ID field to the domain query result for
+this handoff.
 
 #### Deliverables
 
@@ -7074,113 +7122,163 @@ operation ID field to the domain query result for this handoff.
 - a late signal from the completed center phase cannot clear or mutate the
   active query phase;
 - accepted cache mutation is published by the child exactly once and before
-  the containment result is reviewed;
+  any annotation mutation;
 - cancellation after cache application retains that useful dirty cache but
-  cannot open a late dialog;
+  cannot apply a late annotation;
 - a zero-match result produces no annotation preparation or mutation.
 - a non-empty result reaches the child exactly once through `on_query_ready`
   and remains mutation-free until Slice 7b extends that callback.
 
-### Slice 7b: Spatial annotation review, apply, and publication
+### Slice 7b: One-step spatial annotation apply and publication
 
 #### Responsibility boundary
 
-This slice consumes a non-empty current `CanonicalCenterQueryResult` accepted
-by Slice 7a. It owns the modal review UI, main-thread atomic annotation Apply,
-shared table-state publication, and immediate Spatial Query Labels styling. It
-does not perform worker computation or directly call Object Classification.
+This slice turns the Slice 7a calculate-query result into one user-facing
+annotation action. It adds inline Set/Remove and target-typed value controls,
+captures the complete mutation intent before asynchronous work, applies that
+intent immediately after a non-empty accepted query result, publishes the
+effective table mutation, and refreshes Labels styling. It does not introduce
+a modal review dialog, perform worker computation, or call Object
+Classification directly.
 
-The Spatial Query child uses the annotation mode and column name captured in
-the Run intent. It must not replace them with selector values read after the
-worker completed.
+The Spatial Query child owns the annotation action and value because they are
+UI mutation intent, not containment-query inputs. `SpatialQueryController`,
+`CanonicalCenterQueryRequest`, and `CanonicalCenterQueryResult` remain unaware
+of the target column and annotation value.
 
-#### Preparation and dialog contract
+#### Inline annotation-input contract
 
-Before opening the dialog, call:
+Add one explicit Set/Remove control and one target-typed Set editor beneath the
+target-column controls:
+
+```text
+Existing string categorical
+    → Set: QLineEdit with trimmed non-empty text
+    → Remove: editor hidden or disabled
+
+Existing positive-integer categorical
+    → Set: positive-integer-only editor
+    → Remove: editor hidden or disabled
+
+New column
+    → Set only
+    → QLineEdit with trimmed non-empty text
+```
+
+The widget never derives the value from the Shapes name. The Set editor starts
+without an implicit string value. Set is the default action; Remove must be
+chosen explicitly. `"None"` and `"nan"` remain ordinary string categories;
+only the explicit Remove action produces `annotation_value=None`. Remove is
+unavailable for New mode.
+
+Target changes resolve the applicable value kind through the existing Spatial
+Annotation contract and reset an incompatible value draft rather than
+silently converting it. Changing the Set/Remove action or editor value while a
+Run is active invalidates that Run just like changing Shapes, labels, table, or
+target column.
+
+The widget states before execution that Set replaces different existing values
+for every matched labeled object and that Remove clears every matched current
+value. Exact counts are necessarily available only after containment has been
+evaluated and are reported as the operation outcome.
+
+#### Accepted intent and immediate Apply
+
+Extend the frozen child-owned Run intent with the already-normalized typed
+value:
 
 ```python
+@dataclass(frozen=True)
+class _SpatialQueryRunIntent:
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    labels_name: str
+    table_name: str
+    column_mode: SpatialAnnotationColumnMode
+    column_name: str
+    annotation_action: Literal["set", "remove"]
+    annotation_value: SpatialAnnotationValue
+```
+
+`annotation_action="remove"` requires Existing mode and
+`annotation_value=None`; `"set"` requires the target-compatible normalized
+string or positive integer. `_run_intent_matches_current_selection()` includes
+both fields so a worker result can never adopt action or editor state changed
+after Apply Annotation was clicked.
+
+For one or more matched instances, `_on_query_ready()` performs:
+
+```text
+validate the retained Run intent against current widget context
+    ↓
 prepare_spatial_annotation(
-    sdata,
-    query_result=query_result,
-    column_name=captured_column_name,
-    column_mode=captured_column_mode,
+    intent.sdata,
+    query_result=result,
+    column_name=intent.column_name,
+    column_mode=intent.column_mode,
+)
+    ↓
+summarize_spatial_annotation(
+    preparation,
+    intent.annotation_value,
+)
+    ↓
+apply_spatial_annotation(
+    intent.sdata,
+    preparation,
+    summary,
 )
 ```
 
-This is the authoritative transition from matching instance IDs to current
-table rows and current target values. It also validates the exact canonical
-centers and binding retained by the query result.
+All three domain calls run sequentially on the main thread after containment
+worker completion. Preparation and summarization are mutation-free;
+`apply_spatial_annotation()` remains the only annotation mutation boundary.
+The immutable summary is used for consistency validation and exact outcome
+reporting, not as a user review artifact.
 
-Implement the review UI in a focused Spatial Query dialog module with a small
-boundary equivalent to:
+If `changed_count == 0`, report that no annotations changed and publish
+nothing. If preparation or Apply raises
+`SpatialAnnotationColumnChangedError`,
+`SpatialAnnotationQueryOutdatedError`, or another expected target-validation
+error, show an actionable failure and require a new Apply Annotation action.
+Do not retry, rebuild preparation against newer values, or silently adopt
+current selector/editor state.
 
-```python
-def review_spatial_annotation(
-    parent: QWidget,
-    preparation: SpatialAnnotationPreparation,
-    *,
-    shapes_name: str,
-    initial_annotation_value: SpatialAnnotationValue | None = None,
-    refreshed_review: bool = False,
-) -> SpatialAnnotationSummary | None:
-    ...
-```
+Normal Shapes edits and context changes already invalidate the operation
+before result acceptance. Core Apply revalidates current canonical centers,
+binding, table identity, and target values. Do not add a second Shapes geometry
+hash or affine comparison.
 
-The dialog is mutation-free. It calls `summarize_spatial_annotation()`
-repeatedly as the user changes Set/Remove mode or edits the value and returns
-the exact accepted `SpatialAnnotationSummary`. `None` means Cancel.
+A cache update accepted before a no-result, no-op, annotation failure, or later
+input invalidation remains a useful dirty cache mutation and is not rolled
+back.
 
-The dialog displays:
+#### Final status ownership
 
-- saved Shapes, labels, table, and target-column names;
-- the `Centroid inside annotation` inclusion rule;
-- eligible and matched instance counts;
-- explicit Set annotation and Remove annotation modes;
-- current missing, already equal, different, overwrite, and removal counts
-  appropriate to the selected mode;
-- mandatory textual overwrite/removal warnings;
-- one explicit mode-specific primary action and Cancel.
-
-Editor selection follows `preparation.value_kind`:
+`SpatialQueryController` continues to own only calculation and containment
+execution status. It must not gain annotation-domain setters or learn whether
+`.obs` Apply succeeded. The child owns one transient final annotation outcome
+for the unified status card:
 
 ```text
-string
-    → QLineEdit
-    → first review defaults to the Shapes element name
-    → trim and require a non-empty string
+controller worker active
+    → controller execution status has priority
 
-positive_integer
-    → QSpinBox or equivalent integer-only editor
-    → minimum 1
-    → no Shapes-name default
+accepted query reaches child
+    → child prepares and applies annotation
+    → child stores final applied/no-op/failure outcome
 
-Remove
-    → hide or disable the Set editor
-    → summarize annotation_value=None
+query worker emits finished
+    → normal widget refresh preserves the child-owned final outcome
+
+next input change or Apply Annotation action
+    → clear the previous final outcome
 ```
 
-Remove remains unavailable for `column_mode="new"`. The strings `"None"` and
-`"nan"` are ordinary string categories and never removal sentinels.
-
-#### Apply and changed-review handling
-
-After dialog acceptance, call `apply_spatial_annotation()` on the main thread
-with the exact preparation and reviewed summary.
-
-If it raises `SpatialAnnotationColumnChangedError`, do not apply using newly
-observed values silently. Rebuild the preparation from the same accepted query
-result, recompute the summary for the same proposed Set/Remove value, and open
-a refreshed review that clearly states that table values changed and the
-counts must be confirmed again.
-
-If preparation or Apply reports outdated canonical centers, binding, table
-identity, or target availability, discard the result and require a new Run.
-Normal Shapes edits and context changes have already invalidated the operation;
-do not add a second Shapes geometry hash or affine comparison here.
-
-Cancel, a no-op summary, failed preparation, and rejected Apply publish no
-annotation event. A cache update accepted earlier remains dirty and is not
-rolled back.
+Use one optional child-owned status specification or equivalently small
+presentation record; do not duplicate the query result, summary, preparation,
+or Run intent merely to render final feedback.
 
 #### Effective mutation publication
 
@@ -7204,6 +7302,9 @@ change kind
 
 Call `HarpyAppState.record_table_mutation()` exactly once. The core annotation
 operation remains unaware of Qt, app state, dirty tracking, and persistence.
+The Spatial Query child's own event handler must not treat this ordinary
+mutation event as an external input change, invalidate the already accepted
+operation, or clear its final annotation outcome.
 
 The source is used for every effective Spatial Query annotation, not only
 `user_class`. Consumers decide whether the affected column is relevant.
@@ -7214,7 +7315,18 @@ After publication:
   table-backed Spatial Annotation styling path;
 - render missing values with the shared neutral color;
 - leave unrelated layers and color sources untouched;
-- update the unified status with the applied/removed count.
+- update the unified status from the already-computed summary:
+
+```text
+Set
+    → changed count
+    → overwritten-different count
+    → already-equal count
+
+Remove
+    → removed count
+    → already-missing count
+```
 
 For the first effective New-column Apply:
 
@@ -7233,31 +7345,43 @@ replace neutral styling with table-backed styling
 ```
 
 Signal blocking must prevent this programmatic promotion from launching a
-second query or invalidating the already completed Apply.
+second query, applying again, or invalidating the already completed operation.
+The created column becomes the selected Existing target only after the atomic
+mutation and table-state publication succeed.
 
 #### Deliverables
 
-- value-kind-aware review dialog and live summary presentation;
-- changed-value re-review loop;
+- inline Set/Remove and value-kind-aware editor controls;
+- annotation-value validation as part of Apply Annotation readiness;
+- captured typed value in the immutable child-owned Run intent;
+- immediate prepare-summary-Apply handling in `_on_query_ready()`;
 - main-thread use of the existing atomic Apply domain operation;
+- summary and related core docstrings updated from review-oriented wording to
+  one-step consistency and outcome wording;
+- one transient child-owned final annotation outcome without adding annotation
+  state to the controller;
 - exact child-owned annotation event construction;
-- effective Apply status and targeted Labels styling;
+- exact no-result, no-op, changed, overwritten, unchanged, removed, stale, and
+  failure status;
+- targeted Labels styling after effective Apply;
 - New-column promotion and draft consumption;
-- focused dialog, widget Apply, no-op, cancellation, outdated-result,
-  event-path, palette-path, styling, and promotion tests.
+- focused input-validation, intent-capture, widget Apply, no-op, cancellation,
+  outdated-result, event-path, palette-path, styling, and promotion tests.
 
 #### Exit criteria
 
-- every effective mutation is preceded by review of the exact affected,
-  overwrite, or removal counts;
-- target values changed after review can never be applied without a second
-  confirmation;
-- no dialog path mutates the table directly;
+- one Apply Annotation action owns query and mutation without a second dialog
+  or confirmation step;
+- only the action and typed value captured before asynchronous work can reach
+  annotation Apply;
+- changing action, value, target, or context invalidates the active operation;
 - Apply either installs the complete obs/palette consistency unit or restores
   the previous state;
-- no-op, Cancel, stale, and error outcomes publish no annotation event;
+- no-result, no-op, stale, and error outcomes publish no annotation event;
 - an effective Apply publishes exactly one event with only paths that actually
   changed;
+- standing overwrite semantics are visible before execution and exact outcome
+  counts are shown afterward;
 - New mode becomes the newly created Existing target only after successful
   effective Apply;
 - immediate Spatial Query coloring reflects the accepted in-memory table.
@@ -7346,27 +7470,21 @@ single-instance row-scoped styling optimization.
 - consuming an external event never records another mutation or changes shared
   dirty paths.
 
-### Slice 7d: User-facing annotation terminology
+### Slice 7d: User-facing annotation status terminology
 
 #### Responsibility boundary
 
 Spatial Query remains the internal domain and architectural name, but it is
 not the workflow users need to understand. From the user's perspective, the
 selected saved Shapes element determines which labeled objects receive an
-annotation. This slice updates only the visible execution action and status
-language; it does not rename Python modules, classes, methods, controller
-phases, events, tests, or roadmap concepts.
+annotation. Slice 7b already replaces the old query-only action with
+`Apply Annotation`; this slice completes the visible execution and status
+language around that action. It does not rename Python modules, classes,
+methods, controller phases, events, tests, or roadmap concepts.
 
-The primary action becomes:
-
-```text
-Start Spatial Query
-    → Review Annotation
-```
-
-`Review Annotation` is deliberate: the action finds the matching labeled
-objects and opens the review step, but does not mutate the table before the
-user accepts that review.
+`Apply Annotation` is deliberate: one accepted action finds the matching
+labeled objects and mutates the selected table automatically after successful
+query and freshness validation.
 
 #### Execution-status language
 
@@ -7374,13 +7492,19 @@ Replace the developer-facing execution titles with:
 
 ```text
 worker active
-    → Preparing Annotation
+    → Applying Annotation
 
-worker or preflight error
-    → Annotation Preparation Failed
+worker, preflight, or atomic Apply error
+    → Annotation Failed
 
-query work finished
-    → Annotation Preparation Complete
+effective mutation
+    → Annotation Applied
+
+zero-match result
+    → No Matching Objects
+
+no-op result
+    → No Annotation Changes
 ```
 
 Ordinary visible controller messages must describe labeled objects and the
@@ -7395,21 +7519,21 @@ containment query
     → Finding labeled objects inside "<shapes>".
 
 non-empty result
-    → <N> labeled object(s) ready for annotation.
+    → Found <N> labeled object(s); applying the annotation.
 
 zero-match result
     → No labeled objects were found inside the selected shapes.
 ```
 
 Failures retain the useful underlying error detail, but their user-facing
-title and leading message describe an annotation-preparation failure. Applied
-and removed annotation outcomes continue to report the effective mutation
-implemented by Slice 7b; they must not be relabeled as merely query completion.
+title and leading message describe an annotation failure. Applied and removed
+annotation outcomes report the effective mutation and exact counts implemented
+by Slice 7b; they must not be relabeled as merely query completion.
 
 #### Deliverables
 
-- `Review Annotation` as the Spatial Query child's primary action text;
-- annotation-oriented running, failure, and completion status-card titles;
+- annotation-oriented running, failure, applied, zero-match, and no-op
+  status-card titles;
 - annotation-oriented center-calculation, geometry-evaluation, match, and
   no-match messages;
 - focused status-card and widget/controller message tests updated to assert the
@@ -7417,12 +7541,12 @@ implemented by Slice 7b; they must not be relabeled as merely query completion.
 
 #### Exit criteria
 
-- the visible Run workflow does not require the user to understand the term
-  Spatial Query;
+- the visible Apply Annotation workflow does not require the user to understand
+  the term Spatial Query;
 - ordinary execution messages do not expose centroid or canonical-cache
   implementation terminology;
-- the primary action does not imply that clicking it immediately mutates the
-  table;
+- the primary action clearly communicates that a successful query immediately
+  mutates the selected annotation column;
 - internal Spatial Query APIs and architectural terminology remain unchanged.
 
 ### Slice 8: Persistence UX and cross-widget synchronization
@@ -7481,12 +7605,13 @@ The feature is complete when one registered parent Annotation widget lets a
 user create, edit, save, and select a polygon annotation through its Shapes
 Annotation child, then select a 2D labels element and linked table through its
 Spatial Query child; transparently create or reuse validated canonical centers;
-run a responsive center-containment query; review affected rows; set a string
+capture a Set/Remove action and target-typed value; run a responsive
+center-containment query and immediately apply that intent; set a string
 annotation in a compatible existing or new obs column, set a positive-integer
 class in a compatible existing column, or remove annotations from an existing
-compatible column; visualize the selected annotation on the shared primary
-labels layer; and safely write/reload all supported dirty table components
-from zarr without rewriting the complete AnnData object.
+compatible column; report the exact outcome; visualize the selected annotation
+on the shared primary labels layer; and safely write/reload all supported dirty
+table components from zarr without rewriting the complete AnnData object.
 
 Completion additionally requires:
 
@@ -7499,12 +7624,14 @@ Completion additionally requires:
 - polygon union, holes, boundaries, and affine transformations are tested;
 - query membership is canonical-center containment, never silently pixel
   overlap;
-- no annotation mutation occurs before explicit Apply;
+- no annotation mutation occurs before the explicit Apply Annotation action
+  and successful query/freshness validation;
 - cache update is atomic and visibly marks the shared table dirty;
 - creating or refreshing spatial_canonical records both its obsm path and
   metadata path as dirty, while calculation without a cache update does not;
-- overwrite and annotation removal are never silent;
-- no stale/cancelled worker updates the cache, opens a dialog, or mutates a table;
+- overwrite and annotation removal semantics are explicit before execution and
+  their exact counts are reported afterward;
+- no stale/cancelled worker updates the cache or mutates a table;
 - spatial instance identity always uses region_key and instance_key; obs_names
   do not participate in canonical cache identity;
 - table rows with no source label are rejected as binding inconsistencies;
@@ -7542,7 +7669,7 @@ spatial_canonical is a reusable, row-aligned spatial index for the instances in
 a linked AnnData table. It stores one x/y center of mass per covered table row
 in the intrinsic coordinate frame of that row's source labels region.
 
-On Run:
+On Apply Annotation:
 
     inspect and validate spatial_canonical
                     |
@@ -7560,7 +7687,8 @@ On Run:
                          |
               vectorized intersects_xy
                          |
-              review and explicitly Apply
+              atomically apply captured
+              Set or Remove annotation
 
 The expensive global raster aggregation is paid only when the canonical index
 is unavailable or invalidated. The frequent operation is a fast vectorized
