@@ -133,6 +133,16 @@ and prediction elements to be combined. The prediction binding is absent until
 a prediction destination is created and belongs to the same workflow as its
 annotation.
 
+Annotation and prediction element names are draft-time choices until the
+corresponding element is written successfully for the first time. That first
+successful write fixes the element binding in the workflow manifest. A fixed
+binding is read-only in the first release: renaming, cloning, or redirecting a
+persisted workflow element requires a later explicit action and is out of
+scope. The workflow display name remains editable because it does not identify
+or relocate a SpatialData element. If annotations are written before any
+prediction exists, only the annotation binding becomes fixed; the prediction
+destination remains editable until its own first successful write.
+
 An existing workflow is eligible for a selected card when its manifest and
 live elements validate against the source SpatialData association, coordinate
 system, image element, and selected-resolution descriptor. Channel selection is
@@ -337,7 +347,10 @@ Names are normalized through the existing SpatialData element-name validation.
 They never overwrite an existing element silently. The prediction name reserves
 a destination but does not require a prediction element to exist before a
 complete prediction is produced. A manually edited prediction name stops
-following later edits to the annotation-name default.
+following later edits to the annotation-name default. Each name remains editable
+only until that element's first successful write. Existing workflow bindings
+are displayed read-only; changing them requires a future explicit rename or
+clone action rather than editing the workflow form.
 
 Selecting an existing workflow restores its saved channel selection, class
 schema, annotation binding, optional prediction binding, and revision status.
@@ -349,7 +362,8 @@ arrays replace the working layers.
 `Attach existing annotation Labels` is a separate recovery/adoption action, not
 an entry in the normal workflow list. It creates a workflow manifest only after
 the selected Labels element and optional prediction pass target-grid, transform,
-dtype, role, and class-schema validation.
+dtype, role, and class-schema validation. Because attached elements already
+exist persistently, their bindings are fixed as soon as attachment succeeds.
 
 ### 3. Inspect selected channels
 
@@ -398,6 +412,56 @@ The widget provides a small shared class editor:
 release supports at most 255 classes because annotation and prediction use
 `uint8`. Class names and colors are not Random Forest inputs, but they are
 required product metadata and prevent users from confusing integer meanings.
+
+#### Class identity and schema edits
+
+A nonzero class ID is the stable identity of a class while that class is present
+in the workflow's current schema. The annotation and prediction arrays encode
+only these IDs. Names and colors are editable presentation metadata; they do not
+change the integer meaning learned or emitted by the classifier.
+
+Apply these rules:
+
+| Action | Allowed behavior | Persistence state | Classifier and prediction state |
+|---|---|---|---|
+| Rename a class | Allow; keep its ID and pixels unchanged | Class schema and manifest dirty | Remain fresh |
+| Change a class color | Allow and update annotation and prediction layer colormaps | Class schema and manifest dirty | Remain fresh |
+| Remove a class with zero annotated pixels | Remove it from the current class schema | Class schema and manifest dirty | Become stale |
+| Remove a class with annotated pixels | Reject and show the exact annotated-pixel count | Unchanged | Unchanged |
+| Change an existing class ID | Reject | Unchanged | Unchanged |
+| Reuse an ID that is no longer in the current schema | Allow for a newly created class | Class schema and manifest dirty | Existing artifacts remain stale and retain their own schema snapshots |
+
+Renaming is a display-name correction, not a semantic reassignment. Retraining
+after a rename would learn the same mapping from the same integer-labelled
+pixels. If the user intends a genuinely different biological meaning, they must
+create a new class ID and repaint or explicitly reassign annotations; bulk
+class reassignment is a possible later feature.
+
+Removing a class must never silently erase its annotated pixels, convert them
+to `0`, or reinterpret them as another class. Once its annotated-pixel count is
+zero, removal deletes that definition from the workflow's current class schema.
+The manifest does not maintain a retired-class registry or retain unused IDs,
+old names, or old colors in its current class list. Adding or removing a class
+changes active class-ID membership and therefore stales any existing classifier
+and prediction.
+
+A class ID is immutable while its class definition exists, but an ID that is no
+longer present in the current schema may be assigned to a newly created class.
+The provenance for each existing classifier and prediction stores the class
+schema snapshot used to create that artifact. Therefore an older retained stale
+prediction continues to interpret and render its integer IDs using its own
+snapshot, not a later workflow class that happens to reuse the same ID. Once
+such an artifact is removed, its historical names and colors need not be
+retained elsewhere.
+
+The workflow manifest is the authoritative source for the **current** class
+schema. Its class list contains only the IDs, names, and colors currently shown
+in the class editor. `Reload Labels State` reconstructs the class editor and the
+editable annotation layer's napari color mapping from that list. A fresh
+prediction uses the same current mapping. A retained stale prediction instead
+uses its artifact-specific schema snapshot when the old and current mappings
+differ. Do not store the current class schema in `SpatialData.attrs` or Labels
+`DataArray.attrs`; the Labels arrays contain only integer IDs.
 
 Background is an ordinary explicit class with an ID in `1..255`, for example
 `1 = Background`. Unpainted pixels remain unlabeled and must never be inferred
@@ -545,9 +609,10 @@ Follow the persistence interaction already used by Object Classification, but
 treat the selected workflow manifest and its annotation and prediction elements
 as one UI-level consistency unit. The widget exposes two explicit actions:
 
-- `Write Labels State` writes the editable annotation element and any present,
-  complete prediction element to the active backed SpatialData Zarr store and
-  records their bindings and provenance in the selected workflow manifest;
+- `Write Labels State` writes the editable annotation element and writes or
+  overwrites prediction data only when the local prediction is complete and
+  fresh, then records the resulting bindings, freshness, and provenance in the
+  selected workflow manifest;
 - `Reload Labels State` resolves the selected workflow manifest and replaces
   the in-memory annotation and prediction layers with exactly the SpatialData
   elements referenced by it.
@@ -568,12 +633,101 @@ not replace the workflow manifest. When several compatible annotation elements
 exist, `Reload Labels State` acts only on the workflow explicitly selected in
 the workflow selector.
 
-Brush strokes and prediction generation update only the in-memory layers; they
-never write through to Zarr automatically. Annotation edits, class-metadata
-edits, and creating, replacing, or removing a prediction mark the Labels state
-dirty. A write clears dirty state only after every element required for that
-write succeeds. A failed write keeps the in-memory layers intact and the state
-dirty.
+Brush strokes and prediction generation update only the in-memory working
+layers; they never write through to Zarr automatically. As with the table-based
+classification workflow, the controller compares this working state with the
+last successfully persisted state. It must not infer persistence state from the
+presence of a napari layer alone.
+
+#### Dirty state versus stale state
+
+`Dirty` and `stale` describe different properties and must be tracked
+independently:
+
+- **dirty** means that a persistable part of the in-memory workflow differs from
+  the last successfully persisted workflow state;
+- **stale** means that a derived classifier or prediction no longer represents
+  the workflow's current annotation revision, channels, class schema, or other
+  declared inputs. Staleness does not imply that the prediction pixel array was
+  edited.
+
+The workflow controller tracks at least:
+
+- `annotation_dirty`: annotation pixel values changed;
+- `class_schema_dirty`: current class membership, class names, or colors
+  changed;
+- `prediction_dirty`: a complete, fresh prediction was created or replaced
+  relative to the persisted state;
+- `manifest_dirty`: workflow bindings, revisions, provenance, names, or
+  freshness metadata changed;
+- aggregate `labels_state_dirty`: at least one persistable component above is
+  dirty. This aggregate state drives write/discard/cancel prompts.
+
+These are controller-level workflow flags. Napari layer events may trigger
+them, but the Labels arrays themselves are not the authoritative state machine.
+In particular, merely marking an otherwise unchanged prediction stale does not
+make its pixel array dirty. It normally makes the manifest dirty so that the
+changed dependency relationship can be recorded.
+
+| Event | Annotation working state | Prediction working state | Workflow persistence state |
+|---|---|---|---|
+| User paints annotations | Dirty | Becomes stale; its pixel array does not become dirty merely because the annotations changed | Dirty |
+| User runs `Predict` | Unchanged | Complete, fresh, and dirty until written | Dirty |
+| User changes channels | Unchanged | Becomes stale; its pixel array is unchanged | Manifest dirty |
+| User renames or recolors a class | Unchanged | Remains fresh | Class schema and manifest dirty |
+| User removes an unused class | Unchanged | Becomes stale; its pixel array is unchanged | Class schema and manifest dirty |
+| Successful write with a fresh prediction | Clean | Clean and fresh | Clean |
+| Successful annotation-only write retaining an older persisted prediction | Clean | Persisted array remains unchanged and stale | Clean after the manifest records the stale relationship |
+
+A prediction that was generated locally but became stale before its first write
+is an **ephemeral stale prediction**, not a persistable dirty prediction. It may
+remain visible for comparison, but the status card must warn that it will not
+be saved and will disappear on reload. After a successful annotation and
+manifest write, that ephemeral layer does not keep `labels_state_dirty` set;
+otherwise the widget would repeatedly offer to save a prediction that the
+persistence policy deliberately excludes.
+
+A write clears only the dirty flags covered by the successfully finalized
+workflow write. A failed write keeps the in-memory layers and their dirty flags
+intact. Freshness remains orthogonal: a clean persisted prediction may still be
+stale, and a newly computed fresh prediction is dirty until it is successfully
+persisted.
+
+Workflow writes are deliberately best-effort rather than a cross-store
+transaction. Use this order:
+
+1. prevalidate the complete request, including sidecar destination, fixed or
+   draft element bindings, overwrite decisions, array dtype and shape,
+   transformations, and manifest serialization;
+2. write the annotation Labels element;
+3. write the prediction Labels element only when the local prediction is both
+   complete and fresh;
+4. stage, validate, and finalize the workflow manifest last as the
+   workflow-level completion record; an incomplete temporary manifest is never
+   eligible for discovery.
+
+Use `harpy.im.add_labels(...)` as the Labels-element write boundary, including
+its explicit overwrite support. Do not duplicate Harpy's element creation and
+cleanup machinery in napari-harpy. Before relying on overwrite for this
+workflow, verify and, if necessary, extend Harpy's single-element replacement
+so a failed replacement cleans up temporary state safely and preserves or
+restores the previous canonical element when possible.
+
+Napari-harpy does not promise atomic rollback across annotation, prediction,
+and sidecar writes. If any stage fails, stop the remaining stages, keep the
+in-memory workflow and layers unchanged and dirty, and show the failing stage,
+element or manifest path, and underlying error in the status card. The message
+must state that an earlier disk stage may already have succeeded and that
+retrying `Write Labels State` is the normal recovery action. Do not silently
+delete or restore already written user-facing Labels elements from a later
+napari-harpy stage.
+
+Because the manifest is written last, a failed workflow write never publishes a
+new manifest revision as complete. A later discovery pass reports missing,
+incomplete, or incompatible manifests and referenced elements, but does not
+attempt automatic data repair. Unreferenced temporary artifacts produced by a
+failed Harpy element write are Harpy cleanup concerns and are never interpreted
+as valid pixel-classification workflows.
 
 `Reload Labels State` reloads immediately when the current state is clean. When
 it is dirty, it uses the Object Classification three-way decision:
@@ -588,11 +742,29 @@ and continue, or cancel the target change. Reload and discard applies to both
 the annotation and prediction layers; it never retains one local member of the
 pair while reloading the other.
 
-A complete but stale prediction may remain visible or be written only if it is
-clearly marked stale and retains the classifier and annotation-revision
-provenance needed to explain that status. Reload must not present such a
-prediction as current. No periodic recovery snapshot is part of the first
-implementation.
+Only complete, fresh prediction arrays are written or overwritten. Apply this
+policy:
+
+| Prediction state | `Write Labels State` behavior |
+|---|---|
+| Complete and fresh | Write or overwrite annotation and prediction, then update the manifest. |
+| Stale, with a previously persisted prediction | Write annotation only; leave the persisted prediction unchanged and record it as stale with its original provenance. |
+| Stale, never previously persisted | Write annotation only; do not persist or bind the stale prediction. |
+| Missing | Write annotation only. |
+
+A retained stale prediction remains associated with its workflow rather than
+becoming an orphan, but its manifest entry continues to record the classifier
+ID and annotation revision that produced it. The updated workflow revision marks
+it stale relative to the current annotation, channels, class schema, or
+classifier. Reload may display it for comparison but must not present it as
+current. The status card explains that the prediction was not rewritten, names
+its originating annotation revision when available, and directs the user to run
+`Predict` to refresh it.
+
+An unpersisted stale prediction may remain visible during the current session,
+but it has no persisted workflow binding and disappears on reload. Writing must
+never delete or unlink an older persisted prediction merely because it became
+stale. No periodic recovery snapshot is part of the first implementation.
 
 The versioned sidecar workflow manifest should include:
 
@@ -605,7 +777,8 @@ The versioned sidecar workflow manifest should include:
 - selected coordinate system;
 - ordered channel names;
 - selected-grid-to-image transform description;
-- class IDs, names, and colors;
+- current class IDs, names, and colors; this is the authoritative class schema
+  used to reconstruct the class editor and annotation colormap;
 - annotation element name, role, and revision;
 - optional prediction element name, role, creation state, and annotation
   revision used;
@@ -660,14 +833,15 @@ A trained classifier records:
 - workflow ID used for the training run;
 - source image and selected-resolution descriptor used for the training run;
 - ordered selected channel names;
-- class schema;
+- class-schema snapshot used for that training run;
 - sampled class counts;
 - Random Forest parameters and fitted estimator;
 - library versions;
 - annotation revision used for training.
 
-Changing annotations, channel selection, channel order, image, or scale marks
-the classifier stale. Changing only display colors does not.
+Changing annotations, active class-ID membership, channel selection, channel
+order, image, or scale marks the classifier stale. Changing only a class name or
+color does not; those metadata edits leave the fitted integer-ID mapping intact.
 
 ### Selected-resolution descriptor
 
@@ -703,12 +877,15 @@ A prediction records:
 
 - owning workflow ID and prediction-element binding;
 - the classifier identity;
+- class-schema snapshot used for rendering and provenance;
 - target source image and selected-resolution descriptor;
 - output shape and dtype;
 - creation state: running, complete, cancelled, or failed.
 
-Only complete predictions can be written. A cancelled or failed working output
-array is discarded and cannot be mistaken for a valid prediction.
+Only complete, fresh predictions can be written. A cancelled or failed working
+output array is discarded and cannot be mistaken for a valid prediction. A
+complete stale prediction can remain visible under the persistence policy above
+but is never written or overwritten.
 
 ## Scope of the First Usable Release
 
@@ -717,7 +894,8 @@ Included:
 - one active single-sample workflow and target card;
 - explicit create/select/reload workflow interaction;
 - one versioned workflow manifest in a visible Harpy sidecar;
-- editable default names for annotation and prediction Labels elements;
+- editable draft names for annotation and prediction Labels elements, fixed
+  independently by each element's first successful write;
 - sidecar-based discovery of eligible workflows and explicit selection when
   several match;
 - `Attach existing annotation Labels` recovery/adoption;
@@ -895,9 +1073,14 @@ Deliver:
 - apply selected-grid and image transforms to the layer;
 - mark it as the active editable layer;
 - reserve `0` for unlabeled pixels;
-- add, rename, recolor, and select class IDs in the range `1..255`;
+- add, rename, recolor, remove, and select classes with stable IDs in the range
+  `1..255`;
 - show live annotated-pixel counts per class;
-- track annotation revision and dirty state;
+- keep an existing class ID immutable while allowing an ID absent from the
+  current schema to be used for a newly created class;
+- reject removal while annotated pixels remain and report their exact count;
+- track annotation revision, `annotation_dirty`, and `class_schema_dirty`
+  independently;
 - protect a dirty in-memory annotation when switching target, switching scale,
   or closing the widget by offering `Discard and continue` or `Cancel`;
 - defer all write and reload actions to Slice 6, where persistence is actually
@@ -914,6 +1097,18 @@ Acceptance criteria:
   background;
 - an explicitly painted Background class behaves like any other trainable class;
 - two classes can be painted and counted;
+- renaming or recoloring a class changes persisted schema metadata without
+  staling an otherwise compatible classifier or prediction;
+- removing a zero-count class removes it from the current schema and stales
+  existing derived artifacts;
+- attempting to remove a class with annotated pixels is rejected without
+  changing the class schema or annotation array;
+- an existing class ID cannot be edited, while an ID absent from the current
+  schema can be assigned to a newly created class;
+- current class names and colors reload from the workflow manifest rather than
+  SpatialData or Labels attrs;
+- a retained stale prediction with an older or reused ID renders from its own
+  class-schema snapshot;
 - cancelling a dirty-state guard leaves the target and annotation layer
   unchanged;
 - accepting discard clears the in-memory annotation state and completes the
@@ -1025,8 +1220,10 @@ Deliver:
   `Attach existing annotation Labels`;
 - restore saved channels and class schema when an existing workflow is selected;
 - `Write Labels State`, which writes the annotation and any present complete
-  prediction and updates the workflow manifest as one UI-level persistence
-  action;
+  fresh prediction and updates the workflow manifest as one UI-level
+  persistence action;
+- prevalidate the complete write, call `harpy.im.add_labels(...)` for annotation
+  and prediction in that order, and publish the workflow manifest last;
 - `Reload Labels State`, which resolves the selected manifest and reloads its
   bound annotation and optional prediction together;
 - the same write/reload/discard/cancel interaction pattern as Object
@@ -1035,18 +1232,28 @@ Deliver:
   write/discard/cancel now that persistence is available;
 - validated, distinct annotation and prediction element names with overwrite
   confirmation;
+- freeze each annotation or prediction binding independently after that
+  element's first successful write while keeping the workflow display name
+  editable;
 - exactly one annotation binding per workflow, no annotation element owned by
   several workflows, and no arbitrary cross-workflow annotation/prediction
   combinations;
-- `Labels2DModel.parse(...)` creation from selected-scale arrays;
+- prepare selected-scale arrays, `("y", "x")` dims, chunks, and composed
+  transformations for `harpy.im.add_labels(...)`, which creates the
+  `Labels2DModel` element;
 - composed transformation from labels intrinsic coordinates to the selected
   coordinate system;
 - sidecar workflow provenance for annotation and prediction roles, revisions,
   target identity, channels, classes, and model identity;
 - backed `SpatialData.write_element(...)` support;
-- dirty tracking for annotation edits, class-metadata edits, and prediction
-  creation, replacement, or removal;
+- controller-level `annotation_dirty`, `class_schema_dirty`,
+  `prediction_dirty`, `manifest_dirty`, and aggregate `labels_state_dirty`
+  tracking, kept separate from classifier and prediction freshness;
+- persistence handling for fresh, previously persisted stale, unpersisted stale,
+  and missing prediction states;
 - clear behavior for in-memory, read-only, and failed writes;
+- stage-specific status-card errors that keep the workflow dirty and direct the
+  user to retry without claiming cross-element rollback;
 - reload-and-align verification.
 
 Acceptance criteria:
@@ -1071,16 +1278,43 @@ Acceptance criteria:
 - annotations reload into an editable working layer at the same selected grid;
 - predictions reload as normal SpatialData labels and align with the source;
 - writing succeeds when annotations exist but no prediction exists;
+- a complete fresh prediction is written and recorded as current;
+- a stale previously persisted prediction is not rewritten or deleted, remains
+  bound with its original provenance, and is recorded as stale;
+- a stale never-persisted prediction is not written and receives no persisted
+  binding;
+- after a successful annotation and manifest write, a visible ephemeral stale
+  prediction does not keep `labels_state_dirty` set and the status card states
+  that reload will discard it;
+- a missing prediction writes annotations only;
+- the status card explains every skipped stale prediction and offers `Predict`
+  as the refresh action;
 - reloading a state without a persisted prediction removes any local prediction
   and does not create a replacement prediction layer;
 - dirty reload offers write-and-reload, reload-and-discard, and cancel;
 - leaving a dirty target offers write-and-continue, discard-and-continue, and
   cancel;
 - cancelling either prompt leaves the target and both layers unchanged;
-- dirty state clears only when all elements required by the write succeed;
+- dirty state clears only when all required Labels writes and the final manifest
+  write succeed;
+- annotation-write, prediction-write, and manifest-write failures each stop the
+  remaining stages, preserve the in-memory workflow, and identify the failing
+  stage in the status card;
+- failure after an earlier successful disk stage explicitly warns that disk may
+  be partially updated and leaves retry as the recovery action;
+- napari-harpy performs no cross-element rollback or automatic repair;
+- Harpy single-element overwrite cleanup is validated independently, including
+  failure after staging and during canonical replacement;
 - no upsampling occurs during write;
 - annotation and prediction names cannot collide silently;
-- editable element names do not change the stable workflow identity;
+- draft element names do not change the stable workflow identity;
+- a fixed annotation or prediction binding cannot be edited, renamed, cloned,
+  or redirected through the first-release workflow form;
+- writing annotations without a prediction fixes only the annotation binding;
+- a failed first write does not fix the attempted element binding or make its
+  name field read-only;
+- attaching an existing annotation or prediction creates an immediately fixed
+  binding;
 - generic feature-cache cleanup cannot remove workflow manifests;
 - failed writes leave the in-memory working layers intact and the UI
   recoverable;
@@ -1256,21 +1490,41 @@ Rules:
 - training does not depend on prediction or persisted annotations;
 - prediction requires a fresh trained classifier compatible with the target;
 - writing Labels state requires a working annotation layer and includes a
-  prediction only when a complete prediction exists; persistent writes also
-  require a selected workflow and writable sidecar destination;
+  prediction data write only when a complete, fresh prediction exists;
+  persistent writes also require a selected workflow and writable sidecar
+  destination;
+- a stale persisted prediction remains bound but is not rewritten, while a
+  stale unpersisted prediction remains unbound and is not written;
+- dirty state records differences from the last persisted workflow, whereas
+  stale state records invalid derived provenance; neither state implies the
+  other;
+- a newly generated complete, fresh prediction is dirty until written; making
+  an unchanged prediction stale does not make its pixel array dirty;
+- an ephemeral stale prediction does not keep the aggregate Labels state dirty
+  after the persistable annotation and manifest state has been written;
 - reloading Labels state requires a persisted annotation element; a persisted
   prediction element is optional, and both are resolved through the selected
   workflow manifest;
 - changing only viewer contrast, colormap, opacity, or channel-overlay
   visibility does not stale anything;
-- changing class colors does not stale the model;
-- changing class IDs or semantic class assignment does stale the model;
+- changing a class name or color marks class-schema and manifest state dirty but
+  does not stale the classifier or prediction;
+- adding a class or removing a zero-count class changes current class-ID
+  membership and stales the classifier and prediction;
+- removing a class with annotated pixels and editing an existing class ID are
+  rejected without a state change; an ID absent from the current schema may be
+  assigned to a newly created class;
+- changing biological meaning requires a new class ID and annotation changes;
+  a rename alone is never treated as semantic reassignment;
 - changing selected channels or their order stales model and prediction;
 - changing workflow selection, scale, image, or coordinate system changes the
   active annotation context and requires an explicit write/discard/cancel
   decision when Labels state is dirty;
-- changing only the workflow display name or future element-name destination
-  marks workflow metadata dirty but does not stale a compatible classifier.
+- changing only the workflow display name or an as-yet-unwritten element-name
+  destination marks workflow metadata dirty but does not stale a compatible
+  classifier;
+- successfully writing an element changes its name field to read-only; no
+  first-release state transition renames or clones a fixed binding.
 
 ## Performance Contract
 
@@ -1303,6 +1557,35 @@ Use focused tests for each slice, following repository test-scope guidance.
 Core tests:
 
 - workflow manifest serialization, schema validation, and stable identity;
+- complete write prevalidation before any Labels or manifest mutation;
+- annotation, optional prediction, then staged-manifest write ordering;
+- annotation-, prediction-, and manifest-stage failure results that remain dirty
+  and identify possible partial disk updates without cross-element rollback;
+- fresh prediction write and manifest provenance;
+- retained, unchanged persisted prediction becoming explicitly stale after an
+  annotation-only write;
+- stale never-persisted prediction exclusion from disk and manifest bindings;
+- independent annotation, prediction, manifest, and aggregate dirty-state
+  transitions;
+- independent class-schema dirty-state transitions for current class names,
+  colors, and membership;
+- class rename and recolor persistence without classifier or prediction
+  staleness;
+- zero-count class removal from the current manifest with derived-artifact
+  staleness and no retired-class registry;
+- rejection of class removal with annotated pixels without annotation or schema
+  mutation;
+- rejection of existing class-ID editing and acceptance of an ID absent from
+  the current schema for a newly created class;
+- authoritative current class-schema round-trip through the manifest without
+  dependence on SpatialData or Labels attrs;
+- artifact-specific class-schema snapshots in classifier and prediction
+  provenance, including correct rendering of a stale prediction after an ID is
+  reused by the current schema;
+- stale-state transitions that leave unchanged prediction pixels clean;
+- successful annotation-only write clearing aggregate dirty state while an
+  ephemeral stale prediction remains visible with a discard-on-reload warning;
+- annotation-only write with no prediction;
 - default sidecar and explicit sidecar path resolution;
 - workflow eligibility by source, coordinate system, image, and resolution but
   not channel selection;
@@ -1354,15 +1637,23 @@ Widget tests:
 - target-control gating;
 - scale summary and recommendation heuristic;
 - annotation creation and layer reuse;
-- class creation, selection, coloring, and counts;
+- class creation, selection, renaming, coloring, removal, stable IDs, and
+  annotated-pixel counts;
 - all-class annotated, sampled, used, non-finite-excluded, and capped training
   fields in the status card;
 - non-blocking cross-image relative-spacing mismatch warning;
 - dirty Labels-state prompts for reload and target changes;
+- stage-specific write-failure status cards with retry guidance;
+- stale-prediction write status with `Predict` refresh guidance;
 - worker result revision guards;
 - separate annotation and prediction layers;
 - prediction layer read-only behavior;
 - paired write/reload behavior and overwrite confirmation;
+- independent annotation and prediction binding freeze on first successful
+  write;
+- failed first writes leave the corresponding draft name editable;
+- fixed binding fields are read-only while the workflow display name remains
+  editable;
 - destroyed widget ignores late callbacks.
 
 Headless tests:
