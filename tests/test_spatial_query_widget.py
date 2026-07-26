@@ -14,10 +14,21 @@ from spatialdata import SpatialData
 from spatialdata.transformations import Identity, set_transformation
 
 import napari_harpy.widgets.spatial_query.widget as widget_module
-from napari_harpy.core.spatial_query import CANONICAL_OBSM_KEY, CanonicalCacheState
+from napari_harpy._app_state import TableStateChangedEvent
+from napari_harpy.core.spatial_query import (
+    CANONICAL_CACHE_PATHS,
+    CANONICAL_OBSM_KEY,
+    CanonicalCacheState,
+    CanonicalCentersResult,
+    apply_canonical_cache_update,
+    build_canonical_cache_update_payload,
+)
 from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
-from napari_harpy.widgets.spatial_query.widget import SpatialQuery
+from napari_harpy.widgets.spatial_query.widget import (
+    CANONICAL_CACHE_UPDATE_SOURCE,
+    SpatialQuery,
+)
 
 
 class _EventEmitter:
@@ -113,7 +124,7 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     assert "No SpatialData Loaded" in _status_text(widget.status_label)
 
 
-def test_spatial_query_shell_requires_an_explicit_new_column_name_and_emits_only_action_intents(
+def test_spatial_query_shell_requires_an_explicit_new_column_name_and_captures_run_inputs(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
@@ -163,11 +174,20 @@ def test_spatial_query_shell_requires_an_explicit_new_column_name_and_emits_only
     assert widget.run_button.isEnabled() is True
     assert inspection_calls == 1  # Status rendering reuses the captured report.
 
-    intents: list[str] = []
-    widget.run_requested.connect(lambda: intents.append("run"))
+    starts: list[tuple[object, object, str, str]] = []
+
+    def start_spatial_query(sdata, report, *, shapes_name, coordinate_system):
+        starts.append((sdata, report, shapes_name, coordinate_system))
+        return True
+
+    monkeypatch.setattr(widget._controller, "start_spatial_query", start_spatial_query)
     qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
 
-    assert intents == ["run"]
+    assert len(starts) == 1
+    assert starts[0][0] is sdata_blobs
+    assert starts[0][1] is widget.cache_report
+    assert starts[0][2:] == ("blobs_circles", "global")
+    assert inspection_calls == 2  # Run performs one fresh authoritative inspection.
     pd.testing.assert_frame_equal(sdata_blobs.tables["table"].obs, obs_before)
     assert sdata_blobs.tables["table"].uns == uns_before
 
@@ -541,3 +561,78 @@ def test_spatial_query_shell_tracks_only_its_selected_primary_labels_layer(
     assert widget.selected_table_name is None
     assert widget.cache_report is None
     assert widget.run_button.isEnabled() is False
+
+
+def test_spatial_query_child_publishes_accepted_cache_update_once(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    emitted_events: list[TableStateChangedEvent] = []
+    widget.app_state.table_state_changed.connect(emitted_events.append)
+
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    report = widget.cache_report
+    assert report is not None
+    centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
+    payload = build_canonical_cache_update_payload(
+        binding=report.binding,
+        centers=centers,
+        source_signature=report.source_signature,
+    )
+    cache_update = apply_canonical_cache_update(sdata_blobs, payload)
+    result = CanonicalCentersResult(
+        source_signature=payload.source_signature,
+        binding=payload.binding,
+        centers=payload.centers,
+        cache_update=cache_update,
+    )
+
+    widget._on_centers_ready(result)
+
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
+    assert event.sdata is sdata_blobs
+    assert event.table_name == "table"
+    assert event.paths == CANONICAL_CACHE_PATHS
+    assert event.regions == ("blobs_labels",)
+    assert event.change_kind == "created"
+    assert event.source == CANONICAL_CACHE_UPDATE_SOURCE
+    assert widget.app_state.snapshot_table_dirty_state(sdata_blobs, "table").paths == CANONICAL_CACHE_PATHS
+    assert widget.cache_report is not None
+    assert widget.cache_report.state is CanonicalCacheState.VALID
+
+
+def test_spatial_query_child_invalidates_captured_run_when_target_changes(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("first_annotation")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    cancellation_calls = 0
+
+    def cancel() -> bool:
+        nonlocal cancellation_calls
+        cancellation_calls += 1
+        return True
+
+    monkeypatch.setattr(widget._controller, "cancel_active_operation", cancel)
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    assert widget._active_run_intent is not None
+
+    widget.new_column_edit.setText("second_annotation")
+
+    assert cancellation_calls == 1
+    assert widget._active_run_intent is None
+    assert widget._show_execution_status is False

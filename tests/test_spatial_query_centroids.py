@@ -15,6 +15,7 @@ from napari_harpy.core.spatial_query import (
     calculate_canonical_centers,
     ensure_canonical_centers,
     inspect_canonical_cache,
+    read_canonical_centers_from_cache,
 )
 
 
@@ -111,6 +112,45 @@ def test_ensure_canonical_centers_creates_then_reuses_without_labels_tasks(
     assert executed_tasks == []
     np.testing.assert_array_equal(reused.binding.instance_ids, created.binding.instance_ids)
     np.testing.assert_array_equal(reused.centers, created.centers)
+
+
+def test_read_canonical_centers_uses_valid_report_without_reinspection(
+    sdata_blobs: SpatialData,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent future cache reads from repeating the report's instance-set hash."""
+    created = ensure_canonical_centers(
+        sdata_blobs,
+        table_name="table",
+        labels_name="blobs_labels",
+    )
+    report = inspect_canonical_cache(
+        sdata_blobs,
+        table_name="table",
+        labels_name="blobs_labels",
+    )
+
+    def reject_reinspection(*args, **kwargs):
+        raise AssertionError("A valid captured report must not be inspected again.")
+
+    monkeypatch.setattr(centroids_module, "inspect_canonical_cache", reject_reinspection)
+
+    reused = read_canonical_centers_from_cache(sdata_blobs, report)
+
+    assert reused.reused
+    assert reused.cache_update is None
+    np.testing.assert_array_equal(reused.centers, created.centers)
+
+
+def test_read_canonical_centers_rejects_nonvalid_report(sdata_blobs: SpatialData) -> None:
+    report = inspect_canonical_cache(
+        sdata_blobs,
+        table_name="table",
+        labels_name="blobs_labels",
+    )
+
+    with pytest.raises(ValueError, match="requires a valid cache report"):
+        read_canonical_centers_from_cache(sdata_blobs, report)
 
 
 def test_ensure_canonical_centers_refreshes_stale_and_forced_valid_cache(sdata_blobs: SpatialData) -> None:

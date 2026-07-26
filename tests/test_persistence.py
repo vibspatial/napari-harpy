@@ -31,7 +31,6 @@ from napari_harpy.widgets.object_classification.controller import (
     PRED_CONFIDENCE_COLUMN,
 )
 from napari_harpy.widgets.persistence.controller import PersistenceController
-from napari_harpy.widgets.spatial_query.cache_state import record_canonical_cache_update
 
 
 def _record_mutation(
@@ -89,11 +88,10 @@ def test_canonical_cache_update_round_trips_as_one_dirty_consistency_unit(
     app_state = HarpyAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
-    result = _apply_canonical_cache(backed_sdata_blobs)
+    _apply_canonical_cache(backed_sdata_blobs)
 
-    event = record_canonical_cache_update(app_state, backed_sdata_blobs, result)
+    _record_mutation(app_state, backed_sdata_blobs, *CANONICAL_CACHE_PATHS)
 
-    assert event is not None
     assert app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table").paths == CANONICAL_CACHE_PATHS
 
     controller.write_table_state()
@@ -113,8 +111,8 @@ def test_failed_second_canonical_write_acknowledges_neither_path(
     app_state = HarpyAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
-    result = _apply_canonical_cache(backed_sdata_blobs)
-    record_canonical_cache_update(app_state, backed_sdata_blobs, result)
+    _apply_canonical_cache(backed_sdata_blobs)
+    _record_mutation(app_state, backed_sdata_blobs, *CANONICAL_CACHE_PATHS)
     real_write_elem = persistence_module.ad.io.write_elem
     canonical_write_count = 0
 
