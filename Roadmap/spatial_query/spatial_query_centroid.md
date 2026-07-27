@@ -7854,7 +7854,7 @@ The existing `TableStateChangedEvent(change_kind="reloaded")` is a
 post-mutation notification:
 
 ```text
-PersistenceController reloads the live table components
+PersistenceController replaces the selected in-memory table components from disk
     ↓
 HarpyAppState records the accepted reload
     ↓
@@ -7862,10 +7862,10 @@ table_state_changed emits the reload event
 ```
 
 It is therefore too late for pre-reload preparation such as
-`ClassifierController.freeze_for_reload()`. Object Classification is currently
-safe only when it initiates Reload itself because its widget directly freezes
-classifier work before calling `PersistenceController`, then rebinds and resets
-the classifier afterward.
+`ClassifierController.freeze_for_reload()`. Before this slice, Object
+Classification was safe only when it initiated Reload itself because its widget
+directly froze classifier work before calling `PersistenceController`, then
+rebound and reset the classifier afterward.
 
 Slice 8b must express those phases through shared contracts:
 
@@ -7917,15 +7917,15 @@ widget-to-widget dependencies. Each participant compares the request with the
 dataset and table it currently consumes, ignores unrelated requests, and never
 infers the target from the initiating widget.
 
-#### UI intent versus accepted reload request
+#### Reload-button intent versus accepted reload request
 
-`TablePersistenceControls.reload_requested` and `TableReloadRequest` represent
-different stages:
+The Reload button, `TablePersistenceControls.reload_table_state()`, and
+`TableReloadRequest` represent different stages:
 
 ```text
-reload_requested
-    → zero-payload UI intent
-    → “the user clicked Reload in these bound controls”
+Reload button clicked
+    → TablePersistenceControls.reload_table_state()
+    → UI intent that still requires clean/dirty resolution
 
 TableReloadRequest
     → accepted immutable operation identity
@@ -7938,7 +7938,9 @@ After Write succeeds or Discard is accepted, it captures one request and passes
 that same object to every participant and to the reload operation:
 
 ```text
-reload_requested
+Reload button clicked
+    ↓
+TablePersistenceControls.reload_table_state()
     ↓
 resolve Write / Discard / Cancel
     ├── Cancel
@@ -8014,7 +8016,9 @@ No separate workflow-specific coordinator is introduced. Together these shared
 components own the accepted transition:
 
 ```text
-reload_requested
+Reload button clicked
+    ↓
+TablePersistenceControls.reload_table_state()
     ↓
 resolve Write / Discard / Cancel when the table is dirty
     ├── Cancel
@@ -8033,21 +8037,24 @@ resolve Write / Discard / Cancel when the table is dirty
            → publish one accepted post-reload event
 ```
 
-`TablePersistenceControls.reload_requested` remains the zero-payload UI intent.
-The reusable persistence controls, rather than their Object Classification
-host, resolve that intent through the generic decision boundary. They then ask
-`PersistenceController` to capture the immutable request and submit that same
-request for reload. The controller's public request-execution boundary always
-asks `HarpyAppState` to prepare all participants immediately before applying
-the request, so another controller caller cannot accidentally bypass
-preparation. No host widget may implement a separate UI reload lifecycle.
+The Reload button calls `TablePersistenceControls.reload_table_state()`
+directly. The reusable persistence controls, rather than their Object
+Classification host, resolve that UI intent through the generic decision
+boundary. They then ask `PersistenceController` to capture the immutable
+request and submit that same request for reload. The controller's public
+request-execution boundary always asks `HarpyAppState` to prepare all
+participants immediately before applying the request, so another controller
+caller cannot accidentally bypass preparation. No host widget may implement a
+separate UI reload lifecycle.
 
 #### Object Classification migration
 
 Object Classification is the first registered participant:
 
 ```text
-TablePersistenceControls.reload_requested
+Reload button clicked
+    ↓
+TablePersistenceControls.reload_table_state()
     ↓
 reusable Write / Discard / Cancel boundary
     ↓
@@ -8126,7 +8133,8 @@ second accepted-reload callback or event is introduced.
 
 - Object Classification behaves as before but no longer owns a private reload
   lifecycle;
-- participant preparation always happens before live table replacement;
+- participant preparation always happens before selected in-memory table
+  components are replaced from disk;
 - Cancel changes no controller, table, dirty-manifest, layer, or UI state;
 - a failed Write never proceeds to participant preparation or reload;
 - participant preparation or reload failure never emits a post-reload event;
@@ -8144,7 +8152,9 @@ persistence controls inside the Spatial Query child. It extends the protocol
 proven by Object Classification rather than introducing another reload path.
 
 ```text
-Spatial Query reload_requested
+Spatial Query Reload button clicked
+    ↓
+TablePersistenceControls.reload_table_state()
     ↓
 shared reload path
     ↓
