@@ -24,6 +24,7 @@ import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.object_classification.annotation_controller as annotation_module
 import napari_harpy.widgets.object_classification.controller as classifier_module
 import napari_harpy.widgets.object_classification.widget as widget_module
+import napari_harpy.widgets.persistence.controls as persistence_controls_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
 from napari_harpy.core.class_palette import (
@@ -441,6 +442,18 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     )
     assert widget.training_scope_combo.currentData() == classifier_module.DEFAULT_TRAINING_SCOPE
     assert widget.prediction_scope_combo.currentData() == classifier_module.DEFAULT_PREDICTION_SCOPE
+
+
+def test_widget_destruction_unregisters_table_reload_participant(qtbot) -> None:
+    """Ensure Qt destruction cannot leave a stale reload participant."""
+    viewer = DummyViewer(seed_shared_sdata=False)
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+
+    assert any(participant is widget for participant in app_state._table_reload_participants)
+
+    widget.deleteLater()
+    qtbot.waitUntil(lambda: not any(participant is widget for participant in app_state._table_reload_participants))
 
 
 def test_widget_initial_action_rows_fit_current_minimum_width(qtbot) -> None:
@@ -2966,9 +2979,9 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
     monkeypatch.setattr(
-        widget,
+        widget.persistence_controls,
         "_prompt_dirty_reload_decision",
-        lambda: widget_module._DirtyReloadDecision.CANCEL,
+        lambda: persistence_controls_module._DirtyReloadDecision.CANCEL,
     )
 
     widget.persistence_controls.reload_button.click()
@@ -2997,9 +3010,9 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
     monkeypatch.setattr(
-        widget,
+        widget.persistence_controls,
         "_prompt_dirty_reload_decision",
-        lambda: widget_module._DirtyReloadDecision.WRITE,
+        lambda: persistence_controls_module._DirtyReloadDecision.WRITE,
     )
 
     widget.persistence_controls.reload_button.click()
@@ -3035,9 +3048,9 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
     monkeypatch.setattr(
-        widget,
+        widget.persistence_controls,
         "_prompt_dirty_reload_decision",
-        lambda: widget_module._DirtyReloadDecision.RELOAD_DISCARD,
+        lambda: persistence_controls_module._DirtyReloadDecision.RELOAD_DISCARD,
     )
 
     widget.persistence_controls.reload_button.click()
