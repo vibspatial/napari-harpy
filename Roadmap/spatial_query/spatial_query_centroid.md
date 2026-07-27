@@ -7704,8 +7704,9 @@ styling-owner state or styling-ownership implementation slice is required.
 `PersistenceController` already provides the generic component-level Write and
 Reload operations. Object Classification currently owns the only Write Table
 State and Reload Table State buttons, their feedback, and the dirty-reload
-prompt. This slice extracts that UI behavior into a reusable persistence
-component without duplicating persistence or dirty-state truth.
+prompt. This slice extracts the controls and their shared dirty-state
+presentation into a reusable component without duplicating persistence or
+dirty-state truth.
 
 The reusable component binds to:
 
@@ -7719,55 +7720,121 @@ PersistenceController
 HarpyAppState shared dirty manifest
 ```
 
-Object Classification and the parent Annotation workflow must use the same
-component contract. Canonical centers, annotation columns, palettes, classifier
-state, and feature-matrix paths remain one union of dirty table components; no
-workflow-specific write button may persist only its own contribution.
+Canonical centers, annotation columns, palettes, classifier state, and
+feature-matrix paths remain one union of dirty table components; no
+workflow-specific Write button may persist only its own contribution.
 
-#### Write-completion synchronization decision
+This foundation is migrated into Object Classification first. Its existing
+reload orchestration remains authoritative in this slice, including classifier
+freezing, the dirty-reload decision, rebinding, and post-reload reset. The
+reusable component must not expose an independent Reload action in Annotation /
+Spatial Query until Slice 8b introduces shared reload coordination.
+
+The eventual Annotation persistence controls belong inside the Spatial Query
+child, because that child owns the selected Labels element and table. The
+parent Annotation widget hosts the child but does not duplicate its table
+selection.
+
+#### Shared dirty-state notification
 
 Slice 7d could rely on `table_state_changed` plus an Object Classification-local
 post-write refresh because only one generic Write Table State action existed.
-That assumption no longer holds when independent reusable controls are visible.
-A successful `acknowledge_table_write()` changes shared dirty state without
-changing the live table and therefore does not naturally produce a
+That assumption will no longer hold when independent reusable controls become
+visible. A successful `acknowledge_table_write()` changes shared dirty state
+without changing the live table and therefore does not naturally produce a
 `TableStateChangedEvent`.
 
-Before implementation, choose and document one shared write-completion
-notification contract. It must:
+Introduce a narrow shared notification:
 
-- refresh every persistence component bound to the written table;
-- report the authoritative post-acknowledgement dirty boolean;
-- leave a component enabled when a newer mutation token or another dirty path
-  remains;
-- avoid representing persistence acknowledgement as a fake AnnData mutation;
-- avoid a second dirty manifest or widget-local dirty boolean.
+```python
+@dataclass(frozen=True)
+class TableDirtyStateChangedEvent:
+    sdata: SpatialData
+    table_name: str
+    is_dirty: bool
+```
 
-If a dedicated dirty-state notification is introduced, it is a narrow UI
-notification derived from the existing `HarpyAppState` manifest, not a second
-source of truth. Domain consumers continue to use `table_state_changed` for
-actual live-table mutations and reloads.
+`HarpyAppState` remains the only owner of the dirty manifest and emits
+`table_dirty_state_changed` when a table-wide dirty boolean changes:
+
+```text
+first accepted mutation
+    → dirty changes False → True
+    → emit TableDirtyStateChangedEvent(..., is_dirty=True)
+
+successful write acknowledgement
+    → clear only paths whose captured tokens remain current
+    → recompute dirty from the authoritative manifest
+    → emit is_dirty=False only when no dirty path remains
+
+accepted reload
+    → clear the paths restored from disk
+    → recompute dirty from the authoritative manifest
+    → emit only if the table-wide dirty boolean changed
+```
+
+If a newer mutation token or another dirty path survives a write, the table
+remains dirty and every bound control remains enabled. A newly bound component
+reads the current state directly through `PersistenceController`; the event is
+for synchronizing already-bound controls.
+
+This event is a UI-state notification derived from the existing manifest, not a
+second source of truth. `table_state_changed` remains the domain event for
+actual live-table mutations and reloads. Persistence acknowledgement must not
+be represented as a fake AnnData mutation.
+
+#### Staged reload ownership
+
+The reusable controls component may present both Write Table State and Reload
+Table State, but during this slice Object Classification remains the only host:
+
+```text
+Object Classification table selection
+    → bind reusable persistence controls
+
+Write Table State
+    → reusable controls call PersistenceController.write_table_state()
+    → shared dirty-state event refreshes every bound control
+
+Reload Table State
+    → preserve the existing Object Classification reload orchestration
+    → freeze classifier work
+    → resolve Write / Discard / Cancel
+    → reload
+    → rebind and reset classifier state
+```
+
+The controls may expose a reload request to their host, but must not perform an
+unguarded reload that bypasses workflow preparation. Slice 8b replaces this
+single-host orchestration with the shared reload boundary required before a
+second host is enabled.
 
 #### Deliverables
 
 - a reusable Write Table State / Reload Table State UI component backed by
   `PersistenceController`;
 - Object Classification migrated to that component without behavior loss;
-- persistence controls available to the parent Annotation workflow for its
-  selected table;
+- `TableDirtyStateChangedEvent` and one `HarpyAppState` signal derived from the
+  authoritative dirty manifest;
 - shared dirty-to-clean UI synchronization after generic writes;
-- the existing dirty-reload Write / Discard / Cancel interaction implemented
-  once in the reusable component;
+- the existing Object Classification reload orchestration preserved behind the
+  reusable control;
+- no persistence controls exposed in Spatial Query yet;
 - focused tests for multiple controls bound to the same and different tables.
 
 #### Exit criteria
 
 - every bound control reflects one authoritative shared dirty manifest;
-- writing from either workflow immediately refreshes every control for that
-  table;
+- writing through one bound component immediately refreshes every other bound
+  component for that table;
 - Write Table State persists the union of supported dirty paths and clears only
   successfully written paths whose captured mutation tokens are still current;
-- Reload uses the generalized selective component API;
+- a surviving newer token or unrelated dirty path keeps every bound Write
+  button enabled;
+- Object Classification reload retains its current Write / Discard / Cancel,
+  classifier-freeze, rebind, and reset behavior;
+- no Annotation / Spatial Query Reload action can bypass shared reload
+  preparation;
 - no full-AnnData rewrite or workflow-specific persistence implementation is
   introduced.
 
@@ -7799,6 +7866,46 @@ Replace or clear the active SpatialData
     → invalidate active work before accepting replacement
     → remove old layers and publish the new shared dataset
 ```
+
+The existing `TableStateChangedEvent(change_kind="reloaded")` is a
+post-mutation notification:
+
+```text
+PersistenceController reloads the live table components
+    ↓
+HarpyAppState records the accepted reload
+    ↓
+table_state_changed emits the reload event
+```
+
+It is therefore too late for pre-reload preparation such as
+`ClassifierController.freeze_for_reload()`. Object Classification is currently
+safe when it initiates Reload itself because its widget directly freezes
+classifier work before calling `PersistenceController`, then rebinds and resets
+the classifier afterward. A Reload initiated by another widget would still
+emit the generic post-reload event, but it would bypass that Object
+Classification-owned preparation and recovery.
+
+Slice 8b must consequently add a shared pre-reload notification or participant
+boundary that runs before any live table component is replaced:
+
+```text
+Reload requested by any workflow
+    ↓
+affected participants prepare
+    → Object Classification freezes classifier work
+    → Spatial Query invalidates captured work
+    → other table consumers release obsolete state
+    ↓
+reload the live table components
+    ↓
+publish one accepted post-reload event
+    ↓
+participants rebind and refresh from the restored table
+```
+
+The existing post-reload event remains useful for adoption and refresh; it
+cannot replace this pre-change boundary.
 
 The current `HarpyAppState.set_sdata()` transition removes layers and replaces
 the shared dataset without consulting the dirty-table manifest. This slice must
@@ -7845,6 +7952,8 @@ ownership. The final accepted styling call remains visible.
 #### Deliverables
 
 - shared table-reload pre-change coordination;
+- the reusable persistence controls exposed inside the Spatial Query child only
+  after that coordination is installed;
 - a dirty SpatialData replacement/close guard covering Shapes edits and dirty
   tables;
 - explicit multi-table and unbacked-dataset decisions;
