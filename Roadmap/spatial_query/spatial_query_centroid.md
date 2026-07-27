@@ -7888,6 +7888,76 @@ pre-reload preparation and post-reload adoption. Multiple participants must be
 registrable without introducing widget-to-widget dependencies. Participants
 ignore requests for datasets or tables they do not consume.
 
+#### UI intent versus accepted reload request
+
+`TablePersistenceControls.reload_requested` and `TableReloadRequest` represent
+different stages:
+
+```text
+reload_requested
+    → zero-payload UI intent
+    → “the user clicked Reload in these bound controls”
+
+TableReloadRequest
+    → accepted immutable operation identity
+    → “reload these paths from this exact table in this exact SpatialData”
+```
+
+The coordinator constructs no `TableReloadRequest` when the user cancels.
+After Write succeeds or Discard is accepted, it captures one request and passes
+that same object to every participant and to the reload operation:
+
+```text
+reload_requested
+    ↓
+resolve Write / Discard / Cancel
+    ├── Cancel
+    │      → construct no TableReloadRequest
+    │
+    └── accepted
+           → capture sdata / table_name / paths / source once
+           → Object Classification prepares from that request
+           → every other registered participant prepares from that request
+           → PersistenceController reloads that same target
+           → post-reload event reports that same target
+```
+
+Participants must not infer the reload target from their current UI selection
+or from the initiating widget. They compare the immutable request with the
+dataset and table they consume, ignore unrelated requests, and prepare only
+when affected. This prevents the coordinator and separate workflows from
+independently reading mutable selections and acting on different targets.
+
+#### Why Write has no participant request
+
+Write and Reload cross the persistence boundary in opposite directions:
+
+```text
+Write
+    live in-memory table → disk
+    → does not replace .obs, .obsm, or .uns in memory
+    → requires no worker invalidation or controller rebind
+
+Reload
+    disk → live in-memory table
+    → replaces selected .obs, .obsm, or .uns components
+    → may invalidate captured work, selections, and styling
+```
+
+Write already has the immutable consistency object it needs:
+`TableDirtySnapshot` captures the table, dirty paths, and mutation tokens before
+persistence starts. A completed Write acknowledges only captured tokens that
+are still current; a newer token remains dirty. No workflow needs to prepare
+for or recover from that outward synchronization, so a `TableWriteRequest`
+participant protocol would add no useful contract.
+
+The two immutable objects therefore have distinct responsibilities:
+
+| Object | Responsibility |
+|---|---|
+| `TableDirtySnapshot` | Ensure Write acknowledges only the state it actually persisted |
+| `TableReloadRequest` | Tell every workflow exactly which accepted Reload it must prepare for |
+
 #### Shared reload coordinator
 
 The coordinator owns the accepted transition:
