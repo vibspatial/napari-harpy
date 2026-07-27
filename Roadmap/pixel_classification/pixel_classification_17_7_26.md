@@ -294,6 +294,61 @@ Feature Extraction widget. Shared channel and class compatibility is validated
 across those workflow cards before pooled training; the workflows themselves
 remain independently editable and persistable.
 
+### Shared dirty-editor guard for coordinate-system changes
+
+Pixel Classification and Shapes Annotation can both own editable napari layers
+whose unsaved contents would be lost when a shared coordinate-system change
+removes layers from the old coordinate system. Extend the shared app-state
+preflight to support several registered editor participants, but do not call
+destructive participant prompts sequentially.
+
+Every registered participant first exposes a side-effect-free dirty inspection.
+This inspection may identify the editor and report whether it has unsaved state,
+but it must not prompt, write, discard, close a layer, or otherwise mutate
+editor or viewer state. After inspecting every participant, apply this policy:
+
+| Dirty editors | Shared coordinate-system change behavior |
+|---|---|
+| None | Change coordinate system normally. |
+| Exactly one | Let that editor show its normal phase-appropriate write/discard/cancel or discard/cancel prompt. Commit the coordinate-system change only when that editor resolves successfully. |
+| More than one | Reject the coordinate-system change without invoking any editor's resolution prompt or modifying any editor. Show the informational dialog defined below. |
+
+For several dirty editors, restore the initiating coordinate-system selector to
+its previous value and show a modal informational dialog titled
+`Coordinate System Change Blocked`. The dialog has exactly one `OK` button and
+no write, discard, retry, or other state-changing action. Its message names the
+blocking editors. For example:
+
+> Cannot change coordinate system because Shapes Annotation and Pixel
+> Classification both contain unsaved changes. Write or discard one editor's
+> changes, then try again.
+
+Clicking `OK` only dismisses the dialog. The coordinate system, selector,
+editor sessions, dirty state, and viewer layers remain unchanged. After
+dismissal, retain a shorter reminder in the initiating widget's status card,
+for example:
+
+> Coordinate-system change blocked by unsaved changes in multiple editors.
+
+The user resolves one editor explicitly and retries. Once zero or one dirty
+editor remains, the normal policy above applies. Do not implement a
+first-release cross-editor transaction, sequential destructive prompts,
+automatic rollback, or `Discard all` action.
+
+Pixel Classification continues to guard its own workflow, image, and scale
+changes directly because those local changes do not require another editor to
+participate. Slice 3 adds shared coordinate-system participation with
+discard/cancel while Labels persistence is unavailable; Slice 6 upgrades the
+Pixel Classification prompt to write/discard/cancel. Shapes Annotation retains
+its own supported prompt behavior.
+
+Replacing or clearing the active SpatialData object can already remove
+editor-owned layers in the current application. Applying the same dirty-editor
+census to SpatialData replacement is desirable, but it is a pre-existing
+cross-widget concern rather than a Pixel Classification prerequisite. It is
+specified as an independent follow-up slice below and does not block the first
+pixel-classification milestone.
+
 ## Answer to the Scale and Rendering Question
 
 Yes, napari supports the proposed approach.
@@ -1277,7 +1332,10 @@ Each slice should leave the code in a coherent, testable state. The first
 end-to-end usable milestone is complete after Slice 6. Slice 7 adds a portable
 bundle, Slice 8 adds pooled training, and Slice 9 exposes the same single- and
 multi-target core through supported headless APIs. These follow-up slices do not
-block validation of the first single-target release.
+block validation of the first single-target release. The independent
+SpatialData-replacement dirty-guard slice listed after Slice 10 is shared
+cross-widget infrastructure and is likewise not a Pixel Classification release
+dependency.
 
 ### Slice 1: Selected-scale and transformation foundation
 
@@ -1378,6 +1436,11 @@ Deliver:
   independently;
 - protect a dirty in-memory annotation when switching target, switching scale,
   or closing the widget by offering `Discard and continue` or `Cancel`;
+- register Pixel Classification as a shared coordinate-system editor
+  participant with side-effect-free dirty inspection;
+- use the shared dirty-editor census for coordinate-system changes: proceed
+  normally with no dirty editors, delegate to the sole dirty editor, and reject
+  without mutation when several editors are dirty;
 - defer all write and reload actions to Slice 6, where persistence is actually
   implemented;
 - keep annotation available before training and without any extracted-feature
@@ -1408,6 +1471,20 @@ Acceptance criteria:
   unchanged;
 - accepting discard clears the in-memory annotation state and completes the
   requested target change or close;
+- coordinate-system dirty inspection never prompts or mutates editor or viewer
+  state;
+- when Pixel Classification is the only dirty editor, cancelling its
+  discard/cancel prompt preserves the coordinate system, annotation layer, and
+  all editor state;
+- when Shapes Annotation and Pixel Classification are both dirty, the shared
+  coordinate-system change is rejected before either editor shows its
+  resolution prompt, writes, discards, or closes a layer;
+- the initiating selector returns to its previous value, a single-`OK`
+  informational dialog identifies both editors, and dismissing it leaves all
+  state unchanged while the initiating status card retains abbreviated retry
+  guidance;
+- after the user explicitly resolves one of several dirty editors, retrying the
+  coordinate-system change follows the normal zero-or-one-dirty-editor path;
 - Slice 3 does not show a write option or imply that annotations can already be
   persisted;
 - changing the draft's display or element names does not change its stable
@@ -1549,6 +1626,9 @@ Deliver:
   Classification;
 - upgrade the Slice 3 discard/cancel dirty-state guards to
   write/discard/cancel now that persistence is available;
+- upgrade the sole-dirty-editor coordinate-system prompt for Pixel
+  Classification to the same write/discard/cancel behavior; the shared guard
+  continues to reject without mutation when several editors are dirty;
 - validated, distinct annotation and prediction element names with overwrite
   confirmation;
 - freeze each annotation or prediction binding independently after that
@@ -1967,6 +2047,49 @@ Every enriched representation should be compared with the raw-intensity
 baseline on held-out spatial regions and held-out samples. Only a representation
 with a material quality benefit should justify a persistent feature cache.
 
+### Independent follow-up slice: SpatialData replacement dirty guard
+
+This is shared editor infrastructure, not a Pixel Classification release
+dependency. The current application can replace or clear `HarpyAppState.sdata`
+while an existing editor owns unsaved layer state, so the issue already applies
+to current widgets. Implement this as a separate follow-up slice rather than
+expanding the Pixel Classification implementation.
+
+Deliver:
+
+- route replacement and clearing of the active SpatialData object through a
+  preflight before old-dataset layers or editor state are removed;
+- reuse the same side-effect-free registered-editor dirty census as shared
+  coordinate-system changes;
+- proceed normally with no dirty editors;
+- delegate to the normal prompt when exactly one editor is dirty;
+- reject without invoking editor resolution prompts or mutation when several
+  editors are dirty, restore the previous source selection, and use the same
+  single-`OK` informational-dialog plus status-card pattern;
+- commit the SpatialData replacement and remove old layers only after the
+  applicable sole editor resolves successfully;
+- preserve the old SpatialData selection, coordinate system, editor sessions,
+  and viewer layers when the request is cancelled or rejected;
+- route reader-driven replacement and explicit clear actions through the same
+  guarded path rather than maintaining unguarded alternatives.
+
+Acceptance criteria:
+
+- replacing or clearing SpatialData with no dirty editor behaves as it does
+  today;
+- cancelling the sole dirty editor's prompt retains the complete old
+  application context;
+- two or more dirty editors reject replacement before any editor resolution
+  prompt, write, discard, layer removal, or app-state mutation;
+- the single-`OK` rejection dialog names every blocking editor and instructs
+  the user to resolve one editor and retry; dismissing it changes no state and
+  leaves abbreviated guidance in the initiating status card;
+- resolving one editor and retrying follows the normal zero-or-one-dirty-editor
+  path;
+- no participant performs side effects during dirty inspection;
+- coordinate-system and SpatialData replacement guards share one policy and do
+  not diverge into widget-specific copies.
+
 ## State and Gating Rules
 
 The widget should expose a small number of understandable states.
@@ -2053,6 +2176,16 @@ Rules:
 - changing workflow selection, scale, image, or coordinate system changes the
   active target context and requires an explicit write/discard/cancel decision
   when the current workflow state is dirty;
+- shared coordinate-system preflight inspects every registered editor without
+  side effects before any editor-specific resolution prompt;
+- a shared coordinate-system change with no dirty editor proceeds, one with
+  exactly one dirty editor delegates to that editor's normal prompt, and one
+  with several dirty editors is rejected without invoking editor resolution
+  prompts or mutation;
+- rejection for several dirty editors restores the previous selector value,
+  shows a modal informational dialog with one non-destructive `OK` button and
+  the editors' user-facing names, and retains abbreviated retry guidance in the
+  initiating status card after dismissal;
 - selecting a different classifier for application creates a new
   prediction-only workflow instead of mutating a persisted classifier binding;
 - changing only the workflow display name or an as-yet-unwritten element-name
@@ -2096,6 +2229,12 @@ Core tests:
 - workflow manifest serialization, schema validation, and stable identity;
 - tagged-manifest validation for `annotation` and `prediction_only`, including
   required and forbidden mode-specific fields;
+- side-effect-free shared editor dirty inspection;
+- shared coordinate-system changes with zero dirty editors, exactly one dirty
+  editor, and several dirty editors;
+- several-dirty-editor rejection before any prompt, write, discard, layer
+  close, viewer mutation, or coordinate-system mutation;
+- stable blocking-editor names and retry guidance in the rejection result;
 - Slice 6 annotation-manifest round-trip and explicit rejection of unsupported
   modes before Slice 7;
 - local filesystem Zarr backing-path resolution and rejection of unbacked,
@@ -2235,6 +2374,15 @@ Widget tests:
   fields in the status card;
 - non-blocking cross-image relative-spacing mismatch warning;
 - dirty Labels-state prompts for reload and target changes;
+- sole-dirty-editor coordinate-system write/discard/cancel behavior after Slice
+  6 and discard/cancel behavior before persistence exists;
+- simultaneous dirty Shapes Annotation and Pixel Classification sessions
+  rejecting a coordinate-system change without modifying either session;
+- multiple-dirty-editor rejection restores the previous selector, shows one
+  informational dialog with only an `OK` button and both editor names, and
+  retains abbreviated status-card guidance after dismissal;
+- clicking `OK` in that dialog performs no write, discard, retry, layer
+  removal, or state transition;
 - stage-specific write-failure status cards with retry guidance;
 - stale-prediction write status with `Predict` refresh guidance;
 - worker result revision guards;
