@@ -7669,79 +7669,31 @@ cannot be expected to refresh any widget.
 - the general persistence refresh introduces no duplicate mutation records,
   styling refreshes, classifier invalidations, or cross-widget imports.
 
-### Slice 8a: Shared primary-Labels styling ownership
+**Resolved primary-Labels styling contract**
 
-#### Responsibility boundary
+The primary napari Labels layer is one shared presentation surface. It has no
+workflow owner or retained styling claim. Viewer, Object Classification, and
+Spatial Query may each restyle that same live layer, and the most recently
+applied style is the visible style.
 
-Viewer, Object Classification, and Spatial Query can all style the same primary
-napari Labels layer. Today each workflow applies its styling directly. This
-slice introduces one shared ownership contract so an automatic refresh from one
-workflow cannot silently replace a color source explicitly selected in another.
-
-The most recent explicit user coloring action owns the primary Labels styling.
-An automatic table-state event may refresh that active style when its exact
-table, region, and column inputs changed, but it must never claim styling
-ownership by itself.
-
-The contract must distinguish:
+This intentionally includes asynchronous updates:
 
 ```text
-explicit user action
-    → may claim primary-Labels styling ownership
-    → apply the selected table color source or deliberate neutral style
-
-automatic relevant table event
-    → current owner may refresh its active style
-    → ownership remains unchanged
-
-automatic unrelated table event
-    → do not restyle the layer
-    → ownership remains unchanged
-
-primary Labels layer removed or selection context replaced
-    → clear the stale ownership record
+Spatial Query styles the primary layer
+    ↓
+an Auto-train classifier job finishes later
+    ↓
+Object Classification applies its selected Color-by mode
+    ↓
+Object Classification styling becomes visible
 ```
 
-Explicit actions include selecting a Viewer color source, selecting an Object
-Classification color mode, selecting a Spatial Query Existing column or
-deliberate New-column neutral view, and completing an effective Spatial Query
-annotation Apply. Merely constructing a widget or receiving a shared event is
-not an explicit action.
+Viewer table-colored overlays remain separate styled layers and do not
+participate in this primary-layer contract. Styling changes only napari
+presentation state; it never mutates AnnData or marks a table dirty. No shared
+styling-owner state or styling-ownership implementation slice is required.
 
-#### Decisions to resolve before implementation
-
-- define the minimal shared style-ownership record and whether it belongs in
-  `HarpyAppState`, the viewer adapter, or the primary-layer binding;
-- define the stable workflow-owner identifiers without importing widgets into
-  one another;
-- define exact ownership cleanup for layer deletion, Labels selection changes,
-  coordinate-system changes, and SpatialData replacement;
-- define the event/path relevance checks for table-backed color sources,
-  including `user_class`, classifier outputs, and ordinary Spatial Annotation
-  columns.
-
-#### Deliverables
-
-- one shared primary-Labels style-ownership contract;
-- explicit ownership claims from Viewer, Object Classification, and Spatial
-  Query;
-- owner-preserving refreshes for relevant `table_state_changed` events;
-- removal of any automatic styling path that can reclaim a layer merely because
-  another widget published an unrelated table event;
-- focused ownership-transfer, relevant-refresh, unrelated-event, and cleanup
-  tests.
-
-#### Exit criteria
-
-- the most recent explicit coloring action controls the shared primary Labels
-  layer;
-- relevant mutations refresh the currently owned style without changing its
-  owner;
-- unrelated events never change the visible color source;
-- styling never mutates AnnData or marks a table dirty;
-- widgets remain coupled only through shared app/viewer state.
-
-### Slice 8b: Reusable table persistence controls
+### Slice 8a: Reusable table persistence controls
 
 #### Responsibility boundary
 
@@ -7815,7 +7767,7 @@ actual live-table mutations and reloads.
 - no full-AnnData rewrite or workflow-specific persistence implementation is
   introduced.
 
-### Slice 8c: Reload and SpatialData replacement guards
+### Slice 8b: Reload and SpatialData replacement guards
 
 #### Responsibility boundary
 
@@ -7833,6 +7785,8 @@ Reload selected table state
     → reload supported components
     → publish one accepted reload event
     → refresh bound widgets from the reloaded table
+    → the workflow that accepted the reload reapplies its selected primary
+      Labels style from the reloaded values
 
 Replace or clear the active SpatialData
     → inspect unsaved Shapes state and every dirty table in the old dataset
@@ -7846,6 +7800,27 @@ The current `HarpyAppState.set_sdata()` transition removes layers and replaces
 the shared dataset without consulting the dirty-table manifest. This slice must
 move dataset replacement safety to a shared pre-change boundary so correctness
 does not depend on which widget initiated the change.
+
+#### Post-reload primary-Labels styling
+
+Reload replaces live `.obs`, `.obsm`, and `.uns` components, so a primary
+Labels layer may retain a colormap or features derived from the pre-reload
+table. The workflow that accepts the reload must perform one final styling
+refresh after reload consumers have adopted the restored table state:
+
+```text
+Object Classification reload
+    → rebind controllers from the restored table
+    → reapply the selected Color-by mode
+
+Annotation / Spatial Query reload
+    → refresh compatible column controls and canonical-cache status
+    → reapply the selected Existing-column style or deliberate New-column
+      neutral style
+```
+
+This is a refresh of the resolved last-styling-wins contract, not styling
+ownership. The final accepted styling call remains visible.
 
 #### Decisions to resolve before implementation
 
@@ -7871,6 +7846,7 @@ does not depend on which widget initiated the change.
 - explicit multi-table and unbacked-dataset decisions;
 - cancellation/invalidation of work captured before an accepted reload or
   replacement;
+- post-reload primary-Labels styling rebuilt from restored table values;
 - cleanup of obsolete dirty-manifest and layer-binding state;
 - focused Write / Discard / Cancel and late-result tests.
 
@@ -7881,17 +7857,19 @@ does not depend on which widget initiated the change.
 - accepted reload/replacement cannot be followed by a late result mutating the
   restored or newly selected state;
 - no dirty table or unsaved Shapes edit is silently discarded;
+- no primary Labels layer retains table-backed colors or features derived from
+  the pre-reload table state;
 - partial write failures remain visible and do not falsely mark unwritten state
   clean;
 - the guard is enforced at the shared state-transition boundary.
 
-### Slice 8d: Multi-widget backed-zarr integration
+### Slice 8c: Multi-widget backed-zarr integration
 
 #### Responsibility boundary
 
-This slice verifies the combined contracts from Slices 8a–8c against one shared
+This slice verifies the combined contracts from Slices 8a–8b against one shared
 viewer and backed SpatialData store. It is an integration and hardening slice,
-not a place to introduce another styling, dirty-state, or persistence model.
+not a place to introduce another dirty-state or persistence model.
 
 #### Deliverables
 
@@ -7900,8 +7878,10 @@ not a place to introduce another styling, dirty-state, or persistence model.
 - backed-zarr tests proving that canonical centers, annotation columns,
   companion palettes, classifier state, and feature-matrix metadata are written
   and reloaded together through explicit component encodings;
-- ownership tests proving that cross-widget events preserve the most recent
-  explicit primary-Labels color source;
+- last-styling-wins tests covering Spatial Query Apply and later asynchronous
+  Object Classification prediction styling;
+- post-reload tests proving primary-layer colors and features are rebuilt from
+  restored table values;
 - stale-token tests where a newer mutation arrives while an older write is in
   progress;
 - reload and SpatialData replacement tests with pending/running workers;
@@ -7912,12 +7892,13 @@ not a place to introduce another styling, dirty-state, or persistence model.
 
 - all widgets observe one current in-memory table state;
 - all persistence controls observe one shared dirty state;
-- annotation coloring follows only the active owner and relevant current-table,
-  current-region, current-column events;
+- the most recently applied primary-Labels style is visible, including a later
+  asynchronous classifier styling update;
+- post-reload primary-layer styling reflects restored table values;
 - canonical centers and annotation state persist/reload without a full table
   rewrite;
 - no late work affects reloaded or replaced state;
-- there is no competing widget-local dirty or styling truth.
+- there is no competing widget-local dirty truth.
 
 ### Slice 9: Production hardening and release gate
 

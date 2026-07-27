@@ -688,6 +688,19 @@ class ViewerAdapter(QObject):
     The adapter does not use napari layer metadata as the primary contract.
     Instead, it relies on `LayerBindingRegistry` as the authoritative in-memory
     mapping from napari layers to `SpatialData` element identity.
+
+    Primary Labels presentation
+    ---------------------------
+    A primary Labels layer is a shared presentation surface used by multiple
+    napari-harpy workflows. It has no persistent styling owner or styling
+    history. Each accepted styling operation updates the same live layer, and
+    the most recently applied style is therefore the visible style.
+
+    This last-styling-wins contract also applies to asynchronous updates. For
+    example, when classifier predictions finish, Object Classification may
+    restyle the primary layer using its selected Color-by mode even when
+    Spatial Query styled that layer earlier. Viewer styled overlays are
+    separate layers with their own bindings and are unaffected.
     """
 
     # Emitted when the set/order of live primary Labels layers changes.
