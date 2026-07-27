@@ -4,8 +4,8 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 6n, except that the standalone Slice
-6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 6o
+Implementation is complete through Slice 8a, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8b
 and later slices remain planned.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -7699,6 +7699,8 @@ styling-owner state or styling-ownership implementation slice is required.
 
 ### Slice 8a: Reusable table persistence controls
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 `PersistenceController` already provides the generic component-level Write and
@@ -7838,34 +7840,13 @@ second host is enabled.
 - no full-AnnData rewrite or workflow-specific persistence implementation is
   introduced.
 
-### Slice 8b: Reload and SpatialData replacement guards
+### Slice 8b: Shared table-reload protocol and Object Classification migration
 
 #### Responsibility boundary
 
-Reload and SpatialData replacement can invalidate live widget selections,
-editable Shapes state, table bindings, and asynchronous work. These transitions
-must be coordinated before destructive state replacement rather than repaired
-independently by widgets afterward.
-
-Two transitions require explicit contracts:
-
-```text
-Reload selected table state
-    → resolve Write / Discard / Cancel when the table is dirty
-    → invalidate or freeze work that captured the affected table
-    → reload supported components
-    → publish one accepted reload event
-    → refresh bound widgets from the reloaded table
-    → the workflow that accepted the reload reapplies its selected primary
-      Labels style from the reloaded values
-
-Replace or clear the active SpatialData
-    → inspect unsaved Shapes state and every dirty table in the old dataset
-    → resolve Write / Discard / Cancel
-    → cancel when the user rejects the transition
-    → invalidate active work before accepting replacement
-    → remove old layers and publish the new shared dataset
-```
+This slice introduces one shared table-reload protocol and proves it by
+migrating the existing, working Object Classification reload flow. It does not
+yet expose persistence controls in Spatial Query.
 
 The existing `TableStateChangedEvent(change_kind="reloaded")` is a
 post-mutation notification:
@@ -7880,107 +7861,271 @@ table_state_changed emits the reload event
 
 It is therefore too late for pre-reload preparation such as
 `ClassifierController.freeze_for_reload()`. Object Classification is currently
-safe when it initiates Reload itself because its widget directly freezes
+safe only when it initiates Reload itself because its widget directly freezes
 classifier work before calling `PersistenceController`, then rebinds and resets
-the classifier afterward. A Reload initiated by another widget would still
-emit the generic post-reload event, but it would bypass that Object
-Classification-owned preparation and recovery.
+the classifier afterward.
 
-Slice 8b must consequently add a shared pre-reload notification or participant
-boundary that runs before any live table component is replaced:
+Slice 8b must express those phases through shared contracts:
 
-```text
-Reload requested by any workflow
-    ↓
-affected participants prepare
-    → Object Classification freezes classifier work
-    → Spatial Query invalidates captured work
-    → other table consumers release obsolete state
-    ↓
-reload the live table components
-    ↓
-publish one accepted post-reload event
-    ↓
-participants rebind and refresh from the restored table
+```python
+@dataclass(frozen=True)
+class TableReloadRequest:
+    sdata: SpatialData
+    table_name: str
+    paths: frozenset[TableComponentPath]
+    source: str
+
+
+class TableReloadParticipant(Protocol):
+    def prepare_table_reload(
+        self,
+        request: TableReloadRequest,
+    ) -> None: ...
 ```
 
-The existing post-reload event remains useful for adoption and refresh; it
-cannot replace this pre-change boundary.
+The final API may refine the names, but it must retain the distinction between
+pre-reload preparation and post-reload adoption. Multiple participants must be
+registrable without introducing widget-to-widget dependencies. Participants
+ignore requests for datasets or tables they do not consume.
 
-The current `HarpyAppState.set_sdata()` transition removes layers and replaces
-the shared dataset without consulting the dirty-table manifest. This slice must
-move dataset replacement safety to a shared pre-change boundary so correctness
-does not depend on which widget initiated the change.
+#### Shared reload coordinator
 
-#### Post-reload primary-Labels styling
-
-Reload replaces live `.obs`, `.obsm`, and `.uns` components, so a primary
-Labels layer may retain a colormap or features derived from the pre-reload
-table. The workflow that accepts the reload must perform one final styling
-refresh after reload consumers have adopted the restored table state:
+The coordinator owns the accepted transition:
 
 ```text
-Object Classification reload
-    → rebind controllers from the restored table
-    → reapply the selected Color-by mode
-
-Annotation / Spatial Query reload
-    → refresh compatible column controls and canonical-cache status
-    → reapply the selected Existing-column style or deliberate New-column
-      neutral style
+reload_requested
+    ↓
+resolve Write / Discard / Cancel when the table is dirty
+    ├── Cancel
+    │      → stop
+    │      → do not prepare participants
+    │      → do not mutate the table or dirty manifest
+    │
+    ├── Write
+    │      → write the captured dirty table state
+    │      → stop if writing fails
+    │
+    └── Discard or successful Write
+           → construct TableReloadRequest
+           → prepare affected participants
+           → reload supported table components
+           → publish one accepted post-reload event
 ```
 
-This is a refresh of the resolved last-styling-wins contract, not styling
-ownership. The final accepted styling call remains visible.
+`TablePersistenceControls` continues to emit `reload_requested`; it never calls
+`PersistenceController.reload_table_state()` directly. The coordinator is the
+only UI reload path.
+
+#### Object Classification migration
+
+Object Classification is the first registered participant:
+
+```text
+Object Classification reload_requested
+    ↓
+shared reload coordinator
+    ↓
+Object Classification.prepare_table_reload()
+    → ClassifierController.freeze_for_reload()
+    ↓
+PersistenceController reloads the table
+    ↓
+existing post-reload TableStateChangedEvent
+    ↓
+Object Classification adopts restored state
+    → refresh feature-matrix choices
+    → rebind annotation, classifier, and viewer-styling controllers
+    → ClassifierController.reset_after_reload()
+    → reapply the selected Color-by styling
+```
+
+The migration must preserve the current messages, dirty decision behavior,
+selection fallbacks, and stale-worker protection. Its purpose is architectural:
+Object Classification must stop owning a private reload lifecycle while its
+observable behavior remains unchanged.
 
 #### Decisions to resolve before implementation
 
-- define the pre-reload notification or participant contract used to invalidate
-  Spatial Query, Object Classification, Feature Extraction, and other work
-  targeting the affected table;
-- define the shared SpatialData replacement participant/coordinator and how it
-  composes unsaved Shapes confirmation with dirty-table confirmation;
-- define Write / Discard / Cancel behavior for multiple dirty tables and for
-  unbacked SpatialData where Write is unavailable;
-- define when dirty-manifest entries for an accepted discarded/replaced dataset
-  are removed;
-- define failure behavior when writing one of multiple tables succeeds and a
-  later write fails;
-- preserve the existing rule that stale worker results cannot mutate reloaded
-  or replaced state.
+- finalize `TableReloadRequest` fields and the participant registration and
+  teardown lifecycle;
+- choose the shared reload coordinator owner and the reusable decision-dialog
+  boundary;
+- define failure behavior when participant preparation raises before mutation;
+- keep post-reload adoption on the existing reload event or document a
+  separate accepted-reload callback if one is genuinely required;
+- preserve the existing rule that stale classifier results cannot mutate
+  reloaded state.
 
 #### Deliverables
 
-- shared table-reload pre-change coordination;
-- the reusable persistence controls exposed inside the Spatial Query child only
-  after that coordination is installed;
-- a dirty SpatialData replacement/close guard covering Shapes edits and dirty
-  tables;
-- explicit multi-table and unbacked-dataset decisions;
-- cancellation/invalidation of work captured before an accepted reload or
-  replacement;
-- post-reload primary-Labels styling rebuilt from restored table values;
-- cleanup of obsolete dirty-manifest and layer-binding state;
-- focused Write / Discard / Cancel and late-result tests.
+- an immutable reload request and explicit participant protocol;
+- multi-participant registration without direct widget dependencies;
+- one shared reload coordinator owning Write / Discard / Cancel;
+- Object Classification migrated as the first participant;
+- existing Object Classification post-reload rebinding and styling preserved;
+- focused clean, Write, Discard, Cancel, failure, and late-worker tests;
+- no Spatial Query persistence controls yet.
+
+#### Exit criteria
+
+- Object Classification behaves as before but no longer owns a private reload
+  lifecycle;
+- participant preparation always happens before live table replacement;
+- Cancel changes no controller, table, dirty-manifest, layer, or UI state;
+- a failed Write never proceeds to participant preparation or reload;
+- an accepted reload cannot be followed by an older classifier result mutating
+  the restored table;
+- one accepted reload emits one post-reload table event.
+
+### Slice 8c: Spatial Query reload integration
+
+#### Responsibility boundary
+
+This slice adds the second reload participant and exposes the reusable
+persistence controls inside the Spatial Query child. It extends the protocol
+proven by Object Classification rather than introducing another reload path.
+
+```text
+Spatial Query reload_requested
+    ↓
+shared reload coordinator
+    ↓
+prepare every participant targeting the table
+    → Object Classification freezes affected classifier work
+    → Spatial Query invalidates its active operation
+    → any other registered asynchronous table consumer invalidates affected work
+    ↓
+reload the table once
+    ↓
+existing post-reload TableStateChangedEvent
+    ↓
+all affected workflows adopt the restored state
+```
+
+Spatial Query owns its selected Labels element and table, so the persistence
+controls live in the Spatial Query child rather than the parent Annotation
+widget.
+
+#### Spatial Query post-reload adoption
+
+Reload replaces live `.obs`, `.obsm`, and `.uns` components. Spatial Query must
+therefore rebuild every derived UI and viewer state that may refer to the old
+table:
+
+```text
+accepted Spatial Query table reload
+    → invalidate any captured Run intent or worker identity
+    → refresh compatible table-column controls
+    → re-inspect the canonical-center cache
+    → refresh readiness and persistence presentation
+    → reapply the selected Existing-column style
+      or the deliberate New-column neutral style
+```
+
+Object Classification must remain protected when Spatial Query initiates the
+reload, and must perform its Slice 8b post-reload adoption for the same table.
+The final styling call follows the existing last-styling-wins contract; no
+styling ownership is introduced.
+
+#### Decisions to resolve before implementation
+
+- define how the Spatial Query child binds and lays out
+  `TablePersistenceControls`;
+- define the exact Spatial Query pre-reload participant method and which active
+  operation identities it invalidates;
+- audit Feature Extraction and other asynchronous table consumers and register
+  them when their late results could target the reloaded table;
+- define deterministic post-reload ordering when more than one workflow
+  reapplies primary-Labels styling.
+
+#### Deliverables
+
+- reusable persistence controls bound to the Spatial Query table selection;
+- Spatial Query registered as a reload participant;
+- pre-reload invalidation of captured Spatial Query work;
+- post-reload column, canonical-cache, status, and styling refresh;
+- cross-widget tests where either Object Classification or Spatial Query
+  initiates reload;
+- focused late-result and last-styling-wins tests.
+
+#### Exit criteria
+
+- either workflow may initiate Reload without bypassing another affected
+  workflow's preparation;
+- only the selected dataset and table participants prepare and refresh;
+- no stale Spatial Query or classifier result mutates restored state;
+- both persistence controls reflect the same authoritative dirty state;
+- no primary Labels layer retains table-backed colors or features derived from
+  the pre-reload table after adoption completes;
+- one reload request results in at most one table replacement.
+
+### Slice 8d: SpatialData replacement and close guard
+
+#### Responsibility boundary
+
+Replacing or clearing the active `SpatialData` is a broader destructive
+transition than reloading one table. The current `HarpyAppState.set_sdata()`
+removes layers and replaces the shared dataset without consulting unsaved
+Shapes state or the dirty-table manifest. This slice moves replacement safety
+to a shared pre-change boundary.
+
+```text
+Replace or clear the active SpatialData
+    ↓
+inspect unsaved Shapes edit state
+    ↓
+inspect every dirty table in the old dataset
+    ↓
+resolve Write / Discard / Cancel
+    ├── Cancel
+    │      → preserve the current dataset, layers, edits, and manifest
+    │
+    └── accepted
+           → write or deliberately discard each dirty table
+           → invalidate work captured from the old dataset
+           → release old edit sessions and bindings
+           → remove old layers
+           → publish the new shared dataset
+```
+
+#### Decisions to resolve before implementation
+
+- define the SpatialData replacement participant/coordinator and how it composes
+  unsaved Shapes confirmation with dirty-table confirmation;
+- define Write / Discard / Cancel behavior for multiple dirty tables;
+- define behavior for unbacked SpatialData where Write is unavailable;
+- define when dirty-manifest entries for an accepted discarded or replaced
+  dataset are removed;
+- define deterministic failure behavior when writing one of multiple tables
+  succeeds and a later write fails;
+- define close behavior separately from replacement only if their accepted
+  outcomes differ.
+
+#### Deliverables
+
+- a shared SpatialData replacement/close request and participant boundary;
+- one confirmation flow covering unsaved Shapes edits and every dirty table;
+- explicit multi-table, unbacked-dataset, and partial-write behavior;
+- cancellation/invalidation of work captured from the old dataset;
+- cleanup of obsolete dirty-manifest, edit-session, and layer-binding state;
+- focused replacement, close, Cancel, partial-failure, and late-result tests.
 
 #### Exit criteria
 
 - Cancel leaves the current dataset, layers, edit session, table state, and
   dirty manifest unchanged;
-- accepted reload/replacement cannot be followed by a late result mutating the
-  restored or newly selected state;
 - no dirty table or unsaved Shapes edit is silently discarded;
-- no primary Labels layer retains table-backed colors or features derived from
-  the pre-reload table state;
+- accepted replacement or close cannot be followed by late work mutating the
+  old or newly selected dataset;
 - partial write failures remain visible and do not falsely mark unwritten state
   clean;
-- the guard is enforced at the shared state-transition boundary.
+- the guard is enforced at the shared `SpatialData` transition boundary.
 
-### Slice 8c: Multi-widget backed-zarr integration
+### Slice 8e: Multi-widget backed-zarr integration
 
 #### Responsibility boundary
 
-This slice verifies the combined contracts from Slices 8a–8b against one shared
+This slice verifies the combined contracts from Slices 8a–8d against one shared
 viewer and backed SpatialData store. It is an integration and hardening slice,
 not a place to introduce another dirty-state or persistence model.
 
