@@ -7672,9 +7672,13 @@ cannot be expected to refresh any widget.
 **Resolved primary-Labels styling contract**
 
 The primary napari Labels layer is one shared presentation surface. It has no
-workflow owner or retained styling claim. Viewer, Object Classification, and
-Spatial Query may each restyle that same live layer, and the most recently
-applied style is the visible style.
+workflow owner or retained styling claim. Loading or activating an existing
+primary layer through Viewer preserves its current colormap and features; it is
+not a styling operation. A newly created primary layer starts with napari's
+default Labels presentation.
+
+Object Classification and Spatial Query may each restyle that same live primary
+layer, and the most recently applied style is visible.
 
 This intentionally includes asynchronous updates:
 
