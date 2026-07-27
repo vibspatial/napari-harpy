@@ -12,19 +12,19 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.transformations import Identity, set_transformation
 
 from napari_harpy import headless
-from napari_harpy.core.classifier import (
+from napari_harpy.core.feature_matrix_metadata import (
+    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
+    register_feature_matrix_metadata,
+)
+from napari_harpy.core.object_classification.classifier import (
     CLASSIFIER_APPLY_CONFIG_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.core.classifier_export import (
+from napari_harpy.core.object_classification.classifier_export import (
     CLASSIFIER_EXPORT_SCHEMA_VERSION,
     ClassifierExportBundle,
     write_classifier_export_bundle,
-)
-from napari_harpy.core.feature_matrix_metadata import (
-    HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
-    register_feature_matrix_metadata,
 )
 
 _FEATURE_MATRICES_KEY = "feature_matrices"
@@ -730,7 +730,7 @@ def test_apply_classifier_selected_region_leaves_other_regions_unchanged(
     _set_feature_metadata(sdata_blobs_multi_region, table_name="table_multi")
     bundle = _make_classifier_bundle(sdata_blobs_multi_region, table_name="table_multi")
     table = sdata_blobs_multi_region["table_multi"]
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
 
     result = headless.apply_classifier(
@@ -760,7 +760,7 @@ def test_apply_classifier_clears_invalid_rows_in_prediction_scope(
     bundle = _make_classifier_bundle(sdata_blobs_multi_region, table_name="table_multi")
     _set_invalid_feature_rows_for_region(sdata_blobs_multi_region, region_name="blobs_labels_2")
     table = sdata_blobs_multi_region["table_multi"]
-    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[0, 9])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 9, dtype=np.int64), categories=[9])
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.55), index=table.obs.index, dtype="float64")
 
     result = headless.apply_classifier(sdata_blobs_multi_region, bundle, table_name="table_multi")
@@ -772,9 +772,9 @@ def test_apply_classifier_clears_invalid_rows_in_prediction_scope(
     assert result.prediction_regions == ("blobs_labels", "blobs_labels_2")
     assert result.n_predicted_rows == int(valid_rows.sum())
     assert result.n_skipped_feature_invalid_rows == int(invalid_rows.sum())
-    assert table.obs.loc[valid_rows, PRED_CLASS_COLUMN].astype("string").ne("0").all()
+    assert table.obs.loc[valid_rows, PRED_CLASS_COLUMN].notna().all()
     assert table.obs.loc[valid_rows, PRED_CONFIDENCE_COLUMN].between(0.0, 1.0).all()
-    assert table.obs.loc[invalid_rows, PRED_CLASS_COLUMN].eq(0).all()
+    assert table.obs.loc[invalid_rows, PRED_CLASS_COLUMN].isna().all()
     assert table.obs.loc[invalid_rows, PRED_CONFIDENCE_COLUMN].isna().all()
     assert table.uns[CLASSIFIER_APPLY_CONFIG_KEY]["n_skipped_feature_invalid_rows"] == int(invalid_rows.sum())
 

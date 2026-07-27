@@ -474,7 +474,7 @@ Acceptance:
 Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 Work:
 
@@ -557,7 +557,7 @@ Files:
 
 - `tests/test_app_state.py`
 - `tests/test_viewer_widget.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 Recommended scenarios:
 

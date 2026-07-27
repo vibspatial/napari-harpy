@@ -21,11 +21,10 @@ from qtpy.QtWidgets import (
 from spatialdata import read_zarr
 
 from napari_harpy._app_state import (
-    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
-    FeatureMatrixWrittenEvent,
     HarpyAppState,
     ShapesElementWrittenEvent,
+    TableStateChangedEvent,
     get_or_create_app_state,
 )
 from napari_harpy._resources import get_logo_path
@@ -263,11 +262,11 @@ class ViewerWidget(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_app_state_coordinate_system_changed)
-        # Feature extraction can create new annotating tables; refresh Viewer
-        # linked-table choices when that happens in the active sdata.
-        self._app_state.feature_matrix_written.connect(self._on_feature_matrix_written)
-        # Object classification can add/update colorable table columns.
-        self._app_state.classification_table_written.connect(self._on_classification_table_written)
+        # Accepted AnnData table-component changes can alter which tables are
+        # linked to labels or shapes elements. Listen through shared app state
+        # so the Viewer can refresh those cards without depending on the widget
+        # that produced the change.
+        self._app_state.table_state_changed.connect(self._on_table_state_changed)
         # Annotation can create/update shapes elements inside the active sdata;
         # refresh only the Viewer shapes section when that happens.
         self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
@@ -315,10 +314,19 @@ class ViewerWidget(QWidget):
     def _on_coordinate_system_changed(self, index: int) -> None:
         """Publish explicit user coordinate-system changes to shared app state."""
         coordinate_system = self.coordinate_system_combo.itemData(index)
-        self._app_state.set_coordinate_system(
+        changed = self._app_state.set_coordinate_system(
             coordinate_system if isinstance(coordinate_system, str) else None,
             source="viewer_widget",
         )
+        # changed is True
+        #     → app state emits coordinate_system_changed
+        #     → the shared event handler synchronizes all widgets
+        #
+        # changed is False
+        #     → no event is emitted
+        #     → this initiating widget must restore its own combo
+        if not changed:
+            self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
 
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         """Refresh the combo and cards when the shared coordinate system changes."""
@@ -327,21 +335,20 @@ class ViewerWidget(QWidget):
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
         self._refresh_coordinate_system_content()
 
-    def _on_feature_matrix_written(self, event: object) -> None:
-        """Refresh linked-table controls after same-session feature-matrix writes."""
-        if not isinstance(event, FeatureMatrixWrittenEvent):
+    def _on_table_state_changed(self, event: object) -> None:
+        """Refresh linked-table controls after an accepted table change."""
+        if not isinstance(event, TableStateChangedEvent):
             return
         if event.sdata is not self._app_state.sdata:
             return
-
-        self._refresh_labels_card_linked_tables()
-        self._refresh_shapes_card_linked_tables()
-
-    def _on_classification_table_written(self, event: object) -> None:
-        """Refresh table color-source controls after classification table writes."""
-        if not isinstance(event, ClassificationTableWrittenEvent):
-            return
-        if event.sdata is not self._app_state.sdata:
+        # Existing `user_class` edits change row values and palette entries,
+        # but they do not change which table color sources the Viewer can
+        # discover. The object-classification widget refreshes the active
+        # labels layer directly, so rebuilding every linked-table control here
+        # only delays that row-scoped visual update. Keep refreshing for the
+        # initial `created` event, when `user_class` first becomes available as
+        # a Viewer color source.
+        if event.source == "object_classification_annotation" and event.change_kind == "updated":
             return
 
         self._refresh_labels_card_linked_tables()

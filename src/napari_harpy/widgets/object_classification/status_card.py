@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy.core.annotation import UNLABELED_CLASS
 from napari_harpy.widgets.object_classification.controller import ClassifierPreparationSummary
 from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
@@ -134,13 +133,13 @@ def build_object_classification_selection_status_card_spec(
 
     if table_binding_error is not None:
         return _ObjectClassificationStatusCardSpec(
-            title="Selection Warning",
+            title="Table Binding Invalid",
             lines=(
                 *layer_preparation_lines,
                 f'Bound to labels element "{selected_segmentation_name}".',
                 table_binding_error,
             ),
-            kind="warning",
+            kind="error",
         )
 
     if selected_instance_id is None:
@@ -164,7 +163,7 @@ def build_object_classification_selection_status_card_spec(
             kind="warning",
         )
 
-    current_class_label = "unlabeled" if current_user_class in (None, UNLABELED_CLASS) else str(current_user_class)
+    current_class_label = "unlabeled" if current_user_class is None else str(current_user_class)
     return _ObjectClassificationStatusCardSpec(
         title="Selection Ready",
         lines=(

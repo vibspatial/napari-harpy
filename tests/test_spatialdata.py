@@ -15,6 +15,7 @@ from xarray import DataArray
 import napari_harpy.core.spatialdata as spatialdata_module
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
 from napari_harpy.core.spatialdata import (
+    SpatialDataTableMetadata,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
@@ -281,6 +282,33 @@ def test_get_table_metadata_returns_table_linkage(sdata_blobs: SpatialData) -> N
 
     assert metadata.region_key == "region"
     assert metadata.instance_key == "instance_id"
+
+
+@pytest.mark.parametrize("regions", [(), ("",), ("cells", "cells")])
+def test_spatialdata_table_metadata_rejects_invalid_regions(regions: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError, match="region"):
+        SpatialDataTableMetadata(
+            table_name="table",
+            region_key="region",
+            instance_key="instance_id",
+            regions=regions,
+        )
+
+
+def test_get_table_metadata_normalizes_returned_values_without_mutating_attrs(sdata_blobs: SpatialData) -> None:
+    table = sdata_blobs["table"]
+    attrs = table.uns[TableModel.ATTRS_KEY]
+    attrs[TableModel.REGION_KEY_KEY] = np.array(["region"])
+    attrs[TableModel.INSTANCE_KEY] = np.array(["instance_id"])
+    attrs[TableModel.REGION_KEY] = np.array(["blobs_labels"])
+    original_values = dict(attrs)
+
+    metadata = get_table_metadata(sdata_blobs, "table")
+
+    assert metadata.region_key == "region"
+    assert metadata.instance_key == "instance_id"
+    assert metadata.regions == ("blobs_labels",)
+    assert all(attrs[key] is value for key, value in original_values.items())
 
 
 def test_validate_table_binding_rejects_duplicate_instance_ids_within_selected_region(sdata_blobs: SpatialData) -> None:

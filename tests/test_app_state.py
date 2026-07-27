@@ -10,13 +10,15 @@ import napari_harpy._interactive as interactive_module
 import napari_harpy.widgets.object_classification.widget as object_widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
-    ClassificationTableWrittenEvent,
     CoordinateSystemChangedEvent,
-    FeatureMatrixWrittenEvent,
+    CoordinateSystemChangeRequest,
     HarpyAppState,
     ShapesElementWrittenEvent,
+    TableDirtyStateChangedEvent,
+    TableStateChangedEvent,
     get_or_create_app_state,
 )
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
 from napari_harpy.widgets.object_classification.widget import ObjectClassificationWidget
 from napari_harpy.widgets.viewer.widget import ViewerWidget
@@ -75,6 +77,14 @@ class DummyViewer:
     def __init__(self) -> None:
         self.layers = DummyLayers()
         self.window = DummyWindow()
+
+
+class DummyCoordinateSystemChangeParticipant:
+    def __init__(self, callback: Callable[[CoordinateSystemChangeRequest], bool]) -> None:
+        self._callback = callback
+
+    def prepare_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
+        return self._callback(request)
 
 
 def _patch_shared_coordinate_system_names(monkeypatch, coordinate_systems_by_sdata_id: dict[int, list[str]]) -> None:
@@ -145,26 +155,83 @@ def test_harpy_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
     assert removed_sdata_calls == []
 
 
-def test_harpy_app_state_emits_feature_matrix_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+def test_harpy_app_state_records_component_tokens_and_emits_one_event(qtbot, sdata_blobs) -> None:
     state = HarpyAppState()
-    event = FeatureMatrixWrittenEvent(
+    paths = frozenset(
+        {
+            TableComponentPath("obsm", ("features_new",)),
+            TableComponentPath("uns", ("feature_matrices", "features_new")),
+        }
+    )
+    event = TableStateChangedEvent(
         sdata=sdata_blobs,
         table_name="table",
-        feature_key="features_new",
+        paths=paths,
+        regions=("blobs_labels",),
         change_kind="created",
+        source="test",
     )
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
 
-    with qtbot.waitSignal(state.feature_matrix_written) as blocker:
-        state.emit_feature_matrix_written(event)
+    with qtbot.waitSignal(state.table_state_changed) as blocker:
+        state.record_table_mutation(event)
 
     assert blocker.args == [event]
     assert state.is_table_dirty(sdata_blobs, "table") is True
+    snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    assert snapshot.paths == paths
+    tokens = tuple(token for _path, token in snapshot.captured_path_tokens)
+    assert all(token is tokens[0] for token in tokens)
 
-    state.clear_table_dirty(sdata_blobs, "table")
+    state.acknowledge_table_write(snapshot, persisted_paths=paths)
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
+
+
+def test_harpy_app_state_emits_table_wide_dirty_transitions(sdata_blobs) -> None:
+    state = HarpyAppState()
+    path = TableComponentPath("obs", ("user_class",))
+    event = TableStateChangedEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        paths=frozenset({path}),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source="test",
+    )
+    dirty_events: list[object] = []
+    state.table_dirty_state_changed.connect(dirty_events.append)
+
+    state.record_table_mutation(event)
+    snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    # Replacing the path token leaves the table-wide dirty boolean unchanged.
+    state.record_table_mutation(event)
+    state.acknowledge_table_write(snapshot, persisted_paths=frozenset({path}))
+
+    assert dirty_events == [
+        TableDirtyStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            is_dirty=True,
+        )
+    ]
+
+    current_snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    state.acknowledge_table_write(current_snapshot, persisted_paths=frozenset({path}))
+
+    assert dirty_events == [
+        TableDirtyStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            is_dirty=True,
+        ),
+        TableDirtyStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            is_dirty=False,
+        ),
+    ]
 
 
 def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> None:
@@ -181,21 +248,53 @@ def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> Non
     assert blocker.args == [event]
 
 
-def test_harpy_app_state_emits_classification_table_written_and_marks_table_dirty(qtbot, sdata_blobs) -> None:
+def test_harpy_app_state_does_not_clear_a_newer_same_path_token(sdata_blobs) -> None:
     state = HarpyAppState()
-    event = ClassificationTableWrittenEvent(
+    event = TableStateChangedEvent(
         sdata=sdata_blobs,
         table_name="table",
-        columns=("user_class",),
+        paths=frozenset({TableComponentPath("obs", ("user_class",))}),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source="test",
+    )
+    state.record_table_mutation(event)
+    snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    state.record_table_mutation(event)
+
+    state.record_persisted_table_change(event, snapshot)
+
+    assert state.is_table_dirty(sdata_blobs, "table") is True
+
+
+def test_harpy_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
+    state = HarpyAppState()
+    obs_path = TableComponentPath("obs", ("user_class",))
+    feature_metadata_path = TableComponentPath("uns", ("feature_matrices", "features_1"))
+    state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            paths=frozenset({obs_path, feature_metadata_path}),
+            regions=("blobs_labels",),
+            change_kind="updated",
+            source="test",
+        )
     )
 
-    assert state.is_table_dirty(sdata_blobs, "table") is False
+    state.record_table_reload(
+        TableStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            paths=frozenset({TableComponentPath("uns", ("feature_matrices",))}),
+            regions=(),
+            change_kind="reloaded",
+            source="test",
+        )
+    )
 
-    with qtbot.waitSignal(state.classification_table_written) as blocker:
-        state.emit_classification_table_written(event)
-
-    assert blocker.args == [event]
     assert state.is_table_dirty(sdata_blobs, "table") is True
+    assert state.snapshot_table_dirty_state(sdata_blobs, "table").paths == frozenset({obs_path})
 
 
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:
@@ -229,6 +328,82 @@ def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtb
 
     assert changed is False
     assert removed_calls == [{"sdata": sdata_blobs, "coordinate_system": "global"}]
+
+
+def test_harpy_app_state_coordinate_participant_rejects_before_event_or_layer_removal(
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    state = HarpyAppState()
+    state.sdata = sdata_blobs
+    state.coordinate_system = "global"
+    requests: list[CoordinateSystemChangeRequest] = []
+    coordinate_events: list[CoordinateSystemChangedEvent] = []
+    removed_calls: list[object] = []
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: ["global", "local"])
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_outside_coordinate_system",
+        lambda **_kwargs: removed_calls.append(object()),
+    )
+    state.coordinate_system_changed.connect(coordinate_events.append)
+    participant = DummyCoordinateSystemChangeParticipant(lambda request: requests.append(request) or False)
+    state.register_coordinate_system_change_participant(participant)
+
+    changed = state.set_coordinate_system("local", source="object_classification_widget")
+
+    assert changed is False
+    assert requests == [
+        CoordinateSystemChangeRequest(
+            sdata=sdata_blobs,
+            previous_coordinate_system="global",
+            coordinate_system="local",
+            source="object_classification_widget",
+        )
+    ]
+    assert state.coordinate_system == "global"
+    assert coordinate_events == []
+    assert removed_calls == []
+
+
+def test_harpy_app_state_coordinate_participant_runs_once_before_commit_and_supports_identity_safe_teardown(
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    state = HarpyAppState()
+    state.sdata = sdata_blobs
+    state.coordinate_system = "global"
+    timeline: list[str] = []
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: ["global", "local"])
+    monkeypatch.setattr(
+        state.viewer_adapter,
+        "remove_layers_outside_coordinate_system",
+        lambda **_kwargs: timeline.append("layers_removed"),
+    )
+    state.coordinate_system_changed.connect(lambda _event: timeline.append("event_emitted"))
+
+    def prepare(_request: CoordinateSystemChangeRequest) -> bool:
+        assert state.coordinate_system == "global"
+        assert timeline == []
+        timeline.append("participant")
+        return True
+
+    participant = DummyCoordinateSystemChangeParticipant(prepare)
+    state.register_coordinate_system_change_participant(participant)
+
+    assert state.set_coordinate_system("local", source="viewer_widget") is True
+    assert timeline == ["participant", "event_emitted", "layers_removed"]
+
+    # A no-op does not ask the participant again.
+    assert state.set_coordinate_system("local", source="viewer_widget") is False
+    assert timeline == ["participant", "event_emitted", "layers_removed"]
+
+    other_participant = DummyCoordinateSystemChangeParticipant(lambda _request: True)
+    assert state.unregister_coordinate_system_change_participant(other_participant) is False
+    with pytest.raises(RuntimeError, match="already registered"):
+        state.register_coordinate_system_change_participant(other_participant)
+    assert state.unregister_coordinate_system_change_participant(participant) is True
+    state.register_coordinate_system_change_participant(other_participant)
 
 
 def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_valid(monkeypatch) -> None:
@@ -385,6 +560,36 @@ def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_r
     assert app_state.coordinate_system == "local"
     assert viewer_widget.coordinate_system_combo.currentText() == "local"
     assert object_widget.coordinate_system_combo.currentText() == "local"
+
+
+def test_shared_coordinate_participant_rejection_restores_initiating_widget_selectors(qtbot, monkeypatch) -> None:
+    sdata = object()
+    _patch_shared_coordinate_system_names(monkeypatch, {id(sdata): ["global", "local"]})
+    _patch_empty_shared_widget_content(monkeypatch)
+
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    viewer_widget = ViewerWidget(viewer)
+    object_widget = ObjectClassificationWidget(viewer)
+    qtbot.addWidget(viewer_widget)
+    qtbot.addWidget(object_widget)
+    app_state.set_sdata(sdata)
+    requests: list[CoordinateSystemChangeRequest] = []
+    participant = DummyCoordinateSystemChangeParticipant(lambda request: requests.append(request) or False)
+    app_state.register_coordinate_system_change_participant(participant)
+
+    viewer_widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert app_state.coordinate_system == "global"
+    assert viewer_widget.coordinate_system_combo.currentText() == "global"
+    assert object_widget.coordinate_system_combo.currentText() == "global"
+
+    object_widget.coordinate_system_combo.setCurrentIndex(1)
+
+    assert app_state.coordinate_system == "global"
+    assert viewer_widget.coordinate_system_combo.currentText() == "global"
+    assert object_widget.coordinate_system_combo.currentText() == "global"
+    assert [request.source for request in requests] == ["viewer_widget", "object_classification_widget"]
 
 
 def test_shared_viewer_and_object_widgets_select_first_coordinate_system_when_previous_is_invalid_and_clear_on_sdata_clear(

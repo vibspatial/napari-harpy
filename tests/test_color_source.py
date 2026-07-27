@@ -86,7 +86,7 @@ def test_labels_style_result_rejects_invalid_value_kind() -> None:
 
 
 def test_labels_style_result_rejects_invalid_palette_source() -> None:
-    with pytest.raises(ValueError, match="Invalid styled palette source"):
+    with pytest.raises(ValueError, match="Invalid categorical palette source"):
         LabelsStyleResult(
             value_kind="categorical",
             palette_source="generated",
@@ -95,7 +95,7 @@ def test_labels_style_result_rejects_invalid_palette_source() -> None:
 
 
 def test_shapes_style_result_rejects_invalid_palette_source() -> None:
-    with pytest.raises(ValueError, match="Invalid styled palette source"):
+    with pytest.raises(ValueError, match="Invalid categorical palette source"):
         ShapesStyleResult(
             value_kind="categorical",
             palette_source="generated",

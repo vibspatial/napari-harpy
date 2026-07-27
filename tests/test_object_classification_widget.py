@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import anndata as ad
 import numpy as np
 import pandas as pd
+import pytest
 import zarr
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from matplotlib.colors import to_rgba
@@ -20,20 +21,31 @@ from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
 
 import napari_harpy._app_state as app_state_module
-import napari_harpy.core.class_palette as class_palette_module
 import napari_harpy.widgets.object_classification.annotation_controller as annotation_module
 import napari_harpy.widgets.object_classification.controller as classifier_module
 import napari_harpy.widgets.object_classification.widget as widget_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import ClassificationTableWrittenEvent, FeatureMatrixWrittenEvent, get_or_create_app_state
-from napari_harpy.core.annotation import UNLABELED_COLOR, USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
-from napari_harpy.core.class_palette import default_class_colors
-from napari_harpy.core.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX, read_classifier_export_bundle
+from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
+from napari_harpy.core.class_palette import (
+    DEFAULT_NEUTRAL_COLOR,
+    default_categorical_colors,
+    default_class_colors,
+)
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
     HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     register_feature_matrix_metadata,
 )
+from napari_harpy.core.object_classification.annotation import (
+    USER_CLASS_COLORS_KEY,
+    USER_CLASS_COLUMN,
+    UserClassStateChange,
+)
+from napari_harpy.core.object_classification.classifier_export import (
+    DEFAULT_CLASSIFIER_EXPORT_SUFFIX,
+    read_classifier_export_bundle,
+)
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
 from napari_harpy.viewer.labels_colormap import CompactLabelColormap
 from napari_harpy.widgets.object_classification.controller import (
@@ -47,6 +59,45 @@ from napari_harpy.widgets.object_classification.widget import (
 )
 from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
 from napari_harpy.widgets.viewer.widget import ViewerWidget
+
+
+def _feature_table_event(
+    sdata: SpatialData,
+    *,
+    table_name: str,
+    feature_key: str,
+    change_kind: str = "created",
+) -> TableStateChangedEvent:
+    return TableStateChangedEvent(
+        sdata=sdata,
+        table_name=table_name,
+        paths=frozenset(
+            {
+                TableComponentPath("obsm", (feature_key,)),
+                TableComponentPath("uns", ("feature_matrices", feature_key)),
+            }
+        ),
+        regions=("blobs_labels",),
+        change_kind=change_kind,
+        source="feature_extraction",
+    )
+
+
+def _spatial_query_annotation_event(
+    sdata: SpatialData,
+    *,
+    table_name: str = "table",
+    paths: frozenset[TableComponentPath] | None = None,
+    source: str = "spatial_query_annotation",
+) -> TableStateChangedEvent:
+    return TableStateChangedEvent(
+        sdata=sdata,
+        table_name=table_name,
+        paths=(frozenset({TableComponentPath("obs", (USER_CLASS_COLUMN,))}) if paths is None else paths),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source=source,
+    )
 
 
 class DummyEventEmitter:
@@ -167,10 +218,10 @@ _SUCCESS_FEEDBACK_STYLE = STATUS_CARD_PALETTE["success"]
 
 
 def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: str) -> None:
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert expected_message in widget.persistence_feedback.text()
+    assert "Persistence Updated" in widget.persistence_controls.feedback_label.text()
+    assert expected_message in widget.persistence_controls.feedback_label.text()
 
-    stylesheet = widget.persistence_feedback.styleSheet()
+    stylesheet = widget.persistence_controls.feedback_label.styleSheet()
     assert f"color: {_SUCCESS_FEEDBACK_STYLE['text']}" in stylesheet
     assert f"background-color: {_SUCCESS_FEEDBACK_STYLE['background']}" in stylesheet
     assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
@@ -210,63 +261,63 @@ def _set_feature_metadata(
 def test_get_user_class_values_returns_unlabeled_for_missing_column() -> None:
     obs = pd.DataFrame(index=range(3))
 
-    values = classifier_module._get_user_class_values(obs, n_obs=3)
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([0, 0, 0], dtype=np.int64))
+    assert values.isna().all()
+    assert str(values.dtype) == "Int64"
 
 
 def test_get_user_class_values_uses_integer_dtype_fast_path() -> None:
-    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([0, 2, 5], dtype=np.int64)})
+    obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([1, 2, 5], dtype=np.int64)})
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([0, 2, 5], dtype=np.int64))
+    assert values.tolist() == [1, 2, 5]
 
 
 def test_get_user_class_values_uses_nullable_integer_dtype_fast_path() -> None:
     obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series([1, pd.NA, 3], dtype="Int64")})
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([1, 0, 3], dtype=np.int64))
+    assert values.tolist() == [1, pd.NA, 3]
 
 
 def test_get_user_class_values_uses_categorical_integer_fast_path() -> None:
     obs = pd.DataFrame(
         {
             USER_CLASS_COLUMN: pd.Categorical(
-                [0, 2, 1],
-                categories=[0, 1, 2],
+                [pd.NA, 2, 1],
+                categories=[1, 2],
             )
         }
     )
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([0, 2, 1], dtype=np.int64))
+    assert values.tolist() == [pd.NA, 2, 1]
 
 
-def test_get_user_class_values_maps_missing_categorical_codes_to_unlabeled() -> None:
+def test_get_user_class_values_preserves_missing_categorical_values() -> None:
     obs = pd.DataFrame(
         {
             USER_CLASS_COLUMN: pd.Categorical(
                 [1, None, 2],
-                categories=[0, 1, 2],
+                categories=[1, 2],
             )
         }
     )
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
+    values = classifier_module._get_user_class_values(obs)
 
-    assert np.array_equal(values, np.array([1, 0, 2], dtype=np.int64))
+    assert values.tolist() == [1, pd.NA, 2]
 
 
-def test_get_user_class_values_keeps_legacy_string_fallback() -> None:
+def test_get_user_class_values_rejects_string_class_values() -> None:
     obs = pd.DataFrame({USER_CLASS_COLUMN: pd.Series(["1", "bad", None, "3"], dtype="object")})
 
-    values = classifier_module._get_user_class_values(obs, n_obs=len(obs))
-
-    assert np.array_equal(values, np.array([1, 0, 0, 3], dtype=np.int64))
+    with pytest.raises(ValueError, match="positive integer"):
+        classifier_module._get_user_class_values(obs)
 
 
 def _patch_coordinate_system_names(monkeypatch, coordinate_systems: list[str]) -> None:
@@ -406,7 +457,7 @@ def test_widget_initial_action_rows_fit_current_minimum_width(qtbot) -> None:
     assert widget.scroll_content.sizeHint().width() <= viewport_width
     assert widget.auto_train_checkbox.minimumSizeHint().width() <= available_content_width
     assert widget.retrain_action_row.minimumSizeHint().width() <= available_content_width
-    assert widget.persistence_action_row.minimumSizeHint().width() <= available_content_width
+    assert widget.persistence_controls.action_row.minimumSizeHint().width() <= available_content_width
 
 
 def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -494,10 +545,10 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert widget.retrain_button.text() == "Train Classifier"
-    assert widget.sync_button.text() == "Write Table State"
-    assert widget.reload_button.text() == "Reload Table State"
-    assert not widget.sync_button.isEnabled()
-    assert not widget.reload_button.isEnabled()
+    assert widget.persistence_controls.write_button.text() == "Write Table State"
+    assert widget.persistence_controls.reload_button.text() == "Reload Table State"
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert not widget.persistence_controls.reload_button.isEnabled()
     assert not widget.retrain_button.isEnabled()
     assert len(viewer.layers) == 1
     assert viewer.layers.selection.active is None
@@ -841,12 +892,73 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     assert widget.selected_table_name == "table"
     assert widget.warning_status.isHidden()
     assert widget.warning_status.text() == ""
+    assert "Table Binding Invalid" in widget.selection_status.text()
     assert "contains duplicate values within that region" in widget.selection_status.text()
     assert not widget.color_by_combo.isEnabled()
     assert not widget.class_spinbox.isEnabled()
     assert not widget.retrain_button.isEnabled()
-    assert not widget.sync_button.isEnabled()
-    assert not widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert not widget.persistence_controls.reload_button.isEnabled()
+
+
+def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_neutrally(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        np.zeros(table.n_obs, dtype=np.int64),
+        categories=[0],
+    )
+    previous_obs = table.obs.copy(deep=True)
+    previous_uns = table.uns.copy()
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    assert widget.selected_table_name == "table"
+    assert "Table Binding Invalid" in widget.selection_status.text()
+    assert "Object Classification state is invalid" in widget.selection_status.text()
+    assert "user_class" in widget.selection_status.text()
+    assert "positive integer categories" in widget.selection_status.text()
+    assert widget._annotation_controller._selected_table_name is None
+    assert widget._classifier_controller._selected_table_name is None
+    assert widget._viewer_styling_controller._selected_table_name is None
+    assert widget.persistence_controls.controller._selected_table_name is None
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(5), np.asarray(to_rgba(DEFAULT_NEUTRAL_COLOR), dtype=np.float32))
+    assert not widget.class_spinbox.isEnabled()
+    assert not widget.apply_class_button.isEnabled()
+    assert not widget.clear_class_button.isEnabled()
+    assert not widget.feature_matrix_combo.isEnabled()
+    assert not widget.register_feature_matrix_button.isEnabled()
+    assert not widget.color_by_combo.isEnabled()
+    assert not widget.auto_train_checkbox.isEnabled()
+    assert not widget.retrain_button.isEnabled()
+    assert not widget.export_classifier_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert not widget.persistence_controls.reload_button.isEnabled()
+    assert widget.warning_status.isHidden()
+    pd.testing.assert_frame_equal(table.obs, previous_obs)
+    assert table.uns == previous_uns
+    assert not app_state.is_table_dirty(sdata_blobs, "table")
+
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1, *([pd.NA] * (table.n_obs - 1))],
+        categories=[1],
+    )
+    widget._bind_current_selection()
+
+    assert widget._table_binding_error is None
+    assert widget._annotation_controller._selected_table_name == "table"
+    assert widget._classifier_controller._selected_table_name == "table"
+    assert widget.color_by_combo.isEnabled()
+    assert widget.auto_train_checkbox.isEnabled()
 
 
 def test_widget_auto_loads_selected_segmentation_when_shared_sdata_is_set(qtbot, sdata_blobs: SpatialData) -> None:
@@ -968,17 +1080,17 @@ def test_widget_feature_matrix_registration_button_enables_for_unregistered_matr
     assert widget.warning_status.isHidden()
 
 
-def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
+def test_widget_preserves_valid_custom_user_class_palette_during_binding_and_styling(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) == 1 else 0 for instance_id in instance_ids],
-        categories=[0, 1],
+        [1 if int(instance_id) == 1 else pd.NA for instance_id in instance_ids],
+        categories=[1],
     )
-    table.uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, "#123456"]
+    table.uns[USER_CLASS_COLORS_KEY] = ["#123456"]
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -986,19 +1098,9 @@ def test_widget_reports_post_bind_class_palette_drift_as_layer_styling_warning(
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 1])
+    assert table.uns[USER_CLASS_COLORS_KEY] == ["#123456"]
     assert widget.warning_status.isHidden()
-
-    table.uns[USER_CLASS_COLORS_KEY] = [UNLABELED_COLOR, "#123456"]
-    widget._refresh_layer_styling()
-
-    assert "Layer Styling Warning" in widget.warning_status.text()
-    assert "no longer matches Harpy default colors" in widget.warning_status.text()
-
-    table.uns[USER_CLASS_COLORS_KEY] = default_class_colors([0, 1])
-    widget._refresh_layer_styling()
-
-    assert widget.warning_status.isHidden()
+    np.testing.assert_allclose(layer.colormap.map(1), np.asarray(to_rgba("#123456"), dtype=np.float32))
 
 
 def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata(
@@ -1008,8 +1110,11 @@ def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     table.uns.pop(_FEATURE_MATRICES_KEY, None)
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -1042,8 +1147,11 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     table = backed_sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     table.uns.pop(_FEATURE_MATRICES_KEY, None)
     layer = make_blobs_labels_layer(backed_sdata_blobs)
@@ -1058,11 +1166,13 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
         "mark_dirty",
         lambda *, reason=None: mark_dirty_reasons.append(reason),
     )
+    emitted_events: list[object] = []
+    widget.app_state.table_state_changed.connect(emitted_events.append)
 
     assert widget.register_feature_matrix_button.isEnabled()
     assert widget.retrain_button.isEnabled() is False
-    assert widget._persistence_controller.is_dirty is False
-    assert not widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
+    assert not widget.persistence_controls.write_button.isEnabled()
 
     widget.register_feature_matrix_button.click()
 
@@ -1071,9 +1181,13 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     assert widget.register_feature_matrix_button.isEnabled() is False
     assert widget.retrain_button.isEnabled()
     assert widget.warning_status.isHidden()
-    assert widget._persistence_controller.is_dirty is True
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
     assert mark_dirty_reasons == ["feature matrix metadata registered"]
+    assert len(emitted_events) == 1
+    assert isinstance(emitted_events[0], TableStateChangedEvent)
+    assert emitted_events[0].regions == ()
+    assert emitted_events[0].source == "object_classification_feature_metadata"
 
 
 def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_effects(
@@ -1108,7 +1222,7 @@ def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_ef
     _assert_feature_metadata_warning_card(widget)
     assert "registration failed" in widget.warning_status.text()
     assert widget.register_feature_matrix_button.isEnabled()
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert mark_dirty_reasons == []
 
 
@@ -1145,7 +1259,7 @@ def test_widget_register_feature_matrix_button_ignores_stale_click_after_externa
 
     assert registration_calls == []
     assert mark_dirty_reasons == []
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert widget.register_feature_matrix_button.isEnabled() is False
 
 
@@ -1345,10 +1459,10 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
     _set_feature_metadata(sdata_blobs_multi_region, table_name="table_multi")
     region_values = table.obs["region"].astype("string")
     instance_values = table.obs["instance_id"].to_numpy(dtype=np.int64)
-    class_values = np.zeros(table.n_obs, dtype=np.int64)
+    class_values = np.full(table.n_obs, pd.NA, dtype=object)
     class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [1, 2])] = 1
     class_values[(region_values == "blobs_labels").to_numpy() & np.isin(instance_values, [24, 25])] = 2
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical(class_values, categories=[0, 1, 2])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(class_values, categories=[1, 2])
     layer = make_blobs_labels_layer(sdata_blobs_multi_region)
     viewer = DummyViewer(layers=[layer])
 
@@ -1393,8 +1507,11 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     _set_feature_metadata(sdata_blobs)
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -1417,8 +1534,8 @@ def test_widget_disables_retrain_button_when_preparation_is_not_trainable(qtbot,
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 0 for instance_id in instance_ids],
-        categories=[0, 1],
+        [1 if int(instance_id) in {1, 2} else pd.NA for instance_id in instance_ids],
+        categories=[1],
     )
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -1454,21 +1571,20 @@ def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbo
     widget._classifier_controller.mark_dirty = record_mark_dirty  # type: ignore[method-assign]
 
     assert widget.selected_feature_key is None
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
     table.obsm["features_new"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
     assert widget.feature_matrix_combo.count() == 1
     assert widget.selected_feature_key == "features_new"
-    assert widget._persistence_controller.is_dirty is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert mark_dirty_reasons == []
 
 
@@ -1484,8 +1600,11 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     _set_feature_metadata(sdata_blobs)
     training_scope = classifier_module.ResolvedClassifierScope(
@@ -1527,9 +1646,9 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     assert widget._classifier_controller.is_training is True
 
     table.obsm["features_1"] = np.arange(table.n_obs * 2, dtype=np.float64).reshape(table.n_obs, 2)
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="table",
             feature_key="features_1",
             change_kind="updated",
@@ -1540,7 +1659,7 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     assert widget._classifier_controller.is_training is False
     assert widget._classifier_controller.is_dirty is True
     assert widget.selected_feature_key == "features_1"
-    assert widget._persistence_controller.is_dirty is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert "overwritten" in widget.classifier_feedback.text()
 
 
@@ -1555,12 +1674,11 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ]
 
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="other_table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1568,7 +1686,7 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ] == previous_items
     assert widget.selected_feature_key == "features_1"
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
 
 def test_widget_ignores_non_feature_matrix_write_events(qtbot, sdata_blobs: SpatialData) -> None:
@@ -1581,7 +1699,7 @@ def test_widget_ignores_non_feature_matrix_write_events(qtbot, sdata_blobs: Spat
     previous_table_items = _combo_texts(widget.table_combo)
     previous_feature_items = _combo_texts(widget.feature_matrix_combo)
 
-    widget._on_feature_matrix_written(object())
+    widget._on_table_state_changed(object())
 
     assert _combo_texts(widget.table_combo) == previous_table_items
     assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
@@ -1604,12 +1722,11 @@ def test_widget_ignores_feature_matrix_writes_for_other_sdata(
     previous_table_items = _combo_texts(widget.table_combo)
     previous_feature_items = _combo_texts(widget.feature_matrix_combo)
 
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs_multi_region,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs_multi_region,
             table_name="table_multi",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1617,6 +1734,289 @@ def test_widget_ignores_feature_matrix_writes_for_other_sdata(
     assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+
+
+@pytest.mark.parametrize("auto_train_enabled", [False, True])
+def test_widget_consumes_spatial_query_user_class_event_without_republishing(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+    auto_train_enabled: bool,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    table = sdata_blobs.tables["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1, 2, *([pd.NA] * (table.n_obs - 2))],
+        categories=[1, 2],
+    )
+    table.uns.pop(USER_CLASS_COLORS_KEY, None)
+
+    mark_dirty_reasons: list[str | None] = []
+    schedule_calls: list[str] = []
+    full_styling_calls: list[str] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "schedule_retrain",
+        lambda: schedule_calls.append("schedule") or True,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_layer_styling",
+        lambda: full_styling_calls.append("refresh"),
+    )
+    widget.auto_train_checkbox.setChecked(auto_train_enabled)
+
+    emitted_events: list[TableStateChangedEvent] = []
+    app_state.table_state_changed.connect(emitted_events.append)
+    event = _spatial_query_annotation_event(sdata_blobs)
+    app_state.record_table_mutation(event)
+
+    assert full_styling_calls == ["refresh"]
+    assert mark_dirty_reasons == ["the annotations changed"]
+    assert schedule_calls == (["schedule"] if auto_train_enabled else [])
+    assert USER_CLASS_COLORS_KEY not in table.uns
+    assert emitted_events == [event]
+    assert app_state.is_table_dirty(sdata_blobs, "table")
+
+
+@pytest.mark.parametrize(
+    ("event_kind", "expected_source"),
+    [
+        ("other_sdata", "spatial_query_annotation"),
+        ("other_table", "spatial_query_annotation"),
+        ("other_source", "object_classification_annotation"),
+        ("other_path", "spatial_query_annotation"),
+    ],
+)
+def test_widget_ignores_unrelated_spatial_query_annotation_events(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+    sdata_blobs_multi_region: SpatialData,
+    event_kind: str,
+    expected_source: str,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    rebind_calls: list[str] = []
+    monkeypatch.setattr(widget, "_bind_current_selection", lambda: rebind_calls.append("bind"))
+
+    event_sdata = sdata_blobs_multi_region if event_kind == "other_sdata" else sdata_blobs
+    table_name = "other_table" if event_kind == "other_table" else "table"
+    paths = frozenset({TableComponentPath("uns", (USER_CLASS_COLORS_KEY,))}) if event_kind == "other_path" else None
+    widget._on_table_state_changed(
+        _spatial_query_annotation_event(
+            event_sdata,
+            table_name=table_name,
+            paths=paths,
+            source=expected_source,
+        )
+    )
+
+    assert rebind_calls == []
+
+
+def test_widget_rejects_invalid_spatial_query_user_class_state_without_retraining(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    table = sdata_blobs.tables["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        np.zeros(table.n_obs, dtype=np.int64),
+        categories=[0],
+    )
+    mark_dirty_reasons: list[str | None] = []
+    schedule_calls: list[str] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "schedule_retrain",
+        lambda: schedule_calls.append("schedule") or True,
+    )
+    widget.auto_train_checkbox.setChecked(True)
+
+    app_state.record_table_mutation(_spatial_query_annotation_event(sdata_blobs))
+
+    assert widget._table_binding_error is not None
+    assert widget._annotation_controller.labels_layer is layer
+    assert widget._classifier_controller._selected_table_name is None
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(5), np.asarray(to_rgba(DEFAULT_NEUTRAL_COLOR), dtype=np.float32))
+    assert "Table Binding Invalid" in widget.selection_status.text()
+    assert mark_dirty_reasons == []
+    assert schedule_calls == []
+
+
+@pytest.mark.parametrize(
+    ("source", "paths"),
+    [
+        (
+            "spatial_query_canonical_centers",
+            frozenset(
+                {
+                    TableComponentPath("obsm", ("spatial_canonical",)),
+                    TableComponentPath("uns", ("spatial_coordinates", "spatial_canonical")),
+                }
+            ),
+        ),
+        (
+            "spatial_query_annotation",
+            frozenset({TableComponentPath("obs", ("another_annotation",))}),
+        ),
+    ],
+)
+def test_widget_refreshes_persistence_for_any_selected_table_event(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+    source: str,
+    paths: frozenset[TableComponentPath],
+) -> None:
+    """Keep Write Table State synchronized for every selected-table mutation.
+
+    Persistence readiness is table-wide, so domain-specific event filtering
+    must not hide changes produced by other napari-harpy widgets or components.
+    """
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    domain_calls: list[str] = []
+    monkeypatch.setattr(widget, "_bind_current_selection", lambda: domain_calls.append("bind"))
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: domain_calls.append(f"dirty:{reason}"),
+    )
+
+    assert not widget.persistence_controls.write_button.isEnabled()
+
+    app_state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=backed_sdata_blobs,
+            table_name="table",
+            paths=paths,
+            regions=("blobs_labels",),
+            change_kind="updated",
+            source=source,
+        )
+    )
+
+    assert widget.persistence_controls.write_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert domain_calls == []
+
+
+@pytest.mark.parametrize("event_identity", ["other_sdata", "other_table"])
+def test_widget_does_not_refresh_persistence_for_unrelated_table_event(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+    sdata_blobs_multi_region: SpatialData,
+    event_identity: str,
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(
+        widget.persistence_controls,
+        "refresh",
+        lambda: refresh_calls.append("refresh"),
+    )
+
+    event_sdata = sdata_blobs_multi_region if event_identity == "other_sdata" else backed_sdata_blobs
+    table_name = "table_multi" if event_identity == "other_sdata" else "other_table"
+    app_state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=event_sdata,
+            table_name=table_name,
+            paths=frozenset({TableComponentPath("obs", ("another_annotation",))}),
+            regions=("blobs_labels",),
+            change_kind="updated",
+            source="spatial_query_annotation",
+        )
+    )
+
+    assert refresh_calls == []
+    assert not widget.persistence_controls.write_button.isEnabled()
+
+
+@pytest.mark.parametrize("clean_transition", ["persisted_change", "reload"])
+def test_widget_disables_write_when_shared_table_event_cleans_selected_table(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+    clean_transition: str,
+) -> None:
+    """Disable Write Table State after persistence or reload cleans the shared manifest."""
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    dirty_event = TableStateChangedEvent(
+        sdata=backed_sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obs", ("another_annotation",))}),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source="spatial_query_annotation",
+    )
+    app_state.record_table_mutation(dirty_event)
+    snapshot = app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table")
+
+    assert widget.persistence_controls.write_button.isEnabled()
+
+    if clean_transition == "persisted_change":
+        app_state.record_persisted_table_change(dirty_event, snapshot)
+    else:
+        app_state.record_table_reload(
+            TableStateChangedEvent(
+                sdata=backed_sdata_blobs,
+                table_name="table",
+                paths=dirty_event.paths,
+                regions=("blobs_labels",),
+                change_kind="reloaded",
+                source="persistence_controller",
+            )
+        )
+
+    assert app_state.is_table_dirty(backed_sdata_blobs, "table") is False
+    assert not widget.persistence_controls.write_button.isEnabled()
 
 
 def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_selection(
@@ -1638,12 +2038,11 @@ def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_sel
         feature_key="features_new",
     )
 
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="new_table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
@@ -1651,7 +2050,7 @@ def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_sel
     assert widget.selected_table_name == "table"
     assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
     assert widget.selected_feature_key == "features_1"
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
 
 def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_available(
@@ -1682,19 +2081,18 @@ def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_availabl
         labels_name="blobs_multiscale_labels",
         feature_key="features_new",
     )
-    app_state.emit_feature_matrix_written(
-        FeatureMatrixWrittenEvent(
-            sdata=sdata_blobs,
+    app_state.record_table_mutation(
+        _feature_table_event(
+            sdata_blobs,
             table_name="new_table",
             feature_key="features_new",
-            change_kind="created",
         )
     )
 
     assert _combo_texts(widget.table_combo) == ["new_table"]
     assert widget.selected_table_name == "new_table"
     assert widget.selected_feature_key == "features_new"
-    assert widget._persistence_controller.is_dirty is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert mark_dirty_reasons == []
 
 
@@ -1886,7 +2284,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
-    widget.app_state.classification_table_written.connect(emitted_events.append)
+    widget.app_state.table_state_changed.connect(emitted_events.append)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -1897,29 +2295,32 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
 
     assert USER_CLASS_COLUMN in table.obs
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [3]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert int(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0]) == 0
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0, 3])
+    assert pd.isna(table.obs.loc[table.obs["instance_id"] == 6, USER_CLASS_COLUMN].iloc[0])
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_categorical_colors(1)
     assert "adata" not in layer.metadata
     assert "Current class: 3." in widget.selection_status.text()
     assert "Assigned class 3" in widget.annotation_feedback.text()
-    assert emitted_events == [
-        ClassificationTableWrittenEvent(
-            sdata=sdata_blobs,
-            table_name="table",
-            columns=(USER_CLASS_COLUMN,),
-            source="object_classification_widget",
-        )
-    ]
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
+    assert isinstance(event, TableStateChangedEvent)
+    assert event.paths == frozenset(
+        {
+            TableComponentPath("obs", (USER_CLASS_COLUMN,)),
+            TableComponentPath("uns", (USER_CLASS_COLORS_KEY,)),
+        }
+    )
+    assert event.regions == ("blobs_labels",)
+    assert event.change_kind == "created"
 
 
-def test_widget_does_not_emit_table_written_when_user_class_is_already_color_source(
+def test_widget_emits_updated_table_event_when_user_class_is_already_color_source(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
     table = sdata_blobs["table"]
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
@@ -1927,7 +2328,7 @@ def test_widget_does_not_emit_table_written_when_user_class_is_already_color_sou
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
-    widget.app_state.classification_table_written.connect(emitted_events.append)
+    widget.app_state.table_state_changed.connect(emitted_events.append)
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -1936,7 +2337,10 @@ def test_widget_does_not_emit_table_written_when_user_class_is_already_color_sou
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert emitted_events == []
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
+    assert isinstance(event, TableStateChangedEvent)
+    assert event.change_kind == "updated"
 
 
 def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdata_blobs: SpatialData) -> None:
@@ -1997,9 +2401,9 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0]
-    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert table.uns[USER_CLASS_COLORS_KEY] == default_class_colors([0])
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [2]
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
+    assert table.uns[USER_CLASS_COLORS_KEY] == default_categorical_colors(1)
     assert "Current class: unlabeled." in widget.selection_status.text()
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
@@ -2024,7 +2428,7 @@ def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdat
     table = sdata_blobs["table"]
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
 
-    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
     assert "Cleared the user class" in widget.annotation_feedback.text()
 
 
@@ -2171,6 +2575,10 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
     sdata_blobs: SpatialData,
 ) -> None:
     def run_annotation_in_color_mode(color_by: str) -> None:
+        table = sdata_blobs["table"]
+        if USER_CLASS_COLUMN in table.obs:
+            table.obs.pop(USER_CLASS_COLUMN)
+        table.uns.pop(USER_CLASS_COLORS_KEY, None)
         layer = make_blobs_labels_layer(sdata_blobs)
         viewer = DummyViewer(layers=[layer])
         widget = HarpyWidget(viewer)
@@ -2197,7 +2605,9 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
             "refresh_user_class_colormap_and_feature",
             record_color_refresh,
         )
-        monkeypatch.setattr(widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh)
+        monkeypatch.setattr(
+            widget._viewer_styling_controller, "refresh_user_class_feature_only", record_feature_refresh
+        )
         monkeypatch.setattr(widget._viewer_styling_controller, "refresh", record_full_refresh)
 
         layer.selected_label = 5
@@ -2313,6 +2723,10 @@ def test_widget_annotation_defers_classifier_controls_until_selection_status(qtb
         annotation_module.UserClassAnnotationChange(
             instance_id=5,
             class_id=4,
+            state_change=UserClassStateChange(
+                user_class_changed=True,
+                palette_changed=False,
+            ),
             user_class_was_available_as_color_source=True,
         )
     )
@@ -2379,7 +2793,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
 
     assert schedule_calls == []
     assert mark_dirty_reasons == []
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -2390,7 +2804,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3)]
     assert call_order == ["row_scoped_refresh", "mark_dirty"]
     assert refresh_calls == []
-    assert widget._persistence_controller.is_dirty is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
 
     widget.auto_train_checkbox.setChecked(True)
     layer.selected_label = 6
@@ -2410,29 +2824,6 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert refresh_calls == []
 
 
-def test_widget_does_not_log_warning_when_existing_user_class_colors_are_overwritten(
-    qtbot, monkeypatch, sdata_blobs: SpatialData
-) -> None:
-    table = sdata_blobs["table"]
-    table.obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
-    table.uns[USER_CLASS_COLORS_KEY] = ["#ffffffff"]
-
-    layer = make_blobs_labels_layer(sdata_blobs)
-    viewer = DummyViewer(layers=[layer])
-    warnings: list[str] = []
-
-    class DummyLogger:
-        def warning(self, message: str) -> None:
-            warnings.append(message)
-
-    monkeypatch.setattr(class_palette_module, "logger", DummyLogger())
-    widget = HarpyWidget(viewer)
-    qtbot.addWidget(widget)
-    select_segmentation(widget)
-
-    assert warnings == []
-
-
 def test_widget_disables_sync_for_clean_backed_spatialdata(qtbot, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
@@ -2441,11 +2832,11 @@ def test_widget_disables_sync_for_clean_backed_spatialdata(qtbot, backed_sdata_b
     qtbot.addWidget(widget)
     select_segmentation(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert not widget.sync_button.isEnabled()
-    assert widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert widget.persistence_controls.reload_button.isEnabled()
     assert 'The selected "table" table has no unsynced local in-memory changes to write.' in sync_tooltip
     assert f'Discard the current in-memory "table" table state and reload the table from "{expected_table_path}".' in (
         reload_tooltip
@@ -2466,20 +2857,20 @@ def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sy
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget._persistence_controller.is_dirty is True
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
-    widget.sync_button.click()
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    widget.persistence_controls.write_button.click()
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget._persistence_controller.is_dirty is False
-    assert not widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
+    assert not widget.persistence_controls.write_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." not in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." not in reload_tooltip
 
@@ -2496,22 +2887,22 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
-    assert widget.sync_button.isEnabled()
-    widget.sync_button.click()
+    assert widget.persistence_controls.write_button.isEnabled()
+    widget.persistence_controls.write_button.click()
 
     reread = read_zarr(backed_sdata_blobs.path)
     mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert not widget.sync_button.isEnabled()
-    assert widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert widget.persistence_controls.reload_button.isEnabled()
     _assert_persistence_success_feedback(
         widget,
         f'Wrote "table" annotations, predictions, and classifier metadata to "{expected_table_path}".',
     )
     assert isinstance(reread["table"].obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [0, 3]
+    assert list(reread["table"].obs[USER_CLASS_COLUMN].cat.categories) == [3]
     assert reread["table"].obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_class_colors([0, 3])
+    assert list(reread["table"].uns[USER_CLASS_COLORS_KEY]) == default_categorical_colors(1)
 
 
 def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, backed_sdata_blobs: SpatialData) -> None:
@@ -2525,8 +2916,11 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
     )
     _set_feature_metadata(backed_sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
@@ -2535,18 +2929,20 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
     widget.retrain_button.click()
     qtbot.waitUntil(
-        lambda: widget._persistence_controller.is_dirty and table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(),
+        lambda: (
+            widget.persistence_controls.controller.has_unsynced_table_changes and table.obs[PRED_CLASS_COLUMN].notna().any()
+        ),
         timeout=5000,
     )
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget._persistence_controller.is_dirty is True
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
@@ -2563,7 +2959,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
 
     table = backed_sdata_blobs["table"]
     disk_obs = table.obs.copy()
-    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     _write_disk_table_state(backed_sdata_blobs, obs=disk_obs, obsm=dict(table.obsm), uns=dict(table.uns))
 
     layer.selected_label = 5
@@ -2575,15 +2971,15 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
         lambda: widget_module._DirtyReloadDecision.CANCEL,
     )
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
     reread = read_zarr(backed_sdata_blobs.path)
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget._persistence_controller.is_dirty is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
-    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].isna().all()
 
 
 def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
@@ -2606,13 +3002,13 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
         lambda: widget_module._DirtyReloadDecision.WRITE,
     )
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     reread = read_zarr(backed_sdata_blobs.path)
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget._persistence_controller.is_dirty is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
     _assert_persistence_success_feedback(
@@ -2632,7 +3028,7 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
     table = backed_sdata_blobs["table"]
     disk_obs = table.obs.copy()
-    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([0] * table.n_obs, categories=[0])
+    disk_obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
     _write_disk_table_state(backed_sdata_blobs, obs=disk_obs, obsm=dict(table.obsm), uns=dict(table.uns))
 
     layer.selected_label = 5
@@ -2644,15 +3040,15 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
         lambda: widget_module._DirtyReloadDecision.RELOAD_DISCARD,
     )
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
     reread = read_zarr(backed_sdata_blobs.path)
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget._persistence_controller.is_dirty is False
-    assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [0]
-    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [0]
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
+    assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
+    assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].isna().all()
     _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
 
 
@@ -2668,8 +3064,8 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
 
     obs = table.obs.copy()
     obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [0] * (table.n_obs - 1) + [7],
-        categories=[0, 7],
+        [pd.NA] * (table.n_obs - 1) + [7],
+        categories=[7],
     )
     obsm = dict(table.obsm)
     obsm["disk_features"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
@@ -2677,7 +3073,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
     layer.selected_label = int(table.obs["instance_id"].iloc[-1])
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     mask = (table.obs["region"] == "blobs_labels") & (
         table.obs["instance_id"] == int(table.obs["instance_id"].iloc[-1])
@@ -2685,7 +3081,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
 
     _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
     assert isinstance(table.obs[USER_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [0, 7]
+    assert list(table.obs[USER_CLASS_COLUMN].cat.categories) == [7]
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [7]
     assert "disk_features" in table.obsm
     feature_matrix_items = [
@@ -2715,7 +3111,7 @@ def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, ba
     uns = dict(table.uns)
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     feature_matrix_items = [
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
@@ -2740,8 +3136,11 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     )
     _set_feature_metadata(backed_sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
@@ -2777,7 +3176,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
 
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
     obs = table.obs.copy()
-    obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 7, dtype=np.int64), categories=[0, 7])
+    obs[PRED_CLASS_COLUMN] = pd.Categorical(np.full(table.n_obs, 7, dtype=np.int64), categories=[7])
     obs[PRED_CONFIDENCE_COLUMN] = pd.Series(np.full(table.n_obs, 0.77), index=obs.index, dtype="float64")
     obsm = dict(table.obsm)
     uns = dict(table.uns)
@@ -2803,7 +3202,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     }
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     assert workers[0].quit_called is True
     assert widget._classifier_controller.is_training is False
@@ -2832,8 +3231,11 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
     )
     _set_feature_metadata(sdata_blobs)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
 
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -2954,7 +3356,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
-    widget.app_state.classification_table_written.connect(emitted_events.append)
+    widget.app_state.table_state_changed.connect(emitted_events.append)
     widget.auto_train_checkbox.setChecked(True)
 
     layer.selected_label = 1
@@ -2965,11 +3367,15 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: PRED_CLASS_COLUMN in table.obs and table.obs[PRED_CLASS_COLUMN].notna().any(),
+        timeout=5000,
+    )
     qtbot.waitUntil(
         lambda: any(
-            isinstance(event, ClassificationTableWrittenEvent)
-            and event.columns == (PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN)
+            isinstance(event, TableStateChangedEvent)
+            and TableComponentPath("obs", (PRED_CLASS_COLUMN,)) in event.paths
+            and TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)) in event.paths
             for event in emitted_events
         ),
         timeout=5000,
@@ -2977,19 +3383,20 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
 
     pred_class = table.obs.set_index("instance_id")[PRED_CLASS_COLUMN]
     assert isinstance(table.obs[PRED_CLASS_COLUMN].dtype, pd.CategoricalDtype)
-    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [0, 1, 2]
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
+    assert list(table.obs[PRED_CLASS_COLUMN].cat.categories) == [1, 2]
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([1, 2])
     assert pred_class.loc[1] == 1
     assert pred_class.loc[24] == 2
     assert "adata" not in layer.metadata
     assert "model is up to date" in widget.classifier_feedback.text()
     assert table.uns[CLASSIFIER_CONFIG_KEY]["trained"] is True
-    assert ClassificationTableWrittenEvent(
-        sdata=sdata_blobs,
-        table_name="table",
-        columns=(PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN),
-        source="object_classification_widget",
-    ) in emitted_events
+    assert any(
+        isinstance(event, TableStateChangedEvent)
+        and event.source == "object_classification_inference"
+        and event.regions == ("blobs_labels",)
+        and TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)) in event.paths
+        for event in emitted_events
+    )
 
 
 def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(qtbot, sdata_blobs: SpatialData) -> None:
@@ -3018,7 +3425,10 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     widget.class_spinbox.setValue(2)
     widget.apply_class_button.click()
 
-    qtbot.waitUntil(lambda: table.obs[PRED_CLASS_COLUMN].astype("string").ne("0").any(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: PRED_CLASS_COLUMN in table.obs and table.obs[PRED_CLASS_COLUMN].notna().any(),
+        timeout=5000,
+    )
 
     assert isinstance(layer.colormap, CompactLabelColormap)
     assert not np.allclose(layer.colormap.map(1), layer.colormap.map(5))
@@ -3028,7 +3438,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
     assert isinstance(layer.colormap, CompactLabelColormap)
     assert np.allclose(layer.colormap.map(1), layer.colormap.map(5))
     assert np.allclose(layer.colormap.map(24), layer.colormap.map(26))
-    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([0, 1, 2])
+    assert table.uns[PRED_CLASS_COLORS_KEY] == default_class_colors([1, 2])
     assert np.allclose(layer.colormap.map(1), np.asarray(to_rgba(default_class_colors([1])[0]), dtype=np.float32))
     assert np.allclose(layer.colormap.map(24), np.asarray(to_rgba(default_class_colors([2])[0]), dtype=np.float32))
     assert PRED_CLASS_COLUMN in layer.features.columns
@@ -3036,6 +3446,10 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
 
 def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical(
+        np.ones(table.n_obs, dtype=np.int64),
+        categories=[1],
+    )
     table.obs[PRED_CONFIDENCE_COLUMN] = pd.Series(
         np.linspace(0.0, 1.0, table.n_obs),
         index=table.obs.index,
@@ -3058,7 +3472,9 @@ def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sd
 def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: SpatialData) -> None:
     table = sdata_blobs["table"]
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
-    table.obs.loc[mask, USER_CLASS_COLUMN] = pd.Categorical([4], categories=[0, 4])[0]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[4])
+    table.obs[PRED_CLASS_COLUMN] = pd.Categorical([pd.NA] * table.n_obs, categories=[2])
+    table.obs.loc[mask, USER_CLASS_COLUMN] = 4
     table.obs.loc[mask, PRED_CLASS_COLUMN] = 2
     table.obs.loc[mask, PRED_CONFIDENCE_COLUMN] = 0.95
 
@@ -3081,8 +3497,11 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
@@ -3116,8 +3535,11 @@ def test_widget_exports_classifier_with_mocked_save_dialog(
     table = sdata_blobs["table"]
     instance_ids = table.obs["instance_id"].to_numpy(dtype=np.int64)
     table.obs[USER_CLASS_COLUMN] = pd.Categorical(
-        [1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else 0 for instance_id in instance_ids],
-        categories=[0, 1, 2],
+        [
+            1 if int(instance_id) in {1, 2} else 2 if int(instance_id) in {24, 25} else pd.NA
+            for instance_id in instance_ids
+        ],
+        categories=[1, 2],
     )
     _set_feature_metadata(sdata_blobs)
 

@@ -1,101 +1,185 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pandas as pd
-from loguru import logger
-from matplotlib import rcParams
-from scanpy.plotting.palettes import default_20, default_28, default_102
+from matplotlib.colors import to_rgba
 
 if TYPE_CHECKING:
     from anndata import AnnData
 
-DEFAULT_UNLABELED_CLASS = 0
-DEFAULT_UNLABELED_COLOR = "#80808099"
+DEFAULT_NEUTRAL_COLOR = "#DCE8F2CC"
+
+# Maximally distinct palette adapted from:
+# https://godsnotwheregodsnot.blogspot.com/2012/09/color-distribution-methodology.html
+#
+# Black is intentionally excluded because black is commonly used for
+# annotation outlines and backgrounds.
+GODSNOT_102: tuple[str, ...] = (
+    "#FFFF00",
+    "#1CE6FF",
+    "#FF34FF",
+    "#FF4A46",
+    "#008941",
+    "#006FA6",
+    "#A30059",
+    "#FFDBE5",
+    "#7A4900",
+    "#0000A6",
+    "#63FFAC",
+    "#B79762",
+    "#004D43",
+    "#8FB0FF",
+    "#997D87",
+    "#5A0007",
+    "#809693",
+    "#6A3A4C",
+    "#1B4400",
+    "#4FC601",
+    "#3B5DFF",
+    "#4A3B53",
+    "#FF2F80",
+    "#61615A",
+    "#BA0900",
+    "#6B7900",
+    "#00C2A0",
+    "#FFAA92",
+    "#FF90C9",
+    "#B903AA",
+    "#D16100",
+    "#DDEFFF",
+    "#000035",
+    "#7B4F4B",
+    "#A1C299",
+    "#300018",
+    "#0AA6D8",
+    "#013349",
+    "#00846F",
+    "#372101",
+    "#FFB500",
+    "#C2FFED",
+    "#A079BF",
+    "#CC0744",
+    "#C0B9B2",
+    "#C2FF99",
+    "#001E09",
+    "#00489C",
+    "#6F0062",
+    "#0CBD66",
+    "#EEC3FF",
+    "#456D75",
+    "#B77B68",
+    "#7A87A1",
+    "#788D66",
+    "#885578",
+    "#FAD09F",
+    "#FF8A9A",
+    "#D157A0",
+    "#BEC459",
+    "#456648",
+    "#0086ED",
+    "#886F4C",
+    "#34362D",
+    "#B4A8BD",
+    "#00A6AA",
+    "#452C2C",
+    "#636375",
+    "#A3C8C9",
+    "#FF913F",
+    "#938A81",
+    "#575329",
+    "#00FECF",
+    "#B05B6F",
+    "#8CD0FF",
+    "#3B9700",
+    "#04F757",
+    "#C8A1A1",
+    "#1E6E00",
+    "#7900D7",
+    "#A77500",
+    "#6367A9",
+    "#A05837",
+    "#6B002C",
+    "#772600",
+    "#D790FF",
+    "#9B9700",
+    "#549E79",
+    "#FFF69F",
+    "#201625",
+    "#72418F",
+    "#BC23FF",
+    "#99ADC0",
+    "#3A2465",
+    "#922329",
+    "#5B4534",
+    "#FDE8DC",
+    "#404E55",
+    "#0089A3",
+    "#CB7E98",
+    "#A4E804",
+    "#324E72",
+)
+
+CategoricalPaletteSource = Literal["stored", "default_missing", "default_invalid"]
+CATEGORICAL_PALETTE_SOURCES: tuple[CategoricalPaletteSource, ...] = (
+    "stored",
+    "default_missing",
+    "default_invalid",
+)
+
+
+def validate_categorical_palette_source(source: str) -> CategoricalPaletteSource:
+    """Return a validated categorical-palette source."""
+    if source not in CATEGORICAL_PALETTE_SOURCES:
+        allowed = ", ".join(repr(allowed_source) for allowed_source in CATEGORICAL_PALETTE_SOURCES)
+        raise ValueError(f"Invalid categorical palette source {source!r}. Expected one of: {allowed}.")
+
+    return cast(CategoricalPaletteSource, source)
 
 
 def normalize_class_values(
     values: pd.Series,
     *,
     column_name: str,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
 ) -> pd.Series:
-    """Normalize a class column to integer labels with a reserved unlabeled value."""
-    numeric_values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(unlabeled_class).astype("int64")
-    numeric_values.name = column_name
-    return numeric_values
-
-
-def compute_canonical_class_categories(
-    values: pd.Series,
-    *,
-    column_name: str | None = None,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-) -> list[int]:
-    """Return the canonical category order for a class-valued series.
-
-    This helper is for write-time normalization. It always returns the sorted class ids
-    implied by the values, with the unlabeled class included, regardless of whether the
-    input series already has a categorical dtype or category ordering.
-    """
-    normalized_values = normalize_class_values(
-        values,
-        column_name=column_name or values.name or "class",
-        unlabeled_class=unlabeled_class,
-    )
-    return sorted({unlabeled_class, *normalized_values.tolist()})
-
-
-def read_series_class_categories(
-    values: pd.Series,
-    *,
-    column_name: str | None = None,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-) -> list[int]:
-    """Return category order as it is currently represented on the series.
-
-    This helper is for read-time interpretation of existing table state. If the series is
-    categorical, its stored category order is preserved so `uns` palettes can be read in
-    the same order. If the series is not categorical yet, this falls back to the canonical
-    sorted category order.
-    """
+    """Normalize positive integer class ids while preserving missing values."""
     if isinstance(values.dtype, pd.CategoricalDtype):
-        return [int(value) for value in values.cat.categories]
+        for category in values.cat.categories:
+            if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)):
+                raise ValueError(f"`{column_name}` must contain positive integer class categories.")
+            if int(category) <= 0:
+                raise ValueError(f"`{column_name}` must contain only positive integer class ids.")
+    elif pd.api.types.is_bool_dtype(values.dtype) or not pd.api.types.is_integer_dtype(values.dtype):
+        raise ValueError(f"`{column_name}` must contain positive integer class ids or missing values.")
 
-    return compute_canonical_class_categories(
-        values,
-        column_name=column_name or values.name or "class",
-        unlabeled_class=unlabeled_class,
+    normalized_values = pd.Series(
+        pd.array(values, dtype="Int64"),
+        index=values.index,
+        name=column_name,
     )
+    if bool((normalized_values.dropna() <= 0).any()):
+        raise ValueError(f"`{column_name}` must contain only positive integer class ids.")
+    return normalized_values
 
 
-def default_class_colors(
-    categories: Sequence[int],
-    *,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
-) -> list[str]:
+def default_class_colors(categories: Sequence[int]) -> list[str]:
     """Return the default palette list aligned to the given ordered categories."""
-    return [
-        unlabeled_color if int(class_id) == unlabeled_class else default_labeled_class_color(int(class_id))
-        for class_id in categories
-    ]
+    return [default_labeled_class_color(int(class_id)) for class_id in categories]
 
 
 def default_categorical_colors(length: int) -> list[str]:
-    """Return the default generic categorical palette used for viewer overlays."""
-    if length <= 0:
-        return []
-    return _default_labeled_class_colors(length)
+    """Return cyclic append-stable colors for ordered categorical values."""
+    return [default_labeled_class_color(position) for position in range(1, length + 1)]
 
 
 def default_labeled_class_color(class_id: int) -> str:
-    """Return the deterministic default color for one positive class id."""
-    palette_index = _class_palette_index(class_id)
-    palette = default_categorical_colors(palette_index + 1)
-    return palette[palette_index]
+    """Return the cyclic deterministic default color for one positive class id."""
+    if class_id <= 0:
+        raise ValueError("Class ids must be positive integers.")
+
+    return GODSNOT_102[(class_id - 1) % len(GODSNOT_102)]
 
 
 def normalize_color_sequence(value: object) -> list[str] | None:
@@ -112,163 +196,48 @@ def normalize_color_sequence(value: object) -> list[str] | None:
     return [str(value)]
 
 
-def stored_palette_to_lookup(
-    categories: Sequence[int],
-    stored_colors: Sequence[str] | None,
+def resolve_table_categorical_palette(
     *,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
-) -> dict[int, str]:
-    """Convert an ordered stored palette into a class-id -> color mapping."""
-    lookup = {unlabeled_class: unlabeled_color}
+    table: AnnData,
+    column_name: str,
+    categories: Sequence[object],
+) -> tuple[CategoricalPaletteSource, list[str]]:
+    """Resolve one standard AnnData categorical palette without mutation."""
+    stored_colors = normalize_color_sequence(table.uns.get(f"{column_name}_colors"))
     if stored_colors is None:
-        return lookup
-
-    for class_id, color in zip(categories, stored_colors[: len(categories)], strict=False):
-        lookup[int(class_id)] = str(color)
-
-    return lookup
+        return "default_missing", default_categorical_colors(len(categories))
+    if len(stored_colors) != len(categories) or not all(_is_valid_color(color) for color in stored_colors):
+        return "default_invalid", default_categorical_colors(len(categories))
+    return "stored", list(stored_colors)
 
 
-def backfill_missing_class_colors(
-    lookup: dict[int, str],
-    categories: Sequence[int],
+def extend_categorical_palette(
+    palette: Sequence[str],
     *,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
-) -> dict[int, str]:
-    """Fill missing class ids with deterministic defaults without overwriting existing colors."""
-    filled_lookup = dict(lookup)
-    filled_lookup.setdefault(unlabeled_class, unlabeled_color)
-    for class_id in sorted(int(value) for value in categories):
-        if class_id == unlabeled_class:
-            continue
-        filled_lookup.setdefault(class_id, default_labeled_class_color(class_id))
+    current_categories: Sequence[object],
+    next_categories: Sequence[object],
+) -> list[str]:
+    """Append stable colors for an append-only categorical transition."""
+    current = tuple(current_categories)
+    next_ = tuple(next_categories)
+    colors = list(palette)
 
-    return filled_lookup
+    if len(colors) != len(current):
+        raise ValueError("Palette length must match the current category count.")
+    if len(next_) < len(current):
+        raise ValueError("Categorical palette extension cannot remove categories.")
+    if next_[: len(current)] != current:
+        raise ValueError("Next categories must preserve the complete current category prefix.")
+    if any(not isinstance(color, str) or not _is_valid_color(color) for color in colors):
+        raise ValueError("Categorical palette colors must be valid color strings.")
 
-
-def set_class_annotation_state(
-    table: AnnData,
-    values: pd.Series,
-    *,
-    column_name: str,
-    colors_key: str | None = None,
-    keep_colors: bool = True,
-    warn_on_palette_overwrite: bool = True,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
-) -> None:
-    """Normalize a class column in `table.obs` and explicitly sync its palette in `table.uns`.
-
-    This is the high-level mutating entry point for generic class annotation state. It first
-    canonicalizes the categorical values stored in `table.obs[column_name]`, then, when
-    `keep_colors` is enabled, it explicitly regenerates and writes the corresponding
-    `table.uns[colors_key]` palette via `sync_class_palette_state(...)`.
-    """
-    categories = set_class_obs_state(
-        table,
-        values,
-        column_name=column_name,
-        unlabeled_class=unlabeled_class,
-    )
-
-    if not keep_colors or colors_key is None:
-        if colors_key is not None:
-            drop_class_palette_state(table, colors_key=colors_key)
-        return
-
-    sync_class_palette_state(
-        table,
-        categories=categories,
-        column_name=column_name,
-        colors_key=colors_key,
-        warn_on_palette_overwrite=warn_on_palette_overwrite,
-        unlabeled_class=unlabeled_class,
-        unlabeled_color=unlabeled_color,
-    )
+    colors.extend(default_labeled_class_color(position + 1) for position in range(len(current), len(next_)))
+    return colors
 
 
-def set_class_obs_state(
-    table: AnnData,
-    values: pd.Series,
-    *,
-    column_name: str,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-) -> list[int]:
-    """Canonicalize the class column stored in `table.obs` and return its categories."""
-    normalized_values = normalize_class_values(
-        values,
-        column_name=column_name,
-        unlabeled_class=unlabeled_class,
-    )
-    categories = compute_canonical_class_categories(
-        normalized_values,
-        column_name=column_name,
-        unlabeled_class=unlabeled_class,
-    )
-    table.obs[column_name] = pd.Series(
-        pd.Categorical(normalized_values, categories=categories),
-        index=normalized_values.index,
-        name=column_name,
-    )
-    return categories
-
-
-def drop_class_palette_state(table: AnnData, *, colors_key: str) -> None:
-    """Remove the stored palette for one class column without mutating other `uns` entries."""
-    if colors_key not in table.uns:
-        return
-
-    table.uns = {key: value for key, value in table.uns.items() if key != colors_key}
-
-
-def sync_class_palette_state(
-    table: AnnData,
-    *,
-    categories: list[int],
-    column_name: str,
-    colors_key: str,
-    warn_on_palette_overwrite: bool,
-    unlabeled_class: int = DEFAULT_UNLABELED_CLASS,
-    unlabeled_color: str = DEFAULT_UNLABELED_COLOR,
-) -> None:
-    """Regenerate and store the palette that corresponds to the canonical class categories."""
-    generated_colors = default_class_colors(
-        categories,
-        unlabeled_class=unlabeled_class,
-        unlabeled_color=unlabeled_color,
-    )
-    existing_colors = normalize_color_sequence(table.uns.get(colors_key))
-    if warn_on_palette_overwrite and existing_colors is not None and existing_colors != generated_colors:
-        logger.warning(
-            f"Overwriting existing `{colors_key}` palette in `table.uns`. "
-            f"Current napari-harpy behavior regenerates this palette from `{column_name}` categories."
-        )
-    table.uns[colors_key] = generated_colors
-
-
-def _class_palette_index(class_id: int) -> int:
-    if class_id == DEFAULT_UNLABELED_CLASS:
-        raise ValueError("The unlabeled class does not map to the labeled-class palette.")
-    if class_id < DEFAULT_UNLABELED_CLASS:
-        raise ValueError("Class ids must be zero or positive integers.")
-
-    return class_id - 1
-
-
-def _default_labeled_class_colors(length: int) -> list[str]:
-    """Return the default categorical palette used by spatialdata-plot/scanpy."""
-    if len(rcParams["axes.prop_cycle"].by_key()["color"]) >= length:
-        color_cycle = rcParams["axes.prop_cycle"]()
-        palette = [next(color_cycle)["color"] for _ in range(length)]
-    elif length <= 20:
-        palette = list(default_20)
-    elif length <= 28:
-        palette = list(default_28)
-    elif length <= len(default_102):
-        palette = list(default_102)
-    else:
-        palette = ["grey" for _ in range(length)]
-
-    return palette[:length]
+def _is_valid_color(value: str) -> bool:
+    try:
+        to_rgba(value)
+    except (TypeError, ValueError):
+        return False
+    return True

@@ -460,6 +460,8 @@ def _validate_existing_shapes_source_geodataframe(source_geodataframe: object) -
     except AttributeError as error:
         raise ValueError("`source_geodataframe` must have an active geometry column.") from error
 
+    if len(source_geodataframe) == 0:
+        raise ValueError("Edit-existing shapes elements must contain at least one Polygon geometry.")
     if not source_geodataframe.index.is_unique:
         raise ValueError("`source_geodataframe` index values must be unique for editing.")
     if _index_has_missing_values(source_geodataframe.index):

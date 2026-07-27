@@ -668,7 +668,7 @@ Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
 - `src/napari_harpy/_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py`
 
 Work:
@@ -697,7 +697,7 @@ Files:
 
 - `tests/test_feature_extraction_widget.py`
 - `tests/test_feature_extraction.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py`
 - `tests/test_spatialdata.py`
 

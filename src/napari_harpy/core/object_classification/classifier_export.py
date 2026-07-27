@@ -11,6 +11,7 @@ from sklearn import __version__ as sklearn_version
 from sklearn.ensemble import RandomForestClassifier
 
 from napari_harpy import __version__ as napari_harpy_version
+from napari_harpy.core.feature_matrix_metadata import normalize_feature_columns
 
 CLASSIFIER_EXPORT_BUNDLE_TYPE = "napari_harpy_classifier"
 CLASSIFIER_EXPORT_SCHEMA_VERSION = 1
@@ -181,16 +182,6 @@ def normalize_str_tuple(mapping: Mapping[str, object], key: str) -> tuple[str, .
     if any(not value for value in values):
         raise ValueError(f"Classifier export metadata `{key}` must not contain empty strings.")
     return values
-
-
-def normalize_feature_columns(feature_metadata: Mapping[str, object]) -> tuple[str, ...]:
-    """Return the required feature column schema from Harpy feature metadata."""
-    columns = tuple(str(value) for value in _normalize_sequence(feature_metadata, "feature_columns"))
-    if not columns:
-        raise ValueError("Feature metadata must contain at least one `feature_columns` entry.")
-    if any(not column for column in columns):
-        raise ValueError("Feature metadata `feature_columns` must not contain empty strings.")
-    return columns
 
 
 def normalize_feature_names(feature_metadata: Mapping[str, object]) -> tuple[str, ...]:

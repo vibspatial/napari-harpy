@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import lazy_loader as lazy
 
 if TYPE_CHECKING:
+    from .annotation.widget import AnnotationWidget
     from .feature_extraction.widget import FeatureExtractionWidget
     from .histogram.widget import HistogramWidget
     from .object_classification.widget import ObjectClassificationWidget
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
 __getattr__, __dir__, _ = lazy.attach(
     __name__,
     submod_attrs={
+        "annotation.widget": ["AnnotationWidget"],
         "feature_extraction.widget": ["FeatureExtractionWidget"],
         "histogram.widget": ["HistogramWidget"],
         "object_classification.widget": ["ObjectClassificationWidget"],
@@ -23,6 +25,7 @@ __getattr__, __dir__, _ = lazy.attach(
 )
 
 __all__ = [
+    "AnnotationWidget",
     "FeatureExtractionWidget",
     "HistogramWidget",
     "ObjectClassificationWidget",

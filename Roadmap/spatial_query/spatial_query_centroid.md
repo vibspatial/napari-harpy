@@ -4,9 +4,13 @@
 
 Final product specification and implementation plan.
 
+Implementation is complete through Slice 8a, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8b
+and later slices remain planned.
+
 This document supersedes the raster-overlap query algorithm described in
 spatial_query.md. It retains the agreed user interface, table mutation,
-overwrite protection, undo, dirty-state, persistence, reload, asynchronous
+overwrite protection, dirty-state, persistence, reload, asynchronous
 execution, and cross-widget behavior, but changes the spatial membership rule
 and execution strategy.
 
@@ -36,21 +40,41 @@ Let a user bulk-annotate segmented objects by selecting an existing polygon
 annotation:
 
 1. select one Shapes element created by, or valid for, the Shapes Annotation
-   widget;
+   child;
 2. treat all polygons in that Shapes element as one annotation region;
 3. select a labels element in the same SpatialData object and selected
    coordinate system;
 4. select a table that annotates that labels element;
-5. select an existing compatible AnnData.obs column or configure a new one,
-   defaulting to spatial_annotation;
-6. run a centroid-containment spatial query;
-7. transparently calculate and cache canonical centers first when they are not
+5. select an existing compatible AnnData.obs column or explicitly name a new
+   one;
+6. choose Set annotation or Remove annotation and provide the typed annotation
+   value required by Set;
+7. click Apply Annotation, which runs the centroid-containment query and
+   applies the captured annotation intent as one operation;
+8. transparently calculate and cache canonical centers first when they are not
    already valid and reusable;
-8. review the affected instances and any values that will be overwritten;
-9. provide the annotation value, defaulting to the Shapes element name;
-10. apply the value to the matching table rows;
-11. explicitly write or reload the shared table state when working with the
+9. after a successful query, immediately set the captured string or positive
+   integer value, or clear the matching rows to missing for Remove;
+10. report the exact changed, overwritten, unchanged, or removed counts;
+11. visualize the selected annotation column on the primary labels layer and
+    refresh that visualization after an effective annotation change;
+12. explicitly write or reload the shared table state when working with the
     backed zarr store.
+
+This workflow lives in one registered parent `AnnotationWidget`. The parent
+composes two children with separate responsibilities:
+
+    AnnotationWidget
+        ├── ShapesAnnotation
+        │     create, edit, validate, save, and discard polygon annotations
+        └── SpatialQuery
+              select labels/table/target/value, query centers, apply, and
+              visualize table annotations
+
+The parent owns the shared SpatialData, coordinate-system, and selected-Shapes
+context. The children remain separate implementation components with their own
+controllers and status logic; integrating the workflow must not merge their
+domain responsibilities into one large widget class.
 
 The workflow targets zarr-backed SpatialData. The highest-resolution labels
 level, scale0, is always used and is always expected to be backed by a lazy Dask
@@ -75,17 +99,22 @@ results, or confuse in-memory state with persisted state.
   transformed into that frame.
 - **Validated reuse:** a matrix named spatial_canonical is not trusted without
   matching metadata and source/coverage validation.
-- **Preview before annotation mutation:** spatial querying does not change the
-  annotation column. The user reviews affected and overwritten counts before
-  applying.
+- **Explicit one-step mutation intent:** the user selects Set or Remove and the
+  complete typed annotation value before starting work. A successful query
+  applies that captured intent immediately and reports the exact outcome.
 - **No silent data loss:** overwriting values, rebuilding a mismatched managed
-  cache, reloading a dirty table, and leaving a dirty dataset are reported
-  explicitly.
+  cache, reloading a dirty table, and leaving a dirty dataset have explicit
+  semantics and user-facing feedback. The widget warns before Apply Annotation
+  that Set replaces different existing values and reports the exact
+  overwrite/removal counts afterward.
 - **One shared table state:** all Harpy widgets see the same in-memory AnnData
   and the same per-table dirty marker.
+- **One primary labels presentation:** Spatial Query reuses the primary labels
+  layer and the shared table-backed coloring infrastructure instead of creating
+  a competing styled overlay or a separate palette system.
 - **Deterministic and testable:** identical geometry, transforms, canonical
   centers, linkage metadata, and table state produce identical results.
-- **Accessible:** all important states, warnings, progress, and errors are
+- **Accessible:** all important states, warnings, busy states, and errors are
   conveyed textually and are keyboard accessible.
 
 ## Terminology and Normative Decisions
@@ -96,8 +125,8 @@ An annotation is one selected SpatialData Shapes element. Every geometry row in
 the element contributes to the same annotation region. This workflow does not
 offer per-polygon row selection.
 
-The Shapes element must satisfy the existing Shapes Annotation edit-validity
-contract:
+The Shapes element must satisfy the existing Shapes Annotation child's
+edit-validity contract:
 
 - it is a GeoDataFrame with an active geometry column;
 - it contains at least one geometry row;
@@ -110,6 +139,16 @@ save path converts them to valid polygons. Lines, paths, points, unpolygonized
 circles, MultiPolygon values, and geometry collections are not eligible unless
 the shared Shapes Annotation validity contract is extended for them. Spatial
 Query must not define a conflicting geometry-validity rule.
+
+Spatial Query must reuse the complete existing Shapes Annotation edit-validity
+contract and its implementation rather than maintaining a second validator.
+The selected Shapes element must be accepted by
+`validate_existing_shapes_source_geodataframe()` and therefore be eligible for
+editing by the Shapes Annotation child, including its active-geometry,
+GeoDataFrame-index, and Polygon requirements. A Shapes element rejected for
+editing must also be rejected by Spatial Query. If the shared edit-validity
+contract is extended in the future, both workflows inherit that change through
+the shared validator.
 
 The effective annotation region is the geometric union of all polygon rows.
 Overlapping polygons do not duplicate results. Disjoint polygons are allowed.
@@ -138,9 +177,12 @@ labels instance, using equal weight for every pixel:
     center_x = mean(pixel column indices)
     center_y = mean(pixel row indices)
 
-For two-dimensional labels, the stored coordinate order is always x, y.
-RasterAggregator may internally use z, y, x; the singleton z coordinate is
-discarded and y, x is explicitly reordered to x, y before storage.
+The canonical cache always uses a fixed z, y, x storage layout, including for
+two-dimensional labels. RasterAggregator already returns z, y, x. For a 2D
+source, the lazily added singleton z plane produces and stores z=0.0 for every
+covered row. This z value is a storage-padding convention, not evidence that
+the source labels element is three-dimensional. The source signature continues
+to record the actual source dims, for example ("y", "x").
 
 Pixel indices denote pixel centers in the same convention used by Harpy's
 RasterAggregator: x=0, y=0 is the center represented by array position [0, 0].
@@ -192,11 +234,14 @@ The query reads the selected Shapes element and labels/table binding from the
 current in-memory SpatialData object, not arbitrary similarly named napari
 layers.
 
-If Shapes Annotation has an open dirty edit session for the selected Shapes
-element, Spatial Query must not query the last stored geometry silently. Run is
-blocked with guidance to save or discard the shape edits. After a successful
-Shapes Annotation save, the Spatial Query selections refresh and the new
-in-memory geometry becomes queryable.
+If the Shapes Annotation child has an open dirty edit session for the selected
+Shapes element, the parent must not let the Spatial Query child silently query
+the last saved geometry. Apply Annotation is blocked with guidance to save or
+discard the shape edits. Because both children belong to the same parent, this
+is a direct parent-to-child context contract rather than cross-widget
+dirty-session state. After a successful Shapes Annotation save, the parent
+refreshes the Spatial Query child and the new in-memory geometry becomes
+queryable.
 
 The current AnnData object is authoritative for spatial_canonical and its
 metadata. Persisted zarr state becomes authoritative again only after an
@@ -222,10 +267,33 @@ the same coordinate system. The query geometry is transformed using:
     M_shapes_to_labels =
         inverse(M_labels_to_cs) @ M_shapes_to_cs
 
-The unioned annotation is transformed with M_shapes_to_labels before point
-membership is evaluated. Matrix conversion must explicitly use x, y order for
-Shapely coordinates. Napari's array-axis y, x order must not leak into this
-calculation.
+This equation defines the coordinate relationship; napari-harpy must not
+implement the inversion or composition itself. Resolve the transformation
+through SpatialData's transformation graph:
+
+    shapes_to_labels = get_transformation_between_coordinate_systems(
+        sdata,
+        source_coordinate_system=shapes_element,
+        target_coordinate_system=labels_element,
+        intermediate_coordinate_systems=coordinate_system,
+    )
+
+Passing the SpatialElements selects their intrinsic coordinate systems, while
+`intermediate_coordinate_systems=coordinate_system` requires the path to pass
+through the coordinate system selected by the user. Missing, non-invertible,
+or ambiguous paths are rejected by SpatialData rather than replaced with local
+path-discovery or matrix-composition logic.
+
+Convert the returned `BaseTransformation` explicitly with
+`to_affine_matrix(input_axes=("x", "y"), output_axes=("x", "y"))`. The unioned
+annotation is transformed with that matrix before point membership is
+evaluated. Napari's array-axis y, x order must not leak into this calculation.
+A small query adapter may verify the resulting 3 x 3 matrix shape and finite
+values and convert it to the representation expected by Shapely; it must not
+reimplement transformation-graph traversal, inversion, or composition. The
+conversion must be covered by identity, translation, anisotropic-scale,
+rotation, and reflection tests so matrix and axis conventions are not inferred
+from display behavior.
 
 Identity, translation, anisotropic scale, rotation, reflection, and other
 supported invertible 2D affine compositions must work. A transform must not be
@@ -246,7 +314,10 @@ spatial_canonical.
 
 This release supports 2D x/y labels queries. Labels with a spatial z dimension
 are rejected rather than implicitly querying the current napari slice or
-projecting a volume.
+projecting a volume. The fixed z/y/x cache layout is deliberately 3D-ready, but
+does not add 3D calculation, transformation, or query semantics in this
+release. A 2D query reads y from column 1 and x from column 2 and ignores the
+synthetic z column; it does not pass z into a 2D transformation.
 
 ### Table binding and instance membership
 
@@ -282,8 +353,8 @@ the same row order as AnnData.
 If a requested table instance has no pixels in the selected labels element, its
 aggregate count is zero and its temporary center is non-finite. This is a
 table/labels binding inconsistency. The adapter validates the complete requested
-result before installation and reports the missing-ID count plus a bounded
-preview of IDs. Cache installation and the spatial query fail; a non-finite
+result before the cache update and reports the missing-ID count plus a bounded
+preview of IDs. The cache update and spatial query fail; a non-finite
 center for a covered region row is never committed.
 
 Labels values that are absent from the selected table region are intentionally
@@ -307,33 +378,43 @@ centers still scans all scale0 chunks lazily.
 - center-of-mass calculation through Harpy RasterAggregator;
 - canonical-center containment using vectorized Shapely;
 - assignment to one existing compatible obs column or one newly created column;
-- mandatory overwrite disclosure and confirmation;
-- asynchronous center calculation and query execution, cancellation, progress,
-  and stale-result protection;
+- removal of annotations from matching rows in one existing compatible column;
+- primary-label visualization of the selected annotation column with the shared
+  categorical palette and missing-value styling;
+- creation, extension, and persistence of the standard
+  `AnnData.uns["<column>_colors"]` palette associated with an effectively
+  mutated spatial-annotation column;
+- explicit overwrite/removal semantics before execution and exact outcome
+  disclosure afterward;
+- asynchronous center calculation and query execution, cancellation, textual
+  busy status, and stale-result protection;
 - per-table shared clean/dirty state;
 - selective AnnData element-level persistence of all supported dirty table
   components, including canonical centers and their metadata, without rewriting
   the complete AnnData table;
-- reloading the current table state from zarr with dirty-state protection;
-- undo of the most recently applied spatial annotation while its source
-  binding remains valid;
-- cross-widget refresh after cache installation, annotation mutation, write,
-  reload, or Shapes element write.
+- selective reload of supported table components from zarr, plus a full-table
+  convenience reload, with dirty-state protection;
+- refresh of the Annotation children and other widgets after a cache update,
+  annotation mutation, write, reload, or Shapes element write.
 
 ### Non-goals
 
-- modifying labels pixels or Shapes geometry;
+- modifying labels pixels, or modifying Shapes geometry from the Spatial Query
+  child; Shapes geometry editing remains owned by the sibling Shapes Annotation
+  child;
 - querying NumPy-backed labels or lower-resolution pyramid levels;
 - creating missing table rows or a new linked table;
 - returning labels instances that have no linked table row;
 - querying arbitrary unregistered napari Shapes layers;
 - querying unsaved Shapes Annotation edits;
 - per-polygon annotation values within one Shapes element;
-- 3D center calculation/query semantics;
+- 3D center calculation/query semantics; the storage layout is 3D-ready, but
+  3D sources remain unsupported in this release;
 - any-pixel overlap, full-label containment, or percentage-overlap predicates;
 - boolean combinations selected interactively across Shapes elements;
 - automatically writing to zarr after every cache or annotation change;
-- automatically recoloring labels;
+- creating or changing `<column>_colors` merely because a column was selected
+  for viewer display, without an effective annotation mutation;
 - detecting out-of-band labels pixel changes when dimensions, shape, dtype, and
   table linkage all remain unchanged;
 - using an existing obsm["spatial"] array without verified canonical metadata.
@@ -355,11 +436,12 @@ without overloading feature-matrix metadata.
 
 The matrix:
 
-- has shape n_obs by 2;
+- has shape n_obs by 3;
 - is a dense floating-point NumPy-compatible array;
-- uses columns x, y in that order;
+- uses columns z, y, x in that order;
 - is row-aligned through AnnData's obsm contract;
 - contains finite coordinates for every row covered by a valid region entry;
+- contains z=0.0 for every covered row belonging to a 2D labels source;
 - may contain NaN for rows belonging to table regions whose centers have not
   yet been calculated;
 - must not contain inf;
@@ -377,7 +459,7 @@ A representative schema is:
     adata.uns["spatial_coordinates"]["spatial_canonical"] = {
         "schema_version": 1,
         "obsm_key": "spatial_canonical",
-        "axes": ["x", "y"],
+        "axes": ["z", "y", "x"],
         "dtype": "float64",
         "region_key": "region",
         "instance_key": "instance_id",
@@ -389,7 +471,7 @@ A representative schema is:
                 "coordinate_frame": {
                     "type": "element_intrinsic",
                     "element": "nuclei",
-                    "axes": ["x", "y"],
+                    "axes": ["z", "y", "x"],
                 },
                 "calculation": {
                     "method": "center_of_mass",
@@ -441,7 +523,7 @@ source_element, coordinate-frame element, and selected labels name must agree.
 Metadata validation requires:
 
 - supported schema version;
-- matching obsm key, two-dimensional x/y axes, matrix shape, and dtype;
+- matching obsm key, fixed z/y/x axes, three-column matrix shape, and dtype;
 - current table region_key and instance_key;
 - a selected-region entry with matching source labels element;
 - scale0 as the source level;
@@ -451,7 +533,7 @@ Metadata validation requires:
 - the supported pixel-center convention and algorithm version;
 - coverage of all current rows in the selected table region;
 - matching source element, scale0 dimensions, shape, and dtype;
-- finite x/y coordinates on every covered row.
+- finite z/y/x coordinates on every covered row, with z=0.0 for a 2D source.
 
 Dimensions, shape, dtype, and table coverage form the structural cache
 signature. A mismatch is reported and triggers recalculation. Dask/zarr
@@ -466,7 +548,7 @@ the supported algorithm/schema version or documented semantics changed.
 
 ### Coverage and multi-region tables
 
-One table may annotate multiple labels regions. The single n_obs by 2 matrix can
+One table may annotate multiple labels regions. The single n_obs by 3 matrix can
 therefore contain coordinates expressed in different labels-intrinsic frames.
 The row's obs[region_key] value selects the metadata entry that defines its
 frame.
@@ -480,8 +562,9 @@ When a new spatial_canonical matrix is created, initialize all rows to NaN and
 fill the selected region's rows. When another region is later calculated, fill
 only that region and preserve valid existing region coordinates and metadata.
 NaN is a placeholder only for rows in table regions that have no valid region
-entry yet. Every row covered by a registered region entry must have finite x/y
-coordinates; a region is never registered with partial coverage.
+entry yet. Every row covered by a registered region entry must have finite
+z/y/x coordinates, and every covered row for a 2D source must have z=0.0; a
+region is never registered with partial coverage.
 
 Coverage is complete only when every current table row in that region has one
 finite center. Each labels element has a separate instance_set_digest stored in
@@ -506,19 +589,18 @@ mutations that break AnnData's alignment guarantees are outside the contract.
 
 An unordered instance-set digest cannot detect a reassignment that preserves
 the complete per-region instance set, such as swapping two instance-key values
-between existing rows. Supported mutations to obs, region_key, or instance_key
-must therefore emit semantic table events that invalidate every affected region
-entry before the cache can be reused, even when the resulting instance sets are
-unchanged. An out-of-band same-set reassignment that bypasses those events is an
-explicit structural-validation limitation, like an out-of-band labels-pixel
-edit that preserves the labels structural signature. Forced recalculation is
-the recovery path.
+between existing rows. No operation currently planned in this roadmap changes
+the row-to-region or row-to-instance association. An out-of-band same-set
+reassignment is therefore an explicit structural-validation limitation, like
+an out-of-band labels-pixel edit that preserves the labels structural
+signature. The user-facing workflow does not attempt to recover from
+unsupported out-of-band mutations.
 
-Subsetting a table, changing linkage values, replacing obs, or changing
-region/instance-key metadata must cause coverage revalidation. Semantic table
-events must invalidate affected region entries immediately rather than waiting
-until Run; this is required for same-set linkage reassignments that structural
-inspection cannot detect.
+Any future supported producer that changes row-to-region or row-to-instance
+linkage must define its cache lifecycle as part of that feature. It must either
+invalidate every previous and current affected region before reuse, or eagerly
+force recalculation of the complete affected set. The invalidation API should
+be introduced with that concrete producer rather than maintained speculatively.
 
 ### Structural cache validity
 
@@ -543,9 +625,10 @@ validated and applied later when the annotation geometry is queried.
 This contract cannot detect an out-of-band label-pixel edit that preserves the
 complete structural signature. Detecting that case would require reading or
 hashing the raster again and would defeat fast cache reuse. The explicit
-Recalculate centroids action described below is the user-facing recovery path;
-the core ensure operation also exposes the same forced-recalculation mode to
-non-UI callers.
+forced-recalculation mode remains available to core callers and future
+producer-specific recovery tooling, but it is not exposed as a routine widget
+action. A future supported labels-pixel editor must publish an explicit cache
+invalidation or eager-recalculation contract.
 
 ### Cache states
 
@@ -556,29 +639,29 @@ The cache inspector returns one of these typed states for the selected region:
   covered;
 - valid: matrix, metadata, structural source signature, table coverage, and
   finite values pass;
-- stale: the pair is interpretable but its selected-region structural
+- stale: the cache is interpretable but its selected-region structural
   source/coverage/algorithm signature no longer matches;
 - invalid: matrix/metadata is malformed, contradictory, unsupported, or only
-  one half of the pair exists.
+  one managed component exists.
 
-Run behavior:
+Apply Annotation cache behavior:
 
 - valid: reuse immediately;
-- absent or partial: calculate the selected region, install it atomically, then
+- absent or partial: calculate the selected region, apply the cache update atomically, then
   query;
 - stale: recalculate and atomically replace only the selected region, then
   query;
-- invalid: report the pair-wide mismatch, calculate the selected region, and
+- invalid: report the all-regions mismatch, calculate the selected region, and
   rebuild the managed matrix/metadata pair. The rebuild is conservative: an
   existing region is preserved only when its coordinates and metadata can be
   fully substantiated against the shared matrix, current table, and current
-  source signature. If pair-wide inconsistency prevents that proof, rebuild a
-  selected-region-only pair rather than carrying the entry forward.
+  source signature. If an all-regions inconsistency prevents that proof,
+  rebuild a selected-region-only cache rather than carrying the entry forward.
 
-The widget shows the current state before Run, including First query will
-calculate centroids when appropriate.
+The widget shows the current state before Apply Annotation, including that
+centers will first be calculated when appropriate.
 
-### Atomic cache installation
+### Atomic cache update
 
 Center calculation occurs off the Qt main thread against immutable request
 inputs. The worker returns a compact result keyed by instance ID; it never
@@ -586,76 +669,110 @@ mutates AnnData.
 
 After worker completion, the main-thread controller revalidates the request,
 table identity, linkage, row coverage, labels structural signature, and cache
-generation. It then installs or updates the matrix and metadata as one
+generation. It then applies the matrix and metadata update as one
 all-or-nothing table mutation.
 
-If validation or installation fails:
+If validation or the cache update fails:
 
 - restore the complete prior obsm value and metadata registry;
 - emit no accepted mutation event;
 - leave dirty state unchanged;
-- do not continue to the annotation dialog.
+- do not continue to annotation Apply.
 
 A successful cache create, extend, refresh, or rebuild changes table state and
 therefore marks the shared table dirty. This remains true if the query finds no
-instances or the user later cancels the Apply dialog. The cache is useful
-derived data, but it is still an in-memory table change that must be written to
-persist.
-
-Undo last annotation reverses only the annotation-column mutation. It does not
-remove or roll back a canonical-center cache created by the same Run action.
+instances or the subsequent annotation Apply fails. The cache is useful derived
+data, but it is still an in-memory table change that must be written to persist.
 
 ## User Experience
 
-### Dock widget
+### Unified Annotation dock widget
 
-Add a Spatial Query dock widget with the visual language and status-card
-patterns used by existing Harpy widgets.
+Extend the existing registered Annotation dock into one parent
+`AnnotationWidget`; do not register a second Spatial Query dock. The parent
+composes a Shapes Annotation child and a Spatial Query child. Their visual
+language, status cards, spacing, and validation feedback follow the existing
+Harpy widget patterns.
 
-Recommended control order:
+The parent owns the coordinate-system and Shapes-target selectors and the
+committed annotation context shared with both children. Those selectors remain
+visible as common workflow inputs rather than belonging to either child.
 
-1. Coordinate system combo.
-2. Annotation shapes combo.
-3. Labels element combo.
-4. Linked table combo.
-5. Target column mode: Existing column or New column.
-6. Existing-column combo or new-column line edit.
-7. Centroid cache status and Recalculate centroids button.
-8. Run Spatial Query button.
-9. Query/action status and progress area with Cancel while running.
-10. Undo last annotation button.
-11. Write Table State and Reload Table from zarr buttons.
-12. Persistent shared clean/dirty table-state status.
+The Shapes Annotation child owns polygon creation, editing, hole creation,
+validation, save controls, dirty detection, and discard-confirmation behavior.
+Before the parent commits another coordinate system or Shapes target, it asks
+the Shapes child to resolve its current edit session. Cancellation restores the
+old selector and context; acceptance lets the child perform its own layer
+cleanup before the parent commits and publishes the new context. The parent
+never manipulates the child's private edit-session layer directly.
 
-The target controls use stable identities rather than display strings so valid
+The Spatial Query child consumes the parent's committed annotation context and
+owns this dependent control order:
+
+1. Labels element combo.
+2. Linked table combo.
+3. Target column mode: Existing column or New column.
+4. Existing-column combo or new-column line edit.
+5. Annotation action: Set annotation or Remove annotation.
+6. A target-typed annotation-value editor for Set.
+7. One Spatial Query status card combining selection readiness and centroid
+   cache behavior.
+8. Apply Annotation button.
+9. Write Table State and Reload Table from zarr buttons.
+10. Persistent shared clean/dirty table-state status.
+
+The parent coordinates child context changes and cancellation, but each child
+retains its own controller and status-building modules. Spatial Query logic must
+not be added directly to the already substantial Shapes Annotation child.
+Target controls use stable identities rather than display strings so valid
 selections survive refreshes.
 
 ### Selection dependencies
 
-- Coordinate-system choices come from the shared HarpyAppState SpatialData.
-- Annotation choices include only Shapes elements available in the selected
-  coordinate system and valid under the Shapes Annotation contract.
+- Coordinate-system choices come from the shared HarpyAppState SpatialData and
+  are selected once on the parent Annotation widget.
+- The parent's Shapes-target choice includes Shapes elements available in the
+  selected coordinate system and valid under the Shapes Annotation edit
+  contract, plus the existing create-new workflow rendered by the Shapes child.
+- Spatial Query receives only a saved existing Shapes element. A create-new
+  session becomes queryable after its first successful save, and any dirty edit
+  session blocks Run until it is saved or discarded.
 - Labels choices include only supported 2D labels elements available in that
   coordinate system.
 - Table choices include only tables whose SpatialData TableModel metadata
   declares the selected labels element as an annotated region.
-- Existing-column choices include only compatible text/categorical annotation
-  columns and exclude region_key and instance_key.
+- Existing-column choices include only supported pandas categorical annotation
+  columns whose declared categories are all strings or all positive integers,
+  and exclude region_key, instance_key, and classifier-owned prediction
+  outputs.
 - Changing an upstream selection refreshes downstream options, closes pending
-  dialogs, and cancels or invalidates active work.
-- Preserve a downstream selection if its stable identity remains valid.
-  Otherwise choose the first valid option or show a disabled placeholder with
-  an explanation.
+  annotation-value drafts where their target identity changed, and cancels or
+  invalidates active work.
+- Preserve a downstream selection if its stable identity remains valid, except
+  across an accepted coordinate-system change. That transition deliberately
+  clears the Spatial Query labels selection and all dependent state even when
+  the same labels element is available in both coordinate systems. The labels
+  selector then shows `Choose a labels element`; it never silently selects or
+  reloads an element. Removing the selected primary labels layer from napari
+  has the same clearing behavior. Other dependent controls follow their
+  documented defaults or show a disabled placeholder with an explanation.
 
-The coordinate-system combo participates in the shared active-coordinate-system
-model. A change here updates HarpyAppState and follows the same layer cleanup
-and refresh behavior as other coordinate-aware widgets.
+The parent's coordinate-system combo participates in the shared
+active-coordinate-system model. The parent commits an in-widget change to
+HarpyAppState only after the Shapes child accepts the edit-session transition.
+The resulting committed context refreshes both children, invalidates active
+Spatial Query work, and follows the same layer cleanup behavior as other
+coordinate-aware widgets.
 
 ### Target column behavior
 
-If spatial_annotation already exists and is compatible, default to Existing
-column and select it. Otherwise default to New column with spatial_annotation
-prefilled.
+If spatial_annotation already exists and is a compatible categorical target,
+default to Existing column and select it. If it is absent, default to New
+column with an empty draft and show spatial_annotation only as placeholder
+guidance. If it exists but is incompatible, exclude it from the
+Existing-column choices and explain that Spatial Query will neither convert nor
+overwrite it; the user must select another eligible categorical column or enter
+a different non-colliding New column name.
 
 A new column name:
 
@@ -663,142 +780,259 @@ A new column name:
 - must pass SpatialData dataframe-column-name validation;
 - must not equal region_key or instance_key;
 - must not collide with an existing obs column;
-- is not created until the user confirms Apply with at least one changed row.
+- is not created until a successful query produces at least one effective
+  annotation change.
 
-An existing target column is compatible when it is:
+An existing target column is compatible only when it uses
+`pd.CategoricalDtype` and its declared categories satisfy the implemented
+string or positive-integer value-kind contract. Missing row values are valid
+and mean that those rows are not annotated. Preserve the categorical `ordered`
+flag and category order. Empty `user_class` retains its explicit
+positive-integer schema; New columns remain string-categorical.
 
-- pandas categorical with string categories;
-- pandas StringDtype;
-- object/string containing only strings and missing values;
-- an all-missing object/string column.
+StringDtype, object/string, plain numeric, boolean, datetime, mixed-object, and
+unsupported categorical columns are not writable and must never be converted
+implicitly. Spatial Query supports convenience creation through New column,
+but it does not normalize an existing user-owned column into its required
+categorical contract.
 
-Numeric, boolean, datetime, mixed-object, and non-string categorical columns
-are not writable and must never be converted implicitly.
+Remove annotation is available only for an existing compatible target column.
+It clears the matching row values to the column's missing state; it never
+deletes the obs column. New column plus Remove annotation is invalid because it
+would create no useful state.
 
-### Centroid status
+### Annotation action and value
 
-The status area reports one of:
+Set and Remove are configured in the Spatial Query child before work starts.
+Set requires a value whose type matches the selected target:
+
+```text
+Existing string categorical
+    → trimmed non-empty string editor
+
+Existing positive-integer categorical
+    → positive-integer editor
+
+New column
+    → trimmed non-empty string editor
+
+Remove
+    → no value editor
+    → Existing targets only
+```
+
+The value is an explicit input and is never inferred from the Shapes name.
+Empty string, `"None"`, and `"nan"` are not removal controls: the first is
+invalid and the latter two remain literal string categories. The complete
+action and normalized typed value are captured with the accepted Run intent.
+Changing either while work is active invalidates that operation.
+
+Set always assigns the captured value to every matched row, replacing a
+different existing value where present. The UI states this overwrite behavior
+before Apply Annotation is enabled. Remove assigns `pd.NA` to every matched
+row. Exact changed, overwritten, unchanged, and removed counts are calculated
+after the query and reported after the atomic operation; there is no second
+confirmation dialog.
+
+### Annotation visualization
+
+The selected labels element is loaded and activated as the primary labels
+layer through `ViewerAdapter.ensure_labels_loaded()`, following the same layer
+selection and activation behavior as Object Classification. The Spatial Query
+child must reuse that primary layer; it must not create a second styled-labels
+overlay for the annotation. Activating the labels layer switches napari's
+active editing target away from the Shapes layer without discarding the sibling
+Shapes Annotation session.
+
+The selected annotation target column is also the Spatial Query child's color
+source:
+
+- explicitly selecting a labels element or compatible existing target column
+  applies the current column values to the primary labels layer immediately;
+- programmatic context, selector, or table refreshes update the available
+  controls without silently reclaiming primary-layer styling from another
+  workflow; only an explicit user coloring action establishes Spatial Query as
+  the most recent color-source owner;
+- a New column cannot be used as a color source before it exists; after the
+  first effective Apply creates it, the new column remains selected and is
+  applied as the color source;
+- Set and Remove operations refresh the current visualization after the table
+  mutation succeeds; removed or otherwise missing values use the shared
+  semi-transparent missing/unlabelled color;
+- a no-op Apply does not emit a table mutation or perform a mutation-driven
+  refresh.
+
+Use the generic table-backed labels styling path through
+`apply_table_color_source_to_labels_layer()` and a `TableColorSourceSpec` for
+the selected obs column. Do not reuse Object Classification's specialized
+`ViewerStylingController`: it owns `user_class`, `pred_class`, prediction
+confidence, integer class IDs, and classifier palette semantics that do not
+belong to arbitrary spatial-annotation strings.
+
+The annotation column and its standard `table.uns["<column>_colors"]` palette
+form one annotation consistency unit. Palette entries align positionally with
+the categorical column's category order. Resolve that palette as follows:
+
+- a valid stored palette has exactly one valid color per category and remains
+  authoritative; preserve every existing color value and its order;
+- when no stored palette exists, derive one viewer-only from category positions
+  using `default_labeled_class_color(position + 1)`;
+- when stored palette metadata is malformed or incompatible with the category
+  count, render with the same complete position-based default palette and show
+  a non-blocking warning rather than trusting ambiguous color alignment;
+- when Set appends a category to a valid stored palette, append exactly one
+  `default_labeled_class_color(new_position + 1)` entry and never regenerate
+  earlier entries;
+- when a New column is created, create its complete position-based default
+  palette at the same time.
+
+This per-position mapping uses the same underlying default color logic as
+Object Classification while guaranteeing that appending a category never
+changes colors assigned to existing categories. Merely selecting or displaying
+a column remains read-only: a missing or invalid palette is not written,
+repaired, announced as a table mutation, or marked dirty until an effective
+annotation Apply occurs. On such an Apply, store the derived palette when it was
+missing, replace invalid palette metadata with the displayed complete default
+palette, or append the new-category entry to a valid palette. Remove never
+prunes categories or colors.
+
+An effective annotation Apply publishes the ordinary
+`TableStateChangedEvent` for the changed `obs/<column>` path. The Spatial Query
+child refreshes table-backed coloring only when the event refers to the current
+SpatialData object and table, covers the currently displayed annotation
+column, and either includes the selected labels region or is explicitly
+table-wide. Unrelated obs, obsm, uns, table, or region changes must not repaint
+the layer. A relevant reload or a mutation published by another widget follows
+the same targeted refresh rule.
+
+Because Object Classification and the Spatial Query child can both style the
+same primary labels layer, the most recent explicit user coloring action owns
+its presentation. Selecting a Spatial Query target column or successfully
+applying that annotation is such an action. A later Object Classification color
+choice may replace it, and vice versa. Shared presentation state must retain
+the currently applied primary-layer color-source identity so background table
+events refresh that source only; a widget must not reclaim layer styling merely
+because it received an unrelated refresh callback.
+
+### Spatial Query status
+
+One status card reports both the highest-priority selection/readiness state and
+the centroid-cache behavior Apply Annotation will use. For a complete request,
+it reports one of:
 
 - Ready: valid cached centroids will be reused;
-- Not calculated: Run will calculate centers from scale0 first;
-- Partial: Run will calculate centers for this labels region;
-- Stale: Run will refresh centers for this labels region;
-- Invalid: Run will report the mismatch and rebuild centroid data;
+- Not calculated: Apply Annotation will calculate centers from scale0 first;
+- Partial: Apply Annotation will calculate centers for this labels region;
+- Stale: Apply Annotation will refresh centers for this labels region;
+- Invalid: Apply Annotation will report the mismatch and rebuild centroid data;
 - Running: calculating centroids;
 - Running: querying centroids.
 
-Tooltips explain that the first calculation scans all scale0 chunks lazily and
-may take substantially longer than later queries. The UI must not promise that
-only chunks near the polygon will be read: center calculation is a global
-labels aggregation.
+The tooltip explains in user-facing terms that centers will first be
+calculated for the selected labels element before annotation is applied. The
+UI does not expose a manual Recalculate action. Apply Annotation owns the
+complete automatic cache lifecycle: it reuses a valid report and calculates,
+refreshes, or rebuilds centers for absent, partial, stale, or invalid states
+before querying.
 
-### Recalculate centroids action
+### Apply Annotation flow
 
-Recalculate centroids is an explicit standalone action for refreshing the
-selected labels region when the user knows or suspects that label pixels have
-changed without a detectable structural change. It is user-facing terminology;
-internal code and metadata continue to use the spatial_canonical contract.
+1. The user configures a complete valid selection, Set/Remove action, and
+   target-typed annotation value.
+2. Apply Annotation becomes enabled for valid, absent, partial, stale, and
+   rebuildable-invalid cache states only when that complete mutation intent is
+   valid.
+3. Clicking Apply Annotation performs a fresh selected-region cache inspection,
+   including one instance-set digest, then captures an immutable request
+   containing stable source identities, selected coordinate system, table
+   linkage, target intent, normalized annotation value, cache state,
+   structural signatures, and one operation ID.
+4. A valid cache supplies the selected rows of `spatial_canonical` directly and
+   skips centroid calculation. If the cache is absent, partial, stale, or
+   rebuildable-invalid, a worker calculates centers for all rows of the selected
+   table region from scale0 and returns a `CanonicalCacheUpdatePayload` without
+   mutating the table.
+5. The main-thread controller accepts the payload only for the current operation
+   ID and applies it through `apply_canonical_cache_update()`. Its fresh
+   source/binding validation re-resolves current rows and rejects outdated work.
+6. Once canonical centers are valid or the cache update has succeeded, a worker
+   evaluates them against the transformed Shapes geometry. It returns matching
+   instance IDs without mutating SpatialData, AnnData, or Qt state.
+7. Throughout either worker phase, the status card reports that calculation is
+   busy without a progress bar or percentage. Selection changes invalidate the
+   operation ID.
+8. The main-thread controller accepts the query result only for the current
+   operation ID. The Spatial Query child then calls
+   `prepare_spatial_annotation()`, which resolves returned IDs to current table
+   rows through the selected-region `region_key` and `instance_key` binding and
+   validates the current canonical-center provenance.
+9. If no centroids match, show No instances from the selected Labels element
+   have their center inside the selected Shapes and make no annotation-column
+   changes.
+10. Otherwise summarize the captured Set/Remove value and immediately call
+    `apply_spatial_annotation()` on the main thread.
+11. After an effective mutation, publish one table-state event, refresh
+    table-backed Labels styling, and report the exact changed, overwritten,
+    unchanged, or removed counts.
 
-The action is enabled when a supported labels element and a valid non-empty
-linked-table region are selected and no conflicting table/calculation operation
-is running. It does not require a valid Shapes selection or annotation target,
-does not perform a spatial query, and never changes an annotation column.
+Cancellation before the cache update makes no changes. If a newly calculated
+cache was already applied before the query phase is cancelled or invalidated,
+that useful cache remains in memory and remains dirty, but no annotation
+mutation follows.
 
-On activation:
+### Immediate annotation Apply
 
-1. capture the selected labels/table-region identities, structural signatures,
-   instance-set digest, current cache generation, and a new operation token;
-2. bypass valid-cache reuse and calculate all requested table-region centroids
-   lazily from scale0;
-3. validate that every requested table ID has exactly one finite result;
-4. revalidate the captured table, labels, binding, and cache generation on the
-   main thread;
-5. atomically replace only the selected region's current row positions and
-   metadata when the shared matrix/top-level contract is valid, preserving all
-   other valid regions;
-6. emit the shared table-state event, mark the table dirty, refresh the centroid
-   status, and report completion.
+The Spatial Query child captures the normalized annotation value together with
+the accepted Shapes, labels, table, target mode, and target-column identities.
+Worker completion never rereads a newer editor value or silently adopts a new
+Set/Remove action. The existing input-change handlers invalidate the operation
+when any captured input changes before query acceptance.
 
-If calculation is cancelled, fails, produces a missing/non-finite requested ID,
-or becomes stale before installation, the previous obsm/uns pair is preserved
-exactly, no mutation event is emitted, and dirty state is unchanged. A pair-wide
-invalid matrix/metadata state follows the existing rebuild rules, but is not
-replaced until a complete valid calculation result is available.
+For a non-empty accepted query result, perform this sequence synchronously on
+the main thread:
 
-### Run and result flow
+```text
+prepare_spatial_annotation(
+    accepted query result,
+    captured column mode,
+    captured column name,
+)
+    ↓
+summarize_spatial_annotation(
+    preparation,
+    captured typed annotation value,
+)
+    ↓
+apply_spatial_annotation(
+    preparation,
+    exact summary,
+)
+```
 
-1. The user configures a complete valid selection.
-2. Run Spatial Query becomes enabled for valid, absent, partial, stale, and
-   rebuildable-invalid cache states.
-3. Clicking Run performs a fresh selected-region cache inspection, including
-   one instance-set digest, then captures an immutable request containing stable
-   source identities, selected coordinate system, table linkage, target intent,
-   cache state, structural signatures, and a generation token.
-4. A valid cache supplies the selected rows of `spatial_canonical` directly. If
-   cache state is absent, partial, stale, or rebuildable-invalid, the worker
-   calculates centers for all rows of the selected table region from scale0.
-5. The UI shows phase-specific progress and offers Cancel. Selection controls
-   remain readable, but changes invalidate the active request.
-6. The worker evaluates the transformed annotation against either the validated
-   cached coordinates or the newly calculated coordinates.
-7. The worker returns instance IDs, diagnostics, and, when needed, a cache
-   installation payload. It never mutates SpatialData, AnnData, or Qt state.
-8. The controller revalidates all captured identities and structural
-   signatures. If a cache payload exists, installation re-resolves the selected
-   rows and calculates its instance-set digest a second time.
-9. If that signature still matches, install the payload atomically on the main
-   thread and mark the table dirty before accepting the query result; otherwise
-   discard it without mutation.
-10. Resolve returned IDs to current table rows using region_key and
-    instance_key.
-11. If no centroids match, show No instance centroids found in the
-    annotation and make no annotation-column changes.
-12. Otherwise open the Apply Spatial Annotation dialog.
+The summary remains an immutable domain consistency input and post-operation
+outcome source; it is not a second user confirmation. There is no modal review
+UI, refreshed-review loop, dialog-owned value editor, or widget-local pending
+review state.
 
-Cancellation before cache installation makes no changes. Cancellation of the
-Apply dialog after a newly calculated cache was installed leaves that cache in
-memory and leaves the table dirty.
+Immediately before mutation, `apply_spatial_annotation()` revalidates:
 
-### Apply Spatial Annotation dialog
-
-The modal dialog contains:
-
-- annotation source name;
-- labels element, table, and target column;
-- inclusion rule: Centroid inside annotation;
-- number of eligible instances in the selected table region;
-- number of centroids inside the annotation;
-- number of matching rows currently missing a value;
-- number already equal to the proposed value;
-- number with a non-missing different value that would be overwritten;
-- a QLineEdit labeled Annotation value, prefilled with the Shapes element name;
-- Apply and Cancel actions.
-
-It does not show labels missing from the table, because the centroid-based query
-does not enumerate labels outside the table.
-
-The annotation value is trimmed and must be a non-empty string. Unicode and
-internal spaces are allowed. It is a user-facing category value rather than a
-SpatialData element key, so element-name restrictions do not apply.
-
-Changing the value updates equal/overwrite counts live. If different
-non-missing values will be replaced, the dialog shows a prominent mandatory
-warning and uses explicit action text such as Overwrite 12 and apply to 35.
-
-Cancel closes the dialog without creating or changing the annotation column.
-It does not undo a canonical-center cache installed earlier in the Run flow.
-
-Immediately before Apply, revalidate:
-
-- SpatialData, Shapes, labels, coordinate system, table, and target intent;
+- SpatialData, labels, table, and target intent;
 - table linkage and row identities;
-- Shapes and transformation generations;
-- spatial_canonical matrix/metadata generation;
-- target-column values used for the displayed counts.
+- the canonical source, binding, selected-region metadata, and center rows
+  against the exact `CanonicalCentersResult` used by the query;
+- target-column values captured during immediate preparation.
 
-If only target values changed, refresh counts and require confirmation of the
-updated summary. If source geometry, transform, centers, binding, selection, or
-table identity changed, discard the result and require a new query.
+The immutable query request already contains the Polygon and affine snapshots
+used by the worker. Normal Shapes edits, Shapes-target changes, coordinate
+system changes, and dirty-session transitions invalidate the active operation
+before a result can be accepted. Do not add a second Shapes geometry digest or
+transformation comparison at Apply time.
+
+If target values, centers, binding, selection, or table identity changed,
+discard the result without mutation, show an actionable annotation failure,
+and require the user to click Apply Annotation again. Do not automatically
+rebuild preparation, retry Apply, or adopt newer state under the already
+accepted intent.
 
 ### Successful apply
 
@@ -808,51 +1042,48 @@ Applying is one main-thread, all-or-nothing obs mutation:
 - update only rows in the selected labels region whose instance IDs were
   returned;
 - leave all other rows, regions, columns, obsm, and uns untouched;
-- add a category without discarding existing category order or ordered state;
+- when setting, add a category without discarding existing category order or
+  ordered state;
+- when removing, assign the canonical in-memory missing scalar `pd.NA` and do
+  not remove unused categories or reorder categorical metadata;
+- preserve a valid existing `<column>_colors` palette and append one stable
+  default color when Set adds a category;
+- create or repair `<column>_colors` from the stable position-based default
+  palette only as part of an effective annotation Apply;
 - represent unannotated values as actual missing values, never stringified
   missing values or an empty string;
 - preserve the compatible target dtype;
 - update each matching row at most once.
 
-A new target column is categorical. Non-target rows are missing and the applied
-value is its first category.
+A new target column is string-categorical. Non-target rows are missing, the
+applied string value is its first category, and `<column>_colors` contains its
+first stable default color. Removal never creates or deletes a column,
+category, or palette entry.
 
-If every matching row already has the requested value, report a no-op. Do not
-replace the column object, emit an annotation mutation event, create an undo
-record, or alter dirty state. Any dirty state caused earlier by cache creation
-remains.
+If every matching row already has the requested typed value, or every matching
+row is already missing during removal, report a no-op. Do not replace the
+column object, emit an annotation mutation event, or alter dirty state. Any
+dirty state caused earlier by cache creation remains.
 
 After an effective annotation mutation:
 
 - mark the selected table dirty through shared HarpyAppState;
-- emit a semantic table-state event with the changed obs column, selected
-  labels region, source, and change kind;
+- emit a semantic table-state event with the changed obs column and, only when
+  it was created, repaired, or extended, the associated palette uns path;
+  include the selected labels region, source, and change kind; a new column
+  uses `created`, while an existing-column Set or Remove uses `updated`;
 - refresh this widget and table-column/color-source consumers;
-- show updated, overwritten, and unchanged counts;
-- enable undo for this annotation operation.
+- show updated, overwritten, and unchanged counts.
 
-### Undo last annotation
-
-Keep one in-memory undo record for the most recent successful spatial
-annotation. It contains exact affected row identities, prior values,
-dtype/category metadata, whether the column was created, table mutation and
-persistence revisions, and the table dirty state before annotation apply.
-
-Undo:
-
-- restores previous annotation-column values exactly;
-- removes a column created by Apply when no later mutation touched it;
-- never removes or rewinds spatial_canonical or its metadata;
-- clears dirty state only when the complete table exactly returns to the
-  unchanged persisted baseline;
-- therefore remains dirty when the same Run first created/refreshed canonical
-  centers;
-- emits the semantic table event with source spatial_query_undo.
-
-Undo is invalidated by reload, another spatial Apply, incompatible row/linkage
-changes, table replacement, or a later mutation of the same target column. An
-unrelated mutation may leave undo available but prevents it from clearing the
-table's dirty marker.
+Spatial Query deliberately provides no operation-specific Undo command. The
+explicit Set/Remove controls, target-typed value validation, standing overwrite
+semantics, exact post-operation counts, and atomic Apply are the primary
+safeguards. An incorrect annotation can be corrected by another Set annotation
+operation or cleared through Remove annotation. Unpersisted table changes can
+also be discarded through the existing Reload Table from zarr workflow, with
+its normal warning that all covered dirty table components are replaced. This
+keeps annotation state, dirty tracking, and recovery within the shared
+persistence model rather than introducing widget-local history.
 
 ## Canonical Center Calculation
 
@@ -866,19 +1097,22 @@ For a 2D scale0 labels Dask array:
 1. select the rows for the requested labels region and reject an empty set;
 2. validate non-missing, positive, unique integer-like instance IDs within that
    region;
-3. require integer labels dtype and known 2D shape/chunks;
+3. use SpatialData's validated 2D Dask raster representation and require an
+   integer labels dtype;
 4. add a singleton z dimension lazily, without copying or rechunking the raster,
    to satisfy RasterAggregator's z, y, x input contract;
 5. pass exactly the selected table-region instance IDs as index;
 6. exclude background zero before aggregation;
 7. let RasterAggregator construct and execute its Dask aggregation;
 8. receive the compact per-requested-instance z, y, x result;
-9. require z to be the expected singleton-plane value;
-10. drop z and reorder y, x to x, y;
+9. require z to equal the expected singleton-plane value 0.0;
+10. retain the float64 z, y, x result unchanged for canonical storage;
 11. validate exactly one finite result for every requested ID; a zero-count or
     non-finite result means that a table instance is absent from the raster and
     is a binding error;
-12. join results back to table rows by instance ID, never by output order.
+12. require RasterAggregator to return the requested IDs in the same order, as
+    guaranteed by its `center_of_mass(index=...)` contract; retain centers in
+    that binding order.
 
 Passing a known index avoids RasterAggregator's separate global unique-label
 discovery. It does not avoid scanning scale0: every labels chunk may contribute
@@ -888,46 +1122,38 @@ validated; this is the intended table-defined query universe.
 
 RasterAggregator may currently use more than one full lazy pass, for example to
 calculate counts and coordinate moments. The product contract is out-of-core
-execution and bounded working memory, not a promise of exactly one storage
-pass. The implementation must be benchmarked on representative local and remote
-stores. If the current per-chunk intermediate layout exceeds the declared
-production memory budget for high instance counts, RasterAggregator must be
-optimized before release; falling back to loading labels eagerly is forbidden.
+execution through Harpy, not a promise of exactly one storage pass. Harpy owns
+RasterAggregator scheduling, concurrency, memory, and performance. napari-harpy
+does not add local performance budgets or eager fallbacks.
 
-### Cache generation result
+### Background calculation result
 
-Use a UI-independent worker result, conceptually:
+The worker calls `calculate_canonical_centers()` and returns its existing
+`CanonicalCacheUpdatePayload`; do not introduce a second result type that
+duplicates the binding, source signature, instance IDs, or centers. The arrays
+are compact and eager only after Harpy's Dask calculation completes. They
+contain one row per selected table instance, not one row per label pixel.
 
-    CanonicalCenterBuildResult:
-        labels_name
-        table_name
-        instance_ids
-        centers_xy
-        source_signature
-        instance_set_digest
-        cache_action
-        mismatch_reasons
-        diagnostics
-        generation
+The worker receives no Qt or napari layer objects and never mutates table state.
+Applying the payload through `apply_canonical_cache_update()` is a separate
+main-thread domain operation.
 
-The arrays are compact and eager only after Dask completes. They contain one
-row per table instance, not one row per label pixel.
-
-The worker must not receive Qt or napari layer objects and must not mutate table
-state. Main-thread installation is a separate domain operation.
-
-### Performance and cancellation
+### Background execution and cancellation
 
 - Run all labels I/O and Dask calculation off the Qt main thread.
-- Preserve zarr-aligned scale0 chunks; do not rechunk as part of this feature.
-- Never compute the full labels array, a full coordinate raster, or a full
-  boolean mask.
-- Bound local Dask concurrency against a documented memory budget.
-- Use scheduler diagnostics for progress where feasible; otherwise show
-  indeterminate progress with the current phase.
-- Cancellation immediately prevents cache installation, result dialogs, and
-  table mutation. Already scheduled local chunk reads may finish in the
-  background; the UI must not claim hard I/O cancellation.
+- Preserve the scale0 Dask representation; do not rechunk or eagerly load the
+  labels raster as part of this feature.
+- Follow the existing Feature Extraction and Object Classification worker
+  lifecycle: assign a monotonically increasing operation ID, keep the active
+  operation phase, call `worker.quit()` when invalidating it, clear the active
+  reference, and ignore every late signal whose operation ID is no longer
+  current.
+- `worker.quit()` is best-effort invalidation, not hard interruption of Harpy's
+  synchronous calculation. The underlying calculation may finish, but its
+  result cannot update the cache or apply an annotation after invalidation.
+- Do not add a Dask cancellation token, scheduler callback, concurrency policy,
+  task diagnostics, progress bar, percentage, or performance telemetry.
+- While current work is running, show a textual busy message in the status card.
 - Errors become actionable UI feedback and structured logs, with controls
   restored to a usable state.
 
@@ -935,68 +1161,25 @@ state. Main-thread installation is a separate domain operation.
 
 ### Inputs and results
 
-Use typed, UI-independent contracts, for example:
+The containment stage consumes `CanonicalCentersResult` as its only source of
+canonical centers and row-to-instance identity. Cache reuse and fresh
+calculation converge before containment begins. This stage never inspects,
+calculates, applies, or persists the canonical cache and never reads labels
+raster data.
 
-    SpatialCenterQueryRequest:
-        sdata
-        shapes_name
-        labels_name
-        table_name
-        coordinate_system
-        predicate = "canonical_center_inside"
-        cache_generation
-        source_signature
-        generation
-
-    SpatialCenterQueryResult:
-        shapes_name
-        labels_name
-        table_name
-        coordinate_system
-        instance_ids
-        eligible_instance_count
-        matched_instance_count
-        cache_action
-        cache_build_result or None
-        generation
-
-The exact Python types may differ. The separation is normative: center
-calculation and geometry querying return immutable data; cache installation,
-row preparation, and annotation mutation are distinct operations.
+The query returns an immutable result carrying the selected-region binding and
+the matching instance IDs in ascending order. Controller operation identity
+remains orchestration state. The concrete request, result, and thread-boundary
+contracts are specified in Slice 4.
 
 ### Query algorithm
 
-1. Validate and snapshot the selected Shapes polygons.
-2. Union all polygons into one effective region.
-3. resolve M_shapes_to_cs and M_labels_to_cs from current SpatialData;
-4. calculate inverse(M_labels_to_cs) @ M_shapes_to_cs;
-5. transform the union into labels-intrinsic x, y coordinates;
-6. prepare the Shapely geometry for repeated predicates;
-7. inspect spatial_canonical and metadata for the selected region;
-8. if valid, snapshot the selected region's row identities and x/y values;
-9. if absent, partial, or stale, calculate centers through RasterAggregator and
-   use the resulting x/y values for this query;
-10. reject non-finite values or a mismatch between row identities, instance IDs,
-    centers, and declared coverage;
-11. use the annotation bounds as a cheap vectorized prefilter;
-12. evaluate Shapely only for candidate centers:
-
-        candidates = (
-            (x >= min_x) & (x <= max_x)
-            & (y >= min_y) & (y <= max_y)
-        )
-        inside = shapely.intersects_xy(
-            region_in_labels,
-            x[candidates],
-            y[candidates],
-        )
-
-13. map true values back to instance IDs;
-14. return unique sorted positive integer IDs and diagnostics.
-
-No labels raster data is read during step 11-14. With a valid cache, the entire
-Run path after validation is an eager vectorized point query over the in-memory
-table coordinates.
+At a feature-contract level, the query validates and snapshots the selected
+Shapes polygons, transforms their union into the selected labels element's
+intrinsic x, y frame, applies a bounding-box prefilter followed by the
+authoritative vectorized `shapely.intersects_xy()` predicate, and maps matches
+back to the binding's instance IDs. Slice 4 specifies the exact execution
+boundary and algorithm.
 
 The bounding box is an optimization only. Shapely intersection is the
 authoritative membership test, including holes and boundaries.
@@ -1024,8 +1207,9 @@ queries against the same labels/table region should be snappy.
 
 ### Stale-result protection
 
-Every Run has a monotonically increasing generation token and captured source
-identities/structural signatures. Discard all worker output if, while it runs:
+Every Apply Annotation operation has a monotonically increasing operation ID and captured
+source identities/structural signatures. Discard all worker output if, while it
+runs:
 
 - the SpatialData object changes;
 - coordinate system, Shapes, labels, table, or target-column intent changes;
@@ -1033,13 +1217,13 @@ identities/structural signatures. Discard all worker output if, while it runs:
 - a relevant Shapes/labels transformation changes;
 - the labels element is replaced or its structural signature changes;
 - the table is reloaded/replaced or linkage/row coverage changes;
-- spatial_canonical is installed, rebuilt, or modified by another operation;
+- spatial_canonical is created, rebuilt, or modified by another operation;
 - a newer query starts;
 - the widget closes.
 
-For simplicity and predictable side effects, a stale Run installs neither its
-cache payload nor its query result, even when center calculation itself would
-still be reusable. A later Run may recalculate.
+For simplicity and predictable side effects, a stale operation applies neither
+its cache payload nor its query result, even when center calculation itself
+would still be reusable. A later Apply Annotation may recalculate.
 
 Worker completion callbacks perform UI and table work on the main thread only.
 
@@ -1050,94 +1234,233 @@ Use a pure, testable preparation/apply boundary. Preparation contains:
 - sorted queried instance IDs;
 - exact matching table row positions/identities;
 - current values at those positions;
-- missing/equal/overwrite counts for a candidate annotation value;
-- whether the target column will be created;
-- binding, cache, table-mutation, and persistence revisions sufficient for
-  apply-time validation.
+- explicit new/existing column intent;
+- the canonical-center provenance needed for apply-time validation.
+
+A separate pure summarization step classifies the current matched values for a
+candidate typed category assignment or missing-value removal. Shared
+table-component mutation tokens remain widget/app-state orchestration data and
+are not embedded in the UI-independent domain preparation.
 
 Apply validates preparation against current state before mutating. If validation
-or assignment fails, restore the entire prior target-column state and leave
-dirty state/events unchanged. Partial row updates are forbidden.
+or assignment fails, restore the entire prior target-column and companion
+palette state and leave dirty state/events unchanged. Partial row updates and
+half-applied obs/uns annotation units are forbidden.
 
 Large counts use locale-aware formatting. The UI must never render an unbounded
 instance-ID list.
 
 ## Shared State and Cross-Widget Events
 
-Because this feature mutates obs, obsm, and uns, an event named only
-TableObsWrittenEvent is too narrow. Introduce or generalize to a semantic event
-such as TableStateChangedEvent with payload including:
+Because table mutations can affect obs, obsm, and nested uns state, introduce a
+general `TableStateChangedEvent`. A logical table-component path has this
+concrete validated shape:
 
-    sdata
-    table_name
-    components       # obs, obsm, uns
-    keys              # changed columns/array/registry keys
-    regions
-    change_kind       # created, updated, removed, rebuilt, reloaded
-    source            # spatial_query, spatial_query_canonical, undo, ...
+    TableComponent = Literal["obs", "obsm", "uns"]
 
-Accepted mutation events mark their exact component paths dirty. At minimum,
-Spatial Query emits obs column keys for annotation changes and the paired paths
-obsm/spatial_canonical and uns/spatial_coordinates/spatial_canonical for cache
-changes. Reload is a state replacement event or an explicitly non-dirty event.
-Producers do not invoke widgets directly.
 
-Shared app state maintains a per-table dirty-component manifest plus monotonic
-mutation and persistence revisions. The user-facing table dirty boolean is true
-when that manifest is non-empty. Every accepted in-memory table mutation records
-its component/key paths and increments the mutation revision. Successful writes
-clear only the captured component generations that were actually persisted;
-reload establishes a new accepted baseline and clears the manifest. These
-session values are not stored in AnnData.
+    @dataclass(frozen=True, order=True)
+    class TableComponentPath:
+        component: TableComponent
+        keys: tuple[str, ...]
 
-Component generations prevent a write that started from clearing a newer edit
-to the same component. A table becomes clean only after every supported dirty
-component has been persisted and no newer accepted mutation remains. This is a
-shared cross-widget contract, not Spatial Query-local bookkeeping.
+        def __post_init__(self) -> None:
+            if self.component not in ("obs", "obsm", "uns"):
+                raise ValueError("Unsupported table component.")
+            if not self.keys or any(
+                not isinstance(key, str) or not key
+                for key in self.keys
+            ):
+                raise ValueError("Table component path keys must be non-empty strings.")
+            if self.component in ("obs", "obsm") and len(self.keys) != 1:
+                raise ValueError("obs and obsm paths must identify exactly one key.")
 
-Expected consumers:
 
-- Spatial Query refreshes cache/column state and invalidates unsafe dialogs or
-  undo;
-- Viewer refreshes linked table column/color-source choices while preserving
-  valid selections;
-- Object Classification refreshes only state affected by the changed
-  components/keys;
-- future table widgets consume the same general event.
+Examples are:
 
-Handlers guard against feedback loops using event source and object identity.
+    TableComponentPath("obs", ("spatial_annotation",))
+    TableComponentPath("uns", ("spatial_annotation_colors",))
+    TableComponentPath("obsm", ("spatial_canonical",))
+    TableComponentPath(
+        "uns",
+        ("spatial_coordinates", "spatial_canonical"),
+    )
+
+The event has this conceptual shape:
+
+    TableStateChangedEvent:
+        sdata
+        table_name
+        paths              # unique logical component paths
+        regions            # explicit semantic scope of row-scoped changes
+        change_kind        # created, updated, removed, rebuilt, reloaded
+        source             # spatial_query, spatial_query_canonical, ...
+
+`regions` is required on every event. It contains the table regions
+semantically targeted by any row-scoped change. `regions=()` means the event is
+genuinely metadata-only and never means that the affected regions are unknown.
+A producer that cannot prove a narrower row scope reports every region declared
+by the table. For a mixed row-data/companion-metadata event, `regions` describes
+the row-scoped part.
+
+The event describes what changed; emitting it does not by itself decide whether
+the paths are dirty. HarpyAppState exposes three explicit acceptance paths:
+
+    record_table_mutation(event)
+        # emit the event and assign one fresh mutation token to every path
+
+    record_persisted_table_change(event, snapshot)
+        # emit the event and establish only unchanged captured path tokens
+        # as already persisted
+
+    record_table_reload(event)
+        # emit the event and clear only dirty paths covered by the accepted
+        # component reload
+
+Object Classification uses `record_table_mutation()` because it changes the
+in-memory table and relies on PersistenceController for the later write. A user
+annotation reports only its selected labels region. Classifier inference
+reports the resolved prediction regions, which may contain every table region
+even when one segmentation is selected in the widget. A classifier
+metadata-only update reports `regions=()`. Harpy Feature Extraction writes its
+feature matrix and metadata directly when
+SpatialData is backed and therefore uses `record_persisted_table_change()`
+after Harpy returns successfully. It captures the table's dirty snapshot on the
+main thread immediately before launching Harpy and returns that immutable
+snapshot to the main-thread acceptance boundary with the worker result. A path
+is cleared only when its captured mutation token is still current; a same-path
+mutation accepted while Harpy was working remains dirty. A path absent from the
+pre-operation snapshot is not allowed to clear a newer dirty mutation.
+Unbacked Feature Extraction uses `record_table_mutation()`. Reload uses
+`record_table_reload()`. Producers do not invoke widgets directly.
+
+`TableStateChangedEvent` is the single shared contract for AnnData table
+changes. HarpyAppState exposes one `table_state_changed` signal, and each of the
+three explicit acceptance methods emits exactly one event through that signal
+while applying its corresponding dirty-state transition. Producers do not emit
+a second feature-specific table event.
+
+`FeatureMatrixWrittenEvent` and `ClassificationTableWrittenEvent` are removed
+after their existing consumers have migrated to `TableStateChangedEvent`. They
+do not contain information that is absent from the general event: a feature key
+is the key of its changed obsm path, classification columns are the keys of its
+changed obs paths, and change kind, source, SpatialData, and table identity are
+already explicit. Object Classification can therefore detect an overwritten
+selected feature matrix from the event's source, change kind, and obsm path;
+Viewer refreshes can filter the same event by its paths. This avoids duplicate
+signals and duplicate representations of one accepted table change.
+
+Reload events also carry explicit, non-empty component paths; a `None` or empty
+path set is not used as a full-table sentinel. For an obs reload, the event
+reports the complete old/new obs-column coverage because obs is replaced as one
+encoded dataframe. An uns parent path covers its complete subtree. Named obsm
+entries and nested uns entries otherwise remain exact paths. HarpyAppState
+clears only dirty paths covered by those accepted reload paths, so unrelated
+dirty components remain dirty.
+
+`ShapesElementWrittenEvent` remains separate because it describes a
+`SpatialData.shapes` change rather than an AnnData table component. Only the
+explicit HarpyAppState table acceptance method updates or clears the shared
+dirty-component manifest.
+
+Shared app state maintains, for each in-memory table, a mapping from dirty
+component path to its latest opaque mutation token. The user-facing table dirty
+boolean is derived from whether that mapping is non-empty. Every accepted
+mutation creates one fresh identity token and assigns it to all paths in that
+event. A write captures the current `path -> token` mapping and clears a path
+only when that exact token was successfully persisted and is still current.
+A newer mutation of the same path therefore remains dirty. Ordering is neither
+encoded nor needed, and no mutation or persistence counters are maintained.
+These session-only tokens are not stored in AnnData.
+
+The persistence handoff has one explicit snapshot/write/acknowledge boundary:
+
+    snapshot = app_state.snapshot_table_dirty_state(sdata, table_name)
+    result = write_table_components(
+        sdata,
+        table_name=table_name,
+        paths=snapshot.paths,
+    )
+    app_state.acknowledge_table_write(
+        snapshot,
+        persisted_paths=result.persisted_paths,
+    )
+
+`TableDirtySnapshot` captures the table identity and an immutable
+`TableComponentPath -> mutation token` mapping. `TableComponentWriteResult`
+reports the table store and exact logical paths that were successfully
+persisted. The Qt-independent writer receives paths, not HarpyAppState or
+mutation-token state; HarpyAppState alone decides whether the captured tokens
+are still current and may be cleared. Unscoped `mark_table_dirty()` and
+`clear_table_dirty()` operations are therefore not primary mutation or
+persistence APIs.
+
+The deferred-write flow is:
+
+    widget/controller accepts a table mutation
+        ↓
+    record_table_mutation(TableStateChangedEvent)
+        ↓
+    HarpyAppState records path mutation tokens
+        ↓
+    PersistenceController captures a dirty snapshot
+        ↓
+    core persistence writes supported AnnData elements
+        ↓
+    HarpyAppState clears only unchanged persisted tokens
+
+An operation that already persisted its result uses the shorter flow:
+
+    main thread captures the current dirty snapshot
+        ↓
+    producer completes its element writes and metadata consolidation
+        ↓
+    main thread accepts the result
+        ↓
+    record_persisted_table_change(TableStateChangedEvent, snapshot)
+        ↓
+    HarpyAppState emits the event and clears only event paths whose captured
+    mutation tokens are still current
+
+The general event, component manifest, and persistence foundation are
+introduced before canonical-cache integration. Full Viewer, Object
+Classification, and parent Annotation widget refresh behavior, including its
+Spatial Query child, feedback-loop guards, and shared persistence UI are
+completed in the later cross-widget integration slice.
 
 ## Clean/Dirty and Persistence Semantics
 
 ### Shared dirty state
 
-Extend HarpyAppState's per-table dirty tracking and PersistenceController with
-the shared component manifest described above. Do not introduce a widget-local
-dirty truth.
+Generalize HarpyAppState's per-table dirty tracking and the existing
+`PersistenceController` with the shared component manifest described above. Do
+not create a Spatial Query-specific persistence controller or a widget-local
+dirty truth. Multiple widgets may own selection-aware controller instances, but
+they coordinate through the same HarpyAppState manifest and generic core
+persistence operations.
 
 | Action | Table mutation | Dirty-state result |
 | --- | --- | --- |
 | Bind/select inputs | No | Unchanged |
 | Query using valid centers | No | Unchanged |
-| Cancel center calculation | No accepted mutation | Unchanged |
+| Invalidate/cancel center calculation | No accepted mutation | Unchanged |
 | Center calculation fails | No accepted mutation | Unchanged |
-| Install/extend/refresh/rebuild centers | obsm and uns | Dirty |
-| Successful Recalculate centroids | selected-region obsm and uns | Dirty |
-| Failed/cancelled Recalculate centroids | No accepted mutation | Unchanged |
-| Query returns no matching centers after cache install | No further mutation | Remains dirty |
-| Cancel Apply after cache install | No further mutation | Remains dirty |
+| Create/extend/refresh/rebuild centers | obsm and uns | Dirty |
+| Query returns no matching centers after cache update | No further mutation | Remains dirty |
+| Cancel Apply after cache update | No further mutation | Remains dirty |
 | Apply annotation is a no-op | No | Unchanged from current state |
-| Apply creates/changes annotation column | obs | Dirty |
-| Undo annotation | obs | Clean only if complete table equals persisted baseline |
+| Apply sets/removes annotations | obs, plus uns when the companion palette changes | Dirty |
 | Successful write, no remaining/newer dirty components | Captured components persisted | Clean |
 | Successful write with remaining/newer dirty components | Captured components persisted | Remains dirty |
 | Failed write | No accepted persistence completion | Remains dirty |
-| Successful reload | Memory replaced from disk | Clean |
+| Successful component reload, no other dirty paths | Selected components replaced from disk | Clean |
+| Successful component reload with unrelated dirty paths | Selected components replaced from disk | Remains dirty |
+| Successful full-table reload | All supported table components replaced from disk | Clean |
 | Failed/cancelled reload | No accepted replacement | Unchanged |
 
 Dirty status belongs to the entire table. Changes from Object Classification,
 canonical-center generation, Spatial Query annotation, and other widgets
-coexist and are written together. Installing or updating
+coexist and are written together. Creating or updating
 obsm["spatial_canonical"] and its required metadata is an accepted AnnData table
 mutation and therefore always records both component paths as dirty. Merely
 computing a worker result, reusing an existing cache, or rejecting a result does
@@ -1154,6 +1477,47 @@ layers, var, varm, obsp, or uns/obsm entries.
 Preflight must resolve every dirty path to a supported element writer. An
 unknown or unsupported dirty path blocks the operation with an actionable error;
 it is never silently skipped, and the table remains dirty.
+
+The current `PersistenceController` is generalized rather than duplicated. Its
+selection, reload, and user-facing coordination remain in the application
+layer; path resolution and AnnData element writing live in Qt-independent core
+persistence functions. The existing `write_table_prediction_state()` may
+remain temporarily as a compatibility wrapper that delegates to the generic
+writer with explicit Object Classification paths.
+
+Logical paths map to physical AnnData write units as follows:
+
+- any dirty obs-column path writes the complete encoded `obs` dataframe,
+  because its index, column order, missing values, and categorical encodings
+  form one AnnData element;
+- an obsm path writes only the named obsm entry;
+- an uns path writes only the named top-level or nested metadata entry while
+  preserving unrelated siblings;
+- a removed live path deletes only its corresponding encoded element;
+- multiple logical paths that belong to one consistency contract may be
+  grouped into one persistence unit.
+
+After a successful set of element creates, updates, or removals, the generic
+writer consolidates zarr metadata before returning a successful result. This is
+required because direct element writes may be readable through non-consolidated
+access while a normal reopened SpatialData still sees the old consolidated
+hierarchy. If element writing or metadata consolidation fails, no dirty
+mutation token is acknowledged; all captured paths remain dirty and retryable.
+
+Object Classification is the first deferred-write consumer of this generalized
+path. It records every obs column and uns configuration/color key it actually
+changes with `record_table_mutation()` and later uses PersistenceController.
+
+Feature Extraction has different persistence semantics. For backed SpatialData,
+Harpy's feature-matrix operation already writes both
+`TableComponentPath("obsm", (feature_key,))` and
+`TableComponentPath("uns", ("feature_matrices", feature_key))` and consolidates
+metadata before returning. Feature Extraction must not write those elements a
+second time through PersistenceController; it calls
+`record_persisted_table_change()` after Harpy succeeds. For unbacked
+SpatialData, the same logical paths are in-memory changes and are passed to
+`record_table_mutation()`. Both cases publish their one
+`TableStateChangedEvent` through `table_state_changed`.
 
 spatial_canonical is an obsm entry, not an obs column. Its persisted pair is:
 
@@ -1174,25 +1538,30 @@ The implementation creates a correctly encoded spatial_coordinates mapping
 when absent and preserves every unrelated sibling entry when it already exists.
 It does not rewrite all of obsm or uns.
 
-The spatial annotation target, for example
-adata.obs["spatial_annotation"], is separate. If any obs column is dirty, the
-existing AnnData element-level persistence path writes the obs dataframe element
-with its index, column-order, missing-value, and categorical encodings. Writing
-obs is still a selective table-component write; it does not serialize the full
-AnnData object. Existing supported classifier metadata and future components are
-included only when their paths are present in the same shared dirty snapshot.
+The spatial annotation target and companion palette, for example
+`adata.obs["spatial_annotation"]` and
+`adata.uns["spatial_annotation_colors"]`, form one annotation consistency unit.
+If the obs column is dirty, the existing AnnData element-level persistence path
+writes the obs dataframe element with its index, column-order, missing-value,
+and categorical encodings. The palette uns element is additionally written only
+when its own path is dirty because it was created, repaired, or extended.
+Writing these remains a selective table-component operation; it does not
+serialize the full AnnData object. Existing supported classifier metadata and
+future components are included only when their paths are present in the same
+shared dirty snapshot.
 
 There is one shared Write Table State action rather than competing widget-local
 writers. A centroid-only dirty table writes only the spatial_canonical pair; an
-annotation-only dirty table writes obs; a table containing both changes writes
-both in the same operation.
+annotation-only dirty table writes obs and its palette when that palette also
+changed; a table containing both changes writes their union in the same
+operation.
 
 The matrix and its spatial-coordinate metadata are one persistence unit. The
 service stages/backs up as needed, validates both encoded elements, and must not
 leave a newly written matrix paired with old or missing metadata after a handled
 failure. The table remains dirty unless every component in the captured write
-set succeeds. Captured component generations are cleared only if they have not
-changed during the write; later mutations remain dirty.
+set succeeds. Captured component mutation tokens are cleared only if they have
+not changed during the write; later mutations remain dirty.
 
 The action and success message identify the table, resolved store path, and
 components written. A successful write makes newly generated centers reusable
@@ -1212,52 +1581,117 @@ Reuse the Object Classification dirty-reload decision:
 - Reload table state and discard local edits;
 - Cancel.
 
-Before replacement, invalidate active center calculations, queries, Apply
-dialogs, and undo. Reload performs the existing validated in-place replacement
-of obs, obsm, and uns.
+The Qt-independent reload operation accepts explicit
+`TableComponentPath` values and returns a `TableComponentReloadResult` with the
+resolved table path and exact logical path coverage restored from disk. Reload
+uses these physical AnnData units:
+
+- requesting any obs-column path reads, validates, and replaces the complete
+  encoded obs dataframe; the result covers the union of old and reloaded obs
+  columns, including locally created columns removed by the reload;
+- an obsm path reads and replaces only its named entry, or removes that
+  in-memory entry when it is absent on disk;
+- an uns path reads and replaces only its named top-level or nested entry, or
+  removes that in-memory entry when it is absent on disk;
+- an uns parent path explicitly covers and replaces its complete subtree.
+
+Selective uns reload is required. Replacing all of uns merely to restore one
+obsm companion would risk discarding unrelated classifier, feature, or
+canonical metadata changes. AnnData's element API supports reading named obsm
+entries and top-level or nested uns entries directly, so a complete uns
+replacement is not the default.
+
+Logical paths that form one consistency contract are expanded before reload and
+accepted together. In particular:
+
+    feature matrix unit
+        obsm[feature_key]
+        uns["feature_matrices"][feature_key]
+
+    canonical centers unit
+        obsm["spatial_canonical"]
+        uns["spatial_coordinates"]["spatial_canonical"]
+
+The persistence foundation supports grouped paths without embedding feature
+semantics in the generic reader. Feature Extraction supplies its pair; the
+canonical integration slice supplies the canonical pair. A caller must pass the
+complete domain-defined consistency unit rather than only its obsm half.
+
+`Reload Table State` remains a convenience operation. It expands to complete
+obs coverage, every in-memory, on-disk, or currently dirty obsm key, and every
+in-memory, on-disk, or currently dirty top-level uns path, then uses the same
+component reload operation. Including currently dirty paths ensures that a
+locally or externally removed entry is still explicitly covered. Selective
+workflows request only the consistency units they actually need. No special
+`None` path or table-wide wildcard is introduced.
+
+Before applying a reload, validate table identity, row count and order, region
+key, instance key, obsm leading dimensions, and any affected feature-specific
+metadata. In-memory replacement and `record_table_reload()` occur on the main
+thread. The emitted `TableStateChangedEvent` contains the reload result's
+explicit paths. A reload containing an obs or obsm path reports every current
+table region because the replaced AnnData element is row-aligned and the
+generic persistence layer cannot substantiate a narrower semantic scope. A
+known uns-only metadata reload reports `regions=()`. HarpyAppState clears only
+dirty paths covered by those paths. Unrelated dirty paths remain present.
+Before a full-table reload, invalidate active center calculations, queries, and
+pending annotation operations.
+Canonical metadata is parsed and validated before the later canonical
+integration accepts a reloaded canonical consistency unit.
 
 After success:
 
 - re-inspect spatial_canonical and its metadata;
 - refresh table metadata and compatible target columns;
 - preserve a target selection only if still valid;
-- notify consumers through the semantic table replacement event;
-- clear dirty state;
+- notify consumers through `table_state_changed` with the paths actually
+  restored;
+- clear only dirty paths covered by the accepted reload; a full-table reload is
+  clean because it covers every supported component;
 - show the source path and outcome.
 
-Late worker results created before reload must never install a cache, open a
-dialog, or mutate the reloaded table.
+Late worker results created before reload must never update a cache or mutate
+the reloaded table.
 
 ### Leaving a dirty dataset
 
 Changing table selection may leave each table's shared dirty marker intact.
 Before replacing or closing a SpatialData object with dirty tables, the shared
-application lifecycle warns and offers write/discard/cancel behavior. A
-Spatial Query-only warning is insufficient because other widgets can also
-replace the dataset.
+application lifecycle warns and offers write/discard/cancel behavior. A warning
+owned only by the Spatial Query child is insufficient because other widgets can
+also replace the dataset.
 
 ## Validation and Error States
 
-Run remains disabled, with concise status and a detailed tooltip, when:
+The Spatial Query shell keeps Run disabled, with concise status and a detailed
+tooltip, when:
 
 - no SpatialData is loaded;
-- SpatialData/table is not backed by zarr;
 - no coordinate system is selected;
-- no eligible Shapes element is selected;
+- no saved eligible Shapes element is selected;
 - the selected Shapes has unsaved Shapes Annotation edits;
-- Shapes geometry is invalid, empty, unsupported, or cannot be unioned;
 - no eligible 2D labels element is selected;
-- labels has no scale0 or scale0 is not a known-chunk 2D Dask array;
-- Shapes or labels is unavailable in the selected coordinate system;
-- a required transform is missing, non-finite, unsupported, or non-invertible;
+- labels has no readable 2D scale0 array;
 - no linked table is selected;
 - table linkage metadata is missing/inconsistent;
 - selected-region instance IDs are missing, duplicated, non-positive, or not
   integer-like;
 - no valid target mode/column is configured;
 - a new column name is empty, invalid, reserved, or colliding;
-- an existing target column has an incompatible dtype;
-- a calculation/query is already running for the same request.
+- an existing target column has an incompatible dtype.
+
+After Run is requested, the execution flow performs one synchronous preflight
+before starting any worker. It rejects the intent when the Shapes geometry is
+invalid, empty, unsupported, or cannot be unioned; Shapes or labels is no
+longer available in the selected coordinate system; or the required transform
+is missing, non-finite, unsupported, or non-invertible. Once Slice 7a connects
+execution, an active calculation or query also disables Run until that
+operation finishes or is cancelled.
+
+An in-memory SpatialData object is a valid calculation, query, and annotation
+target. Backing by zarr is required only for persistence actions: Write Table
+State and Reload Table from zarr remain unavailable when the selected object
+is not backed.
 
 Runtime outcomes are distinct:
 
@@ -1266,7 +1700,7 @@ Runtime outcomes are distinct:
 - stale cache detected: informational refresh state;
 - invalid/corrupt managed cache: mismatch report followed by recalculation and
   replacement only after a valid result is available;
-- overwrite: mandatory confirmation warning;
+- overwrite: explicit pre-execution semantics and exact post-operation count;
 - cancellation or stale result: neutral/cancelled state;
 - Dask, zarr, transform, geometry, aggregation, persistence, or validation
   failure: error with retry/recovery guidance.
@@ -1277,11 +1711,12 @@ user-facing message.
 ## Accessibility and Interaction Quality
 
 - Controls have visible labels, accessible names, and logical keyboard order.
-- Enter applies only when validation passes; Escape cancels.
+- Enter activates Apply Annotation only when the complete selection, action,
+  and typed value are valid.
 - Warning meaning uses text/icon as well as color.
 - Status cards are word-wrapped and copyable where practical.
 - Long names are elided visually and shown fully in tooltips.
-- Running phase, progress, cancellation, success, and failure are textual.
+- Busy, cancellation, success, and failure states are textual.
 - Destructive rebuild, overwrite, and reload actions use explicit verbs.
 - Modal dialogs have the widget as parent and cannot appear behind napari.
 - The first-run cost and reuse state are understandable without reading logs.
@@ -1295,24 +1730,36 @@ one large module per concern:
     core/
         spatial_query/
             __init__.py
-            models.py
+            canonical_models.py
             canonical.py
-            engine.py
+            centroids.py
+            query_models.py
+            query.py
             annotation.py
 
             __init__.py
                 intentional, stable public exports for the feature domain
 
-            models.py
-                immutable request/result/preparation types
+            canonical_models.py
                 cache-state and metadata value types
-                shared spatial-query enums and literals
+                canonical-center request/result types
+                canonical cache enums and literals
+
+            query_models.py
+                immutable containment-query request/result types
 
             canonical.py
                 spatial_canonical metadata schema/parser/validator
                 cache-state inspection and coverage/source fingerprints
+                atomic cache updates and rollback support
+
+            centroids.py
                 RasterAggregator adapter
-                atomic cache installation and rollback payloads
+                canonical-center calculation and cache ensure
+
+            query.py
+                validated Shapes and transformation snapshot construction
+                vectorized canonical-center containment
 
             engine.py
                 Shapes validation and union
@@ -1322,7 +1769,7 @@ one large module per concern:
             annotation.py
                 target-column validation
                 row resolution and conflict summaries
-                atomic annotation apply and undo payloads
+                atomic annotation apply and rollback
 
 The package's consumers import its intentional API from
 napari_harpy.core.spatial_query rather than importing implementation modules
@@ -1330,43 +1777,68 @@ directly. The __init__.py facade must remain small and explicit; it must not use
 wildcard exports. This lets internal modules be reorganized later without
 changing controllers or other consumers.
 
-The corresponding widget package is:
+The corresponding widget composition is:
 
     widgets/
+        annotation/
+            models.py
+                shared UI-only ShapesAnnotationTarget and AnnotationContext
+
+            widget.py
+                registered parent AnnotationWidget
+                shared coordinate-system and Shapes-target selectors
+                committed AnnotationContext
+                child composition and cross-child cancellation/refresh
+
+        shapes_annotation/
+            widget.py
+                embedded ShapesAnnotation child
+                polygon create/edit/save/discard session
+                dirty-session preflight, cleanup, and context adoption
+
         spatial_query/
             __init__.py
-            controller.py
             widget.py
-            dialogs.py
+            controller.py
+            viewer_styling.py
             status_card.py
+
+            widget.py
+                embedded SpatialQuery child
+                labels/table/target/action/value selectors, cache status,
+                busy state, annotation Apply/publication, and persistence
+                actions
 
             controller.py
                 binding/cache validation
-                worker lifecycle and generations
+                worker lifecycle and operation IDs
                 stale-result handling
-                cache install, apply, and undo orchestration
+                cache update and containment-query orchestration
 
-            widget.py
-                selectors, cache status, progress, persistence actions
-
-            dialogs.py
-                cache mismatch reporting
-                Apply Spatial Annotation dialog
+            viewer_styling.py
+                thin primary-layer binding and generic annotation-column
+                styling orchestration; no classifier-specific class semantics
 
             status_card.py
                 pure status-card specification builders
 
+The exact extraction of the current `ShapesAnnotation` root widget into an
+embedded child is an implementation refactor, not a domain merge. The existing
+Annotation plugin command is retained and points to the new parent; no second
+Spatial Query command or dock contribution is added.
+
 The core spatial_query package must remain UI independent. It must not import
-Qt, napari widgets, HarpyAppState, or widget controllers. The widget controller
-orchestrates the pure core operations with shared application services.
+Qt, napari widgets, HarpyAppState, or widget controllers. The Spatial Query
+child and its controller orchestrate the pure core operations with services
+supplied by the parent Annotation widget and shared application state.
 
 General concerns stay outside the feature package:
 
 - shared table persistence and reload services;
-- shared application state and mutation/persistence revisions;
+- shared application state and per-component mutation tokens;
 - general cross-widget table events;
 - generic SpatialData/table-binding helpers;
-- Shapes Annotation's shared geometry-validity contract.
+- the Shapes Annotation child's shared geometry-validity contract.
 
 These dependencies are consumed by Spatial Query; they are not reimplemented
 inside it.
@@ -1379,13 +1851,13 @@ work adopts the package structure without introducing unrelated import churn.
 Reuse rather than copy:
 
 - annotating-table discovery and table/linkage metadata helpers;
-- Shapes Annotation geometry validity helpers and write events;
+- Shapes Annotation child geometry-validity helpers and write events;
 - Harpy RasterAggregator;
-- HarpyAppState dirty tracking and semantic events;
-- PersistenceController write/reload behavior and the existing
-  ad.io.write_elem-based selective persistence path;
+- HarpyAppState dirty tracking and the shared `table_state_changed` event;
+- the generalized PersistenceController and Qt-independent
+  ad.io.write_elem-based component persistence path;
 - active-coordinate-system selection patterns;
-- styles, status cards, worker cleanup, and generation-token patterns.
+- styles, status cards, worker cleanup, and operation-ID patterns.
 
 The widget must not depend on Object Classification internals. Shared
 persistence/reload UI belongs in a reusable component or service.
@@ -1409,34 +1881,35 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - instance-set digest and finite-coordinate validation;
 - a valid Run calculates one selected-region digest and never hashes unrelated
   registered regions;
-- installation rechecks the selected-region digest and hashes other regions
+- applying a cache update rechecks the selected-region digest and hashes other regions
   only when deciding whether to preserve them;
 - multi-region incremental fill preserves other valid regions;
-- pair-wide mismatch rebuilds the managed pair only after recalculation
+- an all-regions mismatch rebuilds the managed matrix and metadata only after recalculation
   succeeds;
 - forced recalculation bypasses valid reuse, replaces only the selected region,
   and preserves all other valid regions;
 - failed, cancelled, or stale forced recalculation preserves the prior pair
   exactly;
-- cache installation rollback restores matrix/metadata exactly;
+- cache-update rollback restores matrix/metadata exactly;
 - cache create/extend/refresh/rebuild marks shared dirty once;
 - cache parser never mutates during inspection.
 
 ### RasterAggregator adapter tests
 
 - 2D Dask scale0 is wrapped as singleton-z without eager computation;
-- integer dtype and known chunks required;
+- integer labels dtype is required, while SpatialData's Dask raster contract is
+  trusted rather than revalidated locally;
 - table instance IDs are passed as index and background is excluded;
 - no global unique-label discovery when index is supplied;
 - one-pixel labels, irregular labels, disjoint components, concave labels, and
   labels spanning chunks have correct centers;
 - y/x to x/y conversion and integer pixel-center convention;
-- output is joined by instance ID, not aggregator row order;
-- absent label ID, duplicate result, NaN, and inf rejected;
+- output instance IDs must exactly match the requested IDs and order;
+- absent label ID, mismatched result IDs, NaN, and inf are rejected;
 - no NumPy/full-array labels fallback;
 - only scale0 is read;
-- cancellation/stale completion cannot install;
-- memory and concurrency remain within the declared budget.
+- cancellation/stale completion cannot update the cache;
+- worker wrapping does not change Harpy's Dask scheduling policy.
 
 ### Geometry/query tests
 
@@ -1462,27 +1935,40 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - duplicate IDs across regions allowed and within selected region rejected;
 - missing/boolean/fractional/string/non-finite IDs rejected;
 - new categorical annotation column with missing non-target rows;
-- compatible categorical, StringDtype, and object updates;
+- compatible string-categorical updates;
 - category addition preserves order/ordered state;
-- numeric/mixed/reserved target columns rejected;
-- missing/equal/overwrite counts update with proposed value;
-- no-op leaves column identity/events/current dirty state unchanged;
-- apply rollback prevents partial mutation;
-- undo restores values/dtype/categories/column absence;
-- undo never removes canonical cache;
-- undo dirty derivation covers cache-created-on-run, pre-dirty table,
-  intervening write, and unrelated later mutation.
+- valid stored string and positive-integer category palettes are preserved and
+  extended by one default color without changing existing entries;
+- positive-integer category order is append-stable and is not sorted or
+  reduced to currently used row values;
+- missing or invalid palettes are displayed through stable position-based
+  defaults without mutation;
+- the palette is created or repaired only by an effective annotation Apply;
+- adding a category never changes an existing category's resolved color;
+- StringDtype, object/string, plain numeric, boolean, datetime, mixed-object,
+  unsupported categorical, and reserved target columns rejected;
+- set summaries update missing/equal/overwrite counts with the proposed value;
+- removal summaries report already-empty and annotations-to-remove counts;
+- removal writes missing values for categorical columns while preserving the
+  target's string or positive-integer value kind;
+- removal never deletes the column or permits a New column target; string and
+  positive-integer targets both preserve their declared categories and aligned
+  palettes;
+- typed strings such as `"None"` and `"nan"` remain literal annotation values;
+- no-op leaves column and palette identity/events/current dirty state unchanged;
+- apply rollback restores both column and palette and prevents partial
+  obs/uns mutation.
 
 ### Controller and async tests
 
 - valid cache follows query-only phase;
-- absent/partial/stale cache follows calculate-install-query phases;
+- absent/partial/stale cache follows calculate-update-query phases;
 - worker never mutates AnnData or Qt;
-- cache payload installs only after main-thread revalidation;
+- cache-update payload is applied only after main-thread revalidation;
 - result accepted only for unchanged request;
 - every selection/source-signature invalidation drops late results;
 - older run cannot supersede newer run;
-- cancellation prevents installation/dialog/mutation;
+- cancellation prevents cache update or annotation mutation;
 - reload freezes and invalidates pending work;
 - worker errors restore usable controls and give feedback;
 - cleanup disconnects workers/signals when widget closes.
@@ -1491,29 +1977,34 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 
 - dependent combo filtering and stable selection preservation;
 - default spatial_annotation existing/new behavior;
+- Existing-column choices contain only string-categorical columns and exclude
+  reserved, StringDtype, object/string, numeric, and non-string categorical
+  columns;
+- an incompatible existing spatial_annotation column is never converted or
+  reused as a New target with the colliding name;
+- annotation coloring preserves a valid stored palette and otherwise derives
+  the stable shared default palette without mutating table state merely on
+  selection;
 - Run enablement/tooltips for every blocker;
 - dirty Shapes session blocker;
 - all centroid cache status states and phase text;
-- Recalculate centroids enablement is based on labels/table binding rather than
-  Shapes or annotation-target validity;
-- Recalculate centroids bypasses cache reuse, exposes progress/cancellation,
-  refreshes status on success, and never starts a query or annotation flow;
 - invalid-cache mismatch reporting and automatic rebuild state;
-- result dialog contents and centroid predicate wording;
-- live conflict recount and value validation;
-- mandatory overwrite warning and explicit action text;
+- inline Set/Remove controls and target-typed value validation;
+- changing the action or value invalidates active work;
+- standing overwrite/removal semantics and exact post-operation counts;
+- Remove annotation disables the value field and is unavailable for New column;
 - no-result flow does not change annotation column;
-- cancel after cache install leaves cache dirty state visible;
-- apply/undo states and summaries;
+- annotation failure after cache update leaves cache dirty state visible;
+- apply states and summaries;
 - shared dirty indicator across widgets;
 - write enabled only for backed dirty table;
 - dirty reload write/discard/cancel branches;
-- reload re-inspects cache and invalidates undo;
+- reload re-inspects cache and invalidates pending query/apply state;
 - accessibility, keyboard behavior, and long-name tooltips.
 
 ### Backed-zarr integration tests
 
-- first Run calculates centers lazily and installs them in memory;
+- first Run calculates centers lazily and applies the cache update in memory;
 - first Run reads scale0 but not lower-resolution levels;
 - second Run with valid cache reads no label chunks;
 - cache is not on disk until Write Table State;
@@ -1524,8 +2015,15 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
 - an annotation-only write persists obs, including column order, missing values,
   categorical values/categories, and the dataframe index, without rewriting the
   full AnnData table;
-- a mixed dirty manifest writes obs plus the canonical pair and clears dirty
-  state only after all captured component generations succeed;
+- when the companion palette changed, the same write persists exactly the
+  `<column>_colors` uns element and a reopened table retains the category-color
+  association;
+- removed annotations round-trip through zarr as missing values for every
+  supported categorical target, regardless of the concrete missing scalar
+  returned by AnnData on reload;
+- a mixed dirty manifest writes obs, any changed companion palette, and the
+  canonical pair, and clears dirty state only after all captured component
+  mutation tokens succeed;
 - an unknown dirty component blocks persistence and is never silently cleared;
 - no path calls AnnData.write_zarr or rewrites X, layers, var, varm, obsp, or
   unrelated obsm/uns entries;
@@ -1537,23 +2035,29 @@ both live in obsm. It has a distinct spatial-coordinate schema and lifecycle.
   in-memory cache usable;
 - a mutation accepted during persistence remains dirty after the older write
   completes;
+- reloading one obsm entry preserves unrelated obsm entries and reloads any
+  registered companion uns path in the same consistency unit;
+- reloading one nested uns path preserves unrelated uns siblings and unrelated
+  dirty paths;
+- requesting any obs path reloads the complete validated obs dataframe;
+- a full Reload Table State expands to complete obs and all in-memory, on-disk,
+  or currently dirty obsm and top-level uns paths through the same component
+  API;
 - reload validation failure preserves current table and dirty state;
 - canonical-center, spatial-annotation, and object-classification changes
   coexist in one write;
 - late center/query completion after reload cannot affect the table.
 
-### Performance tests
+### Background calculation tests
 
-- benchmark first-run aggregation for representative instance counts, raster
-  sizes, chunk shapes, local stores, and remote-like latency;
-- benchmark cached point queries for representative table sizes and polygon
-  complexity;
-- measure Dask task count, storage passes, peak memory, concurrency, and
-  cancellation latency;
-- establish regression thresholds from measured supported hardware;
-- test repeated queries to demonstrate cache amortization;
-- fail the release gate if current RasterAggregator intermediates exceed the
-  declared production memory budget.
+- calculation runs through a worker and returns a cache-update payload without
+  mutating AnnData;
+- only the current operation ID can apply a returned payload;
+- invalidated, cancelled, and late worker signals are ignored;
+- accepted payloads are revalidated and applied on the main thread;
+- the status card reports a textual busy state without progress telemetry;
+- Harpy's Dask scheduler and performance behavior are not reimplemented or
+  regression-gated in napari-harpy.
 
 ## Observability
 
@@ -1561,13 +2065,12 @@ Log structured diagnostic context for:
 
 - cache inspection state and reason;
 - center calculation start/cancel/stale-drop/success/failure;
-- source scale0 dimensions, shape, dtype, chunks, requested instance count,
-  Dask task count, elapsed time, and peak/concurrency diagnostics;
-- cache installation action, covered region/count, schema/algorithm version;
+- source scale0 dimensions, shape, dtype, and requested instance count;
+- cache-update action, covered region/count, schema/algorithm version;
 - query start/cancel/stale-drop/success/failure;
 - coordinate system, transform identities, annotation bounds, eligible and
   bounding-box candidate counts, matched count, and elapsed time;
-- annotation apply/undo counts and changed key;
+- annotation set/removal counts and changed key;
 - write/reload path and outcome.
 
 Do not log full user annotation values, instance-ID arrays, coordinate arrays,
@@ -1580,60 +2083,62 @@ reviewable behavior. A happy path alone does not complete a slice.
 
 ### Slice 1a: Canonical metadata and cache lifecycle
 
+**Implementation status: Implemented.**
+
 Slice 1a defines and safely manages the canonical cache without calculating any
 centroids. Tests use synthetic x/y arrays and must not invoke RasterAggregator
 or read labels chunks.
 
 Deliverables:
 
-- typed cache state, mismatch report, metadata, source/table signature,
-  installation payload, and installation-result contracts;
+- typed cache state, mismatch report, metadata, source signature,
+  selected-region binding, cache-update payload, and cache-update-result
+  contracts;
 - spatial_coordinates/spatial_canonical schema version 1 using values supported
   by AnnData's zarr encoding;
 - strict parser/builder plus a non-mutating inspector;
 - structural labels signature covering source element, scale0 dimensions,
   shape, and dtype; chunking is excluded from persisted metadata and cache
   validity;
-- a table signature for each labels region covering region/instance keys,
+- a selected-region binding identity covering region/instance keys,
   selected-row count, and a deterministic instance_set_digest over the sorted
-  unique normalized instance IDs for that region; the canonical digest input
-  also includes the labels name and a schema/domain tag;
+  unique instance IDs for that region; the canonical digest input also includes
+  the labels name and a schema/domain tag;
 - one exact, versioned digest encoding implemented and pinned by test vectors,
   including vectorized sorted big-endian uint64 instance-ID representation;
 - selected-region binding validation that rejects zero matching rows and
   missing, non-positive, non-integer-like, duplicate, or uint64-overflowing
   instance IDs without creating or deleting table rows;
-- matrix/metadata validation for shape, dtype, axes, finite registered-region
-  coordinates, and multi-region coverage;
+- matrix/metadata validation for fixed z/y/x shape, dtype, axes, finite
+  registered-region coordinates, 2D z=0.0, and multi-region coverage;
 - deterministic absent, partial, valid, stale, and invalid cache-state
   classification with structured mismatch reasons;
-- synthetic installation payload construction and an atomic installer that:
-  - creates an n_obs by 2 NaN-initialized matrix when absent;
+- synthetic cache-update payload construction and an atomic update operation that:
+  - creates an n_obs by 3 NaN-initialized matrix when absent;
   - fills or replaces only the selected region's current row positions;
   - preserves every other still-valid region and its metadata;
-  - rebuilds the managed pair and drops unsubstantiated region entries after a
-    pair-wide matrix/top-level mismatch;
+  - rebuilds the managed matrix and metadata and drops unsubstantiated region
+    entries after an all-regions matrix/top-level mismatch;
   - restores the complete previous obsm/uns pair if validation or assignment
     fails;
-- installation results that report the exact changed component paths
-  obsm/spatial_canonical and
-  uns/spatial_coordinates/spatial_canonical for later shared dirty-state
-  integration;
+- cache-update results that report the performed create, extend, refresh, or
+  rebuild action together with the fresh inspection's mismatch reasons;
 - fixtures and tests for single- and multi-region missing, reusable, partial,
-  stale, region-mismatched, and pair-wide-invalid states.
+  stale, region-mismatched, and all-regions-invalid states.
 
 #### Slice 1a typed API
 
-The public contracts live in `core/spatial_query/models.py`, and the operations
-that build, parse, inspect, and install them live in
-`core/spatial_query/canonical.py`. Stable consumers import the intentional
-exports from `napari_harpy.core.spatial_query` rather than either implementation
-module directly.
+The public canonical contracts live in
+`core/spatial_query/canonical_models.py`, and the operations that build, parse,
+inspect, and apply them live in `core/spatial_query/canonical.py`. Query-only
+contracts live in `core/spatial_query/query_models.py`. Stable consumers import
+the intentional exports from `napari_harpy.core.spatial_query` rather than the
+implementation modules directly.
 
-Use string enums for cache state, installation action, and mismatch code:
+Use string enums for cache state, cache-update action, and mismatch code:
 
     CanonicalCacheState = absent | partial | valid | stale | invalid
-    CanonicalInstallAction = create | extend | refresh | rebuild
+    CanonicalCacheUpdateAction = create | extend | refresh | rebuild
     CanonicalMismatchCode:
         matrix_without_metadata
         metadata_without_matrix
@@ -1649,12 +2154,13 @@ Use string enums for cache state, installation action, and mismatch code:
         region_coordinates_invalid
 
 Mismatch codes, rather than human-readable messages, drive tests and controller
-behavior. Pair-wide versus region-local scope is represented explicitly on each
-mismatch. Keep the code set at behaviorally meaningful categories; the bounded
-detail identifies the particular malformed field or expected/actual value. For
-example, wrong rank, shape, storage type, or matrix dtype uses `matrix_invalid`,
-while a disagreement among supported top-level `obsm_key`, axes, coordinate
-dtype, or linkage keys uses `top_level_contract_mismatch`.
+behavior. All-regions versus region-local scope is derived from the mismatch
+code rather than stored as a second independently configurable field. Keep the
+code set at behaviorally meaningful categories; the bounded detail identifies
+the particular malformed field or expected/actual value. For example, wrong
+rank, shape, storage type, or matrix dtype uses `matrix_invalid`, while a
+disagreement among supported top-level `obsm_key`, axes, coordinate dtype, or
+linkage keys uses `top_level_contract_mismatch`.
 
 Cache-state classification follows this deterministic evaluation order:
 
@@ -1667,24 +2173,31 @@ Cache-state classification follows this deterministic evaluation order:
    `matrix_without_metadata` or `metadata_without_matrix`.
 3. If both exist but the matrix, schema, top-level contract, or strict metadata
    structure is malformed, contradictory, or unsupported, return `invalid`.
-   Pair-wide invalidity takes precedence over every region-local outcome.
-4. Once the shared pair is valid, if the selected region has no metadata entry,
+   All-regions invalidity takes precedence over every region-local outcome.
+4. Once the shared cache is valid, if the selected region has no metadata entry,
    return `partial` with `region_not_registered`.
 5. If the selected region entry exists and is interpretable but its source
-   signature, table signature, supported algorithm version, or finite complete
+   signature, table coverage, supported algorithm version, or finite complete
    coordinate coverage does not match current state, return `stale` with the
    corresponding region-local mismatch code.
 6. If all selected-region checks pass, return `valid`.
 
+`CanonicalCacheReport.state` is a derived property rather than stored alongside
+the mismatch tuple. All-regions mismatches derive `invalid`,
+`region_not_registered` derives `partial`, other non-empty region-local
+mismatches derive `stale`, no mismatches plus no readable stored metadata
+derives `absent`, and no mismatches plus readable stored metadata derives
+`valid`.
+
 The report state and region-local mismatches describe the selected region only.
-Ordinary inspection does not calculate live source/table signatures or
-instance-set digests for every other registered region. A stale but
+Ordinary inspection does not calculate live source signatures, rebuild region
+bindings, or calculate instance-set digests for every other registered region. A stale but
 structurally interpretable entry for another region therefore does not downgrade
 an otherwise valid selected region and is evaluated only if a later
-installation proposes to preserve it. A malformed region entry discovered by
-the strict metadata parser can still make the shared registry pair-wide
-`invalid`. Cache-report mismatch tuples are ordered deterministically with
-pair-wide reasons first and selected-region reasons second, preserving
+cache update proposes to preserve it. A malformed region entry discovered by
+the strict metadata parser can still make the shared registry `invalid` for
+`all_regions`. Cache-report mismatch tuples are ordered deterministically with
+all-regions reasons first and selected-region reasons second, preserving
 validation order within each group.
 
 The immutable value contracts are conceptually:
@@ -1696,21 +2209,20 @@ The immutable value contracts are conceptually:
         shape
         dtype
 
-    CanonicalTableSignature:
+    CanonicalRegionBinding:
+        table_name
         labels_name
         region_key
         instance_key
-        n_obs
-        instance_set_digest
-
-    CanonicalRegionBindings:
-        signature: CanonicalTableSignature
         row_positions
         instance_ids
+        instance_set_digest
+        n_obs property derived from instance_ids
 
     CanonicalRegionMetadata:
         source_signature: CanonicalSourceSignature
-        table_signature: CanonicalTableSignature
+        n_obs
+        instance_set_digest
         algorithm_version
         generated_by_package or None
         generated_by_version or None
@@ -1724,39 +2236,34 @@ The immutable value contracts are conceptually:
 
     CanonicalCacheMismatch:
         code: CanonicalMismatchCode
-        scope: pair | region
         region or None
         bounded user-facing detail or None
+        scope property derived from code: all_regions | region
 
     CanonicalCacheReport:
-        state: CanonicalCacheState
-        selected_region
-        metadata or None
-        source_signature
-        bindings: CanonicalRegionBindings
+        stored_metadata: CanonicalMetadata or None
+        source_signature: CanonicalSourceSignature
+        binding: CanonicalRegionBinding
         mismatches: tuple[CanonicalCacheMismatch, ...]
+        state property derived from stored_metadata and mismatches
+        table_name property derived from binding
+        labels_name property derived from binding
 
-    CanonicalInstallationPayload:
-        table_name
-        labels_name
-        instance_ids
-        centers_xy
+    CanonicalCacheUpdatePayload:
+        table_name property derived from binding
+        labels_name property derived from binding
+        binding: CanonicalRegionBinding
+        centers with shape (n_instances, 3) in z, y, x order
         source_signature
-        table_signature
 
-    CanonicalInstallationResult:
-        table_name
-        labels_name
-        action: CanonicalInstallAction
-        previous_state: CanonicalCacheState
-        n_installed_rows
+    CanonicalCacheUpdateResult:
+        action: CanonicalCacheUpdateAction
         mismatches: tuple[CanonicalCacheMismatch, ...]
-        changed_paths
 
 The source-signature value type has this concrete shape:
 
 ```python
-SpatialDimension = Literal["z", "y", "x"]
+type SpatialDimension = Literal["z", "y", "x"]
 
 
 @dataclass(frozen=True)
@@ -1768,11 +2275,27 @@ class CanonicalSourceSignature:
     dtype: str
 
     def __post_init__(self) -> None:
+        if not self.labels_name:
+            raise ValueError("Source labels name must not be empty.")
+
+        if self.source_scale != "scale0":
+            raise ValueError(
+                "Canonical coordinates must use labels source scale `scale0`."
+            )
+
+        if not self.dims:
+            raise ValueError("Source dims must not be empty.")
+
         if len(self.dims) != len(self.shape):
             raise ValueError("Source dims and shape must have equal lengths.")
 
         if len(set(self.dims)) != len(self.dims):
             raise ValueError("Source dims must be unique.")
+
+        if any(dim not in ("z", "y", "x") for dim in self.dims):
+            raise ValueError(
+                "Source dims must contain only `z`, `y`, and `x`."
+            )
 
         if any(
             isinstance(size, bool)
@@ -1781,6 +2304,9 @@ class CanonicalSourceSignature:
             for size in self.shape
         ):
             raise ValueError("Source shape must contain positive integers.")
+
+        if not self.dtype:
+            raise ValueError("Source dtype must not be empty.")
 
     @property
     def ndim(self) -> int:
@@ -1794,7 +2320,7 @@ belong to the metadata builder and parser.
 
 `CanonicalCacheReport` is both the non-mutating inspector result and the typed
 mismatch report; do not add a second inspection-result wrapper with the same
-information. `CanonicalRegionBindings` arrays and installation-payload arrays
+information. `CanonicalRegionBinding` arrays and cache-update-payload arrays
 are normalized eager NumPy arrays and are made read-only at the contract
 boundary. The metadata regions mapping is defensively copied and exposed as a
 read-only mapping rather than retaining a caller-owned mutable dictionary.
@@ -1806,8 +2332,10 @@ names, and positive integer shape entries. Schema version 1 additionally
 requires `dims == ("y", "x")`; a future 3D schema can use
 `dims == ("z", "y", "x")` and a three-entry shape without renaming the value
 contract. Do not persist a redundant `ndim`; it is `len(dims)`. These source
-dimensions are distinct from the top-level `axes == ("x", "y")`, which describe
-the column order of the canonical coordinate matrix.
+dimensions are distinct from the fixed top-level
+`axes == ("z", "y", "x")`, which describe the column order of the canonical
+coordinate matrix. A 2D source therefore has dims ("y", "x") while its stored
+centers use z, y, x with z=0.0.
 
 ##### Instance-set digest encoding
 
@@ -1898,16 +2426,16 @@ Here `||` describes byte-sequence concatenation for the encoding contract. The
 stored value is `"sha256:" + hasher.hexdigest()`, using the lowercase
 64-character hexadecimal digest returned by `hashlib`.
 
-Pinned digest test vectors cover at least table row reordering, obs-name
-changes, a changed labels name, adding/removing/replacing an instance ID,
-integer normalization such as `1` versus `1.0`, and uint64 byte-order cases such
-as 255 versus 256. They also demonstrate that a same-set reassignment produces
-the same digest and is handled only by the required semantic invalidation
-events. File bytes, AnnData serialization, zarr chunking, table row order, and
-obs_names never enter the digest. A representative 400,000-ID benchmark must
-guard against regression to per-ID Python hashing; observed performance should
-remain in the low tens of milliseconds on a typical development machine rather
-than becoming a hard, platform-sensitive CI timing assertion.
+Focused digest tests pin the exact encoding, order independence, labels-name
+sensitivity, and instance-membership sensitivity. Binding tests separately
+demonstrate that obs-name changes, table row reordering, and same-set
+reassignment preserve the same identity. Non-integer values, including
+integer-like floats, are rejected rather than normalized. File bytes, AnnData
+serialization, zarr chunking, table row order, and obs_names never enter the
+digest. A representative 400,000-ID benchmark must guard against regression to
+per-ID Python hashing; observed performance should remain in the low tens of
+milliseconds on a typical development machine rather than becoming a hard,
+platform-sensitive CI timing assertion.
 
 ##### Digest frequency and cache/query flow
 
@@ -1928,34 +2456,35 @@ The normal valid-cache path is:
 4. when valid, reuse the selected rows of `spatial_canonical` and run the query
    without another digest calculation or any labels read.
 
-The calculation-and-installation path calculates the selected-region digest
+The calculation-and-cache-update path calculates the selected-region digest
 twice:
 
-1. initial inspection calculates it and captures the table signature in the
-   immutable calculation request;
-2. immediately before installation, the installer resolves the current
+1. initial inspection calculates it and captures the selected-region binding
+   in the immutable calculation request;
+2. immediately before applying the cache update, the update operation resolves the current
    selected-region bindings and calculates it again;
 3. a changed instance set rejects the stale payload without mutation;
-4. an unchanged set lets the installer map calculated centers by instance ID
-   onto the current row positions and install atomically.
+4. an unchanged set lets the update operation map calculated centers by instance ID
+   onto the current row positions and apply the update atomically.
 
 Other registered regions are not hashed during an ordinary selected-region
 query. When an extend or region-local refresh proposes to preserve existing
-other-region coordinates, the installer validates the source signature, table
+other-region coordinates, the update operation validates the source signature, table
 signature, digest, and finite coverage of each preservation candidate at that
 time. Regions that are not fully validated are dropped from the candidate
 metadata. A conservative selected-region-only rebuild need not hash regions it
 will not preserve.
 
 The widget may perform an earlier inspection to display cache status. Such a
-report may be memoized against the shared table/cache generation to prevent
-incidental UI refreshes from repeating the digest, but it is not authoritative
-for a later Run: Run performs its own fresh selected-region inspection. If an
-annotation result remains open before Apply, apply-time table/cache
-revalidation performs another selected-region digest unless the operation has
-an equivalent authoritative fresh signature from the same guarded generation.
-No status, Run, installation, or Apply path hashes every table region by
-default.
+report is not authoritative for a later Run: Run performs its own fresh
+selected-region inspection. A future memoization layer is permitted only when
+it has a concrete revision identity invalidated by every accepted relevant
+table/cache event; do not assume an abstract cache-generation counter that the
+application does not maintain. If an annotation result remains open before
+Apply, apply-time table/cache revalidation performs another selected-region
+digest unless the operation already owns an equivalent authoritative fresh
+binding captured in the same uninterrupted main-thread validation turn. No
+status, Run, cache-update, or Apply path hashes every table region by default.
 
 Schema-v1 constants are not configurable dataclass fields. `obsm_key`, axes,
 matrix dtype, source element type, scale, coordinate-frame type, calculation
@@ -1970,8 +2499,8 @@ The public operation surface is:
     build_canonical_source_signature(sdata, labels_name)
         -> CanonicalSourceSignature
 
-    build_canonical_region_bindings(table, table_metadata, labels_name)
-        -> CanonicalRegionBindings
+    build_canonical_region_binding(table, table_metadata, labels_name)
+        -> CanonicalRegionBinding
 
     build_instance_set_digest(labels_name, instance_ids)
         -> str
@@ -1988,11 +2517,11 @@ The public operation surface is:
     inspect_canonical_cache(sdata, *, table_name, labels_name)
         -> CanonicalCacheReport
 
-    build_canonical_installation_payload(...)
-        -> CanonicalInstallationPayload
+    build_canonical_cache_update_payload(...)
+        -> CanonicalCacheUpdatePayload
 
-    install_canonical_cache(sdata, payload)
-        -> CanonicalInstallationResult
+    apply_canonical_cache_update(sdata, payload)
+        -> CanonicalCacheUpdateResult
 
 The exact builder keyword layout may evolve during implementation, but these
 operation boundaries and return contracts are stable. Parsing and inspection
@@ -2000,40 +2529,47 @@ must not mutate AnnData, SpatialData, or stored metadata. In particular, the
 inspector must not call an existing helper through a code path that normalizes
 SpatialData table attrs in place.
 
-`CanonicalInstallationPayload` deliberately carries instance IDs rather than
-authoritative table row positions. Immediately before installation, the
-installer rebuilds the current region bindings, verifies the source and table
-signatures, and maps payload instance IDs onto current row positions. A normal
+`CanonicalCacheUpdatePayload` deliberately carries the calculation-time
+`CanonicalRegionBinding`, whose instance IDs are authoritative but whose row
+positions are not. Immediately before applying the cache update, the update
+operation rebuilds the
+current region binding, verifies the source signature and binding identity, and
+maps the payload binding's instance IDs onto current row positions. A normal
 AnnData row reorder can therefore complete safely. A changed instance set
 rejects the payload; a same-set row reassignment is remapped safely during
-installation but requires semantic invalidation to prevent reuse of an older
-already-installed cache.
+cache update but remains structurally undetectable when considering an older
+cache for reuse. No current roadmap operation performs such a reassignment; a
+future producer must introduce invalidation or eager affected-region
+recalculation as part of its own contract.
 
-The installer derives its action from a fresh inspection rather than trusting
+The cache-update operation derives its action from a fresh inspection rather than trusting
 the state observed before calculation:
 
 - absent produces create;
 - partial produces extend;
 - stale produces refresh;
 - invalid produces rebuild;
-- valid is reused by the caller and normally does not reach installation;
+- valid is reused by the caller and normally does not reach the cache-update operation;
   forced recalculation of a valid region produces refresh.
 
-Before the first assignment, the installer constructs and validates the
+Before the first assignment, the cache-update operation constructs and validates the
 complete candidate matrix and metadata registry in local values. An internal,
-non-public pair snapshot records whether each managed path existed and its
-complete prior value. If either assignment fails, rollback restores both exact
-prior path states, including absence. Only a successful installation returns
-the two changed component paths.
+non-public assignment helper records in local rollback variables whether each
+managed path existed and its complete prior value. If either assignment fails,
+rollback restores both exact prior path states, including absence. A successful
+update returns only its action and the fresh inspection's mismatch reasons; the
+two mutated managed paths are fixed by the canonical-cache contract rather than
+repeated in the result.
 
 Reuse existing core types only where their contracts match. In particular,
 `SpatialDataTableMetadata` remains the shared linkage value type. The canonical
 binding validator adds the stricter selected-region rules required here.
 Existing general feature-matrix normalization is not reused for
 `spatial_canonical`, because it permits sparse matrices, one-dimensional
-reshaping, and dtype coercion that the canonical schema must reject. A pure
-table-metadata reader may be factored from the existing SpatialData helpers so
-the inspector does not trigger their current in-place normalization behavior.
+reshaping, and dtype coercion that the canonical schema must reject. The
+inspector reuses the existing `get_table_metadata()` helper for read-only table
+linkage metadata and accesses the AnnData table explicitly through
+`sdata.tables[table_name]`.
 
 Exit criteria:
 
@@ -2044,15 +2580,15 @@ Exit criteria:
   obs-name changes preserve it, while a region's instance membership change
   invalidates it;
 - same-set instance-key reassignment is pinned as an explicitly undetectable
-  structural case, and the contract requires later semantic-event integration
-  to invalidate affected region entries before reuse for supported obs/linkage
-  mutations;
+  structural case; no current roadmap operation performs it, and any future
+  producer must introduce invalidation or eager affected-region recalculation
+  before reuse;
 - a valid shared matrix refresh changes only the selected region's current row
   positions and metadata, leaving other valid regions byte-for-byte unchanged;
 - NaN occurs only in rows for regions without valid coverage metadata;
-- region-local refresh preserves other valid regions, while pair-wide rebuild
+- region-local refresh preserves other valid regions, while an all-regions rebuild
   never preserves metadata that no longer describes the shared matrix;
-- no installation failure leaves partially replaced obsm/uns state;
+- no cache-update failure leaves partially replaced obsm/uns state;
 - the structural-validation limitation for undetectable same-signature pixel
   edits is documented;
 - no SpatialData-level Harpy revision attributes or affine snapshots are
@@ -2062,14 +2598,18 @@ Exit criteria:
 
 ### Slice 1b: Harpy centroid construction and cache ensure
 
+**Implementation status: Implemented.**
+
 Slice 1b calculates the values consumed by Slice 1a and supplies the blocking,
-UI-independent ensure operation. Background execution, progress, cancellation,
-and production performance hardening remain Slice 2 responsibilities.
+UI-independent ensure operation. The thin background calculation boundary and
+late-result safety remain Slice 2 responsibilities; complete query-controller
+orchestration remains Slice 7a.
 
 Deliverables:
 
-- a scale0-only labels resolver that requires a known-chunk 2D integer Dask
-  array and never falls back to NumPy or a lower-resolution scale;
+- an exact-scale0 labels lookup that uses SpatialData's validated 2D Dask raster
+  representation directly and never falls back to NumPy or a lower-resolution
+  scale;
 - preflight validation that every normalized positive table instance ID is
   representable by the labels dtype before starting the global aggregation;
 - a RasterAggregator adapter that:
@@ -2077,24 +2617,88 @@ Deliverables:
   - explicitly uses run_on_gpu=False so behavior does not depend on whether
     CuPy happens to be installed;
   - passes exactly the selected table-region instance IDs as index;
-  - converts returned z/y/x centers to float64 x/y;
-  - joins results by instance ID rather than aggregator output order;
+  - converts returned z/y/x centers to float64 without dropping or reordering
+    axes and requires z=0.0 for the supported 2D source;
+  - requires returned instance IDs to exactly match the requested IDs and order,
+    following RasterAggregator's `center_of_mass(index=...)` contract;
 - selective raster-membership validation from the requested aggregation result:
   every requested ID must have exactly one finite center, missing requested IDs
   raise before mutation, and raster IDs absent from the table are neither
   calculated nor globally enumerated;
-- production-safe count precision in the RasterAggregator center-of-mass path:
-  counts must use an integer or floating representation that remains exact for
-  supported label sizes before division into float64 moments; this may require
-  an upstream Harpy fix and pinned minimum version;
-- immutable build results that Slice 1a can validate and install;
-- an ensure operation that:
+- a UI-independent calculation operation with this exact public boundary:
+
+      calculate_canonical_centers(
+          sdata: SpatialData,
+          report: CanonicalCacheReport,
+      ) -> CanonicalCacheUpdatePayload
+
+  The operation consumes the calculation-time source signature and selected-region
+  binding already captured by `inspect_canonical_cache()`. It calculates and
+  validates centers for exactly that binding, then returns the existing Slice 1a
+  cache-update payload carrying the same calculation-time identity. It does not
+  mutate the table or update the cache; applying the update remains the responsibility
+  of `apply_canonical_cache_update()`;
+- an immutable canonical-centers result with this concrete shape:
+
+      @dataclass(frozen=True)
+      class CanonicalCentersResult:
+          source_signature: CanonicalSourceSignature
+          binding: CanonicalRegionBinding
+          centers: NDArray[np.float64] = field(
+              repr=False,
+              compare=False,
+          )
+          cache_update: CanonicalCacheUpdateResult | None
+
+          @property
+          def table_name(self) -> str:
+              return self.binding.table_name
+
+          @property
+          def labels_name(self) -> str:
+              return self.binding.labels_name
+
+          @property
+          def n_obs(self) -> int:
+              return self.binding.n_obs
+
+          @property
+          def reused(self) -> bool:
+              return self.cache_update is None
+
+  `centers` is a read-only float64 array with shape `(binding.n_obs, 3)` and
+  fixed z, y, x column order. Row `i` belongs to
+  `binding.instance_ids[i]`. Consumers associate centers through these instance
+  IDs, not through `binding.row_positions`; row positions are a snapshot and may
+  become outdated after table reordering. `source_signature` describes the live
+  labels raster, while `binding` describes the live linked table rows and
+  instance IDs. They are independent calculation-time snapshots whose shared
+  invariant is the selected labels name. The transient binding stores
+  `table_name` once; the cache report, cache-update payload, and centers result
+  expose it as a derived property;
+- an ensure operation with this exact public boundary:
+
+      ensure_canonical_centers(
+          sdata: SpatialData,
+          *,
+          table_name: str,
+          labels_name: str,
+          force_recalculation: bool = False,
+      ) -> CanonicalCentersResult
+
+  The operation:
   - reuses a structurally valid selected-region cache without reading labels;
-  - calculates and installs spatial_canonical plus metadata when absent;
+  - calculates spatial_canonical plus metadata and applies the cache update when absent;
   - accepts an explicit forced-recalculation mode that bypasses valid reuse;
   - treats a selected region's instance-set digest mismatch as stale and
     recalculates that complete region;
-  - delegates every table mutation and rollback to the Slice 1a installer;
+  - delegates every table mutation and rollback to the Slice 1a cache-update operation;
+  - returns selected-region centers rather than the complete table matrix;
+  - sets `cache_update` to `None` when it reuses a valid cache, otherwise to
+    the `CanonicalCacheUpdateResult` returned by `apply_canonical_cache_update()`.
+    That nested result contains only the performed action and the fresh
+    inspection's mismatch reasons; table/region identity and row count remain
+    available from the centers result's binding;
 - representative zarr-backed Dask fixtures and integration tests, including
   labels spanning chunks and requested IDs absent from the raster.
 
@@ -2103,7 +2707,7 @@ Exit criteria:
 - one UI-independent blocking operation can ensure valid canonical centers for
   a selected labels/table region;
 - its forced mode recalculates a valid selected-region cache instead of reusing
-  it and retains Slice 1a's validation and atomic-installation guarantees;
+  it and retains Slice 1a's validation and atomic cache-update guarantees;
 - a valid cache is reused with zero labels-chunk reads;
 - missing or mismatched cache data is calculated from Dask-backed scale0
   without loading the labels raster into RAM;
@@ -2111,173 +2715,5523 @@ Exit criteria:
   requested, while all scale0 chunks may still be scanned lazily;
 - a table ID absent from the raster produces an actionable binding error and no
   obsm/uns mutation; raster IDs absent from the table produce no center;
-- calculated output is joined to table rows by instance ID, not aggregator
-  order, and is finite for every selected-region row;
+- calculated output exactly follows the requested instance-ID order and is
+  finite for every selected-region row;
 - instance IDs outside the labels dtype range fail before Dask work;
-- count precision is verified beyond the float32 exact-integer boundary without
-  requiring a production-sized raster fixture;
-- no calculation failure reaches the Slice 1a installer or changes obsm/uns;
+- no calculation failure reaches the Slice 1a cache-update operation or changes obsm/uns;
 - domain modules have no Qt dependency.
 
-### Slice 2: Canonical calculation performance and async hardening
+### Slice 2: Background canonical calculation boundary
+
+**Implementation status: Implemented.**
+
+The required mutation boundary is:
+
+    main thread
+        inspect_canonical_cache() and capture CanonicalCacheReport
+            ↓
+    worker
+        calculate_canonical_centers()
+        return CanonicalCacheUpdatePayload
+            ↓
+    main thread
+        reject a cancelled, invalidated, or outdated job
+        apply_canonical_cache_update()
+
+The worker never calls `ensure_canonical_centers()`, because that blocking
+operation includes cache mutation. The existing blocking ensure remains the
+UI-independent convenience operation for synchronous callers.
 
 Deliverables:
 
-- background-worker integration for the Slice 1b ensure operation;
-- bounded Dask concurrency, progress diagnostics, cancellation, and stale-result
-  protection;
-- representative zarr-backed correctness and memory tests;
-- upstream RasterAggregator optimizations if benchmarks show production limits.
+- a thin worker wrapper that calls `calculate_canonical_centers()` and returns
+  its `CanonicalCacheUpdatePayload` without calling
+  `apply_canonical_cache_update()` or otherwise mutating AnnData;
+- the same monotonically increasing operation ID, active-operation-phase,
+  `worker.quit()`, and late-signal rejection pattern used by existing
+  napari-harpy controllers;
+- an accepted-result boundary that applies the payload only on the main thread,
+  where the existing fresh source/binding validation remains authoritative;
+- textual busy, cancellation, success, and failure status without a progress
+  bar, percentage, scheduler diagnostics, or performance telemetry;
+- focused worker tests for accepted, invalidated, cancelled, late, and errored
+  results.
 
 Exit criteria:
 
-- large fixtures demonstrate bounded working memory under configured
-  concurrency;
-- cancellation/stale completion cannot replace table state;
-- first-build performance and resource use meet the declared product budget.
+- labels I/O and centroid calculation run outside the Qt main thread;
+- the worker returns the existing payload contract and never mutates AnnData;
+- cancellation or invalidation immediately prevents result acceptance even if
+  the underlying Harpy call later completes;
+- only the current operation ID may reach
+  `apply_canonical_cache_update()` on the main thread;
+- napari-harpy does not override or regression-gate Harpy's Dask scheduling,
+  concurrency, memory, or calculation performance.
 
-### Slice 3: Shared cache state, events, and persistence
+### Slice 3a: General table-state events and component persistence
+
+**Implementation status: Implemented.**
+
+This slice generalizes the existing Object Classification-oriented persistence
+infrastructure before Spatial Query depends on it. It introduces no canonical
+cache behavior and no second persistence controller.
 
 Deliverables:
 
-- shared dirty-state and semantic table-state event integration for cache
-  creation/refresh/rebuild, plus mandatory affected-region invalidation for
-  supported obs/linkage mutations, including same-set instance reassignment;
-- component-level dirty paths for obsm/spatial_canonical and
-  uns/spatial_coordinates/spatial_canonical;
-- selective ad.io.write_elem persistence and reload support for the canonical
-  pair, including pair-consistency failure handling and preservation of
-  unrelated table elements;
-- mismatch/recalculation feedback for controller and widget consumers;
-- cache lifecycle and backed-zarr tests.
+- the validated immutable `TableComponentPath` contract for obs columns,
+  individual obsm entries, and top-level or nested uns entries;
+- `TableStateChangedEvent` carrying SpatialData/table identity, unique component
+  paths, required semantic row-scope regions, change kind, and source; an empty
+  region tuple means metadata-only and never unknown;
+- one HarpyAppState `table_state_changed` signal carrying that event;
+- migration of every `FeatureMatrixWrittenEvent` and
+  `ClassificationTableWrittenEvent` producer and consumer to the general event,
+  followed by removal of those two redundant event classes and signals;
+- retention of `ShapesElementWrittenEvent` as the separate contract for
+  non-table shapes changes;
+- a HarpyAppState per-table dirty manifest mapping each logical path to its
+  latest opaque mutation token, with table-level `is_table_dirty()` derived
+  from that manifest;
+- explicit `record_table_mutation()`, `record_persisted_table_change()`, and
+  `record_table_reload()` acceptance methods so publishing an event does not
+  implicitly mean that its paths are dirty;
+- pre-operation dirty-snapshot capture for already-persisting producers such as
+  backed Feature Extraction, so their successful completion cannot clear a
+  same-path mutation accepted while their worker was running;
+- `TableDirtySnapshot`, `TableComponentWriteResult`, and acknowledgement
+  operations implementing the documented snapshot/write/acknowledge boundary
+  and clearing only successfully persisted path mutation tokens that are still
+  current;
+- a generalized `PersistenceController` coordinating selection, dirty
+  snapshots, selective and full validated table-state reload, and
+  Qt-independent core persistence functions;
+- component writers for encoded obs, individual obsm entries, and top-level or
+  nested uns entries, including removal, unsupported-path preflight, and zarr
+  metadata consolidation before successful acknowledgement;
+- a `TableComponentReloadResult` and component reader that reload the complete
+  obs dataframe for any obs request, one named obsm entry, or one top-level or
+  nested uns entry, including removal when a requested live entry is absent on
+  disk;
+- grouped reload of caller-expanded consistency units, with Feature Extraction
+  supplying its feature-matrix obsm/uns pair and the later canonical integration
+  supplying the canonical pair; the generic persistence layer has no global
+  feature-specific registry;
+- a full Reload Table State convenience operation that expands in-memory,
+  on-disk, and currently dirty component paths and delegates to the same
+  selective reader;
+- migration of Object Classification as the first deferred-write consumer,
+  declaring every logical path it changes and publishing one general table
+  event;
+- publication of Feature Extraction's backed Harpy writes through
+  `record_persisted_table_change()`, without routing those already-persisted
+  elements through PersistenceController; unbacked changes use
+  `record_table_mutation()`;
+- a temporary compatibility path for `write_table_prediction_state()` if
+  needed by existing headless callers;
+- focused app-state, persistence, Object Classification, and Feature Extraction
+  regression tests.
 
 Exit criteria:
 
-- successful install is dirty and round-trips through zarr;
+- one event accepted through `record_table_mutation()` assigns one fresh
+  identity token to all of its paths; publishing an event alone does not alter
+  dirty state;
+- a table is dirty exactly when its component manifest is non-empty;
+- writing an obs-column path writes the complete encoded obs dataframe but no
+  unrelated AnnData component;
+- writing an obsm or uns path touches only its supported encoded element and
+  preserves unrelated siblings;
+- reloading any obs path replaces the complete validated obs dataframe, while
+  named obsm and uns reloads preserve unrelated entries;
+- component reload emits explicit restored paths, clears only covered dirty
+  paths, and accepts consistency units already expanded by domain code;
+- a full-table reload delegates to the component API and leaves the table clean
+  without using an empty, `None`, or wildcard event path;
+- unsupported paths fail before any write and are never silently cleared;
+- a mutation accepted during persistence remains dirty when its captured older
+  mutation token completes;
+- a backed Feature Extraction result acknowledges only matching mutation tokens
+  from its pre-operation snapshot and cannot clear a path first dirtied after
+  that snapshot;
+- a write is acknowledged only after zarr metadata consolidation succeeds, and
+  a normally reopened SpatialData sees created, updated, and removed elements;
+- a consolidation failure leaves every captured path dirty;
+- backed Feature Extraction remains clean for the exact paths Harpy already
+  persisted, while unbacked Feature Extraction records those paths as dirty;
+- Feature Extraction reports its extraction regions, user annotation reports
+  its selected region, classifier inference reports its resolved prediction
+  regions, and classifier metadata-only changes report an empty region tuple;
+- row-aligned reload events report every table region, while known uns-only
+  metadata reloads report an empty region tuple;
+- Object Classification, Feature Extraction, and Viewer retain their current
+  targeted refresh and invalidation behavior through `table_state_changed`;
+- one accepted table change emits one table event rather than parallel general
+  and feature-specific events;
+- no path calls `AnnData.write_zarr()` or introduces a competing widget-local
+  dirty truth.
+
+### Slice 3b: Canonical cache state and persistence
+
+**Implementation status: Implemented.**
+
+This slice wires the canonical cache into the shared foundation from Slice 3a.
+Core canonical operations remain independent from Qt and HarpyAppState.
+
+Deliverables:
+
+- the existing Spatial Query controller accepted-result callback as the
+  canonical mutation boundary: its consumer publishes a
+  `TableStateChangedEvent` only after `apply_canonical_cache_update()` succeeds
+  on the main thread; synchronous core callers remain responsible for
+  publishing the same event when used inside a shared UI session;
+- one accepted cache event containing both
+  `TableComponentPath("obsm", ("spatial_canonical",))` and
+  `TableComponentPath(
+      "uns",
+      ("spatial_coordinates", "spatial_canonical"),
+  )`; the event reports the selected labels region, uses a canonical-cache
+  source, and maps create, extend/refresh, and rebuild actions to `created`,
+  `updated`, and `rebuilt`, respectively;
+- one canonical consistency unit containing those two paths. Persistence writes
+  both through AnnData element encodings and preserves unrelated table elements
+  and sibling metadata;
+- acknowledge-both-or-neither persistence semantics: the shared dirty manifest
+  clears both canonical paths only after both element writes and zarr metadata
+  consolidation succeed. A failure acknowledges neither path, even if zarr was
+  partially changed before the failure;
+- no claim of a transactional multi-element zarr rollback. A partial on-disk
+  cache remains dirty in the current session and is classified as `INVALID` by
+  canonical inspection after reload or reopen, so it is never reused and is
+  rebuilt conservatively;
+- canonical metadata parsing and structural validation through
+  `inspect_canonical_cache()` after reload or reopen and before any cache reuse.
+  The generic `PersistenceController` remains unaware of canonical metadata;
+- clear mismatch/recalculation data for later controller and widget consumers;
+- canonical cache lifecycle and backed-zarr tests.
+
+The implemented shared consistency contract is:
+
+    CANONICAL_CACHE_PATHS
+        # obsm/spatial_canonical plus its nested uns metadata path
+
+The Spatial Query child owns construction and publication of the corresponding
+`TableStateChangedEvent` from its controller's accepted
+`CanonicalCentersResult`. Reused centers have no cache update and therefore
+publish nothing. The earlier temporary
+`record_canonical_cache_update()`/`cache_state.py` adapter was removed when
+Slice 7a connected this callback directly.
+
+The accepted cache-update flow is:
+
+    worker
+        calculate_canonical_centers()
+            ↓
+    main thread
+        reject cancelled or outdated result
+        apply_canonical_cache_update()
+            ↓ success only
+        record one table mutation for both canonical paths
+
+Cache reuse, cancellation, worker failure, or a rejected payload does not emit
+a table mutation event and does not change shared dirty state.
+
+The persistence boundary is:
+
+    write both canonical paths
+        ↓
+    consolidate zarr metadata
+        ↓
+    success → acknowledge both paths
+    failure → acknowledge neither path
+
+The reload and reopen boundary is:
+
+    reload or reopen table state
+        ↓
+    inspect_canonical_cache()
+        ↓
+    VALID → reuse
+    otherwise → recalculate when canonical centers are next required
+
+An invalid canonical cache does not make an otherwise valid full-table reload
+fail. It is accepted as non-reusable stored state and handled by the existing
+inspection and conservative-rebuild lifecycle.
+
+Direct arbitrary AnnData edits that preserve the instance set while changing
+row-to-region or row-to-instance association remain undetectable. No current
+roadmap operation performs such a mutation. Any future supported producer must
+introduce explicit invalidation or eager affected-region recalculation as part
+of its implementation.
+
+Exit criteria:
+
+- a successful cache update records both canonical paths as dirty in one shared
+  table-state event and round-trips through zarr;
 - a centroid-only write touches only the two canonical element paths and never
   serializes the complete AnnData table;
-- the table is not marked clean when either half of the canonical pair fails to
-  persist;
-- reload/reopen reuses only structurally valid metadata;
-- a supported region-key, instance-key, or obs replacement event invalidates
-  every affected region before cache reuse even when its instance set is
-  unchanged;
-- all widgets observe the same current canonical table state.
+- the table is not marked clean when either half of the canonical persistence
+  unit or zarr metadata consolidation fails; a later reload/reopen classifies
+  any resulting partial disk state as non-reusable;
+- reload/reopen reuses only structurally valid canonical metadata;
+- same-set linkage reassignment remains explicitly unsupported and
+  structurally undetectable; introducing a producer for it requires a new
+  invalidation or eager-recalculation contract;
+- calculating, cancelling, rejecting, or reusing centers without an accepted
+  cache mutation records no dirty path and emits no table-state mutation event.
 
 ### Slice 4: Vectorized centroid-containment query
 
-Deliverables:
+**Implementation status: Implemented.**
+
+#### Public contracts
+
+Cache reuse and fresh calculation converge before the containment query:
+
+    valid cache ------------------+
+                                  |
+                                  v
+                         CanonicalCentersResult
+                                  ^
+                                  |
+    freshly calculated centers ---+
+                                  |
+                                  v
+                    centroid-containment query
+
+Build a self-contained immutable request on the main thread:
+
+    @dataclass(frozen=True)
+    class CanonicalCenterQueryRequest:
+        canonical_centers: CanonicalCentersResult
+        polygons: tuple[Polygon, ...]
+        polygons_to_labels_affine: NDArray[np.float64]
+
+        @property
+        def table_name(self) -> str:
+            return self.canonical_centers.table_name
+
+        @property
+        def labels_name(self) -> str:
+            return self.canonical_centers.labels_name
+
+Return an immutable domain result that retains the exact canonical-center
+snapshot used by the worker:
+
+    @dataclass(frozen=True)
+    class CanonicalCenterQueryResult:
+        canonical_centers: CanonicalCentersResult
+        matched_instance_ids: NDArray[np.integer]
+
+        @property
+        def binding(self) -> CanonicalRegionBinding:
+            return self.canonical_centers.binding
+
+        @property
+        def eligible_instance_count(self) -> int:
+            return self.binding.n_obs
+
+        @property
+        def matched_instance_count(self) -> int:
+            return len(self.matched_instance_ids)
+
+`canonical_centers` is retained by reference rather than copied. It provides
+the source signature, selected-region binding, and exact center snapshot that
+produced the query membership. `binding`, `table_name`, and `labels_name` are
+derived properties rather than repeated fields. `matched_instance_ids`
+contains the matching IDs in ascending order, while `binding.instance_ids`
+contains every eligible instance evaluated by the query. The binding already
+guarantees that IDs are positive and unique, so the query selects and sorts
+them without a second uniqueness-normalization pass. This small result-contract
+refinement is part of
+Slice 5 because annotation apply-time validation is its first consumer.
+
+The public core operations are:
+
+    def build_canonical_center_query_request(
+        sdata: SpatialData,
+        *,
+        shapes_name: str,
+        coordinate_system: str,
+        canonical_centers: CanonicalCentersResult,
+    ) -> CanonicalCenterQueryRequest:
+        ...
+
+    def evaluate_canonical_center_query(
+        request: CanonicalCenterQueryRequest,
+    ) -> CanonicalCenterQueryResult:
+        ...
+
+#### Snapshot and worker boundary
+
+`build_canonical_center_query_request()` fetches the selected Shapes element,
+applies the shared Shapes Annotation edit-validity validation, snapshots its
+polygons, and asks SpatialData for the element-to-element transformation:
+
+    shapes_to_labels = get_transformation_between_coordinate_systems(
+        sdata,
+        source_coordinate_system=shapes_element,
+        target_coordinate_system=labels_element,
+        intermediate_coordinate_systems=coordinate_system,
+    )
+
+It converts the returned `BaseTransformation` with
+`to_affine_matrix(input_axes=("x", "y"), output_axes=("x", "y"))` and snapshots
+the result as `polygons_to_labels_affine`. The affine is a finite 3 x 3
+homogeneous matrix using explicit x, y axes. SpatialData owns graph traversal,
+path selection, inversion, and composition. The request stores only the
+resulting matrix because the evaluator needs the exact coordinate relationship
+captured for this query.
+
+Shapely 2 geometries are immutable, so a tuple of validated Polygon objects is
+the geometry snapshot. Do not copy unrelated GeoDataFrame columns or index
+values into the request. Polygon union remains worker work because it can be
+substantially more expensive than capturing the geometry tuple.
+
+`evaluate_canonical_center_query()` receives only the request. It unions the
+polygons, transforms the union into labels-intrinsic coordinates, applies the
+bounding-box prefilter and vectorized predicate, and returns the matching
+instance IDs. It does not access SpatialData, Qt, napari layers, or mutable
+table state.
+
+The thread boundary is:
+
+    main thread
+        build_canonical_center_query_request()
+            -> validate and snapshot polygons
+            -> ask SpatialData for the Shapes-to-labels transformation
+            -> convert it to an explicit x/y affine
+            -> no mutation
+                    |
+                    v
+    worker
+        evaluate_canonical_center_query()
+            -> union and transform polygons
+            -> bounding-box prefilter
+            -> vectorized intersects_xy
+            -> return sorted matching instance IDs
+            -> no SpatialData access or mutation
+
+The request deliberately does not store `sdata`, `shapes_name`,
+`coordinate_system`, duplicate `table_name` or `labels_name`, or carry cache
+state, cache action, or an operation ID. Table and labels names derive from
+`canonical_centers`; cache handling has already finished; and selection plus
+operation identity belongs to the controller.
+
+#### Query algorithm
+
+1. Receive a validated `CanonicalCentersResult` from the upstream cache or
+   calculation flow.
+2. On the main thread, call `build_canonical_center_query_request()`:
+   - validate and snapshot the selected Shapes polygons through the shared
+     Shapes Annotation edit-validity contract;
+   - ask `get_transformation_between_coordinate_systems()` for the
+     Shapes-intrinsic to labels-intrinsic transformation through the selected
+     coordinate system;
+   - convert and snapshot its affine using explicit x, y axes.
+3. In the worker, call `evaluate_canonical_center_query()`:
+   - union all polygons into one effective region;
+   - transform the union into labels-intrinsic x, y coordinates;
+   - prepare the Shapely geometry for repeated predicates;
+   - read y from canonical-center column 1 and x from column 2 for the selected
+     binding;
+   - use the annotation bounds as a cheap vectorized prefilter;
+   - evaluate Shapely only for candidate centers:
+
+        candidates = (
+            (x >= min_x) & (x <= max_x)
+            & (y >= min_y) & (y <= max_y)
+        )
+        inside = shapely.intersects_xy(
+            region_in_labels,
+            x[candidates],
+            y[candidates],
+        )
+
+4. Map true values back to the binding's instance IDs.
+5. Sort the matching IDs and return `CanonicalCenterQueryResult`.
+
+No labels raster data is read by this containment algorithm. With a valid
+cache, the entire Run path after validation is an eager vectorized point query
+over the in-memory table coordinates.
+
+Controller operation IDs remain orchestration state and do not belong in the
+domain request or result. Center calculation and geometry querying return
+immutable data; cache updates, row preparation, and annotation mutation remain
+distinct operations.
+
+#### Deliverables
 
 - shared Shapes validation/snapshot/union;
-- inverse(M_labels_to_cs) @ M_shapes_to_cs transformation;
+- `build_canonical_center_query_request()` as the main-thread snapshot and
+  transformation boundary;
+- `evaluate_canonical_center_query()` as the SpatialData-independent worker
+  operation;
+- SpatialData-owned Shapes-intrinsic to labels-intrinsic transformation through
+  the selected coordinate system;
 - bounding-box prefilter and vectorized Shapely intersects_xy predicate;
-- region filtering and sorted unique ID result;
-- valid-cache and fresh-build input paths using one query implementation;
+- selected-region filtering and a sorted ID result derived from the validated
+  unique binding;
+- one query implementation consuming `CanonicalCentersResult` after valid-cache
+  and fresh-calculation paths converge;
 - geometry/transform/predicate tests and zero-label-I/O instrumentation for
   cached queries.
 
-Exit criteria:
+#### Exit criteria
 
 - results match an independent point-in-polygon reference;
 - boundary, hole, transform, and x/y semantics are proven;
 - multi-region coordinate frames never mix;
 - valid cached queries read no labels chunks.
 
-### Slice 5: Atomic annotation preparation, apply, and undo
+### Slice 4b: Stable categorical palette foundation
 
-Deliverables:
+#### Responsibility boundary
 
+Slice 4b is a small UI-independent infrastructure slice completed before
+annotation mutation. It establishes one shared, append-stable categorical
+palette contract for current Labels/Shapes color sources, the later Spatial
+Query child styling controller, and future categorical color panels. It does
+not implement a color panel or Spatial Query child and never mutates `.obs`,
+`.uns`, dirty state, or persisted data.
+
+Before this shared foundation, the generic palette fallback lived in
+`viewer/_styling.py` and derived colors from a category-count-dependent palette
+policy. Slice 5 must not import that viewer implementation or duplicate it in
+the UI-independent annotation domain.
+
+Introducing append-stable defaults has one intentional viewer compatibility
+effect: an existing generic Labels or Shapes visualization with no valid stored
+`<column>_colors` palette may receive different default colors after Slice 4b.
+This is a one-time, viewer-only migration effect and does not mutate the table.
+Valid stored palettes remain authoritative and unchanged, and Object
+Classification colors retain their existing specialized contract. After this
+transition, adding categories no longer changes colors assigned to existing
+category positions.
+
+#### Shared core palette contract
+
+Keep the implementation in the existing `core/class_palette.py`; do not create
+a Spatial Query-specific palette module. Refactor the generic default palette
+so category position is stable:
+
+    def default_categorical_colors(length: int) -> list[str]:
+        return [
+            default_labeled_class_color(position)
+            for position in range(1, length + 1)
+        ]
+
+Use one explicit immutable `GODSNOT_102` palette adapted from
+<https://godsnotwheregodsnot.blogspot.com/2012/09/color-distribution-methodology.html>.
+Black is intentionally excluded because black is commonly used for annotation
+outlines and backgrounds. Both category-position defaults and positive
+class-ID defaults select from this palette. Values beyond its 102 entries
+cycle from the beginning:
+
+    def default_labeled_class_color(class_id: int) -> str:
+        if class_id <= 0:
+            raise ValueError("Class ids must be positive integers.")
+
+        return GODSNOT_102[(class_id - 1) % len(GODSNOT_102)]
+
+This explicit palette supersedes the earlier Matplotlib-cycle and Scanpy
+20/28/102 palette-family selection. `core/class_palette.py` no longer imports
+Scanpy palettes. The deliberate default-color migration may change unstored or
+invalid-palette fallbacks and newly created or extended palettes. Valid stored
+palettes remain authoritative and unchanged.
+
+Move the pure standard AnnData categorical-palette inspection from
+`viewer/_styling.py` into the core palette API. Its source classification
+remains explicit:
+
+    CategoricalPaletteSource = Literal[
+        "stored",
+        "default_missing",
+        "default_invalid",
+    ]
+
+
+    def validate_categorical_palette_source(
+        source: str,
+    ) -> CategoricalPaletteSource:
+        ...
+
+
+    def resolve_table_categorical_palette(
+        *,
+        table: AnnData,
+        column_name: str,
+        categories: Sequence[object],
+    ) -> tuple[CategoricalPaletteSource, list[str]]:
+        ...
+
+
+    def extend_categorical_palette(
+        palette: Sequence[str],
+        *,
+        current_categories: Sequence[object],
+        next_categories: Sequence[object],
+    ) -> list[str]:
+        ...
+
+The shared resolver:
+
+- reads `<column>_colors` without mutating the table;
+- returns a valid stored palette unchanged when it has exactly one valid color
+  per category;
+- returns the complete append-stable default palette when stored metadata is
+  absent or invalid;
+- reports which of the three sources produced the result so viewers can warn
+  without changing table state.
+
+`extend_categorical_palette()` requires `next_categories` to start with the
+exact complete `current_categories` sequence. Given a valid existing palette
+aligned to that current sequence, it preserves every existing color value and
+order and appends `default_labeled_class_color(position + 1)` for only the new
+trailing positions. It rejects category removal, reordering, replacement,
+invalid input colors, and a palette/current-category length mismatch. It
+performs no AnnData assignment.
+
+Labels and Shapes categorical styling consume this shared core resolver and
+source type. Plain string/object viewer coercion, where still supported outside
+Spatial Query, uses the same append-stable default palette. Object
+Classification retains its specialized integer-class categories, unlabeled
+class, stored `user_class_colors`/`pred_class_colors`, and strict canonical
+palette validation; this slice changes none of those semantics. Slices 6k and
+6n later replace its unlabeled sentinel and strict sorted/currently-used
+palette lifecycle.
+
+Persistence requires no preparatory change: `write_table_components()` already
+supports explicit top-level uns paths. Creating, repairing, extending, rolling
+back, publishing, and persisting `<column>_colors` remain Slice 5 and later
+widget responsibilities.
+
+#### Implementation boundary
+
+The production changes are limited to:
+
+- `core/class_palette.py` for the shared type, validation, stable defaults,
+  non-mutating resolver, and extension helper;
+- `viewer/_styling.py` for removal of the viewer-local palette policy while
+  retaining unrelated color conversion and rendering helpers;
+- `viewer/labels_styling.py` and `viewer/shapes_styling.py` for consuming the
+  core resolver and source type;
+- focused `test_class_palette.py`, `test_styling.py`, Labels/Shapes styling,
+  and existing Object Classification palette tests affected by those imports
+  or defaults.
+
+Do not modify Spatial Query annotation code, component persistence, table-state
+events, dirty tracking, or widget orchestration in this slice.
+
+#### Deliverables
+
+- append-stable generic defaults in `core/class_palette.py`;
+- core palette source type, validation, non-mutating resolver, and pure
+  extension helper;
+- Labels and Shapes styling migrated from viewer-local palette resolution to
+  the shared core API;
+- removal of duplicated viewer-local generic palette policy;
+- focused palette and affected viewer-styling tests.
+
+#### Exit criteria
+
+- appending categories through and beyond the 102-color cycle never changes
+  any existing position's color;
+- valid stored palettes and their order are returned unchanged;
+- missing and invalid palettes resolve deterministically without mutating the
+  table;
+- extending a palette appends only the required stable colors and rejects
+  invalid input or any non-prefix category transition;
+- Labels and Shapes styling use the same resolver and source classification;
+- focused tests acknowledge the intentional one-time default-color change for
+  generic unstored palettes while proving that no table mutation occurs;
+- Object Classification class-color behavior and stored palette contracts are
+  unchanged;
+- the slice emits no table event, records no dirty path, and performs no zarr
+  write.
+
+### Slice 5: Atomic annotation preparation and apply
+
+**Implementation status: Implemented.**
+
+#### Responsibility boundary
+
+Slice 5 is a UI-independent table-domain slice. It owns exact row resolution,
+target-column validation, live conflict summaries, and atomic apply/rollback.
+It does not own widget input controls, operation IDs, Shapes selection
+freshness, or table-state event publication; those are controller/widget
+responsibilities when the domain API is integrated.
+
+Apply-time validation nevertheless proves that the query is still valid for
+the current selected table region and canonical cache. It uses concrete source,
+binding, metadata, and center snapshots rather than introducing an abstract
+cache-generation counter. The later controller additionally rejects a result
+when its Shapes selection, coordinate system, or operation identity changed.
+
+Slice 5 consumes the stable core palette resolver and extension helper from
+Slice 4b. For an effective annotation mutation, it decides whether the
+companion palette must be created, repaired, or extended and applies that
+`.uns` change atomically with the `.obs` column change. A no-op never changes
+the palette. Slice 5 does not redefine default colors, stored-palette validity,
+or extension semantics.
+
+#### Typed contracts
+
+Keep the column mode explicit because New and Existing represent different user
+intent even when the table changes between preparation and Apply. The mode and
+column name belong directly to the preparation; they do not need a one-use
+wrapper dataclass:
+
+    SpatialAnnotationColumnMode = Literal["existing", "new"]
+
+
+    @dataclass(frozen=True)
+    class SpatialAnnotationPreparation:
+        query_result: CanonicalCenterQueryResult
+        column_name: str
+        column_mode: SpatialAnnotationColumnMode
+        row_positions: NDArray[np.intp]
+        current_values: pd.Series
+
+        @property
+        def binding(self) -> CanonicalRegionBinding:
+            return self.query_result.binding
+
+
+    @dataclass(frozen=True)
+    class SpatialAnnotationSummary:
+        annotation_value: str | None
+        matched_count: int
+        current_missing_count: int
+        current_equal_count: int
+        current_other_count: int
+
+        @property
+        def is_removal(self) -> bool:
+            return self.annotation_value is None
+
+        @property
+        def changed_count(self) -> int:
+            if self.is_removal:
+                return self.current_other_count
+            return self.current_missing_count + self.current_other_count
+
+        @property
+        def unchanged_count(self) -> int:
+            if self.is_removal:
+                return self.current_missing_count
+            return self.current_equal_count
+
+        @property
+        def overwrite_count(self) -> int:
+            return 0 if self.is_removal else self.current_other_count
+
+        @property
+        def removal_count(self) -> int:
+            return self.current_other_count if self.is_removal else 0
+
+
+    class SpatialAnnotationColumnChangedError(ValueError):
+        """The prepared column values changed before Apply."""
+
+
+    class SpatialAnnotationQueryOutdatedError(ValueError):
+        """The binding or canonical-center query provenance is no longer current."""
+
+
+    @dataclass(frozen=True)
+    class SpatialAnnotationApplyResult:
+        annotation_changed: bool
+        palette_changed: bool
+
+        def __post_init__(self) -> None:
+            if self.palette_changed and not self.annotation_changed:
+                raise ValueError(
+                    "A spatial-annotation palette changes only with an effective annotation mutation."
+                )
+
+Arrays stored on these contracts are read-only defensive snapshots. Series are
+defensive copies that domain functions never mutate after construction.
+Names such as `table_name`, `labels_name`, `region_key`, and `instance_key` are
+derived from the binding rather than duplicated. Summary construction validates
+non-negative counts, the partition invariant, the action-specific equal count,
+and the normalized string-or-None annotation value.
+
+The public core operations are:
+
+    def prepare_spatial_annotation(
+        sdata: SpatialData,
+        *,
+        query_result: CanonicalCenterQueryResult,
+        column_name: str,
+        column_mode: SpatialAnnotationColumnMode,
+    ) -> SpatialAnnotationPreparation:
+        ...
+
+
+    def summarize_spatial_annotation(
+        preparation: SpatialAnnotationPreparation,
+        annotation_value: str | None,
+    ) -> SpatialAnnotationSummary:
+        ...
+
+
+    def apply_spatial_annotation(
+        sdata: SpatialData,
+        preparation: SpatialAnnotationPreparation,
+        expected_summary: SpatialAnnotationSummary,
+    ) -> SpatialAnnotationApplyResult:
+        ...
+
+Preparation and summarization never mutate SpatialData or AnnData. The
+one-step widget calls `summarize_spatial_annotation()` after the query using
+the Set/Remove value captured before work started. `annotation_value=None` is
+an internal domain value meaning Remove annotation; the UI never asks the user
+to type a sentinel.
+
+Apply reports whether the obs column and associated palette actually changed.
+The widget uses those booleans to publish only the corresponding shared table
+component paths; the domain function still does not publish events or know
+about `HarpyAppState`.
+
+#### Exact row resolution
+
+Preparation rebuilds the current selected-region binding from the live table
+and requires it to match the query result exactly:
+
+- the same SpatialData table name and labels region;
+- the same region_key and instance_key;
+- the same row positions and instance IDs in corresponding order;
+- the same positive, unique selected-region instance set.
+
+Returned query IDs must be a unique subset of the binding IDs. Resolve them to
+row positions through the binding's instance IDs; never use obs_names and never
+match instance IDs without also constraining the selected region. Duplicate
+instance IDs in other regions remain valid and cannot receive this annotation.
+
+The resolved row positions and current target values are copied into the
+preparation. An empty query result does not create a preparation for Apply; the
+controller reports the no-result outcome directly.
+
+#### Target validation and summaries
+
+`column_mode="new"` requires the normalized column name to remain absent.
+`column_mode="existing"` requires it to remain present and compatible. Both
+modes reject region_key and instance_key. Compatibility follows the Target
+column behavior contract above: the existing Series must use
+`pd.CategoricalDtype`, and every declared category must be a string. No
+implicit conversion of StringDtype, object/string, numeric, boolean, datetime,
+mixed-object, or non-string categorical data is allowed.
+
+A non-None annotation value is trimmed once and must be a non-empty string.
+`None` means Remove annotation and is valid only with
+`column_mode="existing"`. Summarization partitions every matched row into
+neutral current-state counts:
+
+- current_missing: the current value is missing;
+- current_equal: the current non-missing value equals the proposed string;
+- current_other: the current non-missing value differs from the proposed
+  string, or any current non-missing value during removal.
+
+Consequently:
+
+    matched_count == (
+        current_missing_count
+        + current_equal_count
+        + current_other_count
+    )
+
+For Set annotation, missing and other rows change, equal rows remain unchanged,
+and `overwrite_count == current_other_count`. For Remove annotation,
+`current_equal_count == 0`, missing rows remain unchanged, and
+`removal_count == current_other_count`.
+
+Changing the proposed typed value or switching action is a pure O(number of
+matched rows) summary calculation. In the one-step workflow those inputs are
+captured before the query, and the resulting counts provide exact
+post-operation feedback rather than a second confirmation step.
+
+#### Apply-time freshness and atomic mutation
+
+Immediately before mutation, `apply_spatial_annotation()` performs fresh
+table/cache inspection without reading labels pixels and requires:
+
+1. the current selected-region binding to match the preparation exactly,
+   including row-position-to-instance-ID association;
+2. the canonical cache to inspect as VALID for that region;
+3. the current labels source signature and selected-region canonical metadata
+   to match the `CanonicalCentersResult` retained by the query result;
+4. the current selected rows of `spatial_canonical` to equal the exact center
+   snapshot used by the query; this is an eager NumPy comparison and never reads
+   labels pixels;
+5. the column mode, compatible dtype/category state, and matched-row values to
+   match the preparation;
+6. a freshly computed summary to equal `expected_summary`.
+
+Palette metadata does not affect query membership or overwrite/removal counts.
+Apply reads the current palette immediately before mutation, preserves it when
+valid, and resolves missing or invalid state through the palette policy above.
+It must never overwrite a newer valid palette with an older snapshot.
+
+If relevant target values change between immediate preparation and Apply,
+Apply raises `SpatialAnnotationColumnChangedError` without mutation. The widget
+reports the failure and requires a new Apply Annotation action; it does not
+retry against newly observed state. A changed source, binding, or cache raises
+`SpatialAnnotationQueryOutdatedError` and likewise requires a new query. An
+absent or incompatible target follows normal target-validation handling
+without mutating the table.
+
+For an effective mutation, construct the complete replacement target Series
+off-table. Existing compatible dtype, categorical order, and categorical
+`ordered` state are preserved. Set appends a missing string category without
+reordering existing categories. Remove writes `pd.NA` at the resolved rows and
+does not remove categories that become unused. A new column is categorical,
+contains actual missing values outside the matched rows, and uses the applied
+string as its first category. Construct the complete replacement palette
+off-table as well whenever the palette is missing, invalid, or must be extended
+for a new category.
+
+Assign the completed Series and, when required, its completed palette on the
+main thread as one atomic annotation consistency-unit update. Keep exact
+pre-assignment snapshots of both `table.obs[column_name]` and the presence/value
+of `table.uns["<column>_colors"]`. If either assignment or post-assignment
+validation fails, restore both snapshots; remove newly created entries during
+rollback. Do not publish an event or change dirty state until the complete
+domain mutation succeeds. Other obs columns, other uns keys, other regions,
+obsm, and the canonical cache remain untouched.
+
+If `changed_count == 0`, return without assignment. Do not replace the column
+object, create/repair palette metadata, publish a mutation, or alter dirty
+state, and return `SpatialAnnotationApplyResult(False, False)`. After an
+effective successful Apply, return `annotation_changed=True` and report
+`palette_changed=True` only when `<column>_colors` was created, repaired, or
+extended. The widget then publishes one ordinary `TableStateChangedEvent`
+through `record_table_mutation()` for the target obs path plus the palette uns
+path only when `palette_changed` is true, scoped to the selected labels region.
+Creating a new column reports `change_kind="created"`; setting or removing
+values in an existing column reports `change_kind="updated"`.
+
+#### Recovery boundary
+
+Spatial Query does not maintain widget-local annotation history and exposes no
+operation-specific Undo command. Explicit Set/Remove inputs, visible overwrite
+semantics, exact outcome counts, and the shared reload workflow are the
+user-facing safeguards; atomic Apply and rollback protect against partial
+failure.
+
+After Apply, the annotation is an ordinary shared in-memory table mutation. A
+user can correct it with another annotation Apply, persist it through Write
+Table State, or discard covered unpersisted table changes through Reload Table
+from zarr. Reload retains its existing warning and scope: it may also discard
+other dirty table components covered by that reload, including an unpersisted
+canonical cache.
+
+#### Deliverables
+
+- provenance-carrying `CanonicalCenterQueryResult` refinement;
 - exact row resolution through region and instance keys;
-- missing/equal/overwrite summaries;
-- compatible existing-column mutation and new categorical-column creation;
-- apply-time selected-region signature plus cache/binding/table revalidation
-  and rollback;
-- single-operation undo with cache-aware dirty derivation;
-- table-domain tests.
+- immutable preparation and summary contracts;
+- explicit Apply result reporting annotation-column and palette changes;
+- mode-specific set/overwrite/removal summaries;
+- compatible existing-column set/removal and new categorical-column creation;
+- valid-palette preservation, stable default palette creation/repair/extension,
+  and category-color stability;
+- apply-time source/cache/binding/table revalidation and atomic obs/uns
+  rollback;
+- ordinary shared table-state publication after an effective Apply;
+- focused table-domain tests.
 
-Exit criteria:
+#### Exit criteria
 
-- no cancel, no-result, no-op, or failed apply changes the annotation column;
-- all effective mutations are atomic;
-- undo restores the annotation column exactly and never removes cache data.
+- no cancel, no-result, no-op, outdated preparation, or failed apply changes the
+  annotation column or companion palette;
+- all effective mutations assign one completed annotation-column/palette
+  consistency unit atomically;
+- reported counts are the exact counts accepted by Apply;
+- apply rejects any changed binding, canonical-center snapshot, or relevant
+  target-column state;
+- an effective Apply produces one ordinary dirty obs mutation, additionally
+  reports the palette uns path exactly when that palette changed, and never
+  changes canonical cache paths;
+- focused tests cover set/remove, new/existing, valid/missing/invalid palette,
+  stable palette extension, no-op, rollback, and outdated preparation paths.
 
-### Slice 6: Widget selection and validation shell
+### Slice 6a: Shared coordinate-system change guard
+
+**Implementation status: Implemented.**
+
+This slice fixes an existing Shapes Annotation data-loss bug before changing
+the widget architecture. Unsaved polygon edits live only in the editable
+napari Shapes layer until Save shapes succeeds. Viewer, Object Classification,
+or another widget could previously change the shared coordinate system, after
+which Harpy removed layers belonging to the old coordinate system without
+giving Shapes Annotation an opportunity to reject the change. The implemented
+guard now closes that pre-change boundary.
+
+The slice adds no parent widget, moves no selectors, and introduces no Spatial
+Query behavior. The currently registered standalone `ShapesAnnotation` owns
+the guard for its viewer session.
+
+#### Guard API
+
+```python
+@dataclass(frozen=True)
+class CoordinateSystemChangeRequest:
+    sdata: SpatialData | None
+    previous_coordinate_system: str | None
+    coordinate_system: str | None
+    source: str | None
+
+
+type CoordinateSystemChangeGuard = Callable[
+    [CoordinateSystemChangeRequest],
+    bool,
+]
+
+
+class HarpyAppState:
+    def set_coordinate_system_change_guard(
+        self,
+        guard: CoordinateSystemChangeGuard | None,
+    ) -> None: ...
+
+    def clear_coordinate_system_change_guard(
+        self,
+        guard: CoordinateSystemChangeGuard,
+    ) -> bool: ...
+```
+
+The per-viewer app state supports one optional synchronous guard. This is
+intentionally not a general mutable-guard registry: no other guarded dirty
+coordinate-system workflow exists in the current application.
+
+`set_coordinate_system()` first validates and normalizes a genuinely new
+requested coordinate system. It then invokes the guard before changing
+app-state fields, emitting `coordinate_system_changed`, or removing viewer
+layers. `clear_coordinate_system()` follows the same guarded path.
+
+If the guard returns `False`, `set_coordinate_system()` returns `False` and the
+old coordinate system, Shapes edit session, widget selectors, emitted events,
+and viewer layers remain unchanged. A rejected change originating from the
+Shapes Annotation, Viewer, or Object Classification combo resynchronizes that
+control to the unchanged app-state coordinate system. If the guard returns
+`True`, the existing commit, event, and layer-removal flow proceeds.
+
+#### Standalone Shapes Annotation integration
+
+The current widget exposes one reusable session boundary:
+
+```python
+class ShapesAnnotation(QWidget):
+    def try_close_edit_session(
+        self,
+        *,
+        reason: Literal["coordinate_system", "shapes_target"],
+    ) -> bool:
+        """End the edit session, prompting before discarding unsaved changes."""
+```
+
+It returns `True` when no session exists, after releasing a clean session, or
+after the user accepts discard. It returns `False` when the user cancels and
+leaves the session unchanged. The `reason` preserves the existing specific
+warning for a coordinate-system change versus a Shapes-target switch.
+
+The standalone widget installs a guard that calls:
+
+```python
+shapes_annotation.try_close_edit_session(
+    reason="coordinate_system",
+)
+```
+
+Its own coordinate-system combo no longer performs a separate local release;
+it calls `HarpyAppState.set_coordinate_system()` and relies on the same guard
+used by every external source. Shapes-target changes call
+`try_close_edit_session(reason="shapes_target")` directly because they are
+local widget state rather than HarpyAppState state.
+
+The flow is:
+
+    any widget requests another coordinate system through HarpyAppState
+        ↓
+    standalone ShapesAnnotation coordinate-system guard
+        ↓
+    ShapesAnnotation.try_close_edit_session(reason="coordinate_system")
+        ├── cancelled
+        │       ↓ no app-state, selector, event, session, or layer change
+        └── accepted
+                ↓ widget completes its own session/layer cleanup
+    HarpyAppState commits and emits the coordinate-system change
+        ↓
+    existing widget refresh and old-coordinate-system layer cleanup continue
+
+The standalone widget removes its guard during teardown. SpatialData
+replacement remains outside this guard: `set_sdata()` has broader dataset and
+layer lifecycle semantics, and the shared dirty-dataset replacement guard
+remains a Slice 8 responsibility.
+
+#### Required implementation documentation
+
+The guard is a safety boundary against silent loss of unsaved Shapes geometry,
+not a generic callback convenience. The implementation must include:
+
+- a `HarpyAppState.set_coordinate_system()` docstring stating that the guard
+  runs before state mutation, `coordinate_system_changed` emission, and layer
+  removal, and that rejection leaves all three untouched;
+- guard-installation documentation describing the single-owner contract and
+  teardown responsibility;
+- a Shapes Annotation guard-callback docstring explaining that a coordinate
+  change can originate from another widget while edits exist only in the
+  editable napari layer;
+- a concise inline comment at the guard invocation explaining why moving it
+  after mutation or layer removal would permit silent data loss;
+- focused test names and assertions that act as executable documentation.
+
+A generic comment such as "run change guard" is insufficient; the code must
+name the unsaved-Shapes data-loss condition and ordering guarantee directly.
 
 Deliverables:
 
-- registered Spatial Query dock widget and plugin manifest entry;
-- coordinate system, Shapes, labels, table, target-column controls;
-- centroid cache status and explicit Recalculate centroids action;
-- dependent filtering with stable identity preservation;
-- default spatial_annotation behavior;
-- Shapes Annotation dirty-session blocker;
-- status cards, tooltips, accessible names, and selector-state tests.
+- `CoordinateSystemChangeRequest`, the optional HarpyAppState guard, and
+  guarded `set_coordinate_system()`/`clear_coordinate_system()` behavior;
+- public `ShapesAnnotation.try_close_edit_session(reason=...)` extracted
+  from the current private dirty confirmation and cleanup paths;
+- standalone Shapes Annotation guard installation and teardown;
+- exactly-once routing for local and external coordinate-system changes;
+- existing Shapes-target behavior routed through the same public session
+  release helper without using the app-state guard;
+- the required docstrings and safety-ordering inline comment;
+- focused app-state and current Shapes Annotation regression tests.
 
 Exit criteria:
 
-- Run is enabled only for a complete valid/rebuild-authorized request;
+- a rejected coordinate-system request from Shapes Annotation, Viewer, Object
+  Classification, or another source changes no app-state field, emits no
+  `coordinate_system_changed` event, removes no viewer layer, and preserves the
+  edit session and unsaved geometry;
+- an accepted request invokes the guard exactly once before state mutation,
+  event emission, and layer removal, then follows the existing refresh flow;
+- the local Shapes Annotation coordinate-system combo does not perform a
+  second release check;
+- Shapes-target cancellation continues to preserve the old selection and edit
+  session with its target-specific warning;
+- widget teardown removes the guard;
+- code documentation explicitly explains the data-loss condition and
+  safety-critical ordering;
+- no parent Annotation widget, selector move, canonical-center behavior,
+  Spatial Query behavior, or table mutation is introduced.
+
+### Slice 6b: Parent Annotation widget foundation
+
+**Implementation status: Implemented.**
+
+This slice performs only the architectural refactor needed to establish the
+final dock hierarchy:
+
+    AnnotationWidget
+        └── ShapesAnnotation
+
+The Spatial Query child is not introduced or integrated yet. Slice 6b reuses
+the tested coordinate-system guard from Slice 6a unchanged and transfers guard
+installation ownership from the standalone Shapes child to the registered
+parent.
+
+The parent owns the shared selectors and committed selection; the child owns
+the edit session. The existing private Shapes target becomes a small shared UI
+model:
+
+```python
+@dataclass(frozen=True)
+class ShapesAnnotationTarget:
+    mode: Literal["create_new", "edit_existing"]
+    existing_shapes_name: str | None = None
+
+
+@dataclass(frozen=True)
+class AnnotationContext:
+    sdata: SpatialData | None
+    coordinate_system: str | None
+    shapes_target: ShapesAnnotationTarget | None
+    has_unsaved_shapes_changes: bool
+
+    @property
+    def saved_shapes_name(self) -> str | None:
+        target = self.shapes_target
+        if target is None or target.mode != "edit_existing":
+            return None
+        return target.existing_shapes_name
+```
+
+`saved_shapes_name` is `None` for a proposed create-new name before its first
+successful save. An existing selected Shapes element remains identified during
+editing; `has_unsaved_shapes_changes=True` tells downstream consumers that its
+saved geometry must not currently be queried. Dirty state remains derived from
+the Shapes child's existing clean-layer snapshot rather than a parallel dirty
+registry. These shared UI-only models live in
+`widgets/annotation/models.py`, not the core spatial-query package.
+
+The parent exposes:
+
+```python
+class AnnotationWidget(QWidget):
+    annotation_context_changed = Signal(object)
+
+    @property
+    def annotation_context(self) -> AnnotationContext: ...
+```
+
+The child retains the Slice 6a `try_close_edit_session()` API and additionally
+exposes:
+
+```python
+class ShapesAnnotation(QWidget):
+    edit_session_dirty_changed = Signal(bool)
+    shapes_target_change_requested = Signal(object)
+    edit_session_saved = Signal(object)
+
+    @property
+    def has_unsaved_changes(self) -> bool: ...
+
+    def apply_annotation_context(self, context: AnnotationContext) -> None:
+        """Adopt a context already committed by the parent."""
+```
+
+`apply_annotation_context()` prepares or opens the edit workflow for a context
+already committed by the parent. It must not prompt, alter parent selectors, or
+change HarpyAppState.
+
+The child has one context-driven construction mode. It owns the Shapes edit
+controls, edit session, editable layer, and status feedback, but never creates
+its own coordinate-system or Shapes-target selectors. Direct
+`ShapesAnnotation(...)` construction remains supported for tests and
+programmatic embedding; the child is inactive until
+`apply_annotation_context()` supplies a usable context. Do not introduce an
+`embedded=True` option, a compatibility mode that reconstructs the old outer
+dock, or two parallel selector-ownership paths. The registered napari command
+constructs `AnnotationWidget`, which supplies the complete user-facing
+workflow.
+
+The three child signals have distinct responsibilities:
+
+- `edit_session_dirty_changed` emits whenever the child's snapshot-derived
+  boolean dirty state changes; the parent republishes one corresponding
+  `AnnotationContext`;
+- `shapes_target_change_requested` carries a `ShapesAnnotationTarget` when a
+  compatible active primary Shapes layer asks to become the selected target;
+  the parent runs the ordinary guarded Shapes-target transition before
+  committing it;
+- `edit_session_saved` carries the resulting
+  `ShapesAnnotationTarget.edit_existing(...)` after a successful save. When
+  the parent context still contains `create_new`, this promotes the target
+  without closing or reopening the now-clean edit session. For an already
+  selected existing target, it refreshes context without creating a target
+  transition.
+
+`edit_session_saved` is a local parent-child UI notification. The existing
+`ShapesElementWrittenEvent` remains the shared cross-widget notification that
+an in-memory Shapes element was written; neither signal replaces or duplicates
+the other's responsibility.
+
+For coordinate-system changes from any widget, the parent-owned Slice 6a guard
+delegates once to
+`try_close_edit_session(reason="coordinate_system")`. After acceptance,
+HarpyAppState commits and emits the change; the parent commits its selectors and
+`AnnotationContext`, asks the child to adopt that context, and publishes one
+final context notification. A Shapes-target change follows the same local
+sequence with `reason="shapes_target"` but does not pass through HarpyAppState.
+Cancellation restores the old selector and publishes no intermediate context.
+
+The parent suppresses child dirty/session notifications during an accepted
+transition. Siblings observe the old context after cancellation or one final
+new context after acceptance, never a transient clean version of the old
+target created during cleanup.
+
+A successful first save is not a request to leave the edit session. The child
+emits `edit_session_saved`, and the parent promotes `create_new` to
+`edit_existing`, updates context, and publishes without releasing or reopening
+the clean session. Compatible active-primary-Shapes adoption instead emits
+`shapes_target_change_requested` and requests the normal guarded parent
+Shapes-target transition.
+
+Deliverables:
+
+- `widgets/annotation/widget.py` with the registered parent
+  `AnnotationWidget` and `widgets/annotation/models.py` with the two UI models;
+- change only the existing Annotation command's Python target to
+  `AnnotationWidget`, retaining command ID `napari-harpy.shapes_annotation`,
+  display name Annotation, `Interactive(..., widgets="shapes_annotation")`,
+  and exactly one dock contribution;
+- move coordinate-system and Shapes-target selectors, option discovery, outer
+  dock surface, logo, scroll area, selector form, and committed selection state
+  into the parent;
+- embed the remaining Shapes edit workflow without duplicate shared controls
+  or dock chrome; keep `ShapesAnnotation` independently constructible and
+  publicly importable as one context-driven child that remains inactive until
+  supplied a usable `AnnotationContext`, with no dual standalone mode;
+- transfer Slice 6a guard installation and teardown ownership to the parent
+  without changing the guard's app-state semantics or safety documentation;
+- implement parent commit, child context adoption, final-only context
+  publication, and dirty-state reporting;
+- route dirty-state publication, first save, and active-primary-Shapes adoption
+  through their explicit child signals and distinct parent paths described
+  above;
+- preserve all polygon create/edit/hole/validate/save/discard behavior, status
+  feedback, table events, and persistence behavior;
+- update lazy exports and add focused parent, manifest, compatibility,
+  transition, dirty-state, first-save, adoption, and guard-ownership tests.
+
+Exit criteria:
+
+- napari exposes one Annotation dock and no Spatial Query dock, with the visible
+  Shapes workflow behaving as before;
+- the parent is the single source and publication boundary for shared
+  selectors and `AnnotationContext`;
+- a proposed unsaved create-new name is never exposed as
+  `saved_shapes_name`;
+- cancellation preserves selectors, HarpyAppState, the edit session, and the
+  published context; acceptance publishes exactly one final context after
+  child cleanup and adoption;
+- first save promotes the saved target without releasing or reopening the
+  current session, while active-primary-Shapes adoption cannot replace a dirty
+  session without accepted preflight;
+- direct child construction creates no duplicate shared selector or outer dock
+  mode and becomes operational only after receiving a usable context;
+- the three child signals retain their distinct dirty-state, adoption-request,
+  and successful-save responsibilities, while `ShapesElementWrittenEvent`
+  remains the shared Shapes-write notification;
+- the parent owns the guard lifecycle, and closing it removes the guard;
+- existing direct `ShapesAnnotation` construction, the historical command ID,
+  and the historical `Interactive` selector remain valid;
+- no canonical-center, Spatial Query, or table-annotation behavior is added.
+
+### Slice 6b follow-up: Shapes dirty-event filtering
+
+**Implementation status: Implemented.**
+
+This small follow-up tightens the dirty-state publication introduced by Slice
+6b. Napari Shapes operations emit pre-mutation `data` actions (`ADDING`,
+`REMOVING`, or `CHANGING`) followed by the corresponding completed action
+(`ADDED`, `REMOVED`, or `CHANGED`). Rebuilding the complete
+geometry-and-features snapshot for a pre-mutation event performs unnecessary
+work and still sees the previous clean state.
+
+The Shapes child therefore listens only to the active annotation layer's
+`data` emitter, ignores all three pre-mutation actions, and evaluates dirty
+state for the three completed actions. The callback contract is intentionally
+strict: a connected event must expose `type="data"` and an `action`. Missing
+actions or unexpected event types fail loudly instead of being normalized or
+silently accepted.
+
+The child deliberately does not subscribe to `layer.events.features`.
+Napari-harpy currently provides no feature-only Shapes editing workflow, and
+napari updates row-aligned features before emitting the completed `data` event
+for ordinary shape additions and removals. Listening to `features` as well
+would therefore repeat the same complete snapshot comparison. Features remain
+part of the authoritative clean snapshot, so an unexpected feature-only
+mutation is still detected when an edit session is closed.
+
+This is only an event-filtering optimization. It must retain
+`_annotation_layer_has_unsaved_changes()` and the existing exact comparison
+against `_annotation_clean_snapshot` as the source of truth. An event must not
+unconditionally mark the session dirty: if the geometry and features are
+restored exactly to their clean state, the parent context must be allowed to
+return to `has_unsaved_shapes_changes=False`.
+
+Focused tests must establish that:
+
+- `ADDING`, `REMOVING`, and `CHANGING` perform no dirty-state evaluation or
+  parent-context publication;
+- `ADDED`, `REMOVED`, and `CHANGED` each trigger dirty-state evaluation;
+- a data event without an action fails loudly, and an unexpected `features`
+  event is rejected by the data-only callback;
+- repeated events that do not change the derived boolean do not produce
+  duplicate `edit_session_dirty_changed` notifications.
+
+### Slice 6c: Explicit coordinate-system change participant
+
+**Implementation status: Implemented.**
+
+This slice makes the pre-change relationship introduced in Slice 6a explicit
+after Slice 6b has established the parent Annotation widget as its long-term
+owner. The pre-change boundary remains in `HarpyAppState` because a shared
+coordinate-system transition can otherwise discard another workflow's unsaved
+state. Viewer and Object Classification must not acquire a direct dependency
+on the Annotation widget.
+
+The refactor replaces the opaque stored `Callable` with a named participant
+contract:
+
+```python
+class CoordinateSystemChangeParticipant(Protocol):
+    def prepare_coordinate_system_change(
+        self,
+        request: CoordinateSystemChangeRequest,
+    ) -> bool: ...
+
+
+class HarpyAppState:
+    def register_coordinate_system_change_participant(
+        self,
+        participant: CoordinateSystemChangeParticipant,
+    ) -> None: ...
+
+    def unregister_coordinate_system_change_participant(
+        self,
+        participant: CoordinateSystemChangeParticipant,
+    ) -> bool: ...
+```
+
+`AnnotationWidget` implements
+`prepare_coordinate_system_change(request)` and delegates exactly once to its
+Shapes child:
+
+```python
+def prepare_coordinate_system_change(
+    self,
+    request: CoordinateSystemChangeRequest,
+) -> bool:
+    return self.shapes_annotation.try_close_edit_session(
+        reason="coordinate_system",
+    )
+```
+
+`HarpyAppState.set_coordinate_system()` then expresses the mediation in terms
+of the named role:
+
+```python
+participant = self._coordinate_system_change_participant
+if participant is not None:
+    if not participant.prepare_coordinate_system_change(request):
+        return False
+```
+
+The contract remains one optional participant per viewer session. This is not
+a general callback registry: only the parent Annotation workflow currently
+owns state that must synchronously approve a coordinate-system change. The
+registration API rejects replacement by a different active participant, and
+unregistration is identity-safe so teardown of an older parent cannot remove
+a newer owner's protection.
+
+Viewer and Object Classification continue to depend only on
+`HarpyAppState.set_coordinate_system()` and its documented possibility of
+rejection. They do not import, discover, or call `AnnotationWidget` or
+`ShapesAnnotation`. The explicit participant name makes the runtime mediation
+discoverable without pretending that the unavoidable cross-workflow
+coordination has disappeared.
+
+Deliverables:
+
+- add `CoordinateSystemChangeParticipant` as the named structural contract;
+- remove the `CoordinateSystemChangeGuard` callable alias and the
+  `set_coordinate_system_change_guard()` / identity-based clear API;
+- replace them with explicit participant registration and identity-safe
+  unregistration;
+- make the Slice 6b parent `AnnotationWidget` implement and register the
+  participant contract, delegating preflight to its Shapes child exactly once;
+- remove bound-method guard storage from the Annotation widget;
+- preserve the Slice 6a validation, rejection, selector-resynchronization,
+  event-ordering, layer-preservation, and SpatialData-replacement boundaries;
+- update documentation and focused app-state, parent, Viewer, and Object
+  Classification tests to use participant terminology.
+
+Exit criteria:
+
+- constructing the Shapes child alone no longer modifies shared app-state
+  transition behavior;
+- the registered parent is the explicit coordinate-system change participant
+  for its viewer session;
+- app-state code calls a named participant method rather than an arbitrary
+  stored callable;
+- rejected and accepted transitions remain behaviorally identical to Slice
+  6a, including exactly-once preflight and unchanged state on rejection;
+- Viewer and Object Classification retain no dependency on Annotation widget
+  types or internals;
+- participant teardown is identity-safe and leaves no stale preflight owner;
+- no Spatial Query, canonical-center, table mutation, or viewer-styling
+  behavior is introduced.
+
+### Slice 6d: Spatial annotation viewer-styling foundation
+
+**Implementation status: Implemented.**
+
+This slice isolates the small amount of primary-label layer orchestration that
+is specific to spatial annotation. It must build on the existing generic
+table-backed labels styling API rather than reproduce palette resolution or
+Object Classification semantics.
+
+The boundary is one stateless function rather than a controller or another
+state-owning class:
+
+```python
+def load_and_style_spatial_annotation_labels(
+    viewer_adapter: ViewerAdapter,
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    labels_name: str,
+    table_name: str,
+    column_name: str,
+) -> LabelsLoadResult:
+    ...
+```
+
+It performs only the following orchestration:
+
+```text
+validate categorical annotation column
+    ↓
+ViewerAdapter.ensure_labels_loaded()               # primary layer
+    ↓
+apply_table_color_source_to_labels_layer()
+    ↓
+ViewerAdapter.sync_labels_display_after_colormap_change()
+    ↓
+ViewerAdapter.activate_layer()
+```
+
+The function constructs the following generic styling request internally; its
+callers do not need to understand generic viewer color-source configuration:
+
+```python
+TableColorSourceSpec(
+    table_name=table_name,
+    source_kind="obs_column",
+    value_key=column_name,
+    value_kind="categorical",
+)
+```
+
+The selected existing column must use pandas categorical dtype and contain
+only string categories, matching the Spatial Annotation apply contract. Expose
+the existing private validation in `core/spatial_query/annotation.py` as one
+shared core helper and use it from annotation preparation, this styling
+boundary, and the later column-discovery implementation. Column validation
+must happen before loading or changing a viewer layer. Table-binding
+validation remains owned by `apply_table_color_source_to_labels_layer()` and
+must not be repeated as a separate preflight scan.
+
+Deliverables:
+
+- a thin `widgets/spatial_query/viewer_styling.py` boundary for loading or
+  reusing the selected labels element as the primary labels layer, activating
+  it, and applying one selected annotation column as its color source;
+- reuse of the existing `LabelsLoadResult`, including the layer-created and
+  palette-resolution information; no spatial-query-specific result dataclass;
+- a shared core validator for categorical string annotation columns, replacing
+  the private Slice 5-only validation path rather than duplicating its rules;
+- valid stored `<column>_colors` palette preservation and stable
+  position-derived display defaults when that palette is missing or invalid,
+  through the shared styling and palette APIs;
+- missing annotation values rendered through the shared categorical missing
+  color;
+- no table, palette, dirty-state, canonical-cache, or persisted-data mutation
+  during layer loading or styling;
+- focused boundary tests for primary-layer creation, reuse, activation,
+  coloring, validation-before-loading, and no-mutation behavior. Existing
+  shared palette and labels-colormap tests remain responsible for stored,
+  missing, invalid, and missing-value color semantics.
+
+Palette resolution during styling is read-only:
+
+- a valid stored `<column>_colors` palette is used unchanged;
+- a missing or invalid stored palette produces the shared stable viewer-only
+  fallback;
+- styling never creates, repairs, or replaces `<column>_colors` in `.uns`;
+- palette persistence remains part of an effective Spatial Annotation apply;
+- a configured New column is not styleable until its first effective Apply has
+  created the categorical column.
+
+Exit criteria:
+
+- the styling boundary contains only spatial-annotation layer orchestration;
+- categorical-string column validation precedes viewer-layer loading or
+  restyling, while the generic styling helper performs table-binding
+  validation exactly once;
+- the selected labels element is loaded or reused as the registered primary
+  labels layer, styled, synchronized, and activated;
+- it does not introduce a second labels overlay, classifier-specific class
+  semantics, a color-source ownership policy, or a widget controller;
+- it does not call `ViewerAdapter.ensure_styled_labels_loaded()`, because that
+  API represents a separate styled overlay rather than the shared primary
+  annotation layer;
+- all palette selection remains delegated to the shared core/viewer contracts;
+- only napari layer presentation state may change; the AnnData table, app
+  dirty manifest, canonical cache, and persisted data remain unchanged;
+- if inspection shows that an operation is already fully expressed by an
+  existing helper, the spatial-query boundary delegates to that helper instead
+  of wrapping it with additional state.
+
+### Slice 6e: Spatial Query child widget shell
+
+**Implementation status: Implemented.**
+
+Build the Spatial Query child as an independently testable, embeddable widget.
+It is not registered as a napari dock and is not yet composed into the parent
+Annotation widget.
+
+The public child boundary is:
+
+```python
+class SpatialQuery(QWidget):
+    run_requested = Signal()
+
+    def apply_annotation_context(
+        self,
+        context: AnnotationContext,
+    ) -> None:
+        ...
+```
+
+The signal is a parameterless action intent in this slice. No calculation or
+query request dataclass is introduced merely to transport current control
+values. The future execution layer captures and validates immutable
+computational inputs synchronously when it accepts the intent, before starting
+background work.
+
+The child stores only the last parent-supplied `AnnotationContext` and the
+current `CanonicalCacheReport`, when inspection succeeds. Labels, table,
+target-column mode, and column name remain control-owned selection state and
+are read from combo `itemData()` or the new-column line edit. Do not mirror
+them in parallel `_selected_*` fields.
+
+The target-column controls are explicit rather than represented by another
+target dataclass:
+
+```text
+Target column mode: Existing column | New column
+
+Existing column
+    → compatible categorical-string column combo
+
+New column
+    → line edit initially containing "spatial_annotation"
+```
+
+Add one shared core discovery helper:
+
+```python
+def get_compatible_spatial_annotation_column_names(
+    sdata: SpatialData,
+    table_name: str,
+) -> list[str]:
+    ...
+```
+
+It preserves `.obs` column order, excludes the table `region_key` and
+`instance_key`, ignores non-string column names, and applies the same internal
+categorical-string predicate as
+`require_compatible_spatial_annotation_column()`. Discovery and fail-loud
+validation must not maintain separate definitions of column compatibility.
+
+Selection dependencies are applied in this order:
+
+```text
+AnnotationContext.sdata + coordinate_system
+    → supported 2D labels elements in that coordinate system
+        → tables declaring the labels element as an annotated region
+            → existing compatible columns or validated new-column intent
+                → canonical-cache inspection for the labels/table pair
+```
+
+Refresh dependent controls with signals blocked. Preserve an explicitly
+selected labels element by stable identity when it remains valid; otherwise
+leave the labels selector at `Choose a labels element` and do not populate or
+inspect its downstream table/cache state. Other dependent controls use the
+documented `spatial_annotation` default policy once labels and table context
+exists. A create-new Shapes target has no saved query geometry. A supplied
+context with no `saved_shapes_name`, or with
+`has_unsaved_shapes_changes=True`, disables Run in this child. Slice 6f wires
+the live parent publication into this already-defined behavior rather than
+adding another dirty-session policy.
+
+Inspect the canonical cache once after a labels/table selection settles and
+retain that report until an upstream selection or explicit refresh invalidates
+it. Do not rebuild the report during status-card rendering. Report states map
+to the shell as follows:
+
+```text
+VALID
+    → Run will reuse existing centers
+
+ABSENT
+    → Run will calculate centers first
+
+PARTIAL
+    → Run will calculate centers for the selected labels region
+
+STALE
+    → Run will refresh centers for the selected labels region
+
+INVALID
+    → Run will report the mismatch and rebuild conservatively
+```
+
+Every successfully constructed report is rebuild-authorized through Run. Run
+requires a saved clean Shapes context and a valid target-column intent; it
+automatically reuses, calculates, refreshes, or rebuilds canonical centers as
+indicated by the report.
+
+Viewer styling is user-driven in this shell. An explicit labels or existing
+target-column selection uses
+`load_and_style_spatial_annotation_labels()` to load or reuse, style, and
+activate the primary labels layer. Programmatic context and dependent-selector
+refreshes do not silently reapply Spatial Query coloring. A New column is not
+a color source before its first effective Apply.
+
+Add `widgets/spatial_query/status_card.py` as a pure status-spec builder. It
+receives already-derived selection and cache state and returns presentation
+data; it does not inspect SpatialData, mutate widget state, or own controller
+messages. Busy, cancellation, execution success, and execution error cards are
+added when the execution flow is connected.
+
+Shell validation remains cheap and synchronous. Before enabling Run it checks
+the saved/clean Shapes context, supported 2D labels selection, linked table and
+successful canonical inspection, and target-column intent. Complete
+Shapes-geometry and element-to-element transformation snapshot validation is
+performed synchronously by the execution flow after Run is requested and
+before any expensive centroid worker starts; the shell must not duplicate the
+core query-construction contract.
+
+Deliverables:
+
+- an unregistered Spatial Query child accepting the parent-supplied
+  `AnnotationContext` rather than owning duplicate coordinate-system or Shapes
+  selectors;
+- child controls for labels, linked table, and target-column intent;
+- a shared core discovery helper for compatible categorical string annotation
+  columns, excluding `region_key` and `instance_key`, so Qt code does not
+  duplicate the Slice 5 target rules;
+- dependent filtering with stable identity preservation and default
+  `spatial_annotation` new-column behavior;
+- centroid-cache inspection status and one explicit Run action intent;
+- primary labels-layer load/activation and existing-column visualization
+  through the Slice 6d styling boundary;
+- status cards, tooltips, accessible names, and focused selector/state tests.
+
+The action controls in this shell validate state and emit intent only. They do
+not calculate centers, run a query, mutate a table, or publish dirty state;
+those execution paths belong to Slices 7a and 7b. The existing
+`SpatialQueryController` is deliberately not constructed or driven by this
+shell.
+
+Exit criteria:
+
+- Run is enabled only for a complete valid or rebuild-authorized request;
 - first-run cost and cache reuse state are clear before execution;
-- Recalculate centroids is available from a valid labels/table selection even
-  when Shapes or annotation-target inputs are incomplete;
-- selection/inspection never mutates or dirties a table.
+- create-new or dirty Shapes context disables Run directly in the child;
+- a compatible existing annotation column can be visualized without mutating
+  the table, and a configured New column is not treated as available before
+  its first effective Apply;
+- programmatic refresh cannot silently reclaim primary-label coloring;
+- in-memory SpatialData remains eligible for calculation and annotation even
+  though persistence actions require a backed object;
+- selection, inspection, and styling never mutate or dirty a table;
+- focused tests can drive the child with supplied context without constructing
+  the parent widget.
 
-### Slice 7: Async calculate-query-review-apply flow
+### Slice 6f: Annotation parent/child integration
+
+**Implementation status: Implemented.**
+
+Compose the two independently established children into the final dock
+hierarchy:
+
+    AnnotationWidget
+        ├── shared Coordinate System selector
+        ├── shared Shapes selector
+        ├── ShapesAnnotation
+        └── SpatialQuery
+
+Keep the children stacked in that order in the parent's existing scroll area:
+Shapes Annotation first and Spatial Query directly below it. Do not introduce
+tabs, another nested navigation control, a second top-level widget surface, or
+a separate dock. Construct both children with the same napari viewer so they
+resolve the same per-viewer `HarpyAppState`.
+
+This slice wires shared selection and dirty-session context only. It does not
+yet implement asynchronous calculate-query-apply execution.
+
+Use the parent's existing final-context publication as the only Spatial Query
+context input:
+
+```python
+self.annotation_context_changed.connect(
+    self.spatial_query.apply_annotation_context,
+)
+```
+
+Establish this connection before the parent's initial `refresh_from_sdata()`
+so the Spatial Query child receives the first published context. Do not also
+call `SpatialQuery.apply_annotation_context()` through a parallel path. The
+parent continues to call Shapes child commands directly where it needs
+synchronous completion, return values, exception propagation, or signal
+blocking; `annotation_context_changed` is the already-established publication
+boundary for the final immutable context consumed by other children and
+observers.
+
+The normal publication order is:
+
+```text
+AnnotationWidget builds the candidate AnnotationContext
+    ↓
+ShapesAnnotation.apply_annotation_context(context)
+    ↓
+parent reads the Shapes child's final dirty state
+    ↓
+parent stores and emits the final AnnotationContext
+    ↓
+SpatialQuery.apply_annotation_context(context)
+```
+
+Dirty-state publication follows the same boundary:
+
+```text
+ShapesAnnotation.edit_session_dirty_changed(dirty)
+    ↓
+AnnotationWidget replaces has_unsaved_shapes_changes in its context
+    ↓
+AnnotationWidget emits annotation_context_changed(context)
+    ↓
+SpatialQuery refreshes its readiness from that context
+    ↓
+dirty=True disables Run
+```
+
+Spatial Query must not read Shapes child state directly, and the parent must
+not duplicate the child's Run blocker. A successful Shapes save, discard, or
+other final dirty-to-clean transition republishes the resulting context so the
+Spatial Query child observes the current saved in-memory geometry. The child
+retains valid labels, table, target-mode, and column selections across context
+updates for the same SpatialData object; a SpatialData replacement resets
+those dependent selections through its existing
+`apply_annotation_context()` contract.
+
+`SpatialQuery.apply_annotation_context()` must distinguish context fields that
+invalidate its selection dependencies from fields that affect only query
+readiness. A SpatialData identity or coordinate-system change refreshes the
+labels, linked tables, target columns, and canonical-centers cache report. A
+Shapes-target or `has_unsaved_shapes_changes` change for the same SpatialData
+and coordinate system updates readiness only; it must retain the current
+selectors and captured cache report and must not recalculate the selected
+region's instance-set digest:
+
+```python
+previous_context = self._annotation_context
+selection_dependencies_changed = (
+    context.sdata is not previous_context.sdata
+    or context.coordinate_system != previous_context.coordinate_system
+)
+self._annotation_context = context
+
+if not selection_dependencies_changed:
+    # Shapes target and dirty state affect Run readiness, but they do not
+    # invalidate the labels/table selection or its captured cache report.
+    self._refresh_controls_and_status()
+    return
+
+# Refresh dependent selectors and inspect the canonical-centers cache.
+```
+
+Keep this distinction explicit in the method docstring and retain an inline
+comment at the early return. The optimization is part of the lifecycle
+contract, not merely a micro-optimization: Shapes dirty-state publication must
+not trigger repeated table instance-set hashing. User-driven labels/table
+changes continue to inspect through their existing handlers.
 
 Deliverables:
 
-- worker orchestration with generation tokens and two execution phases;
-- standalone Recalculate centroids orchestration through the forced ensure
-  mode, ending after cache installation rather than continuing into query or
-  annotation review;
-- progress, cancellation, cleanup, and error routing;
-- main-thread cache installation/revalidation;
-- no-result outcome;
-- Apply dialog with live counts and mandatory overwrite warning;
-- main-thread annotation apply and undo UI;
-- controller/dialog async tests.
+- embed the Spatial Query child in the existing parent Annotation widget while
+  retaining one Annotation manifest entry and adding no separate Spatial Query
+  dock contribution;
+- one parent-owned and published `AnnotationContext` shared with both children;
+- connect the parent's existing `annotation_context_changed` signal to the
+  Spatial Query child's `apply_annotation_context()` method before initial
+  refresh, with no duplicate direct context-delivery path;
+- unsaved edits to the selected Shapes element reach the child through
+  `AnnotationContext.has_unsaved_shapes_changes`, exercising the child's
+  existing Run blocker and explanation; no second parent-owned blocking rule
+  or general cross-widget Shapes dirty-state registry is introduced;
+- refresh the Spatial Query child after a successful Shapes save or discard so
+  it observes the current saved in-memory geometry;
+- preserve the Shapes edit session when the Spatial Query child activates the
+  primary labels layer;
+- keep `run_requested` as an unconnected intent-only signal in this integration
+  slice; do not construct or drive the Spatial Query controller here;
+- focused tests covering initial context delivery, coordinate-system and
+  Shapes-target publication, dirty/clean transitions, successful-save refresh,
+  same-SpatialData selection preservation, SpatialData-replacement reset,
+  Shapes-session preservation during labels-layer activation, and existing
+  Shapes Annotation regressions;
+- a focused inspection-count test proving that dirty-only and Shapes-target-only
+  context publications reuse the captured cache report, while SpatialData or
+  coordinate-system changes follow the full dependent-selector and cache
+  refresh path.
 
 Exit criteria:
 
-- napari remains responsive during global aggregation;
-- cancel/stale/error paths cannot install, open late dialogs, or annotate;
-- successful Recalculate centroids installs only the refreshed cache, marks the
-  shared table dirty, and opens no query/result dialog;
-- cache installation and annotation application are visibly distinct state
-  changes;
-- users always see affected and overwrite counts before annotation mutation.
+- napari exposes one Annotation dock containing both child workflows and no
+  separate Spatial Query dock;
+- coordinate-system and Shapes-target selection have one parent-owned source
+  of truth published to both children;
+- dirty selected Shapes geometry blocks Run, while a successful save refreshes
+  the Spatial Query child and makes the saved in-memory geometry eligible;
+- dirty-only and Shapes-target-only context changes never re-inspect the
+  canonical-centers cache or recalculate its instance-set digest;
+- parent context changes consistently refresh or invalidate dependent Spatial
+  Query selections and intent;
+- Spatial Query action signals remain execution-free and cause no calculation,
+  query, table mutation, or dirty-state publication in this slice;
+- the existing Shapes Annotation workflow remains behaviorally unchanged;
+- integration itself does not calculate centers, run a query, apply an
+  annotation, or dirty a table.
 
-### Slice 8: Shared events, persistence UX, and cross-widget synchronization
+### Slice 6g: Spatial Query labels-selection and viewer-layer lifecycle
+
+**Implementation status: Implemented.**
+
+Align Spatial Query with the established Object Classification labels
+selection lifecycle. A labels selection is an explicit request to load and
+display that element in the active coordinate system; it must not survive a
+coordinate-system transition or the removal of its corresponding primary
+labels layer merely because the SpatialData element itself remains available.
+
+This slice deliberately supersedes the shell-stage stable-identity
+preservation described in Slice 6e and the same-SpatialData preservation from
+Slice 6f for coordinate-system changes. Shapes-target and dirty-state-only
+context publications still preserve all Spatial Query selections and reuse the
+captured cache report.
+
+The coordinate-system transition is:
+
+```text
+accepted coordinate-system change
+    ↓
+AnnotationWidget publishes the new AnnotationContext
+    ↓
+SpatialQuery repopulates supported labels choices
+    ↓
+clear the labels selection even if its previous name remains available
+    ↓
+show "Choose a labels element"
+    ↓
+clear linked table, target-column, cache-report, styling-error, and readiness state
+    ↓
+do not load a labels layer and do not inspect the canonical-centers cache
+```
+
+The app-state boundary continues to remove Harpy-managed viewer layers outside
+the newly active coordinate system. Spatial Query must not attempt to preserve
+or immediately reload the old primary labels layer in the new coordinate
+system. The user makes a new explicit labels choice after the transition.
+
+Spatial Query also subscribes to the existing
+`ViewerAdapter.primary_labels_layers_changed` signal, as Object Classification
+already does. It resolves live availability through
+`get_loaded_primary_labels_layer()` rather than inspecting napari layer names
+or maintaining a second layer reference. The removal flow is:
+
+```text
+selected primary labels layer is removed from napari
+    ↓
+ViewerAdapter unregisters its binding
+    ↓
+primary_labels_layers_changed is emitted
+    ↓
+SpatialQuery finds no matching loaded primary layer
+    ↓
+clear labels selection and every dependent control/report
+    ↓
+show "Choose a labels element" and disable Run
+```
+
+Removing an unrelated primary labels layer must not affect the Spatial Query
+selection. Likewise, insertion of a primary labels layer by Viewer, Object
+Classification, or another consumer must not auto-select it in Spatial Query.
+The final invariant is one-way: a non-empty Spatial Query labels selection
+requires the matching primary labels layer to be loaded for the current
+SpatialData object and coordinate system, while a loaded layer does not imply
+that Spatial Query selected it.
+
+Keep this synchronization event-driven and control-owned:
+
+- do not add a parallel selected-labels field or retain a napari layer object
+  on `SpatialQuery`;
+- clear the combo and downstream state through one explicit helper so
+  coordinate changes and selected-layer removal follow the same contract;
+- guard only the widget's own synchronous load/style path if necessary to
+  avoid treating its successful layer registration as a disappearance;
+- clearing the selection must not inspect or mutate the canonical cache,
+  change the table, or affect the Shapes edit session;
+- widget destruction relies on Qt receiver teardown in the same way as the
+  existing Object Classification adapter-signal connection.
 
 Deliverables:
 
-- general table-state event supporting obs, obsm, and uns;
-- per-table dirty-component manifest and component-aware
-  mutation/persistence revisions;
-- Viewer and Object Classification targeted refresh behavior;
-- reusable Write Table State and Reload Table from zarr UI/service;
-- dirty reload write/discard/cancel behavior;
-- dirty-dataset close/replacement guard;
-- multi-widget and backed-zarr integration tests.
+- reset Spatial Query labels selection on every accepted coordinate-system
+  change, including when the previous element is valid in the new system;
+- retain the populated options but restore the `Choose a labels element`
+  placeholder and require a new explicit choice;
+- clear linked table, target-column controls, captured cache report and errors,
+  and Run readiness without performing cache inspection;
+- consume `primary_labels_layers_changed` and clear state when the selected
+  primary labels layer is manually removed;
+- ignore unrelated primary-label removal and all unrequested layer insertion;
+- update the earlier preservation-focused test and add focused
+  coordinate-change, selected-layer-removal, and unrelated-layer-removal
+  coverage.
 
 Exit criteria:
+
+- coordinate-system changes never preserve or auto-reload the Spatial Query
+  labels selection;
+- manual removal of the selected primary labels layer leaves no selected
+  labels/table/cache state behind and disables Run;
+- unrelated viewer-layer changes do not disturb a valid current selection;
+- no cache digest is recalculated until the user explicitly selects labels
+  again;
+- Object Classification and Spatial Query present the same labels-reset
+  behavior without sharing widget-local state.
+
+### Slice 6h: Unified Spatial Query status card
+
+**Implementation status: Implemented.**
+
+Replace the separate centroid-cache and Run-readiness cards introduced by the
+Spatial Query shell with one status card. The cache is no longer an independent
+user action: Run automatically reuses, calculates, extends, refreshes, or
+rebuilds centers. Presenting cache state separately can therefore duplicate
+selection blockers or show a warning card beside a successful `Spatial Query
+Ready` card. The unified card must explain one coherent current state.
+
+This slice deliberately supersedes the two-label presentation from Slice 6e.
+It changes presentation only; Run enablement, cache inspection, labels-layer
+lifecycle, controller boundaries, and table dirty state remain unchanged.
+
+Use one widget label, named for the complete workflow rather than one
+subsystem:
+
+```python
+self.status_label = QLabel()
+self.status_label.setObjectName("spatial_query_status_label")
+```
+
+Remove `cache_status_label` and `readiness_status_label`. Place the unified
+status card after the selector form and before the Run button, reusing the
+existing shared status-card styling and word wrapping.
+
+Consolidate the two pure builders into one:
+
+```python
+def build_spatial_query_status_card_spec(
+    *,
+    has_spatialdata: bool,
+    coordinate_system: str | None,
+    saved_shapes_name: str | None,
+    has_unsaved_shapes_changes: bool,
+    labels_name: str | None,
+    table_name: str | None,
+    cache_report: CanonicalCacheReport | None,
+    canonical_input_inspection_error: str | None,
+    target_error: str | None,
+    target_description: str | None,
+    layer_styling_error: str | None,
+) -> _SpatialQueryStatusCardSpec:
+    ...
+```
+
+The builder remains a presentation-only function. It must not inspect
+SpatialData, calculate a digest, mutate widget state, decide whether Run is
+enabled, or own controller messages. The widget continues to derive Run
+enablement from the same validated state and passes already-derived values to
+the builder.
+
+Use deterministic priority for incomplete or exceptional state:
+
+```text
+1. no SpatialData
+2. no coordinate system
+3. no saved Shapes element
+4. dirty Shapes edit session
+5. no labels selection
+6. no linked table
+7. live labels-source or table-binding inspection failure
+8. invalid annotation-target intent
+9. non-blocking labels-layer styling warning
+10. complete request, presented according to cache state
+```
+
+The first applicable state owns the title, message, and status kind. A live
+canonical-input inspection failure uses:
+
+```text
+title: Labels or Table Validation Failed
+kind: error
+message: the captured user-facing labels-source or table-binding validation error
+consequence: Spatial Query cannot calculate centers until this issue is resolved
+Run: disabled
+```
+
+For a complete labels/table selection, the widget must supply exactly one
+inspection outcome: either a `CanonicalCacheReport` or
+`canonical_input_inspection_error`. Supplying neither is an inconsistent
+internal orchestration state, not a user-facing cache condition.
+`SpatialQuery._refresh_controls_and_status()` must fail loudly with
+`RuntimeError` before deriving Run enablement or invoking the presentation-only
+builder. As a secondary function-contract safeguard, the builder also rejects
+both inconsistent argument combinations with `ValueError`: neither outcome
+supplied, or both a report and an error supplied. A labels-layer styling
+warning remains non-blocking and must say that Spatial Query can still run when
+the computational request is otherwise valid.
+
+For a complete request, incorporate cache behavior into the same card:
+
+```text
+VALID
+    → title: Spatial Query Ready
+    → kind: success
+    → say cached centers will be reused
+
+ABSENT
+    → title: Spatial Query Ready
+    → kind: info
+    → say centers will be calculated before querying
+
+PARTIAL
+    → title: Spatial Query Ready
+    → kind: info
+    → say centers for the selected labels region will be added
+
+STALE
+    → title: Spatial Query Ready
+    → kind: warning
+    → say centers for the selected region will be refreshed
+
+INVALID
+    → title: Spatial Query Ready
+    → kind: info
+    → say centers for the selected labels element will be recalculated before querying
+    → keep technical mismatch detail available only in the tooltip
+```
+
+Every complete-state card also identifies the saved Shapes element, selected
+labels element, and target-column description. Warning or informational color
+does not imply that Run is disabled: absent, partial, stale, and rebuildable
+invalid reports remain valid Run prerequisites because their recovery is
+automatic.
+
+An `INVALID` report is a successfully inspected, automatically recoverable
+cache state; it is not a user-actionable cache error. Run remains enabled. On
+Run, the existing managed cache is treated conservatively, no previously
+stored region is trusted, and centers for the currently selected labels
+element are recalculated before the query continues. Other regions are
+recalculated later only when selected. Do not expose the mismatch code in the
+primary status text or imply that every region will be recalculated eagerly.
+The mismatch detail may remain in the tooltip for diagnostics.
+
+This is distinct from a live source or table-binding inspection failure.
+`inspect_canonical_cache()` first needs to construct a trustworthy current
+labels-source signature and selected-region table binding. A `ValueError`,
+`TypeError`, or `KeyError` while resolving those live inputs means that no
+`CanonicalCacheReport` can be constructed:
+
+```text
+current labels source and table binding validate
+    → a CanonicalCacheReport is returned
+    → INVALID stored cache remains automatically recoverable
+    → Run stays enabled
+
+current labels source or table binding does not validate
+    → inspection raises before a report can be constructed
+    → no trustworthy source signature or row/instance binding exists
+    → recalculation cannot safely start
+    → show "Labels or Table Validation Failed"
+    → explain that centers cannot be calculated until the issue is resolved
+    → Run stays disabled
+```
+
+Examples of the blocking branch include a removed or unreadable selected
+labels element, malformed table linkage metadata, a missing region or instance
+key column, no rows for the selected labels region, and non-integer,
+non-positive, or duplicate region-local instance IDs. Discarding the existing
+cache cannot repair these live input problems. Conversely, malformed managed
+matrix or metadata contents are converted into deterministic mismatches on an
+`INVALID` report and must not enter this blocking branch.
+
+When Slice 7a connects execution, the same label displays busy, cancellation,
+no-result, success, and error messages. Controller-owned execution status
+temporarily takes presentation precedence over selection/cache readiness.
+After execution finishes or is dismissed, the widget rebuilds the ordinary
+unified status from current state. Do not reintroduce a second execution-only
+status label.
+
+Deliverables:
+
+- replace `cache_status_label` and `readiness_status_label` with one
+  `status_label`;
+- replace the two status-spec builders with one pure unified builder;
+- rename the captured failure to `canonical_input_inspection_error` and pass it
+  through the builder rather than constructing an exceptional card directly
+  in the widget;
+- make `_refresh_controls_and_status()` fail loudly before status rendering
+  when a complete labels/table selection supplies neither a cache report nor a
+  canonical-input inspection error;
+- make the pure builder explicitly require exactly one of `cache_report` and
+  `canonical_input_inspection_error` after labels and table selection are
+  complete;
+- retain the existing `_SpatialQueryStatusCardSpec` and shared rendering
+  helper;
+- remove duplicate unavailable/required messages and contradictory adjacent
+  success/warning cards;
+- update focused shell and parent-integration assertions to inspect the unified
+  label.
+
+Exit criteria:
+
+- Spatial Query renders exactly one workflow status card;
+- every selection blocker and cache state has one deterministic presentation;
+- a live labels-source or table-binding inspection failure is presented as
+  `Labels or Table Validation Failed`, includes the validation message and its
+  consequence for center calculation, and disables Run without calling the
+  cache invalid;
+- a returned `INVALID` report remains informational, recoverable, and
+  Run-enabled;
+- a complete rebuild-authorized request never shows a separate success card
+  beside a cache warning;
+- first-calculation, reuse, refresh, and rebuild behavior remain clear before
+  Run;
+- status rendering performs no cache inspection, hashing, viewer mutation, or
+  table mutation;
+- Run enablement is unchanged by the presentation refactor;
+- the one label is ready to receive Slice 7a execution status without adding a
+  parallel status surface.
+
+### Slice 6i: Neutral unannotated primary-label styling
+
+**Implementation status: Implemented.**
+
+Align the Spatial Query New-column presentation with Object Classification's
+neutral unannotated presentation. Before this slice, the shell loaded the
+primary labels layer through `ViewerAdapter.ensure_labels_loaded()` but left
+napari's per-instance default labels colors in place when the configured New
+column did not exist yet. Those colors had no annotation meaning and could
+suggest that instances already belonged to distinct annotation categories.
+
+This slice deliberately refines the earlier rule that a New column is not a
+color source before its first effective Apply. The nonexistent column still
+must not be treated as a table-backed color source. Instead, Spatial Query
+applies a viewer-only neutral state:
+
+```text
+New column, or no existing target column selected
+    → load or reuse the primary labels layer
+    → render background label 0 transparently
+    → render every foreground label with the shared missing/unannotated color
+    → do not create an obs column or palette
+
+compatible Existing column selected
+    → use its current categorical values
+    → use its valid stored palette or the shared read-only fallback palette
+
+Slice 7b: first effective Apply creates the New column
+    → store the categorical column and its palette atomically
+    → keep that column selected as an Existing target
+    → immediately replace the neutral presentation with table-backed coloring
+```
+
+Keep the current named-default behavior. `spatial_annotation` is the preferred
+conventional target, but it is not an unconditional color source:
+
+```text
+user explicitly selects a labels element in Spatial Query
+    → select its linked annotation table
+    → discover compatible categorical string columns
+    ↓
+compatible "spatial_annotation" column exists
+    → select Existing column mode
+    → select "spatial_annotation"
+    → color from its current categorical values and resolved palette
+
+"spatial_annotation" column does not exist
+    → select New column mode
+    → propose "spatial_annotation" as the new column name
+    → apply the neutral unannotated presentation
+
+"spatial_annotation" column exists but is incompatible
+    → exclude it from the Existing-column choices
+    → do not convert, repair, or overwrite it
+    → select New column mode with the colliding proposed default name
+    → apply the neutral unannotated presentation
+    → disable Run until the target collision is resolved
+    → require another compatible Existing column or a different New name
+```
+
+Compatibility here means pandas categorical dtype with only string categories.
+Plain integer, string, or object dtype is not compatible, and neither is a
+categorical column with non-string categories.
+
+The incompatible named-default branch must explain why the existing
+`spatial_annotation` column was not selected. A generic message that the New
+column name already exists is insufficient on its own. The status card should
+state that the existing column cannot be used because Spatial Query requires a
+categorical column with string categories, and direct the user to select
+another compatible Existing column or enter a different New-column name.
+
+Do not automatically select the first differently named compatible column.
+Those columns remain available in the Existing-column dropdown, but choosing
+one is an explicit user action. Once the user explicitly selects another
+compatible Existing column, that column is both the annotation target and the
+color source; later programmatic refreshes must not force the selection back
+to `spatial_annotation`.
+
+This convention parallels Object Classification without erasing the difference
+between the workflows:
+
+```text
+Object Classification
+    → fixed conventional annotation column: "user_class"
+    → available: color from its values
+    → absent: show the unannotated presentation
+
+Spatial Query
+    → preferred conventional annotation column: "spatial_annotation"
+    → compatible and selected: color from its values
+    → absent: propose it as New and show the neutral presentation
+    → another compatible Existing column may be selected explicitly
+```
+
+Only an explicit labels or annotation-target selection inside Spatial Query
+may claim the primary layer's presentation. A labels layer loaded by Viewer,
+Object Classification, or another workflow must not cause Spatial Query to
+select `spatial_annotation` or restyle that layer merely because it appeared
+in napari.
+
+Keep this as a stateless presentation boundary beside
+`load_and_style_spatial_annotation_labels()` in
+`widgets/spatial_query/viewer_styling.py`. Add a narrowly named helper rather
+than making a nonexistent column look like a `TableColorSourceSpec`, for
+example:
+
+```python
+def load_and_style_unannotated_spatial_annotation_labels(
+    viewer_adapter: ViewerAdapter,
+    *,
+    sdata: SpatialData,
+    coordinate_system: str,
+    labels_name: str,
+) -> LabelsLoadResult:
+    ...
+```
+
+The helper reuses `ViewerAdapter.ensure_labels_loaded()`, the existing labels
+colormap primitives, and the shared categorical missing/unannotated color. It
+then synchronizes the labels display and activates the primary layer. It must
+not import or reuse Object Classification's specialized
+`ViewerStylingController`: that controller owns integer `user_class` and
+classifier semantics, while Spatial Query needs only the same neutral visual
+meaning.
+
+The neutral colormap should use one constant default foreground color rather
+than materializing one value or color per instance. Applying it must not scan
+labels pixels, calculate canonical centers, derive table row mappings, or
+install fake layer features for a column that does not exist.
+
+The implementation ownership is intentionally split at the Apply boundary:
+
+```text
+Slice 6i
+    → provide the stateless neutral-style helper
+    → apply neutral or Existing-column styling from explicit selection actions
+    → expose the styling paths needed after a later annotation Apply
+
+Slice 7b
+    → perform the first effective annotation Apply
+    → create the New categorical column and palette atomically
+    → retain that column as the selected Existing target
+    → invoke Existing-column styling for the newly created annotation
+```
+
+Slice 6i does not introduce or simulate annotation Apply merely to demonstrate
+the final transition. Slice 7b owns that operational transition because it owns
+the query-and-Apply flow. Slice 6i only establishes and tests the presentation
+helpers and selection-driven behavior that Slice 7b will consume.
+
+Styling remains driven by explicit user actions:
+
+- explicitly selecting a labels element applies either its selected Existing
+  column or the neutral New-column presentation;
+- explicitly switching to New column, or entering Existing mode without
+  selecting a compatible column, applies the neutral presentation;
+- explicitly selecting a compatible Existing column applies table-backed
+  coloring immediately;
+- programmatic parent-context, selector, and table refreshes do not reclaim the
+  primary layer's presentation from another workflow;
+- changing only the proposed New-column text does not repeatedly restyle the
+  layer.
+
+The neutral state is strictly viewer-only. It must not:
+
+- create the proposed `.obs` column;
+- create, repair, or remove `<column>_colors` in `.uns`;
+- emit `TableStateChangedEvent`, mark the table dirty, or write persisted data;
+- mutate the canonical-centers cache;
+- establish a fake table-backed color-source identity.
+
+Deliverables:
+
+- a stateless neutral-style helper in the existing Spatial Query
+  `viewer_styling.py` module;
+- Spatial Query control wiring that replaces raw napari labels colors with the
+  neutral presentation whenever an explicit user coloring action has no
+  selected Existing source;
+- focused tests for transparent background, neutral foreground, primary-layer
+  reuse and activation, no table/cache mutation, explicit Existing/New
+  transitions, incompatible named-default diagnosis, and no styling
+  reclamation during programmatic refresh.
+
+Exit criteria:
+
+- a newly selected labels element never shows semantically meaningless
+  per-instance napari colors merely because the target column has not been
+  created;
+- every foreground instance uses the shared missing/unannotated color until an
+  actual compatible annotation column supplies category values;
+- selecting or displaying the neutral state remains read-only and leaves
+  `.obs`, `.uns`, dirty state, persisted state, and the canonical cache
+  unchanged;
+- an incompatible existing `spatial_annotation` column is never silently
+  coerced or overwritten, keeps Run disabled while its name collides with the
+  proposed New target, and produces an actionable compatibility message;
+- Existing-column palette behavior remains unchanged;
+- the helper and control boundaries required for Slice 7b to replace neutral
+  styling after the first effective Apply are available without Slice 6i
+  implementing Apply itself;
+- Object Classification and Spatial Query share the neutral visual convention
+  without sharing widget-specific controllers or annotation-domain semantics.
+
+### Slice 6j: Empty New-column draft and named-default separation
+
+**Implementation status: Implemented.**
+
+Separate the preferred conventional Existing-column name from the editable
+New-column value. After Slice 6i, `spatial_annotation` was used for both roles,
+which produced an avoidable collision when a compatible column already
+existed and the user explicitly switched from Existing to New mode:
+
+```text
+compatible "spatial_annotation" exists
+    → Existing mode initially colors from it
+    ↓ user switches to New mode
+hidden New-column value is also "spatial_annotation"
+    → neutral styling is correct
+    → proposed New target immediately collides with the existing column
+    → Run is disabled for a name the user never entered
+```
+
+Follow the Shapes Annotation naming convention instead. Keep
+`spatial_annotation` as the preferred Existing-column name and as placeholder
+guidance, but do not install it as the `QLineEdit` value:
+
+```text
+New-column QLineEdit
+    text        → ""
+    placeholder → "spatial_annotation"
+
+placeholder text
+    → visual guidance only
+    → is not a selected annotation target
+    → is never passed to validation, query, Apply, or persistence as a value
+```
+
+Use a name that reflects this single remaining role, for example:
+
+```python
+_PREFERRED_ANNOTATION_COLUMN_NAME = "spatial_annotation"
+```
+
+Do not retain a constant whose name or usage implies that the New-column field
+contains a valid default value.
+
+The initial selection contract becomes:
+
+```text
+compatible "spatial_annotation" exists
+    → select Existing mode
+    → select and color from "spatial_annotation"
+    → keep the hidden New-column draft empty
+
+"spatial_annotation" does not exist
+    → select New mode
+    → keep the New-column draft empty
+    → show "spatial_annotation" only as placeholder guidance
+    → apply neutral styling
+    → disable Run until the user enters a valid unused name
+
+"spatial_annotation" exists but is incompatible
+    → exclude it from Existing choices
+    → select New mode with an empty draft
+    → apply neutral styling
+    → do not convert, repair, or overwrite the existing column
+    → explain why it cannot be used
+    → require another compatible Existing column or an explicitly entered,
+      different New-column name
+```
+
+An empty draft normally produces a concise request to enter a New-column name.
+When an incompatible `spatial_annotation` column exists, the empty-state
+message must additionally explain that the conventional column was not
+selected because Spatial Query requires pandas categorical dtype with only
+string categories. Once the user enters a different valid unused name, that
+unrelated incompatible column no longer blocks Run.
+
+Treat entered New-column text as a user draft scoped to its current
+SpatialData/table target:
+
+- switching temporarily between Existing and New modes preserves a non-empty
+  draft;
+- programmatic selector refreshes that retain the same table preserve it;
+- changing or clearing the selected table context clears it rather than
+  carrying a proposed schema change into another table;
+- changing only the draft text updates readiness but does not repeatedly
+  reclaim or restyle the primary labels layer;
+- New mode always uses the neutral presentation, regardless of whether the
+  draft is empty, valid, or temporarily invalid.
+
+Do not introduce a separate draft model or another source of widget state for
+this behavior. The `QLineEdit` owns the draft, while the existing
+signal-blocked selector-refresh paths decide whether its text is preserved or
+cleared.
+
+Slice 7b owns successful consumption of the draft:
+
+```text
+first effective Apply creates the explicitly named New column
+    → store its categorical values and palette atomically
+    → select it as an Existing target
+    → replace neutral styling with table-backed styling
+    → clear the consumed New-column draft
+```
+
+Deliverables:
+
+- split the preferred conventional name from the New-column field value;
+- initialize and reset the New-column field to empty while showing
+  `spatial_annotation` as placeholder guidance;
+- preserve a user-entered draft only while its SpatialData/table target
+  remains current;
+- retain neutral viewer styling throughout New mode;
+- retain actionable incompatible-conventional-column feedback without relying
+  on a prefilled colliding value;
+- focused tests for compatible, absent, and incompatible conventional columns,
+  mode-toggle draft preservation, table-context draft clearing, placeholder
+  non-semantics, and unchanged viewer/table/cache state.
+
+Exit criteria:
+
+- switching from a compatible Existing `spatial_annotation` target to New mode
+  never presents an immediate collision for text the user did not enter;
+- `spatial_annotation` remains the preferred compatible Existing target but is
+  only placeholder guidance in New mode;
+- an empty New-column draft never enables Run or becomes an implicit Apply
+  target;
+- an incompatible existing `spatial_annotation` column remains visible as an
+  actionable validation problem without being coerced or overwritten;
+- explicit New-column drafts survive mode toggles only while they still belong
+  to the same SpatialData/table target;
+- neutral and Existing-column styling behavior from Slice 6i remains
+  unchanged;
+- this slice performs no annotation Apply, table mutation, dirty-state change,
+  persistence write, or canonical-cache mutation.
+
+### Slice 6k: Missing-value Object Classification class state
+
+**Implementation status: Implemented.**
+
+Refactor Object Classification so the absence of a user annotation or
+prediction is represented as missing data rather than the synthetic integer
+class `0`. This is an Object Classification consistency refactor before the
+Spatial Query execution slice. It does not broaden the Spatial Query target
+column contract.
+
+The canonical class-state representation becomes:
+
+```text
+user_class
+    positive integer categorical value
+        → user-assigned class
+    missing categorical value
+        → unlabelled
+
+pred_class
+    positive integer categorical value
+        → classifier prediction
+    missing categorical value
+        → no prediction
+
+pred_confidence
+    finite floating-point value
+        → confidence belonging to the row's prediction
+    np.nan
+        → no prediction confidence
+```
+
+Use `pd.NA` as the domain-level value assigned when clearing `user_class` or
+`pred_class`. Pandas categorical storage represents missing values through its
+missing code and may expose a version-dependent missing scalar when values are
+read back. Production code and tests must therefore use `isna()`/`notna()`
+rather than identity or equality comparisons with `pd.NA`. Continue using
+`np.nan` for missing `pred_confidence`.
+
+#### Class categories and palettes
+
+Class IDs are positive integers. Boolean values, zero, negative integers,
+fractional numbers, strings, and mixed category types are not valid canonical
+Object Classification class IDs. Missing is not a categorical category:
+
+```text
+before
+    user_class categories → [0, 1, 4]
+    class 0 color          → neutral unlabelled color
+
+after
+    user_class categories → [1, 4]
+    missing values        → neutral unlabelled color
+```
+
+The same rule applies to `pred_class`. The corresponding
+`user_class_colors` and `pred_class_colors` lists contain exactly one color per
+declared positive class category in categorical order. They contain no
+synthetic unlabelled entry. Missing values are rendered with the shared
+`DEFAULT_NEUTRAL_COLOR` outside the stored class palette.
+
+Slice 6k initially retained deterministic class-ID coloring and removed unused
+integer categories. Slice 6n deliberately supersedes that write-time palette
+and category lifecycle: declared positive-integer categories become an
+append-and-retain vocabulary, and their stored colors remain aligned by
+category position. Slice 6n does not change this slice's positive-ID,
+missing-value, or neutral-rendering contract.
+
+Remove the sentinel-oriented class contract from shared class helpers:
+
+- remove `DEFAULT_UNLABELED_CLASS` and `UNLABELED_CLASS`;
+- stop accepting or forwarding `unlabeled_class` arguments;
+- stop filling missing class values with zero;
+- stop requiring category zero during class-state validation;
+- stop storing an unlabelled color in class palettes;
+- retain a semantic shared neutral/missing color for viewer fallthrough.
+
+Do not change generic categorical palette behavior. This refactor applies to
+the specialized Object Classification class helpers and their consumers.
+
+#### User annotation behavior
+
+The Object Classification annotation boundary accepts either a positive class
+ID or the missing annotation intent. Prefer one explicit domain signature:
+
+```python
+def set_user_class_for_rows(
+    table: AnnData,
+    rows: pd.Series,
+    class_id: int | None,
+) -> None:
+    ...
+```
+
+`class_id=None` means clear the annotation and writes categorical missing
+values to the selected rows. A non-None class ID must be a positive integer and
+is added as a category when necessary. The widget's class editor continues to
+offer positive class IDs only, while Clear passes `None`.
+
+Creating `user_class` on the first effective annotation creates a categorical
+column whose non-target rows are missing and whose categories contain only the
+assigned positive class. Clearing the final use of a class removes that unused
+category and its palette entry. Clearing an already missing row is a no-op.
+
+Propagate the same representation through Object Classification state:
+
+- `current_user_class` returns `None` for an absent column or missing selected
+  value;
+- Clear is enabled only when the selected row has a non-missing class;
+- `UserClassAnnotationChange.class_id` uses `int | None`;
+- row-scoped viewer updates treat `None` as removal from the compact label
+  mapping;
+- layer features retain missing user-class values rather than materializing
+  zero.
+
+#### Training behavior
+
+Training eligibility derives from missingness:
+
+```text
+user_class.notna()
+    → labelled training rows
+
+user_class.isna()
+    → excluded from training
+```
+
+Convert only the selected non-missing class values to the NumPy integer array
+given to the estimator. Do not construct a full integer array filled with a
+sentinel merely to calculate this mask. Training summaries, class-label
+discovery, and insufficient-class validation must all operate on the positive
+non-missing class IDs.
+
+#### Prediction behavior
+
+Prediction helpers continue to update `pred_class` and `pred_confidence` as one
+logical result:
+
+```text
+successful prediction for a row
+    → pred_class = positive integer category
+    → pred_confidence = calculated float
+
+prediction cleared or unavailable for a row
+    → pred_class = pd.NA
+    → pred_confidence = np.nan
+```
+
+Initializing prediction outputs creates an all-missing categorical
+`pred_class` column and an all-`np.nan` floating-point `pred_confidence`
+column. Applying predictions adds the observed positive class categories and
+assigns both values for the prediction scope. Clearing predictions assigns
+both missing values for that scope and removes unused prediction categories
+and aligned colors when applicable.
+
+The prediction coloring path excludes missing rows from the compact mapping
+and uses the shared neutral color as its fallback. Prediction-confidence
+coloring continues to use its existing missing continuous color behavior.
+
+#### Validation and compatibility boundary
+
+This slice intentionally provides no backward compatibility for class `0`.
+There is no load-time migration, dual representation, deprecation period, or
+conversion from zero to missing. An existing `user_class` or `pred_class`
+containing value or category `0` is invalid under the new canonical contract
+and must fail loudly at the Object Classification normalization/validation
+boundary. This is an initial product contract, not a persisted-schema
+migration.
+
+Do not add integer-categorical support to Spatial Query in this slice:
+
+- `get_compatible_spatial_annotation_column_names()` continues to return only
+  categorical columns whose categories are strings;
+- `require_compatible_spatial_annotation_column()` retains the same
+  string-categorical requirement;
+- Spatial Query annotation values remain `str | None`;
+- no `user_class` or `pred_class` special case is added to the Spatial Query
+  widget, core annotation functions, styling helper, or status card;
+- `pred_class` remains classifier-owned and is not made writable by Spatial
+  Query.
+
+Integer-categorical Spatial Query annotation, if adopted later, requires a
+separate explicit product contract. Slice 6k only gives Object Classification
+a semantically consistent missing-value representation that such a future
+integration could reuse.
+
+#### Dirty state and persistence
+
+The table component paths and event boundary do not change:
+
+- user annotation publishes `obs/user_class` and
+  `uns/user_class_colors` when those components actually change;
+- prediction updates publish `obs/pred_class`,
+  `obs/pred_confidence`, and `uns/pred_class_colors` as applicable;
+- categorical missing codes and floating-point `np.nan` values are written and
+  reloaded through the existing component persistence functions;
+- a no-op clear or unchanged prediction state emits no mutation event.
+
+Deliverables:
+
+- missing-value class normalization and validation in the shared class core;
+- `user_class` creation, assignment, clearing, category cleanup, and palette
+  synchronization without a class-zero sentinel;
+- missing-aware Object Classification selection, status, training, annotation,
+  and row-scoped viewer styling;
+- paired missing-state handling for `pred_class` and `pred_confidence`;
+- removal of class-zero constants, branches, palette entries, and tests;
+- focused core, controller, widget, viewer-styling, classifier, and persistence
+  tests for the new canonical representation;
+- no Spatial Query behavior or compatibility changes.
+
+Exit criteria:
+
+- unlabelled `user_class` rows are categorical missing values and class `0`
+  appears nowhere in their values, categories, or stored palette;
+- rows without a prediction have missing `pred_class` and `np.nan`
+  `pred_confidence`;
+- only positive non-missing user classes participate in training;
+- clearing user annotations and predictions produces the canonical missing
+  state and updates viewer styling without a sentinel branch;
+- class palettes align only with real positive categories, while missing rows
+  use the shared neutral color;
+- class-zero input fails loudly and is neither interpreted nor migrated;
+- table dirty-state and persistence behavior remains component-scoped;
+- Spatial Query still accepts only string-categorical annotation columns.
+
+### Slice 6l: Graceful invalid Object Classification class state
+
+**Implementation status: Implemented.**
+
+Keep the strict missing-value class contract introduced in Slice 6k, but make
+invalid existing Object Classification columns a controlled widget validation
+state rather than an uncaught bind-time exception.
+
+This slice does not migrate, normalize, or repair invalid persisted values.
+In particular, it does not convert class `0` to missing:
+
+```text
+select Labels element and table
+    ↓
+validate structural table binding
+    ↓
+inspect existing Object Classification columns without mutation
+    ├── valid
+    │      → bind controllers normally
+    │      → apply the selected Object Classification styling
+    │
+    └── invalid
+           → do not bind the selected table to any controller
+           → keep the selected Labels layer loaded
+           → style all foreground labels with the shared neutral color
+           → disable every table-dependent action
+           → show an actionable status-card error
+           → leave the AnnData table unchanged and clean
+```
+
+#### Canonical column requirements
+
+`user_class` and `pred_class` are categorical columns with integer category
+labels. They are not plain integer columns. Every declared category must be a
+positive integer:
+
+```text
+valid row values
+    positive integer category
+        → assigned class
+    categorical missing value
+        → no assigned class
+
+invalid categories or values
+    0
+    negative integer
+    boolean
+    fractional number
+    string
+    mixed category types
+```
+
+“Positive” is deliberate: describing class IDs as merely non-negative would
+incorrectly admit the unsupported legacy class `0`. Unused category `0` is
+also invalid even when no row currently uses it.
+
+An absent `user_class` column remains valid and means that no user annotation
+column has been created yet.
+
+`pred_class` and `pred_confidence` form one prediction-state pair. Neither
+column being present is valid uninitialized classifier state. If prediction
+state is present, both columns must be present and satisfy:
+
+```text
+pred_class
+    categorical with positive integer categories
+    row value is a positive class or missing
+
+pred_confidence
+    floating-point dtype
+    finite value in [0.0, 1.0] when pred_class is present
+    missing value when pred_class is missing
+```
+
+An integer, boolean, string, object, or mixed `pred_confidence` column is not
+accepted as canonical merely because some values could be coerced to floats.
+Do not use coercion as validation. Positive prediction classes with missing,
+non-finite, or out-of-range confidence, and missing prediction classes with a
+non-missing confidence, are invalid paired state.
+
+Palette validation remains owned by the existing class-palette and styling
+contracts. This slice concerns the canonical representations and paired
+missingness of the three Object Classification `.obs` columns.
+
+#### Read-only pre-bind validation boundary
+
+Add one read-only Object Classification table-state validator before any
+annotation, classifier, persistence, or viewer-styling controller adopts the
+selected table. Prefer a dedicated expected error type so the widget catches
+only this validation outcome rather than broadly swallowing unrelated
+`ValueError` exceptions.
+
+The validator must:
+
+- accept absent optional/uninitialized state as described above;
+- inspect dtypes, categorical categories, row values, and prediction-pair
+  missingness;
+- return normally only for canonical state;
+- raise one column-specific, user-facing validation error for invalid state;
+- never assign to `.obs`, `.uns`, or `.obsm`;
+- never add or remove categories or palette entries;
+- never publish `TableStateChangedEvent`;
+- never mark the table dirty.
+
+Validation must happen before the current bind-time normalization calls. Do
+not implement the feature as a broad `try/except` around sequential controller
+binding: an exception after one controller has adopted the table can otherwise
+leave controller state only partially updated.
+
+The strict core normalization helpers continue to reject invalid class state.
+The widget-level validator and error boundary improve presentation and
+recovery; they do not weaken the canonical write contract or introduce a
+second accepted representation.
+
+#### All-or-nothing table binding and neutral styling
+
+Treat Object Classification state validation as part of the existing table
+binding decision. Do not introduce separate “operational table” and
+“persistence table” concepts, and do not add a second persistent widget error
+field solely for this validation:
+
+```text
+_validate_selected_table_binding()
+    ↓
+validate labels/table structural relationship
+    ↓
+validate Object Classification columns
+    ├── both valid
+    │      → effective_table_name = selected_table_name
+    │
+    └── either invalid
+           → effective_table_name = None
+           → store the user-facing explanation in _table_binding_error
+```
+
+The selected table name remains visible in the combo so the UI identifies the
+source of the problem, but every table-dependent controller receives
+`table_name=None`. This is one rejected binding, not two partial bindings.
+
+When the binding is rejected because class-state validation fails:
+
+- preserve the selected SpatialData, coordinate system, Labels element, and
+  table choices so the UI still identifies the source of the problem;
+- do not expose the invalid table to the annotation, classifier,
+  viewer-styling, or persistence controller;
+- keep the primary Labels layer loaded and active;
+- explicitly replace napari's default Labels colormap with neutral styling:
+  label `0` stays transparent and every positive label uses
+  `DEFAULT_NEUTRAL_COLOR`;
+- do not attempt partial user-class, prediction-class, or confidence styling;
+- disable Apply class, Clear class, color-by selection, automatic/manual
+  training, classifier export, feature-metadata registration, Write Table
+  State, Reload Table State, and every other table-dependent action;
+- clear the validation error and restore normal binding and styling after a
+  later normal refresh or table reselection observes corrected canonical
+  table state.
+
+Neutral fallback is an explicit safe display state, not an interpretation of
+the invalid values. No invalid class is shown as though it were a valid
+annotation or prediction.
+
+Disabling Reload Table State is an accepted consequence of the single-binding
+model. Reloading an invalid persisted table would not repair it, while
+preserving a special persistence-only binding for the narrower case where
+memory is invalid but disk is valid would add disproportionate state and
+control complexity. The user must correct the table through its owning
+workflow and then refresh or reselect it.
+
+#### Status-card messages
+
+Show the error in the existing Object Classification selection status card
+rather than allowing a traceback to escape through Qt. The existing
+table-binding-error branch should use an error title such as
+`Table Binding Invalid`. The detail must identify Object Classification state,
+name the invalid column, and state the exact representation required.
+
+Examples:
+
+```text
+Table Binding Invalid
+Object Classification state is invalid: “user_class” must be categorical
+with positive integer categories.
+Rows without a user class must be stored as missing values.
+```
+
+```text
+Table Binding Invalid
+Object Classification state is invalid: “pred_class” must be categorical
+with positive integer categories.
+Rows without a prediction must be stored as missing values.
+```
+
+```text
+Table Binding Invalid
+Object Classification state is invalid: “pred_confidence” must use a
+floating-point dtype with values between 0 and 1.
+Rows without a prediction must have missing confidence.
+```
+
+Where useful, append the observed problem, such as category `0`, an unexpected
+dtype, or mismatched prediction missingness. Do not tell the user that the
+table was repaired, because this slice performs no repair. The error status
+takes precedence over normal selection-ready, classifier-ready, and
+layer-styling messages until the selected table becomes valid.
+
+Reuse the existing table-binding status path: the read-only validator supplies
+the column-specific explanation stored in `_table_binding_error`, and the
+existing selection/status-card refresh displays it. Do not create a parallel
+class-state status channel.
+
+#### Deliverables
+
+- one read-only validator for existing Object Classification `.obs` class
+  state and prediction-pair consistency;
+- integration of that validator into the existing selected-table binding
+  validation before any controller adopts the table;
+- one existing `_table_binding_error` and `effective_table_name` path covering
+  both structural and Object Classification state rejection;
+- explicit neutral primary-label styling for rejected class state;
+- control enablement that prevents every table-dependent action against
+  rejected state;
+- focused core/controller/widget tests for invalid `user_class`,
+  `pred_class`, and `pred_confidence` representations;
+- no separate operational/persistence table bindings, persistence-only
+  recovery path, or additional persistent class-state error field;
+- no class-zero migration, table mutation, dirty-state publication,
+  persistence write, or Spatial Query contract change.
+
+#### Exit criteria
+
+- selecting a structurally valid table with invalid Object Classification
+  columns never raises an uncaught UI exception;
+- the selected Labels element stays loaded and is neutrally styled rather than
+  retaining napari's default Labels colormap;
+- the status card identifies the invalid column and its expected dtype,
+  positive-category, missing-value, or paired-confidence contract;
+- invalid state produces `effective_table_name=None` for every table-dependent
+  controller and disables annotation, classifier, styling-selection, and
+  persistence actions;
+- inspection and rejection leave `.obs`, `.uns`, `.obsm`, and table dirty
+  state unchanged;
+- category or value `0` is rejected and never interpreted as missing;
+- valid missing-value class state continues through the existing bind,
+  styling, training, annotation, prediction, and persistence paths;
+- correcting the table and refreshing or reselecting it allows the widget to
+  recover without reconstruction.
+
+### Slice 6m: Positive-integer categorical Spatial Annotation
+
+**Implementation status: Deferred into Slice 6p.**
+
+The standalone Slice 6m implementation was reverted. Do not implement this
+slice independently. Its positive-integer target, typed-value, UI, and
+cross-widget requirements are retained below as design input. Slice 6n first
+establishes the Object Classification categorical-vocabulary contract; Slice
+6p then implements this deferred Spatial Annotation support against that
+foundation.
+
+Extend the Spatial Annotation core and Spatial Query selection/styling shell
+before implementing the async Run flow. The purpose is direct schema
+interoperability with Object Classification `user_class`, not broad coercion
+of arbitrary numeric columns:
+
+```text
+Object Classification
+    → user_class is categorical
+    → categories are positive integer class IDs
+    → unlabelled rows are pd.NA
+    → user_class_colors is aligned with the declared category order
+
+Spatial Query
+    → may select the same existing user_class column
+    → sets positive integer class IDs
+    → removes annotations with pd.NA
+    → preserves the same categorical and palette contract
+```
+
+This slice supersedes the earlier string-only Spatial Annotation boundary.
+String-categorical behavior remains supported; positive-integer categorical
+behavior is added as a second explicit value kind.
+
+#### Compatible target contract
+
+Introduce one explicit annotation value-kind contract:
+
+```python
+SpatialAnnotationValueKind = Literal["string", "positive_integer"]
+SpatialAnnotationValue = str | int | None
+```
+
+An existing target is compatible only when it has pandas categorical dtype and
+one of these representations:
+
+```text
+string
+    every declared category is a string
+    Set accepts a trimmed, non-empty string
+    Remove assigns pd.NA
+
+positive_integer
+    every declared category is an integer greater than zero
+    bool and np.bool_ are not integers for this contract
+    Set accepts an integer greater than zero
+    Remove assigns pd.NA
+```
+
+Plain integer, nullable-integer, floating-point, string/object, boolean,
+datetime, mixed-category, and categorical columns declaring zero or negative
+integer categories remain ineligible. Spatial Query does not coerce an
+existing column into either accepted representation.
+
+The existing-column discovery helper must return both compatible string and
+positive-integer categorical columns in table order, while continuing to
+exclude `region_key` and `instance_key`.
+
+An empty categorical category set is not sufficient by itself to reveal
+whether future values should be strings or integers. Preserve current
+string-target behavior as the generic empty-category fallback. Treat an empty
+`user_class` as `positive_integer`, because that column has an explicit shared
+Object Classification schema. An empty categorical whose category index still
+has an integer dtype may also retain `positive_integer`; do not infer integer
+semantics for an arbitrary empty object-typed categorical column.
+
+Expose the resolved value kind as a
+`SpatialAnnotationPreparation.value_kind` property derived from the captured
+categorical values and column name. Do not store it as a second field. The
+column name preserves the explicit empty-`user_class` contract, while an
+integer-typed empty category index preserves other known integer targets.
+
+#### Existing versus New targets
+
+This slice adds positive-integer support for existing columns only. New-column
+mode continues to create string-categorical annotation columns:
+
+```text
+Existing string categorical
+    → string annotation editor
+
+Existing positive-integer categorical
+    → positive-integer annotation editor
+
+New column
+    → string annotation editor
+    → new string-categorical column after effective Apply
+```
+
+Do not add a New-column type selector in this slice.
+
+Because New mode remains string-valued, it must not create columns whose names
+carry a conflicting Object Classification schema. Reject `user_class`,
+`pred_class`, and `pred_confidence` as New string-column targets with a
+specific explanation. An absent `user_class` must first be created through
+Object Classification before Spatial Query can select it as an existing
+positive-integer target.
+
+#### Classifier-owned prediction state
+
+`pred_class` is categorical with positive integer categories, but it is not a
+writable Spatial Annotation target. It forms one logical prediction result
+with `pred_confidence`:
+
+```text
+pred_class changed without pred_confidence
+    → prediction-pair missingness or provenance may become invalid
+```
+
+Exclude `pred_class` from compatible-column discovery and reject it explicitly
+at preparation/apply boundaries, even when its dtype and categories would
+otherwise qualify. `pred_confidence` remains ineligible and reserved as well.
+Spatial Query must never create, set, remove, or repair classifier prediction
+outputs.
+
+`user_class` is deliberately different: it is user-authored annotation state
+and is the intended interoperability target.
+
+#### Typed preparation, summary, and Apply
+
+Update the immutable annotation contract so the captured annotation value
+retains its domain type:
+
+```python
+@dataclass(frozen=True)
+class SpatialAnnotationPreparation:
+    ...
+
+    @property
+    def value_kind(self) -> SpatialAnnotationValueKind:
+        ...
+
+
+@dataclass(frozen=True)
+class SpatialAnnotationSummary:
+    annotation_value: SpatialAnnotationValue
+    ...
+```
+
+`None` continues to mean Remove annotation and is never stored as a category.
+For Set:
+
+- `value_kind="string"` trims once and requires a non-empty `str`;
+- `value_kind="positive_integer"` rejects booleans and requires an `int`
+  greater than zero;
+- a value whose type does not match the preparation is rejected before
+  summarization or mutation;
+- equality, missing/equal/other counts, stale-column comparison, no-op
+  detection, and overwrite outcome reporting use the typed value without string
+  conversion.
+
+Do not accept numeric text such as `"3"` for an integer target in the core
+API. The future widget editor owns conversion from its positive-integer control
+to Python `int`; the domain boundary receives an already typed value.
+
+For New mode, the empty captured categorical values resolve the
+`value_kind` property to `"string"`. Remove remains unavailable for New mode.
+
+#### Positive-integer category and palette updates
+
+The current append-only string-category behavior remains unchanged:
+
+```text
+string Set adds a category
+    → append it
+    → extend the current valid positional palette
+    → never recolor existing categories
+
+string Remove
+    → assign pd.NA
+    → preserve declared string categories and palette
+```
+
+Positive-integer targets reuse the append-and-retain categorical semantics
+established for Object Classification by Slice 6n:
+
+```text
+integer Set adds a category
+    → append it without reordering existing categories
+    → extend the current valid positional palette
+    → never recolor existing categories
+
+integer Remove
+    → assign pd.NA
+    → preserve declared integer categories and palette
+```
+
+An integer category is a declared annotation vocabulary entry, not merely a
+summary of currently non-missing row values. Removing the final row using a
+class ID therefore does not remove that category or its durable color.
+Training continues to discover active classes from non-missing row values
+rather than treating unused declared categories as labeled training classes.
+
+Slice 6n defines this Object Classification category/palette lifecycle. Slice
+6p reuses the same shared append-only palette operations for Spatial
+Annotation rather than introducing an integer-specific reconciliation path.
+
+Reuse the existing pure class normalization/category/palette helpers where
+they fit. Preserve the existing Spatial Annotation atomicity boundary: compute
+the full replacement column and palette before assignment, then install or
+roll back the `.obs` column and companion `.uns` palette as one consistency
+unit. Do not call a mutating helper early in a way that bypasses rollback.
+
+`SpatialAnnotationApplyResult` and its component-level dirty reporting remain
+unchanged: report the obs mutation and report the palette path only when its
+stored value actually changed.
+
+#### Selection, status, and viewer styling
+
+Update the Spatial Query shell so:
+
+- existing-column tooltips and status text describe categorical string or
+  positive-integer targets;
+- a compatible positive-integer `user_class` appears in the Existing-column
+  dropdown;
+- `pred_class` and `pred_confidence` never appear as writable targets;
+- a named-default incompatibility message states both accepted categorical
+  representations rather than claiming that only strings are supported;
+- the existing generic table-backed labels styling path colors integer
+  categoricals through their stored class palette and renders missing rows
+  with the shared neutral color;
+- selecting or styling a column remains read-only and never repairs its dtype,
+  categories, or palette.
+
+Do not introduce an integer-specific labels-layer implementation. The shared
+categorical compact-colormap path already supports categorical values; this
+slice should extend target validation and write semantics rather than
+duplicate viewer styling.
+
+#### Slice 7b/7c integration boundary
+
+The inline Set/Remove controls implemented in Slice 7b must choose their editor
+from the selected target's resolved value kind:
+
+```text
+string
+    → QLineEdit
+    → trim and validate non-empty text
+
+positive_integer
+    → positive-integer control, such as QSpinBox(minimum=1)
+
+Remove
+    → hide or disable either Set editor
+    → capture assignment of pd.NA
+```
+
+The normalized typed value is captured before the asynchronous query and
+applied immediately after a non-empty accepted result. It is never reread from
+the editor at worker completion.
+
+After an effective `user_class` Apply, Slice 7b publishes the ordinary
+`TableStateChangedEvent` for `obs/user_class` and
+`uns/user_class_colors` when applicable. Object Classification must recognize
+an external Spatial Query `user_class` mutation for its currently selected
+table through the Slice 7c consumer, refresh user-class styling/control state,
+and mark an existing trained classifier stale. This is event-mediated
+table-state interoperability; neither widget calls the other directly.
+
+#### Deliverables
+
+- shared string/positive-integer Spatial Annotation value-kind and value
+  aliases;
+- compatible-column validation and discovery for both categorical kinds;
+- explicit `user_class` support and `pred_class`/`pred_confidence` exclusion;
+- value kind derived through `SpatialAnnotationPreparation.value_kind`;
+- typed summary and Apply validation using `str | int | None`;
+- atomic positive-integer replacement with append-and-retain categories and
+  an aligned stored palette;
+- updated Spatial Query selection, readiness text, and existing-column styling
+  behavior;
+- focused core annotation, viewer-styling, and Spatial Query shell tests;
+- Slice 7b inline-input/producer and Slice 7c event-consumer requirements
+  aligned to the typed contract;
+- no plain-integer coercion, New-column type selector, prediction-output
+  mutation, or direct widget-to-widget dependency.
+
+#### Exit criteria
+
+- existing categorical string columns retain their current behavior;
+- existing categorical columns with only positive integer categories are
+  discoverable and atomically writable;
+- an existing valid `user_class`, including an all-missing empty-category
+  state, is available to Spatial Query as a positive-integer target;
+- integer Set accepts only positive non-boolean Python integers and Remove
+  stores `pd.NA`;
+- integer category order remains append-stable and `<column>_colors` remains
+  aligned after setting, overwriting, or removing annotations;
+- `pred_class` and `pred_confidence` cannot be selected or mutated through
+  Spatial Query;
+- New mode remains string-categorical and cannot create conflicting
+  Object Classification reserved columns;
+- read-only selection and styling do not mutate or dirty the table;
+- the Slice 7b/7c contracts can present and capture the correct typed editor
+  value and later notify Object Classification of external `user_class`
+  changes through shared table events.
+
+### Slice 6n: Object Classification categorical vocabulary and palette lifecycle
+
+**Implementation status: Implemented.**
+
+Refactor Object Classification first, without changing Spatial Query. This
+slice establishes the categorical contract that Slice 6p will later reuse for
+positive-integer Spatial Annotation.
+
+`user_class` and `pred_class` remain categorical columns with positive integer
+class IDs and `pd.NA` for rows without a class. Their category metadata now
+has the same durable meaning as a string categorical annotation:
+
+```text
+.cat.categories
+    → declared annotation vocabulary and palette order
+
+.uns["<column>_colors"]
+    → colors aligned with that declared order
+```
+
+Declared integer categories are append-only under napari-harpy mutations:
+
+- retain unused categories;
+- never reorder existing categories merely to obtain ascending class IDs;
+- append a class ID when it first enters the declared vocabulary;
+- keep the companion palette aligned with that stored order.
+
+This ordering policy affects representation only. Positive-integer validation
+remains strict, and classifier training continues to discover active class
+labels from non-missing row values rather than from every declared category.
+
+#### User-class stored-palette contract
+
+A structurally valid stored `user_class_colors` palette is authoritative:
+
+```text
+read user_class
+    valid stored user_class_colors
+        → use the stored colors
+
+    missing or invalid stored palette
+        → calculate a stable position-based fallback
+        → do not mutate or dirty the table
+
+effective user-class assignment
+    existing class ID
+        → update row values
+        → preserve categories and palette
+
+    new class ID
+        → append the ID to .cat.categories
+        → append one stable positional color to user_class_colors
+
+effective user-class removal
+    → assign pd.NA
+    → retain all declared categories and colors
+
+no effective row mutation
+    → change neither the column nor its palette
+```
+
+A valid stored positive-integer palette is not required to equal
+`default_class_colors(categories)`. Defaults initialize missing colors; they
+do not override valid user- or table-provided colors.
+
+Selecting, binding, and styling remain read-only. A missing or invalid palette
+is repaired only together with an effective user-class mutation. If that
+mutation introduces no category, install the resolved fallback aligned with
+the existing declared order; if it introduces a category, extend the resolved
+fallback by one color. Report the palette component dirty only when its stored
+value actually changes.
+
+#### Append-and-retain category lifecycle
+
+The previous sorted-and-currently-used class policy is removed. It forced
+integer categories to be deleted, inserted, and reordered and therefore
+required a separate category-identity palette reconciliation algorithm.
+
+Instead, use the existing append-only categorical invariant:
+
+```text
+current categories = [3]
+current colors     = [red]
+
+remove the final class-3 row value
+    → categories remain [3]
+    → colors remain [red]
+
+add class 1 later
+    → categories become [3, 1]
+    → colors become [red, next_default_color]
+```
+
+The stored category order does not need to be numeric. Remove Object
+Classification validation and normalization whose only purpose is to require
+ascending category order or to remove unused categories.
+
+This representation is safe for classifier behavior:
+
+- categorical row values remain positive integers or missing;
+- training class discovery uses the distinct non-missing values in the
+  selected training rows;
+- an unused declared category is not passed to the estimator as a class;
+- viewer styling maps actual class IDs through the palette aligned with the
+  declared category order.
+
+Because napari-harpy mutations preserve the complete current category prefix,
+the existing append-only palette extension model is sufficient. Do not
+introduce an integer-specific reconciliation helper.
+
+#### Object Classification adoption
+
+Update Object Classification so:
+
+- a structurally valid stored `user_class_colors` palette is preserved during
+  binding, styling, and effective annotation changes;
+- styling validates palette alignment and color validity but no longer
+  requires stored colors to equal Harpy defaults;
+- missing or invalid user-class palettes use stable positional fallbacks for
+  display without making an otherwise valid class column unbindable;
+- selecting or rebinding a table never repairs or replaces a palette merely
+  because it differs from `default_class_colors(...)`;
+- an effective `user_class` mutation preserves the complete existing category
+  order and palette, appending one category and color only when a new class ID
+  is introduced;
+- clearing or overwriting the final row that uses a class ID does not remove
+  that declared category or color;
+- read-time validation no longer requires categories to be sorted;
+- the positive-integer dtype, positive-category, missing-value, and
+  `pred_confidence` validation introduced by Slices 6k and 6l remains
+  unchanged.
+
+#### Binding and styling migration
+
+Replace the current mutating Object Classification bind path:
+
+```text
+AnnotationController.bind()
+    → _normalize_existing_annotation_state()
+    → ensure_annotation_column()
+    → _set_user_class_annotation_state()
+    → sync_class_palette_state()
+    → mutate table.uns
+```
+
+with a read-only boundary:
+
+```text
+table binding
+    → validate user_class values and categorical schema
+    → do not normalize category order
+    → do not remove unused categories
+    → do not create, repair, or replace user_class_colors
+
+user_class styling
+    → call the shared read-only categorical palette resolver
+    → valid stored palette: use it
+    → missing/invalid palette: use its positional fallback
+    → mutate neither .obs nor .uns
+```
+
+Remove or replace `_normalize_existing_annotation_state()` so binding never
+reaches a mutating annotation-state or palette-synchronization helper. Existing
+column creation remains lazy: if `user_class` is absent, the first effective
+user annotation creates the column and its aligned palette through the normal
+write path.
+
+Object Classification styling must reuse
+`resolve_table_categorical_palette()` rather than maintain a parallel strict
+palette resolver. Remove the requirement that stored colors equal
+`default_class_colors(categories)`. The blocking table-binding validator
+continues validating the categorical dtype, positive integer categories,
+missing values, and prediction-pair consistency, but palette absence,
+malformation, or disagreement with defaults is not a binding error.
+
+#### Absent color-source presentation
+
+The Object Classification Color-by control continues exposing its fixed
+`user_class`, `pred_class`, and `pred_confidence` modes even when the
+corresponding table columns do not yet exist. Column absence is valid
+uninitialized workflow state, not a styling error and not a reason to create
+table state during binding.
+
+The viewer feature snapshot represents absent sources in memory:
+
+```text
+user_class absent from table.obs
+    → viewer feature rows contain pd.NA
+    → empty user-class color lookup
+    → all instances use the neutral missing color
+
+pred_class absent from table.obs
+    → viewer feature rows contain pd.NA
+    → empty prediction-class color lookup
+    → all instances use the neutral missing color
+
+pred_confidence absent from table.obs
+    → viewer feature rows contain np.nan
+    → all instances use the missing continuous color
+```
+
+These synthesized feature values belong only to napari presentation state.
+They must not be assigned to `table.obs`, written to zarr, or reported as a
+table mutation.
+
+Generalize the existing absent-`user_class` empty-lookup behavior so an absent
+`pred_class` with no observed prediction values also returns an empty lookup
+instead of raising `ClassStateError`. Switching repeatedly among the three
+Color-by modes must therefore remain safe and neutral before annotation or
+prediction state exists.
+
+Creation remains tied to effective domain writes:
+
+```text
+first effective user-class assignment
+    → create user_class and user_class_colors
+
+first successful prediction write
+    → create pred_class, pred_confidence, and pred_class_colors
+
+clear predictions while prediction columns are absent
+    → no-op
+    → create nothing
+```
+
+Consequently, remove the eager prediction-column preparation from
+`ClassifierController.bind()` and from read-only reload adoption. Existing
+prediction state is validated and preserved during those operations; missing
+prediction state remains missing until the classifier produces an effective
+write.
+
+Replace the current eager classifier adoption path explicitly:
+
+```text
+ClassifierController.bind()
+    → do not call _ensure_prediction_columns()
+    → validate existing prediction state if present
+    → leave pred_class and pred_confidence absent when both are absent
+    → preserve existing pred_class category order
+    → do not create or rewrite pred_class_colors
+
+reset_after_reload()
+    → do not call _ensure_prediction_columns()
+    → adopt and validate the reloaded prediction state
+    → leave absent prediction state absent
+    → do not prepare or repair prediction columns or colors
+```
+
+Prediction creation and clearing are effective write boundaries with distinct
+absent-state behavior:
+
+```text
+successful prediction result
+    → create pred_class and pred_confidence if both are absent
+    → retain the existing pred_class vocabulary when present
+    → append newly predicted IDs
+    → write prediction classes and confidence
+    → derive and overwrite pred_class_colors
+    → publish the corresponding table-state event
+
+explicit classifier-driven prediction clearing
+    ├── pred_class and pred_confidence are absent
+    │      → no-op
+    │      → create nothing
+    │      → publish no prediction mutation
+    │
+    └── prediction columns exist
+           → clear the affected values
+           → retain the pred_class vocabulary
+           → derive and overwrite the aligned pred_class_colors
+           → publish the corresponding table-state event
+```
+
+Prediction palette derivation always covers the complete retained
+`pred_class` vocabulary, including categories no longer used by any row. An
+effective clear is a classifier write boundary at which a stale prediction
+palette is synchronized with the current resolved user-class colors.
+
+“Overwrite” describes the resulting consistency contract, not an
+unconditional assignment. If the derived palette equals the stored
+`pred_class_colors`, leave the stored value unchanged and do not report
+`uns/pred_class_colors`. Only a differing derived list is an effective palette
+mutation.
+
+#### Prediction palette relationship
+
+`user_class_colors` is the authoritative user-owned class palette.
+`pred_class_colors` is classifier-derived state and is not independently
+authoritative:
+
+```text
+user_class_colors
+    → authoritative user-owned class palette
+
+pred_class_colors
+    → classifier-derived palette
+    → colors shared class IDs from user_class_colors
+    → uses the deterministic class-ID default for IDs absent from user_class
+```
+
+`pred_class` remains classifier-owned and read-only to Spatial Query. Resolve
+the current user-class lookup read-only:
+
+- a structurally valid stored `user_class_colors` supplies its custom colors;
+- a missing or invalid `user_class_colors` supplies the stable positional
+  fallback aligned with `user_class.cat.categories`, without mutating the
+  table.
+
+Build the prediction lookup in `pred_class.cat.categories` order. For each
+predicted class ID:
+
+- reuse the resolved user-class color when that class ID exists in
+  `user_class`; or
+- use `default_labeled_class_color(class_id)` when that class ID is absent
+  from `user_class`.
+
+Object Classification must use this derived lookup for prediction styling,
+even when an existing structurally valid `pred_class_colors` differs from it.
+Binding or styling remains read-only: do not replace the stored prediction
+palette and do not mark the table dirty merely because it disagrees with the
+derived lookup.
+
+Treat `pred_class.cat.categories` as an append-and-retain vocabulary as well.
+An effective prediction write preserves the complete existing category order
+and appends newly observed predicted IDs in deterministic order. It never
+removes a category solely because the current prediction result no longer
+uses it.
+
+On every effective prediction write, rebuild and overwrite the complete
+aligned `pred_class_colors` list from the derived mapping:
+
+```text
+effective prediction result
+    → retain existing pred_class category order
+    → append newly observed predicted IDs
+    → shared ID in user_class
+         → use its resolved user_class color
+    → ID absent from user_class
+         → use default_labeled_class_color(class_id)
+    → overwrite pred_class_colors with the complete aligned list
+```
+
+Record `uns/pred_class_colors` as changed when the resulting stored list
+differs. After that write, generic table-backed styling can consume the stored
+prediction palette and obtain the same class-ID colors. Thus an outdated
+prediction palette is corrected by an effective classifier write, not as a
+side effect of opening or viewing the table.
+
+This keeps the same class ID visually consistent when the user switches
+between `user_class` and `pred_class`, while retaining the standard AnnData
+`pred_class_colors` companion palette for persistence and generic table-backed
+styling.
+
+#### Deliverables
+
+- append-and-retain positive-integer category state for `user_class` and
+  `pred_class`;
+- shared stored-palette validation and stable positional fallback selection
+  for `user_class`;
+- Object Classification read/styling paths that accept valid non-default
+  stored class colors;
+- Object Classification user-class mutations that append new categories and
+  retain unused categories and colors;
+- neutral viewer presentation for absent user-class and prediction color
+  sources without table-column creation;
+- removal of eager prediction-column creation from binding and read-only
+  reload adoption;
+- prediction display and write-time palette derivation from the current
+  resolved user-class color mapping;
+- effective prediction writes that overwrite the complete aligned
+  `pred_class_colors`;
+- removal of strict default-palette equality checks and now-redundant
+  sorted/currently-used category normalization;
+- focused core palette and Object Classification
+  annotation/styling/classifier/widget tests.
+
+#### Exit criteria
+
+- a valid custom `user_class_colors` palette survives table binding, styling,
+  effective assignments of existing classes, and removals;
+- assigning a new user class appends that ID and one color without reordering
+  or recoloring the existing vocabulary;
+- removing the last row value for a user class retains that declared category
+  and color;
+- unused `user_class` categories are ignored by training class discovery;
+- valid positive-integer categorical columns are not rejected merely because
+  their categories are not in ascending numeric order;
+- all three fixed Color-by modes remain safe before their table columns exist
+  and render the corresponding all-missing viewer state neutrally;
+- binding or reloading a table with no prediction columns leaves those columns
+  absent and leaves the table unchanged;
+- clearing predictions while prediction columns are absent is a no-op;
+- `pred_class_colors` uses the corresponding current user-class colors for
+  shared class IDs and deterministic class-ID defaults only for predicted IDs
+  absent from `user_class`;
+- Object Classification styles predictions through that derived mapping
+  without rewriting a stale or disagreeing stored `pred_class_colors` palette
+  during binding or display;
+- every effective prediction write overwrites `pred_class_colors` with the
+  complete derived palette aligned to the retained prediction vocabulary;
+- missing or invalid user-class palettes render with a stable positional
+  read-only fallback and do not block an otherwise valid class-column binding;
+- palette writes are reported through the existing component-level
+  dirty-state contract;
+- strict positive-integer and missing-value validation remains unchanged;
+- Slice 6n makes no Spatial Query behavior change.
+
+### Slice 6o: Object Classification core package organization
+
+**Implementation status: Implemented.**
+
+Reorganize the Object Classification core into one domain package, mirroring
+the existing `core/spatial_query/` organization. This is a behavior-preserving
+housekeeping slice: it changes module ownership and import paths without
+changing annotation, classifier, palette, persistence, headless, or viewer
+behavior.
+
+#### Package boundary
+
+Create:
+
+```text
+src/napari_harpy/core/object_classification/
+    __init__.py
+    annotation.py
+    classifier.py
+    classifier_export.py
+```
+
+Move the existing modules according to domain ownership:
+
+```text
+core/annotation.py
+    → core/object_classification/annotation.py
+
+core/classifier.py
+    → core/object_classification/classifier.py
+
+core/classifier_export.py
+    → core/object_classification/classifier_export.py
+```
+
+`annotation.py` belongs in this package because it owns the
+Object Classification-specific `user_class` column, companion palette, and
+row-assignment mutation. `classifier.py` and `classifier_export.py` own
+classifier preparation, prediction-state mutation, and artifact contracts.
+
+Keep genuinely shared infrastructure at the top-level core boundary:
+
+```text
+core/class_palette.py
+    → shared categorical palette mechanics
+
+core/_color_source.py
+    → shared viewer color-source mechanics
+
+core/feature_extraction.py
+core/feature_matrix_metadata.py
+core/persistence.py
+core/spatialdata.py
+core/validation.py
+    → shared workflow infrastructure
+```
+
+The dependency direction must remain:
+
+```text
+core/object_classification/
+    → may import shared core modules
+
+shared core modules
+    → must not depend on Object Classification implementation modules
+```
+
+Do not move shared palette helpers into the new package merely because Object
+Classification currently consumes them. Spatial Query and its later Spatial
+Annotation integration also depend on those contracts.
+
+`normalize_feature_columns()` currently lives in `core/classifier_export.py`,
+although it validates shared Harpy feature-matrix metadata and is consumed by
+`core/feature_matrix_metadata.py`. Moving `classifier_export.py` into the
+Object Classification package without correcting that ownership would make a
+shared core module depend on an Object Classification implementation module.
+
+Move the helper as part of this package reorganization:
+
+```text
+core/classifier_export.py::normalize_feature_columns()
+    → core/feature_matrix_metadata.py::normalize_feature_columns()
+```
+
+Then import it from the shared feature-matrix module in:
+
+- `core/object_classification/classifier_export.py`;
+- `core/object_classification/classifier.py`;
+- the Object Classification controller;
+- shared feature-matrix metadata inspection and its focused tests.
+
+This is an ownership and import-path change. Preserve the helper's existing
+arguments, return value, and validation behavior. Because it now belongs to
+shared feature-matrix metadata, validation messages refer to
+`Feature metadata` rather than `Classifier export metadata`. After the move,
+`core/feature_matrix_metadata.py` must not import anything from
+`core/object_classification/`.
+
+#### Import and API migration
+
+Update all internal consumers to the canonical package paths, including:
+
+- Object Classification controllers, annotation controllers, viewer styling,
+  and widgets;
+- `napari_harpy.headless` classifier entry points;
+- core Object Classification modules importing one another;
+- focused tests and fixtures.
+
+The public headless function names, arguments, return values, persistence
+behavior, and classifier artifact format remain unchanged. Only their internal
+imports move.
+
+Use `core/object_classification/__init__.py` only for deliberate domain-level
+exports. Internal implementation helpers remain imported from their defining
+modules; do not turn the package initializer into a broad wildcard facade.
+
+The old `core.annotation`, `core.classifier`, and `core.classifier_export`
+module paths are internal pre-release organization and do not require
+compatibility shims. Remove the old files after every consumer has migrated
+rather than retaining duplicate re-export modules.
+
+#### Behavior-preserving constraints
+
+This slice must not change:
+
+- the Slice 6n append-and-retain categorical vocabulary;
+- user-owned `user_class_colors` authority and fallback behavior;
+- classifier-derived `pred_class_colors` behavior;
+- lazy creation of annotation and prediction columns;
+- prediction clearing, mutation reporting, or viewer-refresh callbacks;
+- `ClassifierApplyResult`, export-bundle, or classifier configuration
+  semantics;
+- table dirty-state paths or zarr persistence layout;
+- Object Classification widget selection, status, or styling behavior;
+- Spatial Query behavior.
+
+Avoid opportunistic renaming or logic cleanup during the move. Any discovered
+behavioral improvement should be handled separately so import failures can be
+distinguished from semantic regressions.
+
+#### Deliverables
+
+- the new `core/object_classification/` package;
+- migration of Object Classification annotation, classifier, and classifier
+  export modules;
+- shared ownership of `normalize_feature_columns()` in
+  `core/feature_matrix_metadata.py`, with Object Classification importing it
+  from that module;
+- canonical imports throughout source and focused tests;
+- removal of the three old top-level domain module files;
+- focused annotation, classifier, headless, and Object Classification widget
+  verification;
+- lint and import/compilation verification for the moved and directly affected
+  modules.
+
+#### Exit criteria
+
+- no source or test import refers to `napari_harpy.core.annotation`,
+  `napari_harpy.core.classifier`, or
+  `napari_harpy.core.classifier_export`;
+- the old top-level files no longer exist;
+- the new package has no circular imports;
+- Object Classification annotation, inference, palette, persistence, viewer
+  styling, export, and headless behavior remain unchanged;
+- shared palette, feature, persistence, SpatialData, and validation modules
+  remain outside the domain package;
+- `core/feature_matrix_metadata.py` owns `normalize_feature_columns()` and has
+  no dependency on `core/object_classification/`;
+- focused affected tests and linting pass.
+
+### Slice 6p: Unified Spatial Annotation categorical palette lifecycle
+
+**Implementation status: Implemented.**
+
+Implement the positive-integer Spatial Annotation support deferred from Slice
+6m after Slice 6n has established the Object Classification category and
+palette contract. This slice makes Spatial Query and Object Classification
+share one user-owned categorical lifecycle.
+
+#### Shared user-owned categorical contract
+
+String and positive-integer annotation columns differ in accepted value type,
+but not in palette ownership or category lifecycle:
+
+```text
+.cat.categories
+    → declared annotation vocabulary and palette order
+
+.uns["<column>_colors"]
+    → colors aligned with that declared order
+
+valid stored palette
+    → authoritative
+
+missing or invalid stored palette
+    → stable position-based read-only fallback
+    → no mutation during selection or styling
+
+Set existing category
+    → update row values only
+
+Set new category
+    → append category
+    → append one stable positional color
+
+Remove
+    → assign pd.NA
+    → retain categories and colors
+```
+
+Do not sort positive-integer categories, remove unused categories, generate
+ordinary user-owned colors from the numeric class ID, or introduce a
+category-identity reconciliation helper. The complete current category prefix
+is preserved, so the existing append-only categorical palette operations can
+serve both value kinds.
+
+The prediction relationship from Slice 6n remains a classifier-specific
+exception. `pred_class` and `pred_confidence` are not writable Spatial
+Annotation targets.
+
+#### Typed Spatial Annotation adoption
+
+Implement the deferred Slice 6m contract:
+
+- `SpatialAnnotationValueKind` is
+  `Literal["string", "positive_integer"]`;
+- `SpatialAnnotationValue` is `str | int | None`;
+- existing categorical string and positive-integer columns are supported;
+- an empty `user_class` retains positive-integer semantics;
+- New mode remains string-categorical and cannot create `user_class`,
+  `pred_class`, or `pred_confidence`;
+- preparation exposes the resolved value kind as a property derived from its
+  captured categorical values and column name;
+- string Set accepts trimmed non-empty text;
+- integer Set accepts a positive non-boolean Python `int`;
+- Remove stores `pd.NA`;
+- the future inline annotation controls select their editor from
+  the same shared target value-kind resolver later reflected by
+  `SpatialAnnotationPreparation.value_kind`.
+
+Use one small validation/resolution boundary rather than introducing another
+target dataclass:
+
+```python
+def validate_and_resolve_spatial_annotation_value_kind(
+    values: pd.Series,
+    *,
+    column_name: str,
+) -> SpatialAnnotationValueKind:
+    ...
+```
+
+This helper validates the categorical representation and returns the resolved
+kind. Compatible-column discovery, existing-column validation, preparation,
+and styling reuse that boundary. `SpatialAnnotationPreparation.value_kind`
+applies it to the captured categorical snapshot rather than duplicating the
+result in stored state. An empty `user_class` resolves to `positive_integer`;
+an arbitrary empty object-backed categorical retains the existing string
+fallback.
+
+Existing positive-integer columns remain strict: plain integer columns,
+booleans, zero, negative IDs, mixed categories, and arbitrary coercion remain
+unsupported. `user_class` is the intended shared writable target.
+
+Reuse the canonical `USER_CLASS_COLUMN`, `PRED_CLASS_COLUMN`, and
+`PRED_CONFIDENCE_COLUMN` names from the Object Classification core package.
+Do not duplicate these reserved names in Spatial Query or introduce a generic
+column-ownership registry. This dependency is intentional: Spatial Query
+explicitly interoperates with the user-authored `user_class` state while
+respecting classifier ownership of the prediction pair.
+
+#### Atomic Apply and dirty-state behavior
+
+Build every replacement column and companion palette off-table. Install or
+roll back `.obs[column]` and `.uns["<column>_colors"]` through the existing
+atomic Spatial Annotation boundary.
+
+Reuse the existing pure `resolve_table_categorical_palette()` and
+`extend_categorical_palette()` helpers from `core/class_palette.py`. Sharing
+the categorical lifecycle does not require a shared mutating annotation
+helper: Object Classification and Spatial Annotation have different row
+selection and atomicity boundaries. Spatial Annotation therefore keeps its
+existing prepare-off-table and atomic obs/uns assignment path.
+
+For either value kind:
+
+- a valid stored palette is preserved byte-for-byte unless a category is
+  appended;
+- a missing or invalid palette remains a read-only fallback until an effective
+  annotation mutation;
+- the next effective mutation stores or repairs the resolved palette;
+- a no-op changes neither column nor palette;
+- `SpatialAnnotationApplyResult.palette_changed` is true only when the stored
+  palette actually changes;
+- component dirty-state publication includes the palette path only when
+  `palette_changed` is true.
+
+#### Slice 6p and Slice 7b/7c ownership boundary
+
+Slice 6p implements the typed domain and widget-shell support:
+
+- compatible-column discovery and value-kind capture;
+- typed preparation, summary, and atomic Apply;
+- status, tooltip, and viewer-styling support.
+
+Slice 6p documents, but does not implement, the future cross-widget event
+contract. Use the exact event source:
+
+```python
+source = "spatial_query_annotation"
+```
+
+Slice 7b publishes and Slice 7c consumes this contract:
+
+```text
+effective Spatial Query user_class Apply
+    ↓
+record TableStateChangedEvent
+    → source = "spatial_query_annotation"
+    → obs/user_class
+    → uns/user_class_colors only when palette_changed is true
+    ↓
+Object Classification consumes the shared event
+```
+
+The Object Classification consumer accepts this source only for the currently
+selected SpatialData object and table when the changed paths include
+`obs/user_class`. Its own `source="object_classification_annotation"` event
+continues through the existing direct annotation callback and must not be
+handled a second time by this external-event path.
+
+Slice 7b also owns the inline Set/Remove controls and chooses its editor from
+the selected target's resolved value kind. Slice 7c implements the consumer
+refresh and classifier lifecycle. Slice 6p does not publish or consume the
+event or implement query orchestration.
+
+#### Selection, status, and viewer styling
+
+- compatible-column discovery returns categorical string and positive-integer
+  targets in table order;
+- compatible `user_class` appears as an Existing-column target;
+- `pred_class` and `pred_confidence` never appear as writable targets;
+- status and tooltip text describe both accepted value kinds;
+- generic table-backed Labels styling resolves either kind from the same
+  stored-palette and positional-fallback path;
+- missing values use the shared neutral color;
+- selection and styling never repair the table.
+
+Do not introduce an integer-specific Labels styling implementation. Both value
+kinds continue through the shared compact categorical colormap.
+
+#### Deliverables
+
+- the deferred Slice 6m value-kind, discovery, preparation, typed-summary,
+  Apply, and UI-shell contracts;
+- one small categorical value-kind resolver used by the derived
+  `SpatialAnnotationPreparation.value_kind` property;
+- reuse of the existing shared read-only stored categorical-palette resolver
+  and append-only palette extension path for strings and positive integers;
+- positive-integer Spatial Annotation Apply with retained categories and
+  atomic obs/uns assignment;
+- shared generic Labels styling for both supported categorical kinds;
+- the documented future `source="spatial_query_annotation"` event contract,
+  with both publication and Object Classification consumption deferred to
+  Slices 7b and 7c;
+- focused core Spatial Annotation, palette, viewer-styling, and Spatial Query
+  shell tests;
+- no category-identity reconciliation, unused-category removal,
+  positive-integer category sorting, plain-integer coercion, New-column type
+  selector, shared mutating annotation helper, prediction-output mutation, or
+  direct widget dependency.
+
+#### Exit criteria
+
+- existing categorical string columns retain their behavior;
+- existing categorical positive-integer columns, including `user_class`, are
+  discoverable and atomically writable;
+- both value kinds use valid stored palettes authoritatively and stable
+  positional fallbacks when those palettes are missing or invalid;
+- assigning a new integer class appends it without reordering or recoloring
+  existing categories;
+- removing the last row using a string or integer category retains that
+  declared category and its color;
+- integer Set accepts only positive non-boolean Python integers and Remove
+  stores `pd.NA`;
+- `pred_class` and `pred_confidence` cannot be selected or mutated through
+  Spatial Query;
+- New mode remains string-categorical and cannot create conflicting Object
+  Classification reserved columns;
+- read-only selection and styling do not mutate or dirty the table;
+- no-op and palette dirty-state reporting remain exact;
+- the Slice 7b inline-input/producer and Slice 7c consumer contracts support
+  the preparation's derived value kind without being implemented in Slice 6p.
+
+### Slice 7a: Two-phase async calculate-query flow
+
+**Implementation status: Implemented.**
+
+#### Responsibility boundary
+
+This slice connects the existing cache and containment domain operations to the
+integrated Spatial Query child. It ends with an accepted
+`CanonicalCenterQueryResult` or a no-result/error outcome. It does not open the
+annotation mutation boundary or implement Object Classification event
+consumption.
+
+`SpatialQuery` owns one `SpatialQueryController`. `AnnotationWidget` continues
+to own and publish the final `AnnotationContext`, but it does not mediate
+controller callbacks or worker results. The controller remains unaware of
+`HarpyAppState`, table dirty state, status-card widgets, and annotation Apply.
+
+The child captures one immutable Run intent after performing a fresh cache
+inspection. That intent contains the exact current:
+
+- SpatialData object identity;
+- saved Shapes name and coordinate system;
+- labels and table names;
+- resolved Existing/New annotation target mode and column name.
+
+The fresh `CanonicalCacheReport` is passed directly to the controller rather
+than retained in the Run intent. The controller receives the calculation/query
+inputs accepted by the same Run. Worker completion never rereads combo-box
+values or silently adopts a new parent context.
+
+#### Valid-cache read boundary
+
+Add one small core operation that consumes an already-inspected valid report:
+
+```python
+def read_canonical_centers_from_cache(
+    sdata: SpatialData,
+    report: CanonicalCacheReport,
+) -> CanonicalCentersResult:
+    ...
+```
+
+It requires `report.state is CanonicalCacheState.VALID`, reads the selected
+rows from the managed canonical matrix, and returns
+`CanonicalCentersResult(cache_update=None)`. It does not inspect again,
+recalculate the instance-set digest, read labels pixels, mutate the cache, or
+publish shared state.
+
+Refactor the synchronous `ensure_canonical_centers()` valid branch to reuse
+this operation. The async Run path must not call `ensure_canonical_centers()`
+after its fresh inspection: doing so would repeat inspection and could enter a
+blocking calculation path on the main thread if state changed.
+
+#### Controller phases
+
+Extend the existing controller through this public widget-facing boundary:
+
+```python
+class SpatialQueryController:
+    def __init__(
+        self,
+        *,
+        on_state_changed: Callable[[], None] | None = None,
+        on_centers_ready: Callable[[CanonicalCentersResult], None] | None = None,
+        on_query_ready: Callable[[CanonicalCenterQueryResult], None] | None = None,
+    ) -> None:
+        ...
+
+    def start_spatial_query(
+        self,
+        sdata: SpatialData,
+        report: CanonicalCacheReport,
+        *,
+        shapes_name: str,
+        coordinate_system: str,
+    ) -> bool:
+        ...
+```
+
+`start_spatial_query()` allocates the one operation ID and selects the valid
+cache or calculation path from the supplied fresh report. It returns `False`
+without changing state when the controller is shut down or another operation
+is active. Otherwise it accepts the operation and returns `True`, including
+when a synchronous valid-cache/query-request preflight subsequently reports an
+error through normal controller status.
+
+The annotation target does not belong in `SpatialQueryController`. The child
+retains its captured target mode and column name in the immutable Run intent
+and pairs them with the accepted query result in Slice 7b. Slice 7b extends
+that child-owned intent with the Set/Remove action and typed value; neither the
+target nor annotation intent belongs in the controller,
+`CanonicalCenterQueryRequest`, or `CanonicalCenterQueryResult`.
+
+The controller worker phases are exactly:
+
+```python
+SpatialQueryWorkerPhase = Literal[
+    "canonical_centers",
+    "containment_query",
+]
+```
+
+One monotonically increasing operation ID governs both phases. Do not
+introduce separate center and query job IDs.
+
+The controller has one strict active-work invariant:
+
+```text
+at most one logical operation is active
+    ↓
+at most one worker belonging to that operation is active
+```
+
+A Run request received while an operation is active returns `False` and makes
+no state change. It does not cancel, replace, or allocate a new operation ID.
+Run is also disabled in the UI while either phase is active, but the controller
+enforces this independently so queued clicks or programmatic calls cannot
+create concurrent work.
+
+The no-cache path uses two sequential workers, not two independently
+user-controlled jobs:
+
+```text
+one Run / one operation ID
+    ↓
+canonical-centers worker
+    ↓ returned payload accepted
+main-thread cache update
+    ↓ update succeeds
+containment-query worker
+```
+
+The containment worker is created only after the canonical-centers result is
+accepted for the current operation ID and the main-thread cache update
+succeeds. A cancelled, stale, errored, or rejected center result never starts
+the query phase.
+
+The phase handoff replaces the active canonical-centers phase with the
+containment-query phase before starting the second worker. Both operation ID
+and expected phase guard every signal. Consequently, a late `finished` signal
+from the first worker cannot clear or otherwise affect the already-installed
+second worker:
+
+```text
+canonical-centers worker emits returned
+    ↓
+controller accepts and installs containment-query as the active phase
+    ↓
+old canonical-centers worker emits finished
+    ↓ phase mismatch
+ignore the old finished signal
+```
+
+The complete valid-cache path is:
+
+```text
+main thread
+    fresh inspect_canonical_cache()
+        ↓ VALID
+    read_canonical_centers_from_cache(report)
+        ↓
+    build_canonical_center_query_request()
+        ↓
+worker
+    evaluate_canonical_center_query()
+        ↓
+main thread
+    accept only the current operation ID
+```
+
+The calculation path is:
+
+```text
+main thread
+    fresh inspect_canonical_cache()
+        ↓ ABSENT / PARTIAL / STALE / INVALID
+worker
+    calculate_canonical_centers()
+    return CanonicalCacheUpdatePayload
+        ↓
+main thread
+    accept only the current operation ID
+    apply_canonical_cache_update()
+    construct CanonicalCentersResult
+        ↓
+    build_canonical_center_query_request()
+        ↓
+worker
+    evaluate_canonical_center_query()
+        ↓
+main thread
+    accept only the same current operation ID
+```
+
+`build_canonical_center_query_request()` remains a main-thread preflight. It
+validates and snapshots the selected saved Polygon geometries and the
+element-to-element affine before the containment worker starts. The worker
+receives only the immutable `CanonicalCenterQueryRequest` and performs no Qt,
+napari-layer, SpatialData, or AnnData mutation.
+
+The existing `on_centers_ready` callback fires for either reused or newly
+accepted centers. The Spatial Query child handles it directly. When
+`result.cache_update is not None`, the child constructs one
+`TableStateChangedEvent` for `CANONICAL_CACHE_PATHS`, maps the update action to
+the existing change kind, and calls its shared app state's
+`record_table_mutation()`. Reused centers publish nothing.
+
+Move this behavior out of the temporary
+`record_canonical_cache_update()`/`cache_state.py` adapter once the child owns
+the callback. The controller must never import or receive `HarpyAppState`.
+
+#### Invalidation and status
+
+Follow the existing best-effort worker cancellation contract:
+
+- `worker.quit()` requests cancellation but is not treated as hard Dask
+  interruption;
+- clear the active phase immediately;
+- ignore every late `returned`, `errored`, or `finished` signal whose operation
+  ID and phase are no longer active;
+- never accept a center payload or query result after invalidation.
+
+Invalidate active work when:
+
+- SpatialData, coordinate system, or parent Shapes target changes;
+- the selected Shapes session becomes dirty;
+- labels, table, target mode, target column, or New-column draft changes;
+- after Slice 7b, the Set/Remove action or annotation value changes;
+- the selected primary Labels layer is removed;
+- relevant table reload replaces the operation's table state;
+- the child or parent is destroyed.
+
+Run is disabled while either worker phase is active. Do not add a progress
+percentage, progress bar, scheduler diagnostics, performance telemetry, or a
+separate Cancel button. Selection/context invalidation and teardown use the
+controller's existing cancellation boundary.
+
+The one Spatial Query status card temporarily gives execution state priority:
+
+```text
+canonical_centers
+    → Calculating centers for "<labels>"
+
+containment_query
+    → Querying centers inside "<shapes>"
+```
+
+Worker/preflight failures become stable user-facing errors without a traceback.
+After cleanup, the controls return to a usable state.
+
+#### Accepted query and no-result boundary
+
+The controller calls the child only for a current accepted
+`CanonicalCenterQueryResult`. The child compares its retained Run intent with
+the current parent and selector context before proceeding.
+
+If `matched_instance_count == 0`:
+
+- show a neutral `No instances from the selected Labels element have their
+  center inside the selected Shapes` outcome;
+- do not call `prepare_spatial_annotation()`;
+- do not mutate annotation state;
+- retain any accepted canonical cache update and its dirty paths.
+
+If one or more instances match, Slice 7a calls the child's
+`_on_query_ready()` callback through `on_query_ready` and shows a stable
+`N instance centroids found` success outcome without mutating annotation
+state. Slice 7b extends that same child callback to prepare and immediately
+apply the captured annotation intent. Do not add a temporary Qt signal,
+operation-result wrapper, or operation ID field to the domain query result for
+this handoff.
+
+#### Deliverables
+
+- `read_canonical_centers_from_cache()` with reuse from the synchronous ensure;
+- one child-owned `SpatialQueryController`;
+- the exact `start_spatial_query()`, `on_centers_ready`, and `on_query_ready`
+  widget/controller boundary;
+- one operation ID across optional center calculation and containment query;
+- a mutation-free containment worker wrapper;
+- main-thread request construction and cache application;
+- child-owned canonical cache event publication and removal of
+  `cache_state.py`;
+- unified busy, cancelled, no-result, success, and error status;
+- focused core cache-read, controller phase-transition, late-signal, widget
+  invalidation, cache-event, and no-result tests.
+
+#### Exit criteria
+
+- each Run performs exactly one fresh cache inspection and one instance-set
+  digest calculation before either reuse or calculation;
+- valid reuse never starts labels I/O or mutates/publishes cache state;
+- labels aggregation and containment evaluation both run off the Qt main
+  thread;
+- a second Run request cannot replace an active operation or allocate another
+  worker;
+- the two no-cache workers never overlap and remain phases of one operation;
+- only the current operation ID can apply a cache payload or deliver a query
+  result;
+- a late signal from the completed center phase cannot clear or mutate the
+  active query phase;
+- accepted cache mutation is published by the child exactly once and before
+  any annotation mutation;
+- cancellation after cache application retains that useful dirty cache but
+  cannot apply a late annotation;
+- a zero-match result produces no annotation preparation or mutation.
+- a non-empty result reaches the child exactly once through `on_query_ready`
+  and remains mutation-free until Slice 7b extends that callback.
+
+### Slice 7b: One-step spatial annotation apply and publication
+
+**Implementation status: Implemented.**
+
+#### Responsibility boundary
+
+This slice turns the Slice 7a calculate-query result into one user-facing
+annotation action. It adds inline Set/Remove and target-typed value controls,
+captures the complete mutation intent before asynchronous work, applies that
+intent immediately after a non-empty accepted query result, publishes the
+effective table mutation, and refreshes Labels styling. It does not introduce
+a modal review dialog, perform worker computation, or call Object
+Classification directly.
+
+The Spatial Query child owns the annotation action and value because they are
+UI mutation intent, not containment-query inputs. `SpatialQueryController`,
+`CanonicalCenterQueryRequest`, and `CanonicalCenterQueryResult` remain unaware
+of the target column and annotation value.
+
+#### Inline annotation-input contract
+
+Add one explicit Set/Remove control and one target-typed Set editor beneath the
+target-column controls:
+
+```text
+Existing string categorical
+    → Set: QLineEdit with trimmed non-empty text
+    → Remove: editor hidden or disabled
+
+Existing positive-integer categorical
+    → Set: positive-integer-only editor
+    → Remove: editor hidden or disabled
+
+New column
+    → Set only
+    → QLineEdit with trimmed non-empty text
+```
+
+The widget never derives the value from the Shapes name. The Set editor starts
+without an implicit string value. Set is the default action; Remove must be
+chosen explicitly. `"None"` and `"nan"` remain ordinary string categories;
+only the explicit Remove action produces `annotation_value=None`. Remove is
+unavailable for New mode.
+
+Target changes resolve the applicable value kind through the existing Spatial
+Annotation contract and reset an incompatible value draft rather than
+silently converting it. Changing the Set/Remove action or editor value while a
+Run is active invalidates that Run just like changing Shapes, labels, table, or
+target column.
+
+The widget states before execution that Set replaces different existing values
+for every matched labeled object and that Remove clears every matched current
+value. Exact counts are necessarily available only after containment has been
+evaluated and are reported as the operation outcome.
+
+#### Accepted intent and immediate Apply
+
+Extend the frozen child-owned Run intent with the already-normalized typed
+value:
+
+```python
+@dataclass(frozen=True)
+class _SpatialQueryRunIntent:
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    labels_name: str
+    table_name: str
+    column_mode: SpatialAnnotationColumnMode
+    column_name: str
+    annotation_action: Literal["set", "remove"]
+    annotation_value: SpatialAnnotationValue
+```
+
+`annotation_action="remove"` requires Existing mode and
+`annotation_value=None`; `"set"` requires the target-compatible normalized
+string or positive integer. `_run_intent_matches_current_selection()` includes
+both fields so a worker result can never adopt action or editor state changed
+after Apply Annotation was clicked.
+
+For one or more matched instances, `_on_query_ready()` performs:
+
+```text
+validate the retained Run intent against current widget context
+    ↓
+prepare_spatial_annotation(
+    intent.sdata,
+    query_result=result,
+    column_name=intent.column_name,
+    column_mode=intent.column_mode,
+)
+    ↓
+summarize_spatial_annotation(
+    preparation,
+    intent.annotation_value,
+)
+    ↓
+apply_spatial_annotation(
+    intent.sdata,
+    preparation,
+    summary,
+)
+```
+
+All three domain calls run sequentially on the main thread after containment
+worker completion. Preparation and summarization are mutation-free;
+`apply_spatial_annotation()` remains the only annotation mutation boundary.
+The immutable summary is used for consistency validation and exact outcome
+reporting, not as a user review artifact.
+
+If `changed_count == 0`, report that no annotations changed and publish
+nothing. If preparation or Apply raises
+`SpatialAnnotationColumnChangedError`,
+`SpatialAnnotationQueryOutdatedError`, or another expected target-validation
+error, show an actionable failure and require a new Apply Annotation action.
+Do not retry, rebuild preparation against newer values, or silently adopt
+current selector/editor state.
+
+Normal Shapes edits and context changes already invalidate the operation
+before result acceptance. Core Apply revalidates current canonical centers,
+binding, table identity, and target values. Do not add a second Shapes geometry
+hash or affine comparison.
+
+A cache update accepted before a no-result, no-op, annotation failure, or later
+input invalidation remains a useful dirty cache mutation and is not rolled
+back.
+
+#### Final status ownership
+
+`SpatialQueryController` continues to own only calculation and containment
+execution status. It must not gain annotation-domain setters or learn whether
+`.obs` Apply succeeded. The child owns one transient final annotation outcome
+for the unified status card:
+
+```text
+controller worker active
+    → controller execution status has priority
+
+accepted query reaches child
+    → child prepares and applies annotation
+    → child stores final applied/no-op/failure outcome
+
+query worker emits finished
+    → normal widget refresh preserves the child-owned final outcome
+
+next input change or Apply Annotation action
+    → clear the previous final outcome
+```
+
+Use one optional child-owned status specification or equivalently small
+presentation record; do not duplicate the query result, summary, preparation,
+or Run intent merely to render final feedback.
+
+#### Effective mutation publication
+
+After an effective `SpatialAnnotationApplyResult`, construct one event:
+
+```text
+source
+    → "spatial_query_annotation"
+
+paths
+    → obs/<column>
+    → uns/<column>_colors only when palette_changed is true
+
+regions
+    → selected labels name
+
+change kind
+    → created for the first New-column Apply
+    → updated for Existing Set or Remove
+```
+
+Call `HarpyAppState.record_table_mutation()` exactly once. The core annotation
+operation remains unaware of Qt, app state, dirty tracking, and persistence.
+The Spatial Query child's own event handler must not treat this ordinary
+mutation event as an external input change, invalidate the already accepted
+operation, or clear its final annotation outcome.
+
+The source is used for every effective Spatial Query annotation, not only
+`user_class`. Consumers decide whether the affected column is relevant.
+
+After publication:
+
+- refresh the selected primary Labels layer through the existing generic
+  table-backed Spatial Annotation styling path;
+- render missing values with the shared neutral color;
+- leave unrelated layers and color sources untouched;
+- update the unified status from the already-computed summary:
+
+```text
+Set
+    → changed count
+    → overwritten-different count
+    → already-equal count
+
+Remove
+    → removed count
+    → already-missing count
+```
+
+For the first effective New-column Apply:
+
+```text
+create column and palette atomically
+    ↓
+publish the table mutation
+    ↓
+refresh compatible Existing-column choices
+    ↓
+select the created column as an Existing target
+    ↓
+clear the consumed New-column draft
+    ↓
+replace neutral styling with table-backed styling
+```
+
+Signal blocking must prevent this programmatic promotion from launching a
+second query, applying again, or invalidating the already completed operation.
+The created column becomes the selected Existing target only after the atomic
+mutation and table-state publication succeed.
+
+#### Deliverables
+
+- inline Set/Remove and value-kind-aware editor controls;
+- annotation-value validation as part of Apply Annotation readiness;
+- captured typed value in the immutable child-owned Run intent;
+- immediate prepare-summary-Apply handling in `_on_query_ready()`;
+- main-thread use of the existing atomic Apply domain operation;
+- summary and related core docstrings updated from review-oriented wording to
+  one-step consistency and outcome wording;
+- one transient child-owned final annotation outcome without adding annotation
+  state to the controller;
+- exact child-owned annotation event construction;
+- exact no-result, no-op, changed, overwritten, unchanged, removed, stale, and
+  failure status;
+- targeted Labels styling after effective Apply;
+- New-column promotion and draft consumption;
+- focused input-validation, intent-capture, widget Apply, no-op, cancellation,
+  outdated-result, event-path, palette-path, styling, and promotion tests.
+
+#### Exit criteria
+
+- one Apply Annotation action owns query and mutation without a second dialog
+  or confirmation step;
+- only the action and typed value captured before asynchronous work can reach
+  annotation Apply;
+- changing action, value, target, or context invalidates the active operation;
+- Apply either installs the complete obs/palette consistency unit or restores
+  the previous state;
+- no-result, no-op, stale, and error outcomes publish no annotation event;
+- an effective Apply publishes exactly one event with only paths that actually
+  changed;
+- standing overwrite semantics are visible before execution and exact outcome
+  counts are shown afterward;
+- New mode becomes the newly created Existing target only after successful
+  effective Apply;
+- immediate Spatial Query coloring reflects the accepted in-memory table.
+
+### Slice 7c: Object Classification consumption of Spatial Query annotations
+
+**Implementation status: Implemented.**
+
+#### Responsibility boundary
+
+This slice implements the deferred cross-widget consumer for effective Spatial
+Query writes to `user_class`. Communication remains exclusively through
+`HarpyAppState.table_state_changed`; neither widget imports, stores, or calls
+the other.
+
+Extend Object Classification's existing table-state handler with a distinct
+external-annotation branch. It accepts an event only when:
+
+- `event.source == "spatial_query_annotation"`;
+- `event.sdata is selected_spatialdata`;
+- `event.table_name == selected_table_name`;
+- `event.paths` includes `TableComponentPath("obs", ("user_class",))`.
+
+The optional `uns/user_class_colors` path is consumed through the current live
+table state but is not required: an effective annotation may change values
+without changing the already-valid palette.
+
+Do not require the selected segmentation to appear in `event.regions`.
+`user_class` is a classifier input and a change in another region of the same
+table may still affect table-wide training. The consumer therefore performs a
+safe full current-table refresh rather than the row-scoped optimization used
+when Object Classification itself knows the edited instance.
+
+#### Consumer flow
+
+```text
+Spatial Query records source="spatial_query_annotation"
+    → obs/user_class
+    → optional uns/user_class_colors
+        ↓
+Object Classification accepts the current-table event
+        ↓
+validate current table binding and Object Classification state
+        ↓
+refresh user-class controls and full Labels styling
+        ↓
+mark the classifier stale and invalidate any pending or active classifier work
+        ↓
+schedule retraining only when Auto-train is enabled
+```
+
+An accepted external `user_class` change invalidates the inputs captured by
+every classifier job that started before that change. Before the event handler
+completes, any pending debounce request or active classifier worker based on
+those old inputs must therefore be invalidated so that a late worker result
+cannot write stale predictions or mark the classifier up to date.
+
+The classifier stale boundary should provide this guarantee directly:
+
+```text
+accepted external user_class change
+    ↓
+invalidate pending and active classifier work
+    ↓
+mark classifier stale
+    ├── Auto-train disabled
+    │      → schedule no replacement
+    │      → remain stale
+    │
+    └── Auto-train enabled
+           → schedule exactly one replacement job
+           → replacement captures the updated user_class state
+```
+
+Strengthen `ClassifierController.mark_dirty()` so marking classifier inputs
+stale also invalidates pending and active asynchronous jobs through the
+controller's existing job-invalidation boundary. This makes the method's
+semantics match its purpose for both Spatial Query annotations and the
+existing Object Classification annotation path. A cancelled worker that
+returns late must fail the existing job-identity acceptance guard.
+
+If current table validation fails:
+
+- invalidate classifier work captured from the previously accepted table
+  state;
+- preserve the selected Labels layer;
+- apply the existing neutral invalid-table styling;
+- show the existing table-binding error;
+- do not schedule retraining.
+
+The consumer does not publish another table event. In particular,
+`source="object_classification_annotation"` continues through the existing
+direct `_on_annotation_changed()` path and must not enter this external event
+branch. This prevents duplicate styling, duplicate dirty-state tokens, and
+duplicate retraining requests.
+
+The event carries component paths and regions, not individual instance IDs.
+Do not attempt to synthesize `UserClassAnnotationChange` or reuse the
+single-instance row-scoped styling optimization.
+
+#### Deliverables
+
+- Object Classification external Spatial Query event branch;
+- current-table binding/state validation and full control/styling refresh;
+- classifier invalidation and conditional Auto-train scheduling;
+- source/path/identity guards and feedback-loop prevention;
+- focused current/other table, current/other SpatialData, missing palette path,
+  invalid table, Auto-train on/off, active-worker invalidation with Auto-train
+  on and off, own-source, and no-republication tests.
+
+#### Exit criteria
+
+- an effective current-table Spatial Query `user_class` Apply refreshes Object
+  Classification without direct widget coupling;
+- valid external changes always invalidate older classifier work and mark the
+  classifier stale;
+- a classifier result captured before the annotation change cannot write
+  predictions or restore the up-to-date state afterward;
+- Auto-train schedules exactly once only when enabled and the refreshed table
+  remains valid;
+- with Auto-train disabled, no replacement job is scheduled and the classifier
+  remains stale;
+- palette-only or unrelated-column events do not invalidate the classifier;
+- other datasets and tables are ignored;
+- Object Classification's own annotation event is not handled twice;
+- consuming an external event never records another mutation or changes shared
+  dirty paths.
+
+### Slice 7d: Shared table dirty-state UI synchronization
+
+**Implementation status: Implemented.**
+
+#### Responsibility boundary
+
+`HarpyAppState` already owns the authoritative per-viewer dirty-table manifest.
+Dirty state is keyed by `SpatialData` identity and table name, with a distinct
+mutation token for each dirty component path. This shared state is correct
+regardless of which napari-harpy widget mutated the table.
+
+The remaining gap is only UI refresh. Reuse the existing
+`HarpyAppState.table_state_changed` signal rather than adding a second dirty
+state event. Every supported cross-widget table mutation, already-persisted
+change, and reload already publishes this signal after reconciling the shared
+dirty manifest.
+
+The persistence UI does not need a `TableDirtySnapshot`. Snapshots capture
+component mutation tokens so a write can later acknowledge only the state it
+actually persisted. The UI needs only the current table-wide boolean and must
+query it through `PersistenceController.has_unsynced_table_changes`, which
+delegates to `HarpyAppState.is_table_dirty()`.
+
+#### Existing notification contract
+
+```text
+record_table_mutation()
+    → install fresh dirty-component tokens
+    → emit table_state_changed
+
+record_persisted_table_change()
+    → acknowledge only captured tokens that are still current
+    → emit table_state_changed
+
+record_table_reload()
+    → clear only dirty paths restored from storage
+    → emit table_state_changed
+```
+
+When Object Classification receives any of these events, the manifest already
+contains the authoritative post-operation state. It can therefore refresh its
+Write Table State control without interpreting the event source, component
+paths, change kind, or regions.
+
+`acknowledge_table_write()` does not independently publish
+`table_state_changed`. This is already handled for the currently implemented
+Write Table State action:
+
+```text
+Object Classification: Write Table State clicked
+    ↓
+PersistenceController.write_table_state()
+    ↓
+snapshot and write every dirty component path for the selected table
+    ↓
+acknowledge_table_write()
+    → clear only successfully persisted paths whose mutation tokens are current
+    ↓
+return to Object Classification
+    ↓
+_update_selection_status()
+    ↓
+_update_persistence_controls()
+    ↓
+disable Write Table State when the shared table is now clean
+```
+
+The action is generic because it writes all dirty paths captured for the table,
+including paths produced by other napari-harpy widgets; it is not restricted to
+Object Classification annotations or classifier output. Object Classification
+is currently the only widget exposing this generic Write Table State action,
+so its explicit post-write refresh covers the dirty-to-clean transition without
+a second shared event. If another independent widget later gains the same
+generic persistence action, revisit the shared write-completion notification
+at that point.
+
+Mutation-token safety remains unchanged. A stale write acknowledgement cannot
+clear a component that received a newer token while persistence was running.
+The next UI refresh therefore continues to observe the table as dirty.
+
+#### Object Classification consumer
+
+Extend Object Classification's existing `table_state_changed` handler so
+persistence synchronization occurs before source-specific early returns:
+
+```text
+receive TableStateChangedEvent
+    ↓
+validate event type and SpatialData identity
+    ↓
+event belongs to the selected table
+    ↓
+refresh only the persistence controls
+    ↓
+continue with existing source/path-specific handling
+```
+
+The persistence refresh must run for every current-table event, including
+canonical-center `.obsm`/`.uns` writes, Spatial Query annotations to columns
+other than `user_class`, feature-extraction changes, classifier writes,
+already-persisted changes, and reloads. Unrelated datasets and tables are
+ignored.
+
+This general persistence step must not rebind controllers, refresh Labels
+styling, invalidate the classifier, publish another event, or inspect the
+mutation source. After it runs, the existing source-specific branches retain
+their current domain behavior.
+
+The Write Table State control follows this invariant:
+
+```text
+selected table is backed
+and its Object Classification binding is valid
+and HarpyAppState reports the table dirty
+    → enabled
+
+otherwise
+    → disabled
+```
+
+Selection and binding changes continue to refresh persistence controls through
+the existing widget refresh path. Object Classification's own successful
+generic table write continues to disable the control through its existing
+post-write refresh.
+
+Direct table mutation without calling the appropriate `HarpyAppState`
+recording method remains outside the supported cross-widget contract and
+cannot be expected to refresh any widget.
+
+#### Deliverables
+
+- Object Classification's existing table-state handler refreshing persistence
+  controls for every current-dataset/current-table event before domain-specific
+  filtering;
+- no new app-state event, snapshot type, dirty boolean, or duplicated manifest;
+- focused Object Classification tests covering canonical-cache paths,
+  unrelated annotation columns, already-persisted events, reloads, other
+  datasets/tables, and dirty-to-clean button updates;
+- preservation of the existing local post-write control refresh.
+
+#### Exit criteria
+
+- any accepted napari-harpy mutation of the selected table enables Write Table
+  State immediately when the table is backed and its binding is valid;
+- successful persistence or reload disables Write Table State immediately only
+  when no newer or remaining dirty components exist;
+- a stale write acknowledgement cannot disable the control after a newer
+  mutation;
+- cross-widget persistence UI synchronization uses `table_state_changed` and
+  the authoritative shared manifest rather than a second notification system;
+- persistence readiness does not depend on table-event source, component type,
+  or domain-specific widget consumption;
+- the general persistence refresh introduces no duplicate mutation records,
+  styling refreshes, classifier invalidations, or cross-widget imports.
+
+**Resolved primary-Labels styling contract**
+
+The primary napari Labels layer is one shared presentation surface. It has no
+workflow owner or retained styling claim. Loading or activating an existing
+primary layer through Viewer preserves its current colormap and features; it is
+not a styling operation. A newly created primary layer starts with napari's
+default Labels presentation.
+
+Object Classification and Spatial Query may each restyle that same live primary
+layer, and the most recently applied style is visible.
+
+This intentionally includes asynchronous updates:
+
+```text
+Spatial Query styles the primary layer
+    ↓
+an Auto-train classifier job finishes later
+    ↓
+Object Classification applies its selected Color-by mode
+    ↓
+Object Classification styling becomes visible
+```
+
+Viewer table-colored overlays remain separate styled layers and do not
+participate in this primary-layer contract. Styling changes only napari
+presentation state; it never mutates AnnData or marks a table dirty. No shared
+styling-owner state or styling-ownership implementation slice is required.
+
+### Slice 8a: Reusable table persistence controls
+
+**Implementation status: Implemented.**
+
+#### Responsibility boundary
+
+`PersistenceController` already provides the generic component-level Write and
+Reload operations. Object Classification currently owns the only Write Table
+State and Reload Table State buttons, their feedback, and the dirty-reload
+prompt. This slice extracts the controls and their shared dirty-state
+presentation into a reusable component without duplicating persistence or
+dirty-state truth.
+
+The reusable component binds to:
+
+```text
+SpatialData
+table_name
+optional labels_name
+    ↓
+PersistenceController
+    ↓
+HarpyAppState shared dirty manifest
+```
+
+Canonical centers, annotation columns, palettes, classifier state, and
+feature-matrix paths remain one union of dirty table components; no
+workflow-specific Write button may persist only its own contribution.
+
+This foundation is migrated into Object Classification first. Its existing
+reload orchestration remains authoritative in this slice, including classifier
+freezing, the dirty-reload decision, rebinding, and post-reload reset. The
+reusable component must not expose an independent Reload action in Annotation /
+Spatial Query until Slice 8b introduces shared reload coordination.
+
+The eventual Annotation persistence controls belong inside the Spatial Query
+child, because that child owns the selected Labels element and table. The
+parent Annotation widget hosts the child but does not duplicate its table
+selection.
+
+#### Shared dirty-state notification
+
+Slice 7d could rely on `table_state_changed` plus an Object Classification-local
+post-write refresh because only one generic Write Table State action existed.
+That assumption will no longer hold when independent reusable controls become
+visible. A successful `acknowledge_table_write()` changes shared dirty state
+without changing the live table and therefore does not naturally produce a
+`TableStateChangedEvent`.
+
+Introduce a narrow shared notification:
+
+```python
+@dataclass(frozen=True)
+class TableDirtyStateChangedEvent:
+    sdata: SpatialData
+    table_name: str
+    is_dirty: bool
+```
+
+`HarpyAppState` remains the only owner of the dirty manifest and emits
+`table_dirty_state_changed` when a table-wide dirty boolean changes:
+
+```text
+first accepted mutation
+    → dirty changes False → True
+    → emit TableDirtyStateChangedEvent(..., is_dirty=True)
+
+successful write acknowledgement
+    → clear only paths whose captured tokens remain current
+    → recompute dirty from the authoritative manifest
+    → emit is_dirty=False only when no dirty path remains
+
+accepted reload
+    → clear the paths restored from disk
+    → recompute dirty from the authoritative manifest
+    → emit only if the table-wide dirty boolean changed
+```
+
+If a newer mutation token or another dirty path survives a write, the table
+remains dirty and every bound control remains enabled. A newly bound component
+reads the current state directly through `PersistenceController`; the event is
+for synchronizing already-bound controls.
+
+This event is a UI-state notification derived from the existing manifest, not a
+second source of truth. `table_state_changed` remains the domain event for
+actual live-table mutations and reloads. Persistence acknowledgement must not
+be represented as a fake AnnData mutation.
+
+#### Staged reload ownership
+
+The reusable controls component may present both Write Table State and Reload
+Table State, but during this slice Object Classification remains the only host:
+
+```text
+Object Classification table selection
+    → bind reusable persistence controls
+
+Write Table State
+    → reusable controls call PersistenceController.write_table_state()
+    → shared dirty-state event refreshes every bound control
+
+Reload Table State
+    → preserve the existing Object Classification reload orchestration
+    → freeze classifier work
+    → resolve Write / Discard / Cancel
+    → reload
+    → rebind and reset classifier state
+```
+
+The controls may expose a reload request to their host, but must not perform an
+unguarded reload that bypasses workflow preparation. Slice 8b replaces this
+single-host orchestration with the shared reload boundary required before a
+second host is enabled.
+
+#### Deliverables
+
+- a reusable Write Table State / Reload Table State UI component backed by
+  `PersistenceController`;
+- Object Classification migrated to that component without behavior loss;
+- `TableDirtyStateChangedEvent` and one `HarpyAppState` signal derived from the
+  authoritative dirty manifest;
+- shared dirty-to-clean UI synchronization after generic writes;
+- the existing Object Classification reload orchestration preserved behind the
+  reusable control;
+- no persistence controls exposed in Spatial Query yet;
+- focused tests for multiple controls bound to the same and different tables.
+
+#### Exit criteria
+
+- every bound control reflects one authoritative shared dirty manifest;
+- writing through one bound component immediately refreshes every other bound
+  component for that table;
+- Write Table State persists the union of supported dirty paths and clears only
+  successfully written paths whose captured mutation tokens are still current;
+- a surviving newer token or unrelated dirty path keeps every bound Write
+  button enabled;
+- Object Classification reload retains its current Write / Discard / Cancel,
+  classifier-freeze, rebind, and reset behavior;
+- no Annotation / Spatial Query Reload action can bypass shared reload
+  preparation;
+- no full-AnnData rewrite or workflow-specific persistence implementation is
+  introduced.
+
+### Slice 8b: Shared table-reload protocol and Object Classification migration
+
+#### Responsibility boundary
+
+This slice introduces one shared table-reload protocol and proves it by
+migrating the existing, working Object Classification reload flow. It does not
+yet expose persistence controls in Spatial Query.
+
+The existing `TableStateChangedEvent(change_kind="reloaded")` is a
+post-mutation notification:
+
+```text
+PersistenceController reloads the live table components
+    ↓
+HarpyAppState records the accepted reload
+    ↓
+table_state_changed emits the reload event
+```
+
+It is therefore too late for pre-reload preparation such as
+`ClassifierController.freeze_for_reload()`. Object Classification is currently
+safe only when it initiates Reload itself because its widget directly freezes
+classifier work before calling `PersistenceController`, then rebinds and resets
+the classifier afterward.
+
+Slice 8b must express those phases through shared contracts:
+
+```python
+@dataclass(frozen=True)
+class TableReloadRequest:
+    sdata: SpatialData
+    table_name: str
+    paths: frozenset[TableComponentPath]
+    source: str
+
+
+class TableReloadParticipant(Protocol):
+    def prepare_table_reload(
+        self,
+        request: TableReloadRequest,
+    ) -> None: ...
+```
+
+The final API may refine the names, but it must retain the distinction between
+pre-reload preparation and post-reload adoption. Multiple participants must be
+registrable without introducing widget-to-widget dependencies. Participants
+ignore requests for datasets or tables they do not consume.
+
+#### UI intent versus accepted reload request
+
+`TablePersistenceControls.reload_requested` and `TableReloadRequest` represent
+different stages:
+
+```text
+reload_requested
+    → zero-payload UI intent
+    → “the user clicked Reload in these bound controls”
+
+TableReloadRequest
+    → accepted immutable operation identity
+    → “reload these paths from this exact table in this exact SpatialData”
+```
+
+The coordinator constructs no `TableReloadRequest` when the user cancels.
+After Write succeeds or Discard is accepted, it captures one request and passes
+that same object to every participant and to the reload operation:
+
+```text
+reload_requested
+    ↓
+resolve Write / Discard / Cancel
+    ├── Cancel
+    │      → construct no TableReloadRequest
+    │
+    └── accepted
+           → capture sdata / table_name / paths / source once
+           → Object Classification prepares from that request
+           → every other registered participant prepares from that request
+           → PersistenceController reloads that same target
+           → post-reload event reports that same target
+```
+
+Participants must not infer the reload target from their current UI selection
+or from the initiating widget. They compare the immutable request with the
+dataset and table they consume, ignore unrelated requests, and prepare only
+when affected. This prevents the coordinator and separate workflows from
+independently reading mutable selections and acting on different targets.
+
+#### Why Write has no participant request
+
+Write and Reload cross the persistence boundary in opposite directions:
+
+```text
+Write
+    live in-memory table → disk
+    → does not replace .obs, .obsm, or .uns in memory
+    → requires no worker invalidation or controller rebind
+
+Reload
+    disk → live in-memory table
+    → replaces selected .obs, .obsm, or .uns components
+    → may invalidate captured work, selections, and styling
+```
+
+Write already has the immutable consistency object it needs:
+`TableDirtySnapshot` captures the table, dirty paths, and mutation tokens before
+persistence starts. A completed Write acknowledges only captured tokens that
+are still current; a newer token remains dirty. No workflow needs to prepare
+for or recover from that outward synchronization, so a `TableWriteRequest`
+participant protocol would add no useful contract.
+
+The two immutable objects therefore have distinct responsibilities:
+
+| Object | Responsibility |
+|---|---|
+| `TableDirtySnapshot` | Ensure Write acknowledges only the state it actually persisted |
+| `TableReloadRequest` | Tell every workflow exactly which accepted Reload it must prepare for |
+
+#### Shared reload coordinator
+
+The coordinator owns the accepted transition:
+
+```text
+reload_requested
+    ↓
+resolve Write / Discard / Cancel when the table is dirty
+    ├── Cancel
+    │      → stop
+    │      → do not prepare participants
+    │      → do not mutate the table or dirty manifest
+    │
+    ├── Write
+    │      → write the captured dirty table state
+    │      → stop if writing fails
+    │
+    └── Discard or successful Write
+           → construct TableReloadRequest
+           → prepare affected participants
+           → reload supported table components
+           → publish one accepted post-reload event
+```
+
+`TablePersistenceControls` continues to emit `reload_requested`; it never calls
+`PersistenceController.reload_table_state()` directly. The coordinator is the
+only UI reload path.
+
+#### Object Classification migration
+
+Object Classification is the first registered participant:
+
+```text
+Object Classification reload_requested
+    ↓
+shared reload coordinator
+    ↓
+Object Classification.prepare_table_reload()
+    → ClassifierController.freeze_for_reload()
+    ↓
+PersistenceController reloads the table
+    ↓
+existing post-reload TableStateChangedEvent
+    ↓
+Object Classification adopts restored state
+    → refresh feature-matrix choices
+    → rebind annotation, classifier, and viewer-styling controllers
+    → ClassifierController.reset_after_reload()
+    → reapply the selected Color-by styling
+```
+
+The migration must preserve the current messages, dirty decision behavior,
+selection fallbacks, and stale-worker protection. Its purpose is architectural:
+Object Classification must stop owning a private reload lifecycle while its
+observable behavior remains unchanged.
+
+#### Decisions to resolve before implementation
+
+- finalize `TableReloadRequest` fields and the participant registration and
+  teardown lifecycle;
+- choose the shared reload coordinator owner and the reusable decision-dialog
+  boundary;
+- define failure behavior when participant preparation raises before mutation;
+- keep post-reload adoption on the existing reload event or document a
+  separate accepted-reload callback if one is genuinely required;
+- preserve the existing rule that stale classifier results cannot mutate
+  reloaded state.
+
+#### Deliverables
+
+- an immutable reload request and explicit participant protocol;
+- multi-participant registration without direct widget dependencies;
+- one shared reload coordinator owning Write / Discard / Cancel;
+- Object Classification migrated as the first participant;
+- existing Object Classification post-reload rebinding and styling preserved;
+- focused clean, Write, Discard, Cancel, failure, and late-worker tests;
+- no Spatial Query persistence controls yet.
+
+#### Exit criteria
+
+- Object Classification behaves as before but no longer owns a private reload
+  lifecycle;
+- participant preparation always happens before live table replacement;
+- Cancel changes no controller, table, dirty-manifest, layer, or UI state;
+- a failed Write never proceeds to participant preparation or reload;
+- an accepted reload cannot be followed by an older classifier result mutating
+  the restored table;
+- one accepted reload emits one post-reload table event.
+
+### Slice 8c: Spatial Query reload integration
+
+#### Responsibility boundary
+
+This slice adds the second reload participant and exposes the reusable
+persistence controls inside the Spatial Query child. It extends the protocol
+proven by Object Classification rather than introducing another reload path.
+
+```text
+Spatial Query reload_requested
+    ↓
+shared reload coordinator
+    ↓
+prepare every participant targeting the table
+    → Object Classification freezes affected classifier work
+    → Spatial Query invalidates its active operation
+    → any other registered asynchronous table consumer invalidates affected work
+    ↓
+reload the table once
+    ↓
+existing post-reload TableStateChangedEvent
+    ↓
+all affected workflows adopt the restored state
+```
+
+Spatial Query owns its selected Labels element and table, so the persistence
+controls live in the Spatial Query child rather than the parent Annotation
+widget.
+
+#### Spatial Query post-reload adoption
+
+Reload replaces live `.obs`, `.obsm`, and `.uns` components. Spatial Query must
+therefore rebuild every derived UI and viewer state that may refer to the old
+table:
+
+```text
+accepted Spatial Query table reload
+    → invalidate any captured Run intent or worker identity
+    → refresh compatible table-column controls
+    → re-inspect the canonical-center cache
+    → refresh readiness and persistence presentation
+    → reapply the selected Existing-column style
+      or the deliberate New-column neutral style
+```
+
+Object Classification must remain protected when Spatial Query initiates the
+reload, and must perform its Slice 8b post-reload adoption for the same table.
+The final styling call follows the existing last-styling-wins contract; no
+styling ownership is introduced.
+
+#### Decisions to resolve before implementation
+
+- define how the Spatial Query child binds and lays out
+  `TablePersistenceControls`;
+- define the exact Spatial Query pre-reload participant method and which active
+  operation identities it invalidates;
+- audit Feature Extraction and other asynchronous table consumers and register
+  them when their late results could target the reloaded table;
+- define deterministic post-reload ordering when more than one workflow
+  reapplies primary-Labels styling.
+
+#### Deliverables
+
+- reusable persistence controls bound to the Spatial Query table selection;
+- Spatial Query registered as a reload participant;
+- pre-reload invalidation of captured Spatial Query work;
+- post-reload column, canonical-cache, status, and styling refresh;
+- cross-widget tests where either Object Classification or Spatial Query
+  initiates reload;
+- focused late-result and last-styling-wins tests.
+
+#### Exit criteria
+
+- either workflow may initiate Reload without bypassing another affected
+  workflow's preparation;
+- only the selected dataset and table participants prepare and refresh;
+- no stale Spatial Query or classifier result mutates restored state;
+- both persistence controls reflect the same authoritative dirty state;
+- no primary Labels layer retains table-backed colors or features derived from
+  the pre-reload table after adoption completes;
+- one reload request results in at most one table replacement.
+
+### Slice 8d: SpatialData replacement and close guard
+
+#### Responsibility boundary
+
+Replacing or clearing the active `SpatialData` is a broader destructive
+transition than reloading one table. The current `HarpyAppState.set_sdata()`
+removes layers and replaces the shared dataset without consulting unsaved
+Shapes state or the dirty-table manifest. This slice moves replacement safety
+to a shared pre-change boundary.
+
+```text
+Replace or clear the active SpatialData
+    ↓
+inspect unsaved Shapes edit state
+    ↓
+inspect every dirty table in the old dataset
+    ↓
+resolve Write / Discard / Cancel
+    ├── Cancel
+    │      → preserve the current dataset, layers, edits, and manifest
+    │
+    └── accepted
+           → write or deliberately discard each dirty table
+           → invalidate work captured from the old dataset
+           → release old edit sessions and bindings
+           → remove old layers
+           → publish the new shared dataset
+```
+
+#### Decisions to resolve before implementation
+
+- define the SpatialData replacement participant/coordinator and how it composes
+  unsaved Shapes confirmation with dirty-table confirmation;
+- define Write / Discard / Cancel behavior for multiple dirty tables;
+- define behavior for unbacked SpatialData where Write is unavailable;
+- define when dirty-manifest entries for an accepted discarded or replaced
+  dataset are removed;
+- define deterministic failure behavior when writing one of multiple tables
+  succeeds and a later write fails;
+- define close behavior separately from replacement only if their accepted
+  outcomes differ.
+
+#### Deliverables
+
+- a shared SpatialData replacement/close request and participant boundary;
+- one confirmation flow covering unsaved Shapes edits and every dirty table;
+- explicit multi-table, unbacked-dataset, and partial-write behavior;
+- cancellation/invalidation of work captured from the old dataset;
+- cleanup of obsolete dirty-manifest, edit-session, and layer-binding state;
+- focused replacement, close, Cancel, partial-failure, and late-result tests.
+
+#### Exit criteria
+
+- Cancel leaves the current dataset, layers, edit session, table state, and
+  dirty manifest unchanged;
+- no dirty table or unsaved Shapes edit is silently discarded;
+- accepted replacement or close cannot be followed by late work mutating the
+  old or newly selected dataset;
+- partial write failures remain visible and do not falsely mark unwritten state
+  clean;
+- the guard is enforced at the shared `SpatialData` transition boundary.
+
+### Slice 8e: Multi-widget backed-zarr integration
+
+#### Responsibility boundary
+
+This slice verifies the combined contracts from Slices 8a–8d against one shared
+viewer and backed SpatialData store. It is an integration and hardening slice,
+not a place to introduce another dirty-state or persistence model.
+
+#### Deliverables
+
+- multi-widget tests with Viewer, Annotation/Spatial Query, and Object
+  Classification sharing one `HarpyAppState`;
+- backed-zarr tests proving that canonical centers, annotation columns,
+  companion palettes, classifier state, and feature-matrix metadata are written
+  and reloaded together through explicit component encodings;
+- last-styling-wins tests covering Spatial Query Apply and later asynchronous
+  Object Classification prediction styling;
+- post-reload tests proving primary-layer colors and features are rebuilt from
+  restored table values;
+- stale-token tests where a newer mutation arrives while an older write is in
+  progress;
+- reload and SpatialData replacement tests with pending/running workers;
+- assertions that no feedback loop, duplicate mutation record, unrelated
+  classifier invalidation, or full-AnnData rewrite occurs.
+
+#### Exit criteria
 
 - all widgets observe one current in-memory table state;
-- canonical centers and annotation columns persist/reload together;
-- Write Table State persists the union of supported dirty components through
-  AnnData element encodings and clears only successfully written unchanged
-  component generations;
-- no full-AnnData rewrite occurs;
-- no event loop or unrelated classifier invalidation;
-- no late task affects a reloaded/replaced table;
+- all persistence controls observe one shared dirty state;
+- the most recently applied primary-Labels style is visible, including a later
+  asynchronous classifier styling update;
+- post-reload primary-layer styling reflects restored table values;
+- canonical centers and annotation state persist/reload without a full table
+  rewrite;
+- no late work affects reloaded or replaced state;
 - there is no competing widget-local dirty truth.
 
 ### Slice 9: Production hardening and release gate
 
 Deliverables:
 
-- representative first-build and cached-query benchmarks;
-- documented memory/concurrency budgets and regression thresholds;
-- cancellation-latency and remote-store testing;
 - structured logging and diagnostic coverage;
 - accessibility and keyboard pass;
 - user documentation with screenshots and exact centroid semantics;
@@ -2290,19 +8244,21 @@ Exit criteria:
 
 - all Definition of Done items pass;
 - no correctness, data-loss, stale-worker, cache-coherency, or persistence
-  defect is deferred as polish;
-- performance limitations are measured and documented;
-- first-build resource usage meets the declared professional-product budget.
+  defect is deferred as polish.
 
 ## Definition of Done
 
-The feature is complete when a user can select a valid stored polygon
-annotation, 2D labels element, and linked table; transparently create or reuse
-validated canonical centers; run a responsive center-containment query; review
-affected and overwritten rows; apply a string annotation to a compatible
-existing or new obs column; undo the last annotation; and safely write/reload
-all supported dirty table components from zarr without rewriting the complete
-AnnData object.
+The feature is complete when one registered parent Annotation widget lets a
+user create, edit, save, and select a polygon annotation through its Shapes
+Annotation child, then select a 2D labels element and linked table through its
+Spatial Query child; transparently create or reuse validated canonical centers;
+capture a Set/Remove action and target-typed value; run a responsive
+center-containment query and immediately apply that intent; set a string
+annotation in a compatible existing or new obs column, set a positive-integer
+class in a compatible existing column, or remove annotations from an existing
+compatible column; report the exact outcome; visualize the selected annotation
+on the shared primary labels layer; and safely write/reload all supported dirty
+table components from zarr without rewriting the complete AnnData object.
 
 Completion additionally requires:
 
@@ -2315,25 +8271,44 @@ Completion additionally requires:
 - polygon union, holes, boundaries, and affine transformations are tested;
 - query membership is canonical-center containment, never silently pixel
   overlap;
-- no annotation mutation occurs before explicit Apply;
-- cache installation is atomic and visibly marks the shared table dirty;
-- installing or refreshing spatial_canonical records both its obsm path and
-  metadata path as dirty, while calculation without installation does not;
-- overwrite is never silent;
-- no stale/cancelled worker installs data, opens a dialog, or mutates a table;
+- no annotation mutation occurs before the explicit Apply Annotation action
+  and successful query/freshness validation;
+- cache update is atomic and visibly marks the shared table dirty;
+- creating or refreshing spatial_canonical records both its obsm path and
+  metadata path as dirty, while calculation without a cache update does not;
+- overwrite and annotation removal semantics are explicit before execution and
+  their exact counts are reported afterward;
+- no stale/cancelled worker updates the cache or mutates a table;
 - spatial instance identity always uses region_key and instance_key; obs_names
   do not participate in canonical cache identity;
 - table rows with no source label are rejected as binding inconsistencies;
 - labels absent from the table are not claimed as queryable or counted;
-- annotation apply/rollback and undo are safe and atomic;
+- annotation set/removal and any associated palette update apply and roll back
+  as one atomic obs/uns consistency unit;
+- annotation coloring reuses the generic compact table-backed labels styling,
+  preserves valid stored colors, derives stable defaults by category position
+  for user-owned string and positive-integer categoricals, and preserves their
+  append-only declared category vocabulary so later mutations never recolor an
+  existing category;
+- Object Classification derives prediction colors from `user_class_colors`
+  for shared class IDs, uses class-ID defaults only for predicted IDs absent
+  from `user_class`, and overwrites the aligned `pred_class_colors` on each
+  effective prediction write;
+- missing or invalid `<column>_colors` state is not mutated merely for viewer
+  display, but is stored or repaired with the next effective annotation Apply
+  and recorded through the corresponding dirty uns path;
+- the latest explicit primary-label coloring action wins across the parent
+  Annotation widget's Spatial Query child and Object Classification, and
+  unrelated table events do not override it;
 - shared cross-widget dirty state and general table events work for obs, obsm,
   and uns;
-- canonical cache and annotation columns round-trip through backed zarr;
+- canonical cache, annotation columns, and their changed companion palettes
+  round-trip through backed zarr;
 - persistence uses AnnData element-level encodings for dirty obs/obsm/uns
   components and never rewrites unrelated AnnData elements;
 - reload and dirty-dataset replacement protect local changes;
 - accessible validation/status/error feedback is complete;
-- repository tests, lint, formatting, benchmarks, and manual smoke tests pass.
+- repository tests, lint, formatting, and manual smoke tests pass.
 
 ## Final Architectural Decision
 
@@ -2341,7 +8316,7 @@ spatial_canonical is a reusable, row-aligned spatial index for the instances in
 a linked AnnData table. It stores one x/y center of mass per covered table row
 in the intrinsic coordinate frame of that row's source labels region.
 
-On Run:
+On Apply Annotation:
 
     inspect and validate spatial_canonical
                     |
@@ -2350,7 +8325,7 @@ On Run:
       reuse centers             calculate centers
             |                 lazily from scale0
             |                         |
-            |                 atomically install
+            |                 atomically apply cache update
             |                   and mark dirty
             +------------+------------+
                          |
@@ -2359,7 +8334,8 @@ On Run:
                          |
               vectorized intersects_xy
                          |
-              review and explicitly Apply
+              atomically apply captured
+              Set or Remove annotation
 
 The expensive global raster aggregation is paid only when the canonical index
 is unavailable or invalidated. The frequent operation is a fast vectorized

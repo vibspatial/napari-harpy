@@ -89,7 +89,7 @@ def test_manifest_contributes_shapes_annotation_widget() -> None:
     widgets = {widget["display_name"]: widget for widget in data["contributions"]["widgets"]}
 
     assert commands["napari-harpy.shapes_annotation"]["python_name"] == (
-        "napari_harpy.widgets.shapes_annotation.widget:ShapesAnnotation"
+        "napari_harpy.widgets.annotation.widget:AnnotationWidget"
     )
     assert widgets["Annotation"]["command"] == "napari-harpy.shapes_annotation"
 

@@ -12,14 +12,19 @@ import pandas as pd
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from numpy.typing import NDArray
 
-from napari_harpy.core.annotation import UNLABELED_CLASS
-from napari_harpy.core.class_palette import set_class_annotation_state
-from napari_harpy.core.classifier_export import ClassifierExportBundle, normalize_feature_columns
+from napari_harpy.core.class_palette import (
+    default_labeled_class_color,
+    normalize_color_sequence,
+    resolve_table_categorical_palette,
+)
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
+    normalize_feature_columns,
     normalize_feature_matrix,
     normalize_feature_matrix_source_kind,
 )
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.object_classification.classifier_export import ClassifierExportBundle
 from napari_harpy.core.spatialdata import get_table, get_table_metadata
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 
@@ -46,6 +51,88 @@ CLASSIFIER_CONFIG_KEY = "classifier_config"
 CLASSIFIER_APPLY_CONFIG_KEY = "classifier_apply_config"
 
 
+class ObjectClassificationStateError(ValueError):
+    """Raised when existing Object Classification columns violate their contract."""
+
+
+def validate_object_classification_table_state(table: AnnData) -> None:
+    """Validate existing Object Classification columns without mutation."""
+    if USER_CLASS_COLUMN in table.obs:
+        _validate_categorical_class_column(table.obs[USER_CLASS_COLUMN], column_name=USER_CLASS_COLUMN)
+
+    has_pred_class = PRED_CLASS_COLUMN in table.obs
+    has_pred_confidence = PRED_CONFIDENCE_COLUMN in table.obs
+    if not has_pred_class and not has_pred_confidence:
+        return
+    if has_pred_class != has_pred_confidence:
+        missing_column = PRED_CONFIDENCE_COLUMN if has_pred_class else PRED_CLASS_COLUMN
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{PRED_CLASS_COLUMN}` and `{PRED_CONFIDENCE_COLUMN}` must either both exist or both be absent. "
+            f"Missing column: `{missing_column}`."
+        )
+
+    pred_class = table.obs[PRED_CLASS_COLUMN]
+    pred_confidence = table.obs[PRED_CONFIDENCE_COLUMN]
+    _validate_categorical_class_column(pred_class, column_name=PRED_CLASS_COLUMN)
+    if not pd.api.types.is_float_dtype(pred_confidence.dtype):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{PRED_CONFIDENCE_COLUMN}` must use a floating-point dtype with values between 0 and 1. "
+            f"Observed dtype: `{pred_confidence.dtype}`."
+        )
+
+    pred_class_missing = pred_class.isna().to_numpy(dtype=bool, copy=False)
+    pred_confidence_missing = pred_confidence.isna().to_numpy(dtype=bool, copy=False)
+    mismatched_missingness = pred_class_missing != pred_confidence_missing
+    if bool(mismatched_missingness.any()):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{PRED_CONFIDENCE_COLUMN}` must be missing exactly when `{PRED_CLASS_COLUMN}` is missing. "
+            f"Found {int(mismatched_missingness.sum())} mismatched row(s)."
+        )
+
+    confidence_values = pred_confidence.loc[~pred_confidence_missing].to_numpy(dtype=np.float64, copy=False)
+    if confidence_values.size and (
+        not bool(np.isfinite(confidence_values).all())
+        or bool(((confidence_values < 0.0) | (confidence_values > 1.0)).any())
+    ):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"non-missing `{PRED_CONFIDENCE_COLUMN}` values must be finite floating-point values between 0 and 1."
+        )
+
+
+def _validate_categorical_class_column(values: pd.Series, *, column_name: str) -> None:
+    if not isinstance(values.dtype, pd.CategoricalDtype):
+        raise ObjectClassificationStateError(
+            "Object Classification state is invalid: "
+            f"`{column_name}` must use a categorical dtype with positive integer categories. "
+            f"Observed dtype: `{values.dtype}`."
+        )
+
+    for category in values.cat.categories:
+        if isinstance(category, (bool, np.bool_)) or not isinstance(category, (int, np.integer)) or int(category) <= 0:
+            raise ObjectClassificationStateError(
+                "Object Classification state is invalid: "
+                f"`{column_name}` must use a categorical dtype with positive integer categories. "
+                f"Observed invalid category: `{category!r}`. Rows without a class must be stored as missing values."
+            )
+
+
+@dataclass(frozen=True)
+class PredictionStateChange:
+    """Describe the effective prediction-column and palette mutations."""
+
+    pred_class_changed: bool
+    pred_confidence_changed: bool
+    palette_changed: bool
+
+    @property
+    def changed(self) -> bool:
+        return self.pred_class_changed or self.pred_confidence_changed or self.palette_changed
+
+
 @dataclass(frozen=True)
 class ClassifierApplyResult:
     """Summary of predictions applied to a table."""
@@ -57,6 +144,7 @@ class ClassifierApplyResult:
     n_skipped_feature_invalid_rows: int
     pred_class_column: str
     pred_confidence_column: str
+    prediction_state_change: PredictionStateChange
     applied_at: str
 
 
@@ -141,21 +229,15 @@ def _write_classifier_predictions(
     pred_class_column: str = PRED_CLASS_COLUMN,
     pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
 ) -> ClassifierApplyResult:
-    _clear_predictions_for_row_positions(
+    prediction_state_change = _update_table_prediction_state(
         table,
-        raw_prediction_table_row_positions,
+        clear_row_positions=raw_prediction_table_row_positions,
+        prediction_row_positions=prediction_table_row_positions,
+        pred_classes=pred_classes,
+        pred_confidences=pred_confidences,
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
     )
-    if prediction_table_row_positions.size:
-        _set_predictions_for_prediction_rows(
-            table,
-            prediction_table_row_positions,
-            pred_classes,
-            pred_confidences,
-            pred_class_column=pred_class_column,
-            pred_confidence_column=pred_confidence_column,
-        )
 
     return ClassifierApplyResult(
         table_name=table_name,
@@ -167,6 +249,7 @@ def _write_classifier_predictions(
         ),
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
+        prediction_state_change=prediction_state_change,
         applied_at=datetime.now(UTC).isoformat(),
     )
 
@@ -194,7 +277,9 @@ def _validate_feature_matrix_compatible_with_bundle(
         raise ValueError(f"Feature matrix `{feature_key}` is not available in `.obsm`.")
     feature_metadata = _get_feature_metadata(table, feature_key)
     target_source_kind = normalize_feature_matrix_source_kind(feature_metadata)
-    custom_obsm_involved = bundle.source_kind == CUSTOM_OBSM_SOURCE_KIND or target_source_kind == CUSTOM_OBSM_SOURCE_KIND
+    custom_obsm_involved = (
+        bundle.source_kind == CUSTOM_OBSM_SOURCE_KIND or target_source_kind == CUSTOM_OBSM_SOURCE_KIND
+    )
     target_feature_columns = normalize_feature_columns(feature_metadata)
     if target_feature_columns != bundle.feature_columns:
         if custom_obsm_involved:
@@ -376,96 +461,219 @@ def _get_feature_metadata(table: AnnData, feature_key: str) -> dict[str, object]
     return dict(feature_metadata)
 
 
-def _ensure_prediction_columns(
-    table: AnnData,
-    *,
-    pred_class_column: str = PRED_CLASS_COLUMN,
-    pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
-) -> None:
-    pred_class_values = _get_pred_class_values(table.obs, column_name=pred_class_column)
-    pred_confidence_values = _get_pred_confidence_values(
-        table.obs,
-        column_name=pred_confidence_column,
-    )
-    _set_pred_class_annotation_state(table, pred_class_values, column_name=pred_class_column)
-    table.obs[pred_confidence_column] = pred_confidence_values
-
-
-def _set_predictions_for_prediction_rows(
-    table: AnnData,
-    prediction_table_row_positions: TableRowPositions,
-    pred_classes: np.ndarray,
-    pred_confidences: np.ndarray,
-    *,
-    pred_class_column: str = PRED_CLASS_COLUMN,
-    pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
-) -> None:
-    pred_class_values = _get_pred_class_values(table.obs, column_name=pred_class_column)
-    pred_confidence_values = _get_pred_confidence_values(
-        table.obs,
-        column_name=pred_confidence_column,
-    )
-    pred_class_values.iloc[prediction_table_row_positions] = np.asarray(pred_classes, dtype=np.int64)
-    pred_confidence_values.iloc[prediction_table_row_positions] = np.asarray(pred_confidences, dtype=np.float64)
-    _set_pred_class_annotation_state(table, pred_class_values, column_name=pred_class_column)
-    table.obs[pred_confidence_column] = pred_confidence_values
-
-
 def _clear_predictions_for_row_positions(
     table: AnnData,
     prediction_table_row_positions: TableRowPositions,
     *,
     pred_class_column: str = PRED_CLASS_COLUMN,
     pred_confidence_column: str = PRED_CONFIDENCE_COLUMN,
-) -> None:
-    _set_predictions_for_prediction_rows(
+) -> PredictionStateChange:
+    """Clear stale predictions when no replacement result can be produced.
+
+    Object Classification uses this boundary when its current inputs are not
+    eligible for training. Existing predictions for the affected rows must not
+    remain visible as though they were current. Clearing assigns missing class
+    and confidence values while retaining the declared prediction vocabulary
+    and its aligned palette.
+
+    If prediction state is already absent, clearing is a no-op: requesting a
+    clear must not create prediction columns.
+
+    Parameters
+    ----------
+    table
+        AnnData table containing the prediction state.
+    prediction_table_row_positions
+        Table row positions whose existing predictions must be cleared.
+    pred_class_column
+        Observation column containing categorical prediction classes.
+    pred_confidence_column
+        Observation column containing floating-point prediction confidence.
+
+    Returns
+    -------
+    PredictionStateChange
+        Flags identifying the prediction columns or palette that changed.
+    """
+    # Clearing removes existing prediction values; it must not create
+    # ``pred_class`` or ``pred_confidence`` merely because clear was requested.
+    if pred_class_column not in table.obs and pred_confidence_column not in table.obs:
+        return PredictionStateChange(
+            pred_class_changed=False,
+            pred_confidence_changed=False,
+            palette_changed=False,
+        )
+
+    return _update_table_prediction_state(
         table,
-        prediction_table_row_positions,
-        np.full(prediction_table_row_positions.shape, UNLABELED_CLASS, dtype=np.int64),
-        np.full(prediction_table_row_positions.shape, np.nan, dtype=np.float64),
+        clear_row_positions=prediction_table_row_positions,
+        prediction_row_positions=np.array([], dtype=np.int64),
+        pred_classes=np.array([], dtype=np.int64),
+        pred_confidences=np.array([], dtype=np.float64),
         pred_class_column=pred_class_column,
         pred_confidence_column=pred_confidence_column,
     )
 
 
-def _get_pred_class_values(
-    obs: pd.DataFrame,
-    *,
-    column_name: str = PRED_CLASS_COLUMN,
-) -> pd.Series:
-    if column_name not in obs:
-        return pd.Series(UNLABELED_CLASS, index=obs.index, dtype="int64", name=column_name)
-
-    values = pd.to_numeric(obs[column_name].astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
-    return pd.Series(np.asarray(values, dtype=np.int64), index=obs.index, dtype="int64", name=column_name)
-
-
-def _set_pred_class_annotation_state(
+def _update_table_prediction_state(
     table: AnnData,
-    values: pd.Series,
     *,
-    column_name: str = PRED_CLASS_COLUMN,
-) -> None:
-    set_class_annotation_state(
-        table,
-        values,
-        column_name=column_name,
-        colors_key=_pred_class_colors_key(column_name),
-        warn_on_palette_overwrite=False,
+    clear_row_positions: TableRowPositions,
+    prediction_row_positions: TableRowPositions,
+    pred_classes: np.ndarray,
+    pred_confidences: np.ndarray,
+    pred_class_column: str,
+    pred_confidence_column: str,
+) -> PredictionStateChange:
+    """Conditionally mutate in-memory prediction columns and their palette.
+
+    Parameters
+    ----------
+    table
+        AnnData table whose prediction state may be mutated.
+    clear_row_positions
+        Table row positions covering the complete prediction scope. Existing
+        prediction classes and confidences at these positions are cleared
+        before any replacement predictions are installed.
+    prediction_row_positions
+        Subset of ``clear_row_positions`` with usable features for which the
+        classifier produced replacement predictions. An empty array performs
+        a pure clear.
+    pred_classes
+        Replacement classes aligned one-to-one with
+        ``prediction_row_positions``.
+    pred_confidences
+        Replacement confidence values aligned one-to-one with
+        ``prediction_row_positions``.
+    pred_class_column
+        Observation column containing categorical prediction classes.
+    pred_confidence_column
+        Observation column containing floating-point prediction confidence.
+
+    Returns
+    -------
+    PredictionStateChange
+        Flags identifying which prediction columns or palette were
+        effectively mutated.
+
+    Notes
+    -----
+    Clearing the complete scope before writing the eligible subset prevents an
+    old prediction from surviving on a row whose current features are invalid.
+    Missing prediction columns are created here. Callers that treat absent
+    prediction state as a no-op must return before invoking this mutation
+    boundary.
+    """
+    has_pred_class = pred_class_column in table.obs
+    has_pred_confidence = pred_confidence_column in table.obs
+    if has_pred_class != has_pred_confidence:
+        raise ObjectClassificationStateError(
+            f"`{pred_class_column}` and `{pred_confidence_column}` must either both exist or both be absent."
+        )
+    if has_pred_class:
+        current_pred_class = table.obs[pred_class_column]
+        _validate_categorical_class_column(current_pred_class, column_name=pred_class_column)
+        current_categories = [int(category) for category in current_pred_class.cat.categories]
+        replacement_pred_class = current_pred_class.copy()
+        current_pred_confidence = table.obs[pred_confidence_column]
+        if not pd.api.types.is_float_dtype(current_pred_confidence.dtype):
+            raise ObjectClassificationStateError(
+                f"`{pred_confidence_column}` must use a floating-point dtype before predictions can be updated."
+            )
+        replacement_pred_confidence = current_pred_confidence.copy()
+    else:
+        current_categories = []
+        replacement_pred_class = pd.Series(
+            pd.Categorical([pd.NA] * table.n_obs, categories=[]),
+            index=table.obs.index,
+            name=pred_class_column,
+        )
+        replacement_pred_confidence = pd.Series(
+            np.full(table.n_obs, np.nan, dtype=np.float64),
+            index=table.obs.index,
+            name=pred_confidence_column,
+        )
+
+    normalized_pred_classes = np.asarray(pred_classes, dtype=np.int64)
+    normalized_pred_confidences = np.asarray(pred_confidences, dtype=np.float64)
+    if prediction_row_positions.size != normalized_pred_classes.size:
+        raise ValueError("Prediction row positions and class values must have equal lengths.")
+    if prediction_row_positions.size != normalized_pred_confidences.size:
+        raise ValueError("Prediction row positions and confidence values must have equal lengths.")
+    if prediction_row_positions.size and not bool(
+        np.isin(prediction_row_positions, clear_row_positions).all()
+    ):
+        raise ValueError("Prediction row positions must be a subset of clear row positions.")
+    if normalized_pred_classes.size and bool((normalized_pred_classes <= 0).any()):
+        raise ValueError("Predicted class ids must be positive integers.")
+
+    next_categories = list(current_categories)
+    new_categories = sorted(set(normalized_pred_classes.tolist()).difference(current_categories))
+    if new_categories:
+        replacement_pred_class = replacement_pred_class.cat.add_categories(new_categories)
+        next_categories.extend(new_categories)
+
+    replacement_pred_class.iloc[clear_row_positions] = pd.NA
+    replacement_pred_confidence.iloc[clear_row_positions] = np.nan
+    if prediction_row_positions.size:
+        replacement_pred_class.iloc[prediction_row_positions] = normalized_pred_classes
+        replacement_pred_confidence.iloc[prediction_row_positions] = normalized_pred_confidences
+
+    pred_class_changed = not has_pred_class or not replacement_pred_class.equals(table.obs[pred_class_column])
+    pred_confidence_changed = (
+        not has_pred_confidence or not replacement_pred_confidence.equals(table.obs[pred_confidence_column])
     )
+    next_palette = _derive_prediction_palette(
+        table,
+        pred_categories=next_categories,
+    )
+    stored_palette = normalize_color_sequence(table.uns.get(_pred_class_colors_key(pred_class_column)))
+    palette_changed = stored_palette != next_palette
+
+    if pred_class_changed:
+        table.obs[pred_class_column] = replacement_pred_class
+    if pred_confidence_changed:
+        table.obs[pred_confidence_column] = replacement_pred_confidence
+    if palette_changed:
+        table.uns[_pred_class_colors_key(pred_class_column)] = next_palette
+
+    return PredictionStateChange(
+        pred_class_changed=pred_class_changed,
+        pred_confidence_changed=pred_confidence_changed,
+        palette_changed=palette_changed,
+    )
+
+
+def _derive_prediction_palette(
+    table: AnnData,
+    *,
+    pred_categories: Sequence[int],
+) -> list[str]:
+    """Derive prediction colors from the user-owned class color scheme.
+
+    Prediction classes that are also declared in ``user_class`` deliberately
+    reuse their resolved user-class colors. Only prediction classes absent
+    from that declared vocabulary receive deterministic default colors. The
+    stored ``pred_class_colors`` palette is not consulted because it is
+    classifier-derived state rather than an independent color authority.
+    """
+    user_color_lookup: dict[int, str] = {}
+    if USER_CLASS_COLUMN in table.obs:
+        user_class = table.obs[USER_CLASS_COLUMN]
+        _validate_categorical_class_column(user_class, column_name=USER_CLASS_COLUMN)
+        user_categories = [int(category) for category in user_class.cat.categories]
+        _, user_colors = resolve_table_categorical_palette(
+            table=table,
+            column_name=USER_CLASS_COLUMN,
+            categories=user_categories,
+        )
+        user_color_lookup = dict(zip(user_categories, user_colors, strict=True))
+
+    return [
+        user_color_lookup.get(int(class_id), default_labeled_class_color(int(class_id)))
+        for class_id in pred_categories
+    ]
 
 
 def _pred_class_colors_key(column_name: str) -> str:
     return f"{column_name}_colors"
-
-
-def _get_pred_confidence_values(
-    obs: pd.DataFrame,
-    *,
-    column_name: str = PRED_CONFIDENCE_COLUMN,
-) -> pd.Series:
-    if column_name not in obs:
-        return pd.Series(np.full(len(obs), np.nan, dtype=np.float64), index=obs.index, name=column_name)
-
-    values = pd.to_numeric(obs[column_name], errors="coerce").astype("float64")
-    return pd.Series(np.asarray(values, dtype=np.float64), index=obs.index, name=column_name)

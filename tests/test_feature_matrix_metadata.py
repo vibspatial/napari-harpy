@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 from scipy import sparse
 
-from napari_harpy.core.classifier_export import normalize_feature_columns
 from napari_harpy.core.feature_matrix_metadata import (
     CUSTOM_OBSM_FEATURE_NAME,
     CUSTOM_OBSM_SOURCE_KIND,
@@ -13,6 +12,7 @@ from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
     inspect_feature_matrix_metadata,
     is_custom_obsm_feature_metadata,
+    normalize_feature_columns,
     normalize_feature_matrix_source_kind,
     register_feature_matrix_metadata,
 )

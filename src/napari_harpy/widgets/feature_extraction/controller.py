@@ -3,11 +3,10 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
-from napari_harpy._app_state import FeatureMatrixWriteChangeKind, FeatureMatrixWrittenEvent
 from napari_harpy.core.feature_extraction import (
     FeatureExtractionChannel,
     FeatureExtractionTriplet,
@@ -39,6 +38,7 @@ def _resolve_thread_worker() -> Any:
 
 
 FEATURE_EXTRACTION_IDLE_STATUS = "Feature extraction: choose a labels element, table, and output key."
+FeatureMatrixWriteChangeKind = Literal["created", "updated"]
 
 thread_worker = _resolve_thread_worker()
 
@@ -228,11 +228,11 @@ class FeatureExtractionController:
         *,
         on_state_changed: Callable[[], None] | None = None,
         on_table_state_changed: Callable[[FeatureExtractionResult], None] | None = None,
-        on_feature_matrix_written: Callable[[FeatureMatrixWrittenEvent], None] | None = None,
+        on_feature_matrix_changed: Callable[[FeatureExtractionResult], None] | None = None,
     ) -> None:
         self._on_state_changed = on_state_changed
         self._on_table_state_changed = on_table_state_changed
-        self._on_feature_matrix_written = on_feature_matrix_written
+        self._on_feature_matrix_changed = on_feature_matrix_changed
 
         self._selected_spatialdata: SpatialData | None = None
         self._selected_triplets: tuple[FeatureExtractionTriplet, ...] = ()
@@ -264,6 +264,11 @@ class FeatureExtractionController:
     def is_running(self) -> bool:
         """Return whether a feature-extraction worker is currently active."""
         return self._active_worker is not None
+
+    @property
+    def active_job_id(self) -> int | None:
+        """Return the currently running feature-extraction job identifier."""
+        return self._active_worker_job_id
 
     @property
     def binding_state(self) -> FeatureExtractionBindingState:
@@ -531,11 +536,7 @@ class FeatureExtractionController:
             job_id=job_id,
             sdata=self._selected_spatialdata,
             request=request,
-            change_kind=(
-                "updated"
-                if table is not None and self._selected_feature_key in table.obsm
-                else "created"
-            ),
+            change_kind=("updated" if table is not None and self._selected_feature_key in table.obsm else "created"),
         )
 
     def _set_status(self, message: str, *, kind: str) -> None:
@@ -546,25 +547,18 @@ class FeatureExtractionController:
 
     def _notify_table_state_changed(self, result: FeatureExtractionResult) -> None:
         # Keep this local widget refresh hook separate from the shared
-        # `feature_matrix_written` app-state event. The owning widget uses the
+        # shared table-state event. The owning widget uses the
         # concrete result to refresh table choices and, after create-table
         # writes, promote the new table into normal existing-table mode before
         # downstream widgets consume the shared semantic event.
         if self._on_table_state_changed is not None:
             self._on_table_state_changed(result)
 
-    def _notify_feature_matrix_written(self, result: FeatureExtractionResult) -> None:
-        if self._on_feature_matrix_written is None or self._selected_spatialdata is None:
+    def _notify_feature_matrix_changed(self, result: FeatureExtractionResult) -> None:
+        if self._on_feature_matrix_changed is None or self._selected_spatialdata is None:
             return
 
-        self._on_feature_matrix_written(
-            FeatureMatrixWrittenEvent(
-                sdata=self._selected_spatialdata,
-                table_name=result.table_name,
-                feature_key=result.feature_key,
-                change_kind=result.change_kind,
-            )
-        )
+        self._on_feature_matrix_changed(result)
 
     def _update_idle_status(self) -> None:
         if self._selected_spatialdata is None:
@@ -656,7 +650,7 @@ class FeatureExtractionController:
             return
 
         self._notify_table_state_changed(result)
-        self._notify_feature_matrix_written(result)
+        self._notify_feature_matrix_changed(result)
         self._set_status(
             "Feature extraction: "
             f'wrote "{result.feature_key}" into table "{result.table_name}" as '

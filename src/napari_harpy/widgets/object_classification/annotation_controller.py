@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from numbers import Integral
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
-from napari_harpy.core.annotation import (
-    UNLABELED_CLASS,
+from napari_harpy.core.object_classification.annotation import (
     USER_CLASS_COLUMN,
-    _set_user_class_annotation_state,
+    UserClassStateChange,
     _to_user_class_values,
     set_user_class_for_rows,
 )
@@ -28,15 +29,27 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class UserClassAnnotationChange:
-    """Describe one row-scoped user-class annotation edit."""
+    """Describe one effective row-scoped user-class annotation edit.
+
+    ``state_change`` is the exact mutation result returned by
+    ``set_user_class_for_rows()``. The widget uses its flags to publish only
+    the table-component paths that actually changed.
+    """
 
     instance_id: int
-    class_id: int
+    class_id: int | None
+    state_change: UserClassStateChange
     user_class_was_available_as_color_source: bool = True
 
     def __post_init__(self) -> None:
-        if self.class_id < 0:
-            raise ValueError("Class ids must be zero or positive integers.")
+        if self.class_id is not None and (
+            isinstance(self.class_id, (bool, np.bool_)) or not isinstance(self.class_id, Integral) or self.class_id <= 0
+        ):
+            raise ValueError("Class ids must be positive integers.")
+        if not isinstance(self.state_change, UserClassStateChange):
+            raise TypeError("state_change must be a UserClassStateChange.")
+        if not self.state_change.changed:
+            raise ValueError("UserClassAnnotationChange must describe an effective table mutation.")
 
 
 @dataclass(frozen=True)
@@ -126,10 +139,11 @@ class AnnotationController:
             return None
 
         if USER_CLASS_COLUMN not in state.table.obs:
-            return UNLABELED_CLASS
+            return None
 
         values = _to_user_class_values(state.table.obs.loc[matching_rows, USER_CLASS_COLUMN])
-        return int(values.iloc[0])
+        value = values.iloc[0]
+        return None if pd.isna(value) else int(value)
 
     @property
     def selected_instance_has_table_row(self) -> bool:
@@ -161,11 +175,9 @@ class AnnotationController:
     ) -> None:
         """Bind the controller to the selected labels layer and annotation table.
 
-        Binding adopts an existing ``user_class`` column by normalizing it to
-        Harpy's canonical categorical integer state and synchronized palette.
-        If ``user_class`` is absent, binding leaves it absent so merely
-        selecting a table does not dirty it; the first annotation creates the
-        column through the normal write path.
+        Binding is read-only. Existing ``user_class`` state was validated by
+        the widget before this controller is bound, and an absent column stays
+        absent until the first effective annotation creates it.
         """
         next_layer = None
         if sdata is not None and labels_name is not None:
@@ -201,8 +213,6 @@ class AnnotationController:
             # is no longer ambiguous.
             self._set_selected_instance_id(None)
 
-        self._normalize_existing_annotation_state()
-
     def activate_layer(self) -> bool:
         """Activate the bound labels layer for annotation interactions."""
         if not self._viewer_adapter.activate_layer(self._labels_layer):
@@ -218,24 +228,13 @@ class AnnotationController:
 
         return True
 
-    def ensure_annotation_column(self, column_name: str = USER_CLASS_COLUMN) -> None:
-        """Ensure the user annotation column exists as a categorical integer label column."""
-        table = self._require_bound_table()
-        if column_name not in table.obs:
-            values = pd.Series(UNLABELED_CLASS, index=table.obs.index, dtype="int64", name=column_name)
-            _set_user_class_annotation_state(table, values)
-            return
-
-        values = _to_user_class_values(table.obs[column_name])
-        _set_user_class_annotation_state(table, values)
-
     def apply_class(self, class_id: int) -> str | None:
         """Assign the given user class to the currently picked instance."""
         return self._set_current_class(class_id)
 
     def clear_current_class(self) -> str | None:
         """Reset the current object's user class back to the unlabeled state."""
-        return self._set_current_class(UNLABELED_CLASS)
+        return self._set_current_class(None)
 
     def _disconnect_selected_label_events(self) -> None:
         selected_label_emitter = getattr(getattr(self._labels_layer, "events", None), "selected_label", None)
@@ -295,7 +294,7 @@ class AnnotationController:
         if self._on_selected_instance_changed is not None:
             self._on_selected_instance_changed(instance_id)
 
-    def _set_current_class(self, class_id: int) -> str | None:
+    def _set_current_class(self, class_id: int | None) -> str | None:
         """Write the selected user class for the current pick.
 
         The current selection must be fully bound to a segmentation, annotation
@@ -308,8 +307,10 @@ class AnnotationController:
         logged and the user-facing warning message is returned so the widget can
         display it in the UI.
         """
-        if class_id < 0:
-            raise ValueError("Class ids must be zero or positive integers.")
+        if class_id is not None and (
+            isinstance(class_id, (bool, np.bool_)) or not isinstance(class_id, Integral) or class_id <= 0
+        ):
+            raise ValueError("Class ids must be positive integers.")
 
         state = self._get_selection_table_state()
         if state.table is None:
@@ -332,12 +333,16 @@ class AnnotationController:
             return message
 
         user_class_was_available_as_color_source = USER_CLASS_COLUMN in state.table.obs
-        set_user_class_for_rows(state.table, matching_rows, int(class_id))
+        state_change = set_user_class_for_rows(state.table, matching_rows, class_id)
+        if not state_change.changed:
+            return None
+
         if self._on_annotation_changed is not None:
             self._on_annotation_changed(
                 UserClassAnnotationChange(
                     instance_id=int(state.instance_id),
-                    class_id=int(class_id),
+                    class_id=None if class_id is None else int(class_id),
+                    state_change=state_change,
                     user_class_was_available_as_color_source=user_class_was_available_as_color_source,
                 )
             )
@@ -397,14 +402,6 @@ class AnnotationController:
             self._labels_layer.selected_label = 0
         except (AttributeError, TypeError, ValueError):
             return
-
-    def _normalize_existing_annotation_state(self) -> None:
-        table = self._get_bound_table()
-        if table is None or USER_CLASS_COLUMN not in table.obs:
-            return
-
-        self.ensure_annotation_column(USER_CLASS_COLUMN)
-
 
 def _get_positive_selected_label(layer: Any) -> int | None:
     selected_label = getattr(layer, "selected_label", 0)

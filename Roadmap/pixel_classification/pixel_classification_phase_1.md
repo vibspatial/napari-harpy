@@ -17,12 +17,16 @@ Included:
 - create/manage a high-resolution napari `Labels` annotation layer;
 - train from annotated pixels only, with `0 = unlabeled` and `1..N = classes`;
 - extract tile-wise pixel features from selected channels as an internal cache-building step;
-- append normalized marker intensities to reduced deep features;
+- concatenate normalized marker intensities with 64 deterministically projected deep-feature planes;
 - write/reuse/delete a manifest-keyed sidecar zarr feature cache;
 - train one pooled classifier and predict class labels for the active viewer target;
 - display predicted labels as a high-resolution napari labels layer;
 - explicitly save predicted labels to SpatialData as `sdata.labels[...]`;
 - report progress, errors, stale state, and cache reuse clearly in the UI.
+
+Phase 1 treats positive integer annotation values as the complete class identity. `0` means unlabeled, and `1..N` are
+user-defined classes. There is no semantic class-name schema or cross-target class mapping. Pooled training assumes
+that users apply the same integer label consistently across participating targets.
 
 Excluded from Phase 1:
 
@@ -163,7 +167,7 @@ src/napari_harpy/core/pixel_classification/
   manifest.py
   normalization.py
   prediction.py
-  reducer.py
+  projection.py
 
 src/napari_harpy/widgets/pixel_classification/
   __init__.py
@@ -215,7 +219,7 @@ execution, validating coordinate-system availability, and returning channel-awar
 The Phase 1 resolution contract is simple:
 
 - annotation shape equals highest-resolution image shape;
-- feature cache shape is `(C + F_reduced, y, x)` at highest resolution;
+- feature cache shape is `(C + 64, y, x)` at highest resolution, where `C` is the number of selected marker channels;
 - predicted class labels shape equals highest-resolution image shape;
 - saved `sdata.labels[...]` shape equals highest-resolution image shape.
 
@@ -226,12 +230,16 @@ The manifest should record enough information to reject incompatible caches:
 - source image element zarr path resolved through SpatialData metadata;
 - coordinate system;
 - selected channels and channel names;
-- highest-resolution source shape, axes, and dtype;
+- highest-resolution source shape, axes, dtype, and the complete physical Zarr/Dask chunk tuple for every axis,
+  including the smaller terminal chunks;
+- ConvNeXt common output stride, minimum input height/width, required context, stride-rounded halo, transient
+  right/bottom padding, actual post-overlap core/expanded layouts, and final regular cache layout;
 - normalization settings;
-- feature extractor name, weights, package versions, layers, and tile settings;
-- reducer type, parameters, fitted state identity, and output dimension;
+- feature extractor name, weights, package versions, layers, common stride, context halo, padding, and dense-upsampling
+  settings;
+- projection algorithm, parameters, implementation version, matrix identity, and output dimension (`K = 64`);
 - raw feature schema id;
-- reducer id;
+- projection id;
 - final feature schema id;
 - feature cache dtype, shape, chunks, and schema version.
 
@@ -244,27 +252,44 @@ All ids should use a versioned canonical hash contract:
 - array payloads: hash numeric arrays separately using canonical dtype, shape, memory order, and raw bytes, then include
   those array hashes in the JSON payload;
 - excluded runtime fields: creation time, last-used time, writer hostname, progress state, local cache-store path,
-  napari layer names, UI labels, and other fields that do not change feature values or compatibility;
+  napari layer names, UI labels, runtime marker-batch size, source-chunk compatibility classification, lazy-rechunk
+  diagnostics, and other fields that do not change feature values or compatibility;
 - included version fields: cache schema version and package/model/library versions that can change feature values.
 
-**Shared Reducer and Cache Compatibility**
+**Deterministic Projection and Cache Compatibility**
 Feature caches should be physically separate per target card / sample / coordinate system, but pooled classifier
 training requires a shared final feature schema.
 
-This is especially important for PCA. Two PCA reducers fitted independently on two samples are not compatible, even if
-both output the same number of components. Component `pca_0` in one cache may represent a different axis than `pca_0`
-in another cache. For pooled training, PCA must be fitted once across the selected training samples and then reused to
-transform every target cache that participates in that classifier.
+Phase 1 should use one deterministic fixed random projection for the deep-feature axis. It must not fit PCA or another
+data-dependent reducer. Given the same raw feature schema, every target independently obtains the same projection
+matrix and final feature-plane semantics. Consequently, users can build caches one target at a time, add another target
+later, and reuse existing compatible caches without a reducer-refit workflow or a reducer control in the UI.
+
+Use a dense Rademacher projection as the Phase 1 default. For raw deep-feature dimension `D` and output dimension
+`K = 64`, generate a matrix `R` with shape `(K, D)` whose entries are deterministically sampled from
+`{-1 / sqrt(K), +1 / sqrt(K)}`. For a raw per-pixel feature vector `x`, compute `z = R @ x`. The generator algorithm,
+seed-derivation rule, matrix orientation, scaling, input/output dtype policy, and implementation version are part of the
+persisted projection contract. Generation must not depend on cache-build order, target data, annotations, training
+scope, process-global random state, or hardware.
+
+For the initial projection contract, derive the seed by hashing a versioned projection namespace together with the
+`raw_feature_schema_id`, then convert a specified digest prefix to an unsigned integer with specified byte order. Use a
+named, versioned pseudo-random generator rather than a library-global RNG. This makes matrix reproduction an explicit
+algorithm rather than an accidental consequence of whichever process generated the first cache.
+
+`K = 64` is a fixed Phase 1 product default, not a theorem-derived optimum or a user-facing setting. Later phases may
+change it based on ablation results. Such a change creates a new `projection_id` and `final_feature_schema_id`; it does
+not mutate an existing cache schema.
 
 Use three levels of identity:
 
 - `raw_feature_schema_id`: hash of fields that define the unreduced deep-feature stream and normalized marker planes,
   excluding target-specific source identity. This includes selected channel names and order, normalization settings,
-  feature extractor name/weights/layers, tile settings, raw deep-feature plane order, and raw deep-feature dimension.
-- `reducer_id`: hash of the fitted reducer artifact. For PCA/IncrementalPCA, this must include reducer type and params,
-  `components`, `mean`, explained variance/ratio when available, number of components, number of raw features, fit
-  sample policy, fit target ids, package versions, and array hashes for the fitted state.
-- `final_feature_schema_id`: hash of `raw_feature_schema_id`, `reducer_id`, final feature plane order, final dtype
+  feature extractor name/weights/layers, minimum-input/stride/halo/padding/upsampling contract, raw deep-feature plane
+  order, and raw deep-feature dimension.
+- `projection_id`: hash of the deterministic projection contract and generated matrix. The same raw feature schema must
+  produce the same projection id on every target and in every process.
+- `final_feature_schema_id`: hash of `raw_feature_schema_id`, `projection_id`, final feature plane order, final dtype
   policy, and cache schema version.
 
 Exact `raw_feature_schema_id` inputs:
@@ -278,40 +303,28 @@ Exact `raw_feature_schema_id` inputs:
 - marker normalization policy, parameters, and whether fitted normalization state is per-target or shared;
 - raw marker plane order;
 - feature extractor backend name, implementation version, model name, weights name or digest, selected layers, scale
-  pyramid settings, input channel handling, padding policy, tile size/overlap, preprocessing, and output raw feature
-  plane order;
-- raw deep-feature dimension before reduction;
-- reducer input dtype/precision policy;
+  pyramid settings, input channel handling, RGB replication strategy, pretrained input mean/std, padding policy,
+  common output stride, minimum input height/width, required context, stride-rounded halo, dense-upsampling mode and
+  coordinate convention, preprocessing, Dask overlap/trim contract version, and output raw feature plane order;
+- raw deep-feature dimension before projection;
+- projection input dtype/precision policy;
 - relevant package versions for feature generation.
 
-Exact `reducer_id` inputs for PCA/IncrementalPCA:
+Exact `projection_id` inputs:
 
-- hash kind and reducer hash schema version;
-- `raw_feature_schema_id`;
-- reducer implementation, reducer type, and package version;
-- reducer parameters, including `n_components`, whitening, batch size, random state, centering policy, and dtype policy;
-- reducer-fit cohort target ids, sorted canonically;
-- raw-feature sampling policy, including pixels per target, balancing policy, sampling seed, mask policy, and tile/batch
-  ordering;
-- fitted reducer attributes needed for transformation and audit, including `components`, `mean`, number of raw
-  features, number of samples seen, explained variance, explained variance ratio, and singular values when available;
-- array hashes for every fitted numeric array used by the reducer.
-
-Exact `reducer_id` inputs for a fixed random projection:
-
-- hash kind and reducer hash schema version;
+- hash kind and projection hash schema version;
 - `raw_feature_schema_id`;
 - projection implementation and package version;
-- projection parameters, including output dimension, random state, distribution, density, dtype policy, and input
-  dimension;
+- projection parameters, including input dimension, output dimension `K = 64`, Rademacher distribution and scaling,
+  generator algorithm, seed-derivation rule, matrix orientation, and input/output dtype policy;
 - projection matrix array hash.
 
 Exact `final_feature_schema_id` inputs:
 
 - hash kind and final schema hash version;
 - `raw_feature_schema_id`;
-- `reducer_id`;
-- final feature plane order: selected marker planes first, then reduced deep-feature planes;
+- `projection_id`;
+- final feature plane order: selected normalized marker planes first, then projected deep-feature planes;
 - final feature names or deterministic plane labels;
 - final feature count;
 - final feature dtype policy;
@@ -327,6 +340,7 @@ Target-specific `cache_id` should still include source identity:
 - coordinate system;
 - compute scale, for Phase 1 `scale0` / highest resolution;
 - highest-resolution shape and axes;
+- complete source Dask/Zarr chunk tuples for every axis, including terminal chunks;
 - selected channel names and order as resolved in this target;
 - target-specific fitted normalization state, if the selected normalization policy is per-target;
 - feature array shape, chunks, dtype, compressor/store policy, and cache schema version.
@@ -339,48 +353,39 @@ sample.harpy-cache.zarr/
     feature_schemas/
       <final_feature_schema_id>/
         raw_feature_manifest
-        reducer/
-          <reducer_id>/
+        projection/
+          <projection_id>/
             manifest
-            components
-            mean
-            explained_variance
-            explained_variance_ratio
+            matrix
     feature_caches/
       <target_cache_id>/
         features
-        manifest              # points to raw_feature_schema_id, reducer_id, final_feature_schema_id
+        manifest              # points to raw_feature_schema_id, projection_id, final_feature_schema_id
 ```
 
-For a PCA-backed schema, cache building should be a two-stage operation:
+Cache building is independent per target:
 
-1. Fit the shared reducer.
-   - Gather raw deep-feature samples from all target cards in the intended reducer-fit cohort.
-   - Use deterministic sampling per target card, with the sampling policy recorded in the reducer manifest.
-   - Prefer balanced sampling by target card so a very large image does not dominate the PCA fit by default.
-   - Fit one reducer from the combined sampled raw features. For large data, stream batches through `IncrementalPCA`
-     rather than materializing all sampled features at once.
-2. Write per-target caches.
-   - Stream raw deep features tile-wise for each target card.
-   - Transform deep features with the shared reducer.
-   - Append normalized marker-intensity planes.
-   - Write a separate feature cache folder per target card, each pointing to the same `reducer_id` and
-     `final_feature_schema_id`.
+1. Resolve the raw feature schema and deterministically generate or load its projection artifact.
+2. Stream raw deep features tile-wise for the target card.
+3. Apply the projection only along the deep-feature axis, for example as a fixed `1 x 1` linear operation.
+4. Concatenate selected normalized marker planes followed by the 64 projected deep-feature planes.
+5. Write a separate target cache pointing to the shared `projection_id` and `final_feature_schema_id`.
+
+The raw high-dimensional deep features should not be persisted. Building a new target cache neither reads nor changes
+other targets' data or caches.
 
 Training-scope validation:
 
 - all selected training target caches must have the same `final_feature_schema_id`;
-- all selected training target caches must point to the same `reducer_id`;
-- the reducer-fit cohort should contain every target used for classifier training when the reducer type is PCA;
-- same reducer type, same number of components, or same feature count is not sufficient;
+- all selected training target caches must point to the same `projection_id`;
+- same projection type or same output count alone is not sufficient; the complete projection identity must match;
 - per-target source fields may differ, but schema fields must match exactly;
-- if a new target card is added to a PCA-backed training scope after the reducer was fitted, Harpy should require a
-  shared reducer refit and rebuild the affected final caches before that target can contribute to pooled training.
+- adding a target with a compatible raw feature schema must not invalidate or rebuild existing target caches.
 
 Prediction validation:
 
 - an active prediction target must use the same `final_feature_schema_id` as the trained classifier;
-- if the active target cache has a different reducer, even with the same number of components, prediction must be
+- if the active target cache has a different projection, even with the same output dimension, prediction must be
   blocked with a clear rebuild/reuse action.
 
 **Implementation Slices**
@@ -512,7 +517,8 @@ Acceptance criteria:
 3. Annotation layer lifecycle
 
 Implement `annotation_controller.py`. Create or reuse a napari labels layer matching the highest-resolution image grid.
-Use `0` as unlabeled. Keep class labels, class names, and colors stable while the user edits annotations.
+Use `0` as unlabeled. Preserve integer class ids while the user edits annotations. Use consistent per-label colors
+across target layers as a visual aid; colors and optional display names are not classifier compatibility metadata.
 
 Acceptance criteria:
 
@@ -525,25 +531,413 @@ Acceptance criteria:
 
 4. Normalization and feature schema
 
-Implement `normalization.py`, `features.py`, and `reducer.py`. Normalize selected marker channels before caching, extract
-deep features tile-wise, reduce only the deep-feature axis, then append normalized marker planes unchanged. In the UI,
-this work is presented as building or rebuilding a feature cache, not as producing a user-facing feature matrix.
+Implement `normalization.py`, `features.py`, and `projection.py`. Normalize selected marker channels before caching,
+extract deep features tile-wise, project only the deep-feature axis to 64 planes, then append those planes after the
+normalized marker planes. In the UI, this work is presented as building or rebuilding a feature cache, not as producing
+a user-facing feature matrix. The projection has no fit action or user-facing configuration. Tile-wise extraction must
+be expressed as one lazy Dask graph from the source Zarr-backed array to the sidecar feature-cache Zarr. Do not call
+`.compute()` once per spatial tile in a Python loop and do not materialize the complete source or feature array.
+
+The two feature groups are intentionally complementary:
+
+```text
+normalized marker planes       direct biological intensity at the pixel
+projected CNN feature planes   morphology and local-neighbourhood context
+```
+
+Keeping the marker planes is a feature-level skip connection around the pretrained CNN and projection. It preserves
+simple marker rules and exact high-resolution intensities that may otherwise be transformed, spatially smoothed, or
+mixed across projected coordinates. This matters because ConvNeXt was pretrained on natural RGB images, its nonlinear
+and strided operations do not preserve every original marker value, and a 64-dimensional projection is deliberately
+lossy. Marker normalization must be deterministic and recorded, but aggressive per-target normalization should be
+avoided or explicitly evaluated because it can erase meaningful cross-target intensity differences.
 
 Recommended Phase 1 defaults:
 
 - selected channels: user-selected subset, with a product warning for very large selections;
 - marker normalization: deterministic channel-wise clipping/scaling recorded in the manifest;
 - deep feature backend: ConvNeXt-Tiny early-layer features behind the optional `torch` dependency group;
-- reducer: shared fitted PCA/IncrementalPCA across the intended training targets, or a deterministic fixed projection,
-  recorded as a reusable reducer artifact;
+- ConvNeXt input handling: process each marker independently by transiently replicating it over RGB and applying only
+  the pretrained weights' fixed ImageNet mean/std normalization;
+- projection: deterministic dense Rademacher projection to `K = 64`, recorded as a reusable projection artifact;
 - persistent feature dtype: `float16` unless validation shows it harms classifier quality.
+
+For one concrete Dask block with `C` selected markers, reshape `(C, H, W)` to `(C, 1, H, W)` and treat marker identity
+as the Torch batch coordinate during feature extraction. Restore the marker coordinate afterward and emit raw features
+in a fixed marker-major order before projection. Replicate the marker batch over the three input channels, apply the
+pretrained weights' mean/std, and discard that RGB tensor as soon as its selected intermediate features have been
+extracted. The replicated tensor is a transient implementation detail: it must never be written to the feature cache.
+Marker passes may be split into smaller batches when device memory is constrained. This intentionally does not mix
+markers inside ConvNeXt; cross-marker combinations are learned later by the classifier from the projected features and
+appended marker planes.
+
+Use the following as the initial production batching pattern:
+
+```python
+import torch
+from torchvision.models import ConvNeXt_Tiny_Weights
+
+
+# marker_tile: Torch tensor (C, H, W), converted from one normalized Dask block
+C, H, W = marker_tile.shape
+marker_batch = marker_tile.reshape(C, 1, H, W)
+
+# expand is a view, but the normalized three-channel result is transiently
+# materialized. Bound the number of markers processed together.
+input_transform = ConvNeXt_Tiny_Weights.DEFAULT.transforms()
+mean = marker_batch.new_tensor(input_transform.mean).reshape(1, 3, 1, 1)
+std = marker_batch.new_tensor(input_transform.std).reshape(1, 3, 1, 1)
+max_marker_batch = 4
+feature_chunks: dict[str, list] = {}
+
+with torch.inference_mode():
+    for marker_chunk in marker_batch.split(max_marker_batch, dim=0):
+        rgb_chunk = (marker_chunk.expand(-1, 3, -1, -1) - mean) / std
+        chunk_features = intermediate_extractor(rgb_chunk)
+        del rgb_chunk
+        for name, values in chunk_features.items():
+            feature_chunks.setdefault(name, []).append(values)
+
+# The extractor returns selected intermediate ConvNeXt feature maps. Restore the
+# marker coordinate independently for every selected layer before spatial
+# alignment, concatenation and deterministic projection.
+layer_features = {
+    name: torch.cat(chunks, dim=0).reshape(C, *chunks[0].shape[1:])
+    for name, chunks in feature_chunks.items()
+}
+```
+
+This marker-batching code runs inside the Dask block-inference function. Dask supplies one concrete NumPy block,
+including its spatial halo; the block function converts that bounded block to Torch, runs the frozen extractor under
+`torch.inference_mode()`, returns a NumPy feature block, and releases its CPU/GPU intermediates. Construct the model
+once per execution worker, not once per Dask block.
+
+Do not call the complete TorchVision classification transform on dense tiles: its resize/crop operations would change
+the source grid. Use only the mean/std supplied by the selected weights. Persist the weights identifier, exact mean/std
+values, RGB replication policy, and preprocessing implementation version in the raw feature schema. Marker chunk size
+is a runtime memory control and is excluded from feature identity; tests must show that changing it preserves output
+values within the declared tolerance.
+
+**Dask-to-PyTorch execution contract**
+
+Use the physical source chunk layout as the Phase 1 inference layout. Do not add an independently configurable spatial
+tile planner. Keep these units separate:
+
+```text
+physical Zarr chunk    storage unit and initial spatial ConvNeXt inference core
+expanded Dask block    one inference core plus the context halo
+Torch marker batch     number of marker planes sent through ConvNeXt together
+```
+
+The source image remains a lazy Dask array. Select the requested markers, lazily combine only the marker axis into one
+block, preserve the source spatial chunks, apply marker clipping/scaling lazily from the already computed percentile
+statistics, add the required spatial halo, map the PyTorch extractor over those blocks, trim the halo and transient
+edge padding, and regularize the resulting feature chunks for direct storage in the target cache Zarr. Build this
+complete graph before executing it.
+
+ConvNeXt contains strided operations. If two inference cores begin on different phases of that stride lattice, the
+same source pixel can be grouped with different neighbours and acquire different features. Halo overlap supplies
+neighbourhood context, but it cannot repair a shifted stride lattice. Define `stride` as the least common multiple of
+the output strides of every selected ConvNeXt feature layer. For the usual power-of-two ConvNeXt stages this is simply
+the largest selected output stride. Before graph construction, require every internal source-chunk boundary on both
+spatial axes to lie on that common lattice:
+
+```python
+from itertools import accumulate
+
+
+def internal_chunk_boundaries(chunks: tuple[int, ...]) -> tuple[int, ...]:
+    return tuple(accumulate(chunks[:-1]))
+
+
+assert all(
+    boundary % stride == 0
+    for chunks in source_markers.chunks[-2:]
+    for boundary in internal_chunk_boundaries(chunks)
+)
+```
+
+For a regular source layout, this normally means that the non-terminal chunk size is a multiple of `stride`. The
+naturally smaller terminal chunk need not itself have the original nominal size: its start is what matters. If an
+internal boundary is not aligned, reject cache construction before model execution with a message that reports the
+source layout, required stride, and offending boundary. Merely recording a misaligned layout would make the result
+reproducible, but would not remove chunk-boundary seams.
+
+The padded image dimensions must also be divisible by `stride`, otherwise local dense upsampling at the right or
+bottom edge can use a different scale from a whole-image extraction. Add only the necessary `0 .. stride - 1`
+right/bottom pixels, lazily and transiently, using zero in normalized-marker space:
+
+```python
+height, width = normalized.shape[-2:]
+pad_bottom = (-height) % stride
+pad_right = (-width) % stride
+
+padded = da.pad(
+    normalized,
+    ((0, 0), (0, pad_bottom), (0, pad_right)),
+    mode="constant",
+    constant_values=0,
+)
+
+# da.pad may represent the new edge as a separate tiny Dask block. Fold that
+# block into the terminal source core so the original, possibly unaligned
+# image edge does not become a new internal inference boundary.
+padded_chunks = (
+    (C,),
+    normalized.chunks[1][:-1]
+    + (normalized.chunks[1][-1] + pad_bottom,),
+    normalized.chunks[2][:-1]
+    + (normalized.chunks[2][-1] + pad_right,),
+)
+padded = padded.rechunk(padded_chunks)
+```
+
+The `rechunk` immediately after `da.pad` is intentional and local to the image boundary. For example:
+
+```text
+source chunks                         (512, 512, 101)
+after adding three padding pixels     (512, 512, 101, 3)
+after folding the padding block       (512, 512, 104)
+```
+
+It must preserve every non-terminal chunk and concatenate only the small zero-padding blocks onto the rightmost
+column, bottom row, and bottom-right corner of source chunks. It is a lazy graph transformation: it does not rewrite
+the source Zarr, materialize the complete image, or redistribute the interior chunks. At execution time the affected
+boundary tasks assemble the terminal source block and at most `stride - 1` zero-valued rows or columns in memory. Those
+source blocks would already be read for feature extraction.
+
+Keep this padding-fold rechunk conceptually separate from the later `allow_rechunk=True` overlap repair:
+
+```text
+padding-fold rechunk     removes the standalone padding block and aligns the padded image edge
+overlap rechunk          merges/redistributes any inference cores too small to support the halo
+```
+
+The resulting terminal core has a size divisible by `stride` because both its start and the padded image end are
+stride-aligned. Round the required model context up to the same lattice,
+`halo = ceil(required_context / stride) * stride`. Consequently, a stride-aligned core start plus a stride-aligned halo
+also gives a stride-aligned expanded-block start. Run tiled and canonical reference extraction with the same
+right/bottom padding and fixed dense-upsampling convention, then crop the feature result back to the original
+`(height, width)` before storage.
+
+Chunk size and model input size are separate constraints. A physical source core may be smaller than the halo. In that
+case `allow_rechunk=True` must lazily merge or redistribute adjacent cores until Dask can construct the overlap; this
+applies to any undersized spatial core, not only the terminal core. The merged cores are logical inference blocks only
+and do not rewrite the source Zarr. Their actual boundaries must still pass the stride checks, and their expanded sizes
+must still fit the memory budget.
+
+Independently, the selected extractor has a minimum spatial input size. Set the Phase 1 ConvNeXt-Tiny extractor
+contract to `minimum_input_height = minimum_input_width = 32` and persist these values in the raw feature schema. Every
+expanded block passed to Torch must be at least `32 x 32`. First validate the complete padded source, because an axis
+held in one block has no neighbouring block with which it can be merged:
+
+```python
+minimum_input_height = 32
+minimum_input_width = 32
+padded_height, padded_width = padded.shape[-2:]
+
+if padded_height < minimum_input_height:
+    raise FeatureExtractionInputSizeError(
+        "Feature extraction requires an input height of at least "
+        f"{minimum_input_height} pixels; the padded source height is "
+        f"{padded_height} pixels."
+    )
+
+if padded_width < minimum_input_width:
+    raise FeatureExtractionInputSizeError(
+        "Feature extraction requires an input width of at least "
+        f"{minimum_input_width} pixels; the padded source width is "
+        f"{padded_width} pixels."
+    )
+```
+
+For example, when the common stride is `4`, a source width of `20` is already stride-aligned and receives no edge
+padding. It must therefore fail before graph execution with:
+
+```text
+Feature extraction requires an input width of at least 32 pixels;
+the padded source width is 20 pixels.
+```
+
+After overlap construction, also validate every actual expanded spatial block against the same `32 x 32` minimum.
+This covers small physical chunks that Dask merged as well as edge blocks that have a halo on only one side.
+
+Because block inference changes the leading axis from selected markers to `(C + 64)` cache planes, prefer explicit
+overlap, block mapping, and trimming stages rather than relying on automatic output-shape inference:
+
+```python
+import dask.array as da
+import numpy as np
+
+
+# source_markers is Zarr-backed and remains lazy: (C, Y, X). Rechunk only the
+# marker axis; its spatial chunks remain the source Zarr chunks.
+source_markers = source_markers.rechunk({0: C})
+normalized = normalize_dask(source_markers, percentile_statistics)
+
+# Validate internal source boundaries and create `padded` as specified above.
+# halo_y and halo_x are required-context values rounded up to `stride`.
+
+# An axis held in one block has no internal block boundary and needs no Dask
+# overlap. ConvNeXt still applies its normal model-boundary behavior there.
+depth = {
+    0: 0,
+    1: 0 if padded.numblocks[1] == 1 else halo_y,
+    2: 0 if padded.numblocks[2] == 1 else halo_x,
+}
+boundary = {0: "none", 1: "none", 2: "none"}
+
+overlapped = da.overlap.overlap(
+    padded,
+    depth=depth,
+    boundary=boundary,
+    # Any source core smaller than the overlap requirement may need to be
+    # merged/redistributed. Validate the resulting core lattice below.
+    allow_rechunk=True,
+)
+
+if min(overlapped.chunks[1]) < minimum_input_height:
+    raise FeatureExtractionInputSizeError(
+        "At least one expanded inference block is shorter than the "
+        f"required {minimum_input_height} pixels."
+    )
+if min(overlapped.chunks[2]) < minimum_input_width:
+    raise FeatureExtractionInputSizeError(
+        "At least one expanded inference block is narrower than the "
+        f"required {minimum_input_width} pixels."
+    )
+
+# infer_convnext_block receives one in-memory NumPy block and returns
+# (C + 64, block_y, block_x). Supplying meta prevents Dask from invoking
+# PyTorch on synthetic 0-dimensional inputs during graph construction. Derive
+# spatial output metadata from the actual post-rechunk overlap array, never
+# from the original source chunk shape.
+actual_pretrim_chunks = (
+    (C + 64,),
+    overlapped.chunks[1],
+    overlapped.chunks[2],
+)
+mapped = overlapped.map_blocks(
+    infer_convnext_block,
+    dtype=np.float16,
+    chunks=actual_pretrim_chunks,
+    meta=np.empty((0, 0, 0), dtype=np.float16),
+)
+
+features_padded = da.overlap.trim_internal(
+    mapped,
+    depth,
+    boundary=boundary,
+)
+
+# Remove only the transient right/bottom padding. Cache and annotation shapes
+# remain exactly aligned with the original highest-resolution image.
+features = features_padded[:, :height, :width]
+
+# Automatic overlap rechunking may leave irregular inference-core chunks.
+# Rechunk only the projected C + 64 output to the fixed cache layout; this does
+# not rewrite the source or rerun ConvNeXt.
+actual_inference_chunks = features_padded.chunks
+cache_chunks = (C + 64, cache_chunk_y, cache_chunk_x)
+features_for_store = features.rechunk(cache_chunks)
+
+# target_cache_zarr is created with cache_chunks. This creates a lazy write
+# graph; it does not load the complete feature array.
+write_job = da.store(
+    features_for_store,
+    target_cache_zarr,
+    compute=False,
+)
+
+# Execute exactly once in the existing background worker. The synchronous
+# scheduler keeps GPU inference concurrency at one for the initial local path.
+write_job.compute(scheduler="synchronous")
+```
+
+The final `write_job.compute(...)` is not an eager full-array conversion: it executes the store graph and writes one
+output block at a time. A separate preliminary Dask reduction may compute the small set of full-image percentile
+statistics once. The prohibited pattern is repeated spatial-tile `.compute()` calls.
+
+`allow_rechunk=True` remains necessary whenever any spatial source core is smaller than the halo or otherwise cannot
+support Dask's overlap construction. Dask may merge or redistribute several adjacent cores and may change the number
+of blocks. Because the source internal boundaries, padded total shape, and halo are all multiples of `stride`, the
+resulting cores are expected to remain on the common lattice, but do not rely on that as an undocumented Dask
+guarantee. Treat `overlapped.chunks` and the chunks obtained after `trim_internal` as authoritative and reject the plan
+before model execution if any resulting padded-core size or internal boundary is not divisible by `stride`, or if any
+expanded block is smaller than the extractor's `32 x 32` minimum.
+
+Do not pass output chunks predicted from the original source layout into `da.map_overlap`. When automatic rechunking
+changes the block grid, stale `chunks=` metadata can fail graph construction or describe different boundaries from the
+arrays returned at runtime, making downstream region writes unsafe. For this shape-changing operation from `(C, ...)`
+to `(C + 64, ...)`, the explicit public sequence `overlap(..., allow_rechunk=True) -> map_blocks(chunks derived from
+overlapped.chunks) -> trim_internal(...)` is intentionally safer than the `da.map_overlap` convenience wrapper. It is
+the same overlap/map/trim algorithm while exposing the actual intermediate layout needed for correct output metadata.
+
+Before execution, validate the actual plan rather than the requested plan:
+
+- the largest expanded block, including all selected markers and transient Torch activations, fits the CPU/GPU memory
+  budget;
+- the complete padded source and every actual expanded block meet the extractor's `32 x 32` minimum input size;
+- every source internal spatial chunk boundary is divisible by the common ConvNeXt stride;
+- the halo, padded image dimensions, actual padded-core sizes, and actual padded-core boundaries are divisible by that
+  stride;
+- `features_padded` has shape `(C + 64, padded_Y, padded_X)` and cropping restores exactly `(C + 64, Y, X)`;
+- `features_for_store` has regular chunks matching the fixed Zarr cache chunks.
+
+The complete source chunk tuple is part of the target-specific cache manifest and cache identity. Compare the current
+layout with the persisted tuple whenever opening or reusing a cache. Any difference invalidates that target's cache and
+the UI should say that it is being recalculated because the source chunk layout changed. Record the actual
+post-overlap core/expanded layout as well for diagnostics. The source layout is deliberately not part of the shared
+`raw_feature_schema_id` or `final_feature_schema_id`: targets with different but valid stride-aligned source layouts
+must still be poolable for classifier training. Cache invalidation is conservative even though the equivalence tests
+below require valid aligned layouts to produce the same interior feature values.
+
+Do not physically rechunk or rewrite the source image in Phase 1. The marker-axis combine, terminal padding fold, any
+undersized-core repair required by Dask overlap, and final output regularization are lazy graph operations. An on-disk
+staging/rechunk cache would require a full source read, duplicate storage, another progress and invalidation workflow,
+and is outside this phase. Also do not introduce a PyTorch `DataLoader` for dense cache generation: Dask already owns
+block scheduling, overlap, shared reads, and chunk-wise Zarr output. A DataLoader remains an option for future
+independent-sample training workflows. The final `features.rechunk(cache_chunks)` is also lazy and operates only on the
+already projected `(C + 64)` output so the Zarr cache has one regular physical chunk shape. Pre-create
+`target_cache_zarr` with that exact shape/dtype/chunk layout and use `da.store`; do not ask `to_zarr` to select another
+automatic write layout after this explicit regularization.
 
 Acceptance criteria:
 
-- feature cache planes are ordered as selected normalized marker planes followed by reduced deep feature planes;
+- feature cache planes are ordered as selected normalized marker planes followed by 64 projected deep-feature planes;
 - raw high-dimensional deep features are streamed tile-wise and are not persisted blindly;
-- PCA-backed caches are written only after fitting one shared reducer for the selected reducer-fit cohort;
-- per-target caches reference the shared reducer id and final feature schema id;
+- production feature extraction replicates each marker transiently over RGB, applies the selected weights' mean/std,
+  and never writes replicated RGB planes to the cache;
+- marker batching can be reduced without changing feature-plane semantics when device memory is constrained;
+- multichannel extraction preserves the declared marker-major raw-feature order when flattening and restoring the
+  marker batch coordinate;
+- cache building constructs one lazy Dask graph and does not call `.compute()` per spatial tile or on the full source
+  or feature array;
+- Dask overlap supplies the declared halo, block inference returns the expanded spatial shape, and trimming restores
+  the padded shape without seams in the tested valid region; removing transient right/bottom padding then restores the
+  exact highest-resolution source shape;
+- every source internal spatial chunk boundary is stride-aligned, the halo is rounded up to the common extractor
+  stride, and only `0 .. stride - 1` transient right/bottom pixels are added;
+- `da.pad` edge blocks are folded into the terminal source cores so the original image edge does not become a new
+  internal inference boundary;
+- the padding-fold rechunk preserves all non-terminal spatial chunks and only assembles the right/bottom boundary
+  blocks; it remains distinct from any subsequent undersized-core overlap rechunk;
+- overlap may lazily merge or redistribute any source cores that are too small for the overlap requirement;
+  block-output metadata is derived from the actual post-rechunk `overlapped.chunks`, never from the original source
+  layout;
+- the complete padded source and every expanded inference block are at least `32 x 32`; an undersized source or block
+  is rejected before Torch inference with its actual and required dimensions;
+- the actual expanded/core layouts pass memory, output-shape, and stride-grid validation before execution;
+- irregular trimmed inference chunks are lazily rechunked only after projection to a regular `(C + 64, y, x)` cache
+  layout matching the target Zarr chunks;
+- a source with a non-stride-aligned internal boundary is rejected with the offending boundary and required stride;
+- the complete source chunk tuple is stored in the target cache manifest, and changing it makes that cache stale and
+  produces a clear UI explanation before recalculation;
+- source padding and any undersized-core overlap repair remain lazy and never create an on-disk rechunked source copy;
+- the initial local execution path keeps a single frozen ConvNeXt instance and at most one GPU inference task active;
+- projection generation is deterministic and independent of target data, annotations, and cache-build order;
+- independently built compatible target caches resolve to the same projection id and final feature schema id;
+- adding a compatible target does not invalidate or rebuild existing caches;
 - tests can run with a fake feature extractor so CI does not require downloading model weights;
 - missing optional torch dependencies produce a clear install/action message.
 
@@ -557,11 +951,10 @@ sample.harpy-cache.zarr/
     feature_schemas/
       <final_feature_schema_id>/
         raw_feature_manifest
-        reducer/
-          <reducer_id>/
+        projection/
+          <projection_id>/
             manifest
-            components
-            mean
+            matrix
     feature_caches/
       <cache_id>/
         features
@@ -584,7 +977,8 @@ Acceptance criteria:
 - cache status is reported per target card as missing, found, building, ready, stale, or invalid/partial;
 - pooled-training cache compatibility is validated through `final_feature_schema_id`, not through target-specific
   `cache_id`;
-- caches with independently fitted PCA reducers are rejected even when component counts match;
+- caches with different projection ids are rejected even when both contain 64 projected planes;
+- adding a target with a compatible schema reuses the existing projection identity without rebuilding other caches;
 - cache creation is atomic enough that interrupted writes do not look valid;
 - stale/partial caches are reported and can be deleted from the UI.
 
@@ -596,11 +990,28 @@ and return a high-resolution predicted label map for that target.
 
 Recommended Phase 1 classifier:
 
-- `RandomForestClassifier` with deterministic `random_state`;
+- a small per-pixel multilayer perceptron (MLP) implemented behind the optional `torch` dependency group;
+- input width `C + 64`, one hidden `Linear(C + 64, 64)` layer, `GELU`, `Dropout(p=0.1)`, and a final
+  `Linear(64, N_classes)` layer;
+- no batch normalization; fit a per-feature mean and standard deviation on the sampled training rows, persist that
+  state with the classifier, and apply it unchanged during prediction;
+- deterministic class- and target-balanced training-row sampling, a fixed training seed, `float32` training, and
+  bounded epochs with validation-based early stopping where a valid spatial holdout can be formed;
 - class labels are integer label IDs from the annotation layer;
 - one fitted classifier is trained from pooled annotated pixels across the selected training scope;
-- confidence is max predicted probability;
+- confidence is the maximum softmax score, presented as an uncalibrated model confidence rather than a calibrated
+  probability;
 - prediction writes should not modify the annotation layer.
+
+The MLP is a fixed Phase 1 product choice, not another expert configuration surface. The UI should expose a single
+training action and useful progress/error status, not hidden-layer, optimizer, dropout, epoch, projection, or seed
+controls. Exact defaults must be versioned and recorded in classifier metadata.
+
+This classifier matches the hybrid cache representation: explicit marker planes retain direct per-pixel biological
+signals, projected CNN planes provide neighbourhood and morphology context, and the dense first layer can learn
+arbitrary combinations across both groups. The fixed projection is lossy, so the roadmap should retain ablation tests
+for marker-only, projected-CNN-only, and combined inputs; the neural network cannot recover information discarded by
+the projection.
 
 Training scope:
 
@@ -618,13 +1029,20 @@ Prediction scope:
 
 Acceptance criteria:
 
-- training rejects empty/unbalanced/one-class selected training scopes with clear messages;
+- training rejects empty, one-class, or otherwise insufficient selected training scopes with clear messages;
 - the fitted classifier records the target cards and cache ids used for training;
-- training rejects target-cache selections whose `final_feature_schema_id` or `reducer_id` differ;
+- training rejects target-cache selections whose `final_feature_schema_id` or `projection_id` differ;
+- training-row sampling prevents a large target or heavily annotated class from dominating by default and records the
+  sampled counts per target and class;
+- classifier input-standardization state, integer-class/output-index mapping, architecture version, optimizer and
+  stopping parameters, and deterministic seed are persisted and reused for prediction;
+- validation rows are separated by target or spatial block where practical rather than randomly interleaving adjacent
+  pixels between training and validation;
 - prediction is tile-wise and does not require flattening the whole image into memory at once;
 - predicted class labels have the active target's highest-resolution image shape;
-- classifier metadata records training cache ids, training scope, training class counts, training time, and classifier
-  parameters.
+- classifier metadata records the final feature schema and projection ids, training cache ids, training scope, training
+  class counts, training time, classifier architecture/parameters, fitted input-standardization state, class-index
+  mapping, and model-state identity.
 
 7. Widget workflow and background jobs
 
@@ -677,7 +1095,7 @@ Save behavior:
 - default output name should be generated from source image and classifier context;
 - existing labels element names require explicit overwrite or a new name;
 - saved labels include coordinate-system metadata compatible with the source image;
-- prediction metadata records cache id, selected channels, normalization, feature extractor, reducer, classifier
+- prediction metadata records cache id, selected channels, normalization, feature extractor, projection, classifier
   parameters, training scope, active prediction target, class labels, and created timestamp.
 
 Acceptance criteria:
@@ -693,9 +1111,10 @@ Add focused tests before broadening UI behavior:
 
 - manifest canonicalization and `cache_id` stability;
 - cache compatibility/rejection;
-- shared reducer id and final feature schema id validation;
-- independently fitted PCA reducers with the same component count are rejected for pooled training;
-- PCA reducer refit is required when a new target is added to the PCA-backed training scope;
+- deterministic projection generation and matrix-hash stability;
+- projection id and final feature schema id validation;
+- caches with different projection identities are rejected even when their output dimensions match;
+- adding a compatible target preserves existing cache ids and does not rebuild other target caches;
 - coordinate-system selection creates target-card state;
 - image/channel target-card selection validates against coordinate-system availability;
 - per-channel overlay load reuses existing layers;
@@ -703,8 +1122,40 @@ Add focused tests before broadening UI behavior:
 - annotation validation and class-count tracking;
 - training-scope selection pools eligible annotated target cards;
 - normalization and feature-plane ordering;
-- fake extractor plus reducer writes expected feature-cache shape;
-- classifier training/prediction on small synthetic data;
+- RGB replication applies the selected weights' exact mean/std without resize/crop and never writes RGB cache planes;
+- changing the marker batch/chunk size preserves marker-major feature ordering and feature values within tolerance;
+- fake extractor plus projection writes the expected `(C + 64, y, x)` feature-cache shape;
+- a Zarr-backed Dask source reaches a Zarr feature target through one overlap/map/trim/store graph without per-block
+  `.compute()` calls or full-array materialization;
+- fake block inference is not invoked during graph construction when explicit `meta` is supplied;
+- internal source-chunk boundaries divisible by the common extractor stride are accepted, while a deliberately
+  misaligned boundary is rejected before the extractor runs with an actionable error;
+- arbitrary source image dimensions are lazily padded on the right/bottom to the next stride multiple, the padding
+  block is folded into the terminal source core, and the stored feature array is cropped back to the exact source
+  shape;
+- after padding and its explicit fold, every non-terminal chunk equals the corresponding source chunk, the terminal
+  chunk equals `source_terminal_chunk + padding`, and no standalone padding chunk remains on either spatial axis;
+- computing an interior padded-array block does not require a boundary source block, and padding-fold execution does
+  not modify or create a rechunked source Zarr;
+- padded/overlap/trim extraction matches a canonical equally padded whole-image reference for multiple valid physical
+  source chunk layouts, including edge chunks;
+- changing any entry in the complete source chunk tuple changes the target `cache_id`, marks the previous cache stale,
+  and does not change the shared `final_feature_schema_id`;
+- terminal and non-terminal cores smaller than the overlap requirement are lazily merged or redistributed without
+  rewriting the source Zarr; both same-block-count and changed-block-count cases expose stride-aligned pre-trim and
+  trimmed chunk metadata;
+- a padded source axis smaller than 32 pixels is rejected before graph execution with the required and actual size,
+  including the exact 20-pixel-width error-message contract documented above;
+- every actual expanded block is validated against the `32 x 32` extractor minimum before the fake or real Torch
+  extractor is invoked;
+- shape-changing block inference derives `chunks=` from the actual overlapped array; deliberately stale metadata is
+  rejected by validation rather than reaching Zarr storage;
+- irregular inference-core chunks are lazily regularized after projection, output Zarr chunks match that regular layout,
+  and partial/failed graph execution remains identifiable;
+- MLP training/prediction on small synthetic data, including deterministic seeds and persisted input standardization;
+- class- and target-balanced sampling behavior;
+- integer class-id/output-index round trips for non-contiguous positive label ids;
+- marker-only, projected-CNN-only, and combined-representation ablation harnesses;
 - interactive prediction rejects non-active/batch target scopes;
 - tile-wise prediction shape/dtype;
 - widget state transitions with mocked workers;
@@ -720,6 +1171,133 @@ Use the repository environment directly:
 Torch/TorchVision integration tests should be optional or skipped unless the optional dependency group and model weights
 are available. Core behavior should be testable without network access.
 
+10. Follow-up optimization: single-channel ConvNeXt stem
+
+After the standard RGB-replication feature path is implemented and validated, add an optimized backend that folds RGB
+replication and the pretrained weights' mean/std into a one-channel ConvNeXt stem. This is an implementation
+optimization, not a different feature model: for a single normalized marker `x`, it should reproduce the reference
+RGB stem within the declared numerical tolerance.
+
+For original RGB stem weights `W_r`, bias `b`, pretrained input means `mean_r`, and standard deviations `std_r`, use:
+
+```text
+W_single = sum_r(W_r / std_r)
+b_single = b - sum_r((mean_r / std_r) * sum_spatial(W_r))
+```
+
+The replacement is `Conv2d(1, stem_width, kernel_size=4, stride=4, padding=0)`. All subsequent pretrained ConvNeXt
+layers remain unchanged and frozen. Use the following as the canonical initial TorchVision implementation; retain the
+explicit structural checks so a future TorchVision layout change fails rather than silently converting the wrong
+layer.
+
+```python
+import torch
+from torch import nn
+
+
+def convert_convnext_stem_to_single_channel(
+    model: nn.Module,
+    *,
+    mean: tuple[float, float, float],
+    std: tuple[float, float, float],
+) -> nn.Module:
+    """Fold replicated-marker ImageNet normalization into ConvNeXt's stem."""
+    try:
+        old_conv = model.features[0][0]
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise RuntimeError("Unsupported TorchVision ConvNeXt stem layout") from exc
+
+    if not isinstance(old_conv, nn.Conv2d):
+        raise RuntimeError("Expected model.features[0][0] to be Conv2d")
+    if old_conv.in_channels != 3 or old_conv.groups != 1:
+        raise RuntimeError("Expected an ungrouped three-channel ConvNeXt stem")
+    if old_conv.padding != (0, 0) or old_conv.padding_mode != "zeros":
+        raise RuntimeError("Exact stem conversion requires the unpadded ConvNeXt stem")
+    if old_conv.bias is None:
+        raise RuntimeError("Exact stem conversion requires a stem bias")
+
+    weight = old_conv.weight
+    mean_t = weight.new_tensor(mean).reshape(1, 3, 1, 1)
+    std_t = weight.new_tensor(std).reshape(1, 3, 1, 1)
+    if not torch.all(std_t > 0):
+        raise ValueError("ConvNeXt input standard deviations must be positive")
+
+    new_conv = nn.Conv2d(
+        in_channels=1,
+        out_channels=old_conv.out_channels,
+        kernel_size=old_conv.kernel_size,
+        stride=old_conv.stride,
+        padding=old_conv.padding,
+        dilation=old_conv.dilation,
+        groups=1,
+        bias=True,
+        padding_mode=old_conv.padding_mode,
+        device=weight.device,
+        dtype=weight.dtype,
+    )
+
+    with torch.no_grad():
+        new_conv.weight.copy_((weight / std_t).sum(dim=1, keepdim=True))
+        normalization_offset = (weight * (mean_t / std_t)).sum(dim=(1, 2, 3))
+        new_conv.bias.copy_(old_conv.bias - normalization_offset)
+
+    model.features[0][0] = new_conv
+    return model
+```
+
+Construct and freeze the optimized extractor using the metadata attached to the selected pretrained weights:
+
+```python
+from torchvision.models import ConvNeXt_Tiny_Weights, convnext_tiny
+
+
+weights = ConvNeXt_Tiny_Weights.DEFAULT
+input_transform = weights.transforms()
+model = convnext_tiny(weights=weights)
+model = convert_convnext_stem_to_single_channel(
+    model,
+    mean=tuple(input_transform.mean),
+    std=tuple(input_transform.std),
+)
+model.requires_grad_(False).eval()
+```
+
+The optimized production path passes `(C, 1, H, W)` percentile-normalized marker batches from each Dask block directly
+to the converted model. It must not replicate RGB or additionally apply ImageNet normalization because both operations
+are already represented by the converted stem.
+
+Pros:
+
+- avoids materializing the transient normalized three-channel tensor;
+- reduces input bandwidth and the first stem convolution from three input channels to one;
+- retains independent per-marker processing and is mathematically equivalent to the reference preprocessing;
+- can reduce peak device memory when many markers or tiles are batched together.
+
+Cons:
+
+- mutates a standard pretrained architecture and depends on TorchVision's internal stem layout;
+- adds conversion code, compatibility checks, parameter hashing, and numerical-equivalence tests;
+- may complicate checkpoint inspection, model tooling, export, and future TorchVision upgrades;
+- floating-point summation order can produce small differences even though the operations are algebraically equivalent;
+- likely provides limited end-to-end speedup because most ConvNeXt compute and memory occur after the stem;
+- is unnecessary when RGB replication fits comfortably in memory with a suitably small marker batch.
+
+Treat input handling as part of the raw feature schema. Record `single_channel_fused_stem`, the conversion
+implementation version, original weights identifier/digest, exact mean/std, converted stem parameter hash, and numeric
+precision. Do not claim bitwise compatibility with RGB-built caches; changing from RGB replication to the optimized
+path creates a new `raw_feature_schema_id` unless a future cache-migration contract explicitly proves stronger
+compatibility.
+
+Slice 10 acceptance criteria:
+
+- a focused test compares the converted stem with RGB replication plus mean/std over multiple inputs and shapes using
+  `torch.testing.assert_close` with an explicit tolerance;
+- selected intermediate feature maps from the complete frozen extractor also match the reference path within tolerance;
+- the optimized production path accepts `(C, 1, H, W)` directly and does not create an RGB tensor;
+- structural validation rejects unsupported ConvNeXt/TorchVision stem layouts;
+- benchmarks report peak memory and end-to-end tile throughput for representative tile sizes and marker counts;
+- the optimization remains disabled when its maintenance cost or measured benefit does not justify activation.
+
 **Suggested Delivery Order**
 1. Package skeleton, manifest registration, and empty widget.
 2. Source resolution, target-card UX, per-channel overlays, and Phase 1 highest-resolution contract.
@@ -730,7 +1308,8 @@ are available. Core behavior should be testable without network access.
 7. Shared classifier training and viewer-bound tile-wise prediction.
 8. Viewer display and stale-state handling.
 9. Save predicted labels to SpatialData.
-10. Cache management UI, progress/cancel polish, and final test hardening.
+10. Optional single-channel ConvNeXt stem optimization with equivalence tests and benchmarks.
+11. Cache management UI, progress/cancel polish, and final test hardening.
 
 This order keeps each slice independently testable while building toward the real user workflow.
 

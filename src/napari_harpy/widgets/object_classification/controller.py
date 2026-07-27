@@ -13,28 +13,31 @@ import pandas as pd
 from qtpy.QtCore import QObject, QTimer
 from sklearn.ensemble import RandomForestClassifier
 
-import napari_harpy.core.classifier as _classifier_core
-from napari_harpy.core.annotation import UNLABELED_CLASS, USER_CLASS_COLUMN
-from napari_harpy.core.classifier import (
+import napari_harpy.core.object_classification.classifier as _classifier_core
+from napari_harpy.core.class_palette import normalize_class_values
+from napari_harpy.core.feature_matrix_metadata import (
+    CUSTOM_OBSM_SOURCE_KIND,
+    FeatureMatrixMetadataState,
+    inspect_feature_matrix_metadata,
+    normalize_feature_columns,
+    normalize_feature_matrix,
+    normalize_feature_matrix_source_kind,
+)
+from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
+from napari_harpy.core.object_classification.classifier import (
+    PredictionStateChange,
     _get_feature_metadata,
     _get_finite_feature_row_mask,
     _normalize_prediction_regions,
     _resolve_region_row_positions,
 )
-from napari_harpy.core.classifier_export import (
+from napari_harpy.core.object_classification.classifier_export import (
     ClassifierExportBundle,
     ClassifierModelSnapshot,
     build_classifier_export_bundle,
-    normalize_feature_columns,
     write_classifier_export_bundle,
 )
-from napari_harpy.core.feature_matrix_metadata import (
-    CUSTOM_OBSM_SOURCE_KIND,
-    FeatureMatrixMetadataState,
-    inspect_feature_matrix_metadata,
-    normalize_feature_matrix,
-    normalize_feature_matrix_source_kind,
-)
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
 
 
@@ -71,8 +74,29 @@ RANDOM_FOREST_PARAMS = {
 }
 
 ClassifierScopeMode = Literal["selected_segmentation_only", "all"]
+ClassifierTableStateChangeSource = Literal[
+    "object_classification_inference",
+    "object_classification_metadata",
+]
 DEFAULT_TRAINING_SCOPE: ClassifierScopeMode = "all"
 DEFAULT_PREDICTION_SCOPE: ClassifierScopeMode = "selected_segmentation_only"
+
+
+@dataclass(frozen=True)
+class ClassifierTableStateChange:
+    """Carry an accepted classifier table change to the widget.
+
+    The classifier controller knows the authoritative paths, affected regions,
+    and source of a mutation. In particular, inference may affect every region
+    in the resolved prediction scope rather than only the segmentation
+    currently selected in the widget. This callback payload preserves that
+    context so the widget can publish an accurate ``TableStateChangedEvent``
+    without reconstructing or guessing the classifier's mutation scope.
+    """
+
+    paths: frozenset[TableComponentPath]
+    regions: tuple[str, ...]
+    source: ClassifierTableStateChangeSource
 
 
 @dataclass(frozen=True)
@@ -255,7 +279,7 @@ class ClassifierController:
         *,
         debounce_interval_ms: int = DEFAULT_RETRAIN_DEBOUNCE_MS,
         on_state_changed: Callable[[], None] | None = None,
-        on_table_state_changed: Callable[[], None] | None = None,
+        on_table_state_changed: Callable[[ClassifierTableStateChange], None] | None = None,
         on_prediction_state_changed: Callable[[], None] | None = None,
         # In the widget, pass the widget as parent so Qt destroys the debounce
         # timer with the UI. Tests and non-widget callers can leave this as None.
@@ -353,10 +377,10 @@ class ClassifierController:
     ) -> bool:
         """Bind the controller to the currently selected SpatialData inputs.
 
-        When a table is bound, prediction columns are prepared immediately:
-        existing ``pred_class`` values are normalized to Harpy's canonical
-        categorical integer state and palette, or all-unlabeled prediction
-        state is created when predictions are absent.
+        Binding is read-only with respect to prediction state. Existing
+        prediction columns are validated by the widget's table-state boundary,
+        while absent prediction columns remain absent until a successful
+        prediction write creates them.
         """
         if self._is_shutdown:
             return False
@@ -394,15 +418,28 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return context_changed
 
-        self._ensure_prediction_columns(table)
-
         self._update_idle_status()
         return context_changed
 
     def mark_dirty(self, reason: str | None = None) -> None:
-        """Mark the current classifier outputs as stale after an input change."""
+        """Invalidate older asynchronous work and mark classifier outputs stale."""
         if self._is_shutdown:
             return
+
+        # mark_dirty() is also the asynchronous job-invalidation boundary:
+        #
+        # a pending or active classifier job captures the current inputs
+        #     ↓
+        # an annotation, feature matrix, or other classifier input changes
+        #     ↓
+        # invalidate the captured job identity
+        #     ↓
+        # any late result fails the identity guard in _on_worker_returned()
+        #
+        # Auto-train being disabled prevents a replacement job from starting;
+        # it does not guarantee that no older job is still pending or running.
+        # That older work must still be invalidated.
+        self._invalidate_async_jobs()
 
         if self._get_bound_table() is None:
             self._is_dirty = False
@@ -511,7 +548,6 @@ class ClassifierController:
             self._set_status("Classifier: choose an annotation table and feature matrix.", kind="warning")
             return
 
-        self._ensure_prediction_columns(table)
         self._is_dirty = False
         self._update_status_from_reloaded_table(table)
 
@@ -693,10 +729,10 @@ class ClassifierController:
                 training_blocker_kind="data",
             )
 
-        user_class_values = _get_user_class_values(table.obs, len(table.obs))
-        training_user_class_values = user_class_values[training_scope.table_row_positions]
-        labeled_mask = training_user_class_values != UNLABELED_CLASS
-        class_labels = tuple(sorted(int(value) for value in np.unique(training_user_class_values[labeled_mask])))
+        user_class_values = _get_user_class_values(table.obs)
+        training_user_class_values = user_class_values.iloc[training_scope.table_row_positions]
+        labeled_mask = training_user_class_values.notna().to_numpy()
+        class_labels = tuple(sorted(int(value) for value in training_user_class_values.iloc[labeled_mask].unique()))
         summary = ClassifierPreparationSummary(
             training_scope=training_scope,
             prediction_scope=prediction_scope,
@@ -817,12 +853,12 @@ class ClassifierController:
             )
 
         predict_features = feature_matrix[summary.prediction_scope.table_row_positions]
-        user_class_values = _get_user_class_values(table.obs, len(table.obs))
-        training_user_class_values = user_class_values[summary.training_scope.table_row_positions]
-        labeled_mask = training_user_class_values != UNLABELED_CLASS
+        user_class_values = _get_user_class_values(table.obs)
+        training_user_class_values = user_class_values.iloc[summary.training_scope.table_row_positions]
+        labeled_mask = training_user_class_values.notna().to_numpy()
         labeled_training_positions = summary.training_scope.table_row_positions[labeled_mask]
         train_features = feature_matrix[labeled_training_positions]
-        train_labels = np.asarray(training_user_class_values[labeled_mask], dtype=np.int64)
+        train_labels = training_user_class_values.iloc[labeled_mask].to_numpy(dtype=np.int64)
         return ClassifierJob(
             job_id=job_id,
             feature_key=feature_key,
@@ -843,8 +879,10 @@ class ClassifierController:
             self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
             return
 
-        self._ensure_prediction_columns(table)
-        self._clear_predictions_for_prediction_regions(table, job.prediction_scope.regions)
+        prediction_state_change = self._clear_predictions_for_prediction_regions(
+            table,
+            job.prediction_scope.regions,
+        )
 
         table.uns[CLASSIFIER_CONFIG_KEY] = self._build_classifier_config(
             feature_key=job.feature_key,
@@ -854,7 +892,10 @@ class ClassifierController:
             trained_at=None,
         )
         self._clear_model_snapshot("the latest classifier inputs are not trainable")
-        self._notify_prediction_table_state_changed()
+        self._notify_prediction_table_state_changed(
+            job.prediction_scope.regions,
+            prediction_state_change,
+        )
         self._is_dirty = True
         self._set_status(f"Classifier: {job.summary.reason}", kind="warning")
 
@@ -869,7 +910,6 @@ class ClassifierController:
         if table is None:
             return
 
-        self._ensure_prediction_columns(table)
         apply_result = _classifier_core._write_classifier_predictions(
             table,
             table_name=result.table_name,
@@ -889,7 +929,10 @@ class ClassifierController:
         )
         table.uns[CLASSIFIER_CONFIG_KEY] = classifier_config
         self._store_model_snapshot(table, result, classifier_config)
-        self._notify_prediction_table_state_changed()
+        self._notify_prediction_table_state_changed(
+            result.prediction_scope.regions,
+            apply_result.prediction_state_change,
+        )
         self._is_dirty = False
         self._set_status(
             f"Classifier: model is up to date. Updated predictions for {apply_result.n_predicted_rows} objects.",
@@ -925,7 +968,11 @@ class ClassifierController:
                 trained=False,
                 trained_at=None,
             )
-            self._notify_table_state_changed()
+            self._notify_table_state_changed(
+                frozenset({TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,))}),
+                regions=(),
+                source="object_classification_metadata",
+            )
         self._is_dirty = True
         self._clear_model_snapshot("classifier training failed")
         self._set_status(f"Classifier: training failed: {error}", kind="error")
@@ -1048,23 +1095,24 @@ class ClassifierController:
 
         return get_table(self._selected_spatialdata, self._selected_table_name)
 
-    def _ensure_prediction_columns(self, table: AnnData) -> None:
-        _classifier_core._ensure_prediction_columns(table)
-
     def _clear_predictions_for_prediction_regions(
         self,
         table: AnnData,
         prediction_regions: tuple[str, ...],
-    ) -> None:
+    ) -> PredictionStateChange:
         if self._selected_table_metadata is None:
-            return
+            return PredictionStateChange(
+                pred_class_changed=False,
+                pred_confidence_changed=False,
+                palette_changed=False,
+            )
 
         prediction_table_row_positions = _resolve_region_row_positions(
             table.obs,
             self._selected_table_metadata.region_key,
             prediction_regions,
         )
-        _classifier_core._clear_predictions_for_row_positions(
+        return _classifier_core._clear_predictions_for_row_positions(
             table,
             prediction_table_row_positions,
         )
@@ -1108,19 +1156,49 @@ class ClassifierController:
         if self._on_state_changed is not None:
             self._on_state_changed()
 
-    def _notify_table_state_changed(self) -> None:
+    def _notify_table_state_changed(
+        self,
+        paths: frozenset[TableComponentPath],
+        *,
+        regions: tuple[str, ...],
+        source: ClassifierTableStateChangeSource,
+    ) -> None:
         if self._is_shutdown:
             return
 
         if self._on_table_state_changed is not None:
-            self._on_table_state_changed()
+            self._on_table_state_changed(
+                ClassifierTableStateChange(
+                    paths=paths,
+                    regions=regions,
+                    source=source,
+                )
+            )
 
-    def _notify_prediction_table_state_changed(self) -> None:
+    def _notify_prediction_table_state_changed(
+        self,
+        regions: tuple[str, ...],
+        prediction_state_change: PredictionStateChange,
+    ) -> None:
         if self._is_shutdown:
             return
 
-        self._notify_table_state_changed()
-        if self._on_prediction_state_changed is not None:
+        changed_paths = {
+            TableComponentPath("uns", (CLASSIFIER_CONFIG_KEY,)),
+        }
+        if prediction_state_change.pred_class_changed:
+            changed_paths.add(TableComponentPath("obs", (PRED_CLASS_COLUMN,)))
+        if prediction_state_change.pred_confidence_changed:
+            changed_paths.add(TableComponentPath("obs", (PRED_CONFIDENCE_COLUMN,)))
+        if prediction_state_change.palette_changed:
+            changed_paths.add(TableComponentPath("uns", (PRED_CLASS_COLORS_KEY,)))
+
+        self._notify_table_state_changed(
+            frozenset(changed_paths),
+            regions=regions,
+            source="object_classification_inference",
+        )
+        if prediction_state_change.changed and self._on_prediction_state_changed is not None:
             self._on_prediction_state_changed()
 
     def _update_idle_status(self, *, reason: str | None = None) -> None:
@@ -1268,27 +1346,8 @@ def _empty_resolved_classifier_scope(mode: ClassifierScopeMode) -> ResolvedClass
     )
 
 
-def _get_user_class_values(obs: pd.DataFrame, n_obs: int) -> np.ndarray:
+def _get_user_class_values(obs: pd.DataFrame) -> pd.Series:
     if USER_CLASS_COLUMN not in obs:
-        return np.full(n_obs, UNLABELED_CLASS, dtype=np.int64)
+        return pd.Series(pd.NA, index=obs.index, dtype="Int64", name=USER_CLASS_COLUMN)
 
-    values = obs[USER_CLASS_COLUMN]
-    if pd.api.types.is_integer_dtype(values.dtype) and not pd.api.types.is_bool_dtype(values.dtype):
-        # Preferred fast path: normalized user_class values are already integer
-        # class ids, so avoid string conversion and full-column parsing.
-        return values.to_numpy(dtype=np.int64, na_value=UNLABELED_CLASS, copy=False)
-
-    if isinstance(values.dtype, pd.CategoricalDtype):
-        categories = values.cat.categories
-        if pd.api.types.is_integer_dtype(categories.dtype) and not pd.api.types.is_bool_dtype(categories.dtype):
-            # Categorical rows store integer class ids as category labels plus
-            # per-row codes; missing rows have code -1 and stay unlabeled.
-            category_values = categories.to_numpy(dtype=np.int64, copy=False)
-            codes = values.cat.codes.to_numpy(copy=False)
-            user_class_values = np.full(len(values), UNLABELED_CLASS, dtype=np.int64)
-            valid_codes = codes >= 0
-            user_class_values[valid_codes] = category_values[codes[valid_codes]]
-            return user_class_values
-
-    values = pd.to_numeric(values.astype("string"), errors="coerce").fillna(UNLABELED_CLASS)
-    return np.asarray(values, dtype=np.int64)
+    return normalize_class_values(obs[USER_CLASS_COLUMN], column_name=USER_CLASS_COLUMN)

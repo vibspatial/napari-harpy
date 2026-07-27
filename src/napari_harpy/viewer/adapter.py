@@ -688,11 +688,30 @@ class ViewerAdapter(QObject):
     The adapter does not use napari layer metadata as the primary contract.
     Instead, it relies on `LayerBindingRegistry` as the authoritative in-memory
     mapping from napari layers to `SpatialData` element identity.
+
+    Primary Labels presentation
+    ---------------------------
+    A primary Labels layer is a shared presentation surface used by multiple
+    napari-harpy workflows. It has no persistent styling owner or styling
+    history. Each accepted styling operation updates the same live layer, and
+    the most recently applied style is therefore the visible style.
+
+    Loading or activating an existing primary layer is not a styling operation:
+    its current colormap and features are preserved. A primary layer created
+    because none exists starts with napari's default Labels presentation.
+    Object Classification and Spatial Query can subsequently style that shared
+    layer.
+
+    This last-styling-wins contract also applies to asynchronous updates. For
+    example, when classifier predictions finish, Object Classification may
+    restyle the primary layer using its selected Color-by mode even when
+    Spatial Query styled that layer earlier. Viewer styled overlays are
+    separate layers with their own bindings and are unaffected.
     """
 
     # Emitted when the set/order of live primary Labels layers changes.
     # Used by consumers that depend on the annotation-capable labels-layer
-    # lifecycle, currently ObjectClassificationWidget.
+    # lifecycle, including Object Classification and Spatial Query.
     primary_labels_layers_changed = Signal()
     # Emitted after a primary shapes layer has a Harpy binding while loaded in
     # the viewer. Consumers can rely on the binding registry being ready.
@@ -1199,7 +1218,12 @@ class ViewerAdapter(QObject):
         )
 
     def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> LabelsLoadResult:
-        """Load a labels element into napari if it is not already present."""
+        """Load a primary Labels layer without restyling an existing one.
+
+        An existing primary layer is returned with its current colormap and
+        features unchanged. When no primary layer exists, a new layer is
+        created with napari's default Labels presentation.
+        """
         existing_layer = self._get_loaded_labels_layer_for_coordinate_system(sdata, labels_name, coordinate_system)
         if existing_layer is not None:
             return LabelsLoadResult(
