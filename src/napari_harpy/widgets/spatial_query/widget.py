@@ -69,7 +69,7 @@ from napari_harpy.widgets.spatial_query.status_card import (
     _SpatialQueryStatusCardSpec,
     build_spatial_annotation_failure_status_card_spec,
     build_spatial_annotation_outcome_status_card_spec,
-    build_spatial_query_execution_status_card_spec,
+    build_spatial_query_controller_status_card_spec,
     build_spatial_query_status_card_spec,
 )
 from napari_harpy.widgets.spatial_query.viewer_styling import (
@@ -265,8 +265,7 @@ class SpatialQuery(QWidget):
         self._canonical_input_inspection_error: str | None = None
         self._layer_styling_error: str | None = None
         self._active_run_intent: _SpatialQueryRunIntent | None = None
-        self._annotation_outcome_status: _SpatialQueryStatusCardSpec | None = None
-        self._show_execution_status = False
+        self._status_card_spec: _SpatialQueryStatusCardSpec | None = None
         self._controller = SpatialQueryController(
             on_state_changed=self._on_controller_state_changed,
             on_centers_ready=self._on_centers_ready,
@@ -755,7 +754,7 @@ class SpatialQuery(QWidget):
         if self._controller.is_running:
             return
 
-        self._annotation_outcome_status = None
+        self._status_card_spec = None
         sdata = self.selected_spatialdata
         shapes_name = self._annotation_context.saved_shapes_name
         coordinate_system = self.selected_coordinate_system
@@ -791,7 +790,7 @@ class SpatialQuery(QWidget):
         except (KeyError, TypeError, ValueError) as error:
             self._canonical_cache_report = None
             self._canonical_input_inspection_error = str(error)
-            self._show_execution_status = False
+            self._status_card_spec = None
             self._refresh_controls_and_status()
             return
 
@@ -808,7 +807,11 @@ class SpatialQuery(QWidget):
             annotation_action=mutation_resolution.action,
             annotation_value=mutation_resolution.value,
         )
-        self._show_execution_status = True
+        self._status_card_spec = build_spatial_query_controller_status_card_spec(
+            message="Starting spatial query.",
+            kind="info",
+            is_running=True,
+        )
         operation_accepted = self._controller.start_spatial_query(
             sdata,
             report,
@@ -819,7 +822,7 @@ class SpatialQuery(QWidget):
             return
 
         self._active_run_intent = None
-        self._show_execution_status = False
+        self._status_card_spec = None
         self._refresh_controls_and_status()
 
     def _on_centers_ready(self, result: CanonicalCentersResult) -> None:
@@ -883,12 +886,12 @@ class SpatialQuery(QWidget):
                 raise RuntimeError("Spatial annotation Apply returned an inconsistent mutation result.")
         except Exception as error:  # noqa: BLE001 - Qt callback boundary must report domain failures.
             message = str(error).strip() or f"{type(error).__name__} while applying the annotation."
-            self._annotation_outcome_status = build_spatial_annotation_failure_status_card_spec(message)
+            self._status_card_spec = build_spatial_annotation_failure_status_card_spec(message)
             self._refresh_controls_and_status()
             return
 
         if not apply_result.annotation_changed:
-            self._annotation_outcome_status = build_spatial_annotation_outcome_status_card_spec(summary)
+            self._status_card_spec = build_spatial_annotation_outcome_status_card_spec(summary)
             self._refresh_controls_and_status()
             return
 
@@ -919,7 +922,7 @@ class SpatialQuery(QWidget):
 
         self._layer_styling_error = None
         self._apply_existing_column_styling()
-        self._annotation_outcome_status = build_spatial_annotation_outcome_status_card_spec(
+        self._status_card_spec = build_spatial_annotation_outcome_status_card_spec(
             summary,
             layer_styling_error=self._layer_styling_error,
         )
@@ -953,11 +956,24 @@ class SpatialQuery(QWidget):
         controls and status after applying its configuration change.
         """
         self._active_run_intent = None
-        self._annotation_outcome_status = None
-        self._show_execution_status = False
+        self._status_card_spec = None
         self._controller.cancel_active_operation()
 
     def _on_controller_state_changed(self) -> None:
+        status_spec = self._status_card_spec
+        if status_spec is None:
+            if self._controller.is_running:
+                raise RuntimeError("A running Spatial Query operation must expose execution status.")
+        elif status_spec.source == "controller":
+            # The controller emits state changes while the worker is active and
+            # again after `finished` clears it. Rebuild its card so Running
+            # becomes Complete or Failed. An annotation-outcome card skips this
+            # branch because `finished` must not overwrite the final Apply result.
+            self._status_card_spec = build_spatial_query_controller_status_card_spec(
+                message=self._controller.status_message,
+                kind=self._controller.status_kind,
+                is_running=self._controller.is_running,
+            )
         if not self._controller.is_running:
             self._active_run_intent = None
         self._refresh_controls_and_status()
@@ -1269,55 +1285,24 @@ class SpatialQuery(QWidget):
             and not self._controller.is_running
         )
 
-        status_spec = self._resolve_status_card_spec(
-            column_resolution,
-            mutation_resolution,
-        )
+        status_spec = self._status_card_spec
+        if status_spec is None:
+            status_spec = build_spatial_query_status_card_spec(
+                has_spatialdata=self.selected_spatialdata is not None,
+                coordinate_system=self.selected_coordinate_system,
+                saved_shapes_name=self._annotation_context.saved_shapes_name,
+                has_unsaved_shapes_changes=self._annotation_context.has_unsaved_shapes_changes,
+                labels_name=self.selected_labels_name,
+                table_name=self.selected_table_name,
+                cache_report=self._canonical_cache_report,
+                canonical_input_inspection_error=self._canonical_input_inspection_error,
+                annotation_column_error=column_resolution.error,
+                annotation_column_description=column_resolution.description,
+                annotation_mutation_error=mutation_resolution.error if column_resolution.is_ready else None,
+                annotation_mutation_description=mutation_resolution.description,
+                layer_styling_error=self._layer_styling_error,
+            )
         self._apply_status_card_spec(self.status_label, status_spec)
-
-    def _resolve_status_card_spec(
-        self,
-        column_resolution: _AnnotationColumnResolution,
-        mutation_resolution: _AnnotationMutationResolution,
-    ) -> _SpatialQueryStatusCardSpec:
-        """Return the highest-priority status card for the current widget state."""
-        if self._controller.is_running:
-            if not self._show_execution_status:
-                raise RuntimeError("A running Spatial Query operation must expose execution status.")
-            return build_spatial_query_execution_status_card_spec(
-                message=self._controller.status_message,
-                kind=self._controller.status_kind,
-                is_running=True,
-            )
-
-        if self._annotation_outcome_status is not None:
-            return self._annotation_outcome_status
-
-        # An accepted Run can finish without reaching annotation Apply, for
-        # example when no centroids match or a worker fails. Preserve that
-        # final controller message instead of returning to readiness status.
-        if self._show_execution_status:
-            return build_spatial_query_execution_status_card_spec(
-                message=self._controller.status_message,
-                kind=self._controller.status_kind,
-                is_running=False,
-            )
-
-        return build_spatial_query_status_card_spec(
-            has_spatialdata=self.selected_spatialdata is not None,
-            coordinate_system=self.selected_coordinate_system,
-            saved_shapes_name=self._annotation_context.saved_shapes_name,
-            has_unsaved_shapes_changes=self._annotation_context.has_unsaved_shapes_changes,
-            labels_name=self.selected_labels_name,
-            table_name=self.selected_table_name,
-            cache_report=self._canonical_cache_report,
-            canonical_input_inspection_error=self._canonical_input_inspection_error,
-            annotation_column_error=column_resolution.error,
-            annotation_column_description=column_resolution.description,
-            annotation_mutation_error=mutation_resolution.error if column_resolution.is_ready else None,
-            annotation_mutation_description=mutation_resolution.description,
-            layer_styling_error=self._layer_styling_error,
-        )
 
     def _set_column_control_visibility(self) -> None:
         existing = self.selected_column_mode == "existing"

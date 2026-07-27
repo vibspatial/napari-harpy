@@ -91,7 +91,8 @@ class CanonicalCenterQueryResult:
     ``napari_harpy.core.spatial_query.annotation`` later passes this result to
     ``_require_current_query_provenance()``, which compares both against the
     current cache. This prevents an old query from annotating rows after centers
-    were rebuilt or otherwise changed while the result was awaiting review.
+    were rebuilt or otherwise changed before the result reached annotation
+    Apply.
     Keeping the existing result object avoids duplicating provenance fields or
     copying its center array.
     """

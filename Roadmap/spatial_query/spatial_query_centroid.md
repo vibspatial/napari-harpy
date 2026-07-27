@@ -7131,6 +7131,8 @@ this handoff.
 
 ### Slice 7b: One-step spatial annotation apply and publication
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 This slice turns the Slice 7a calculate-query result into one user-facing

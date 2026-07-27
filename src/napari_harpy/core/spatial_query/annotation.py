@@ -48,7 +48,7 @@ _OBJECT_CLASSIFICATION_COLUMNS = frozenset((USER_CLASS_COLUMN, PRED_CLASS_COLUMN
 
 
 class SpatialAnnotationColumnChangedError(ValueError):
-    """The reviewed column changed and its summary must be refreshed."""
+    """The prepared annotation column changed before atomic Apply."""
 
 
 class SpatialAnnotationQueryOutdatedError(ValueError):
@@ -57,7 +57,7 @@ class SpatialAnnotationQueryOutdatedError(ValueError):
 
 @dataclass(frozen=True)
 class SpatialAnnotationPreparation:
-    """Immutable table-row and target-column snapshot prepared for review."""
+    """Immutable table-row and target-column snapshot prepared for Apply."""
 
     query_result: CanonicalCenterQueryResult
     column_name: str
@@ -103,7 +103,7 @@ class SpatialAnnotationPreparation:
 
 @dataclass(frozen=True)
 class SpatialAnnotationSummary:
-    """Reviewed effect of setting or removing one annotation value.
+    """Exact effect of setting or removing one annotation value.
 
     Parameters
     ----------
@@ -114,7 +114,7 @@ class SpatialAnnotationSummary:
         stored, and the strings ``"None"`` and ``"nan"`` remain ordinary
         annotation categories.
     matched_count
-        Total number of matched rows included in the review.
+        Total number of matched rows included in the operation.
     current_missing_count
         Number of matched rows whose current annotation is missing.
     current_equal_count
@@ -299,7 +299,7 @@ def apply_spatial_annotation(
     preparation: SpatialAnnotationPreparation,
     expected_summary: SpatialAnnotationSummary,
 ) -> SpatialAnnotationApplyResult:
-    """Revalidate and atomically apply one reviewed annotation mutation.
+    """Revalidate and atomically apply one prepared annotation mutation.
 
     Parameters
     ----------
@@ -308,16 +308,17 @@ def apply_spatial_annotation(
         cache.
     preparation
         Immutable row and target-column snapshot created before the annotation
-        was reviewed.
+        was applied.
     expected_summary
-        Exact Set or Remove summary presented for review. The annotation value
-        lives on this summary so the reviewed value and counts cannot disagree.
+        Exact Set or Remove summary calculated from ``preparation``. The
+        annotation value lives on this summary so its value and counts cannot
+        disagree.
         Apply first verifies that the live binding, cache, centers, and selected
         column values still match ``preparation``. It then recalculates the
         summary from those accepted values and requires it to equal
         ``expected_summary`` before mutating the table. This final comparison
-        protects the review contract; live table changes are handled by the
-        preceding freshness validation.
+        protects the prepared consistency contract; live table changes are
+        handled by the preceding freshness validation.
 
     Returns
     -------
@@ -341,7 +342,7 @@ def apply_spatial_annotation(
         )
         if current_value_kind != preparation.value_kind:
             raise SpatialAnnotationColumnChangedError(
-                "The annotation column value kind changed while the annotation was being reviewed."
+                "The annotation column value kind changed before the annotation was applied."
             )
         _require_unchanged_existing_column(preparation, current_column)
     else:
@@ -510,13 +511,13 @@ def _require_current_query_provenance(
     Otherwise, raise ``SpatialAnnotationQueryOutdatedError`` and require a new
     query.
 
-    This is necessary because the query result is calculated before the user
-    reviews and confirms the annotation. While that result is pending, another
-    operation can reload or replace the table, change its row-to-instance
-    binding, or rebuild its canonical-center cache. Applying the old matching
-    instance IDs after such a change could annotate rows using a geometric
-    decision made from different centers. Requiring the complete provenance to
-    remain current prevents that stale-result mutation.
+    This is necessary because the query result is calculated asynchronously
+    before annotation Apply. While that result is pending, another operation
+    can reload or replace the table, change its row-to-instance binding, or
+    rebuild its canonical-center cache. Applying the old matching instance IDs
+    after such a change could annotate rows using a geometric decision made
+    from different centers. Requiring the complete provenance to remain current
+    prevents that stale-result mutation.
 
     This validation reads only table state and the in-memory canonical-center
     cache. It does not read labels pixels or recalculate centers. Shapes and
@@ -573,14 +574,12 @@ def _require_unchanged_existing_column(
     prepared_categories = tuple(prepared_values.cat.categories)
     if current_categories != prepared_categories or current_column.cat.ordered != prepared_values.cat.ordered:
         raise SpatialAnnotationColumnChangedError(
-            "The annotation column categories changed while the annotation was being reviewed."
+            "The annotation column categories changed before the annotation was applied."
         )
     current_values = current_column.iloc[preparation.row_positions].reset_index(drop=True)
     prepared_values = prepared_values.reset_index(drop=True)
     if not current_values.equals(prepared_values):
-        raise SpatialAnnotationColumnChangedError(
-            "The annotation values changed while the annotation was being reviewed."
-        )
+        raise SpatialAnnotationColumnChangedError("The annotation values changed before the annotation was applied.")
 
 
 def _build_annotation_replacement(

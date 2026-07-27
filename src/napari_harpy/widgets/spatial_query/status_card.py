@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from napari_harpy.core.spatial_query import (
     CanonicalCacheReport,
@@ -18,25 +19,30 @@ _CENTER_CALCULATION_TOOLTIP = (
     "Centers will be calculated for the selected labels element before the spatial query runs."
 )
 
+type _StatusCardSource = Literal["configuration", "controller", "annotation_outcome"]
+
 
 @dataclass(frozen=True)
 class _SpatialQueryStatusCardSpec:
     title: str
     lines: tuple[str, ...]
     kind: StatusCardKind
+    source: _StatusCardSource = "configuration"
     tooltip_message: str | None = None
 
     def __post_init__(self) -> None:
+        if self.source not in ("configuration", "controller", "annotation_outcome"):
+            raise ValueError(f"Unsupported Spatial Query status-card source: {self.source!r}.")
         validate_status_card_kind(self.kind)
 
 
-def build_spatial_query_execution_status_card_spec(
+def build_spatial_query_controller_status_card_spec(
     *,
     message: str,
     kind: StatusCardKind,
     is_running: bool,
 ) -> _SpatialQueryStatusCardSpec:
-    """Build the temporary execution outcome shown by the unified status card."""
+    """Build the current or final controller-owned status card."""
     if not isinstance(message, str) or not message:
         raise ValueError("Spatial Query execution status requires a non-empty message.")
     if is_running:
@@ -49,6 +55,7 @@ def build_spatial_query_execution_status_card_spec(
         title=title,
         lines=(message,),
         kind=kind,
+        source="controller",
     )
 
 
@@ -77,6 +84,7 @@ def build_spatial_annotation_outcome_status_card_spec(
             title="No Annotation Changes",
             lines=lines,
             kind="info",
+            source="annotation_outcome",
         )
 
     if summary.is_removal:
@@ -97,6 +105,7 @@ def build_spatial_annotation_outcome_status_card_spec(
         title="Annotation Applied",
         lines=lines,
         kind="warning" if layer_styling_error is not None else "success",
+        source="annotation_outcome",
     )
 
 
@@ -110,6 +119,7 @@ def build_spatial_annotation_failure_status_card_spec(
         title="Annotation Failed",
         lines=(error, "Review the current annotation inputs and apply again."),
         kind="error",
+        source="annotation_outcome",
     )
 
 
