@@ -7428,13 +7428,45 @@ validate current table binding and Object Classification state
         ↓
 refresh user-class controls and full Labels styling
         ↓
-mark the classifier stale
+mark the classifier stale and invalidate any pending or active classifier work
         ↓
 schedule retraining only when Auto-train is enabled
 ```
 
+An accepted external `user_class` change invalidates the inputs captured by
+every classifier job that started before that change. Before the event handler
+completes, any pending debounce request or active classifier worker based on
+those old inputs must therefore be invalidated so that a late worker result
+cannot write stale predictions or mark the classifier up to date.
+
+The classifier stale boundary should provide this guarantee directly:
+
+```text
+accepted external user_class change
+    ↓
+invalidate pending and active classifier work
+    ↓
+mark classifier stale
+    ├── Auto-train disabled
+    │      → schedule no replacement
+    │      → remain stale
+    │
+    └── Auto-train enabled
+           → schedule exactly one replacement job
+           → replacement captures the updated user_class state
+```
+
+Strengthen `ClassifierController.mark_dirty()` so marking classifier inputs
+stale also invalidates pending and active asynchronous jobs through the
+controller's existing job-invalidation boundary. This makes the method's
+semantics match its purpose for both Spatial Query annotations and the
+existing Object Classification annotation path. A cancelled worker that
+returns late must fail the existing job-identity acceptance guard.
+
 If current table validation fails:
 
+- invalidate classifier work captured from the previously accepted table
+  state;
 - preserve the selected Labels layer;
 - apply the existing neutral invalid-table styling;
 - show the existing table-binding error;
@@ -7457,15 +7489,21 @@ single-instance row-scoped styling optimization.
 - classifier invalidation and conditional Auto-train scheduling;
 - source/path/identity guards and feedback-loop prevention;
 - focused current/other table, current/other SpatialData, missing palette path,
-  invalid table, Auto-train on/off, own-source, and no-republication tests.
+  invalid table, Auto-train on/off, active-worker invalidation with Auto-train
+  on and off, own-source, and no-republication tests.
 
 #### Exit criteria
 
 - an effective current-table Spatial Query `user_class` Apply refreshes Object
   Classification without direct widget coupling;
-- valid external changes always mark the classifier stale;
+- valid external changes always invalidate older classifier work and mark the
+  classifier stale;
+- a classifier result captured before the annotation change cannot write
+  predictions or restore the up-to-date state afterward;
 - Auto-train schedules exactly once only when enabled and the refreshed table
   remains valid;
+- with Auto-train disabled, no replacement job is scheduled and the classifier
+  remains stale;
 - palette-only or unrelated-column events do not invalidate the classifier;
 - other datasets and tables are ignored;
 - Object Classification's own annotation event is not handled twice;
