@@ -14,6 +14,7 @@ from napari_harpy._app_state import (
     CoordinateSystemChangeRequest,
     HarpyAppState,
     ShapesElementWrittenEvent,
+    TableDirtyStateChangedEvent,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
@@ -186,6 +187,51 @@ def test_harpy_app_state_records_component_tokens_and_emits_one_event(qtbot, sda
     state.acknowledge_table_write(snapshot, persisted_paths=paths)
 
     assert state.is_table_dirty(sdata_blobs, "table") is False
+
+
+def test_harpy_app_state_emits_table_wide_dirty_transitions(sdata_blobs) -> None:
+    state = HarpyAppState()
+    path = TableComponentPath("obs", ("user_class",))
+    event = TableStateChangedEvent(
+        sdata=sdata_blobs,
+        table_name="table",
+        paths=frozenset({path}),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source="test",
+    )
+    dirty_events: list[object] = []
+    state.table_dirty_state_changed.connect(dirty_events.append)
+
+    state.record_table_mutation(event)
+    snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    # Replacing the path token leaves the table-wide dirty boolean unchanged.
+    state.record_table_mutation(event)
+    state.acknowledge_table_write(snapshot, persisted_paths=frozenset({path}))
+
+    assert dirty_events == [
+        TableDirtyStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            is_dirty=True,
+        )
+    ]
+
+    current_snapshot = state.snapshot_table_dirty_state(sdata_blobs, "table")
+    state.acknowledge_table_write(current_snapshot, persisted_paths=frozenset({path}))
+
+    assert dirty_events == [
+        TableDirtyStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            is_dirty=True,
+        ),
+        TableDirtyStateChangedEvent(
+            sdata=sdata_blobs,
+            table_name="table",
+            is_dirty=False,
+        ),
+    ]
 
 
 def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> None:

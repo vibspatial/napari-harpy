@@ -89,7 +89,7 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
     ClassStateError,
     ViewerStylingController,
 )
-from napari_harpy.widgets.persistence.controller import PersistenceController
+from napari_harpy.widgets.persistence.controls import TablePersistenceControls
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
@@ -133,8 +133,6 @@ _INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QSpinBox"
 _TABLE_WIDE_TRAINING_SCOPE_LABEL = "All eligible annotated rows in table"
 _TABLE_WIDE_PREDICTION_SCOPE_LABEL = "All eligible rows in table"
 _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected labels element only"
-_WRITE_TABLE_STATE_BUTTON_TEXT = "Write Table State"
-_RELOAD_TABLE_STATE_BUTTON_TEXT = "Reload Table State"
 _SPATIAL_QUERY_ANNOTATION_SOURCE = "spatial_query_annotation"
 _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
@@ -192,7 +190,15 @@ class ObjectClassificationWidget(QWidget):
         self._viewer_styling_controller = ViewerStylingController(
             self._app_state.viewer_adapter,
         )
-        self._persistence_controller = PersistenceController(self._app_state)
+        self.persistence_controls = TablePersistenceControls(
+            self._app_state,
+            write_content_description="annotations, predictions, and classifier metadata",
+            parent=self,
+        )
+        # Reload cannot be performed by the reusable controls directly:
+        # Object Classification must resolve dirty state and freeze classifier
+        # work before the table is replaced.
+        self.persistence_controls.reload_requested.connect(self._reload_from_zarr)
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._label_options: list[SpatialDataLabelsOption] = []
@@ -324,11 +330,6 @@ class ObjectClassificationWidget(QWidget):
         retrain_action_layout = QHBoxLayout(self.retrain_action_row)
         retrain_action_layout.setContentsMargins(0, 0, 0, 0)
         retrain_action_layout.setSpacing(8)
-        self.persistence_action_row = QWidget()
-        self.persistence_action_row.setObjectName("persistence_action_row")
-        persistence_action_layout = QHBoxLayout(self.persistence_action_row)
-        persistence_action_layout.setContentsMargins(0, 0, 0, 0)
-        persistence_action_layout.setSpacing(8)
         self.auto_train_checkbox = QCheckBox("Auto-train classifier")
         self.auto_train_checkbox.setObjectName("auto_train_checkbox")
         self.auto_train_checkbox.setChecked(False)
@@ -352,22 +353,6 @@ class ObjectClassificationWidget(QWidget):
         self.export_classifier_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.export_classifier_button.setMinimumHeight(28)
         self.export_classifier_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-
-        self.sync_button = QPushButton(_WRITE_TABLE_STATE_BUTTON_TEXT)
-        self.sync_button.setObjectName("sync_to_zarr_button")
-        self.sync_button.clicked.connect(self._write_to_zarr)
-        self.sync_button.setEnabled(False)
-        self.sync_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.sync_button.setMinimumHeight(28)
-        self.sync_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
-
-        self.reload_button = QPushButton(_RELOAD_TABLE_STATE_BUTTON_TEXT)
-        self.reload_button.setObjectName("reload_from_zarr_button")
-        self.reload_button.clicked.connect(self._reload_from_zarr)
-        self.reload_button.setEnabled(False)
-        self.reload_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.reload_button.setMinimumHeight(28)
-        self.reload_button.setStyleSheet(_ACTION_BUTTON_STYLESHEET)
 
         self.warning_status = QLabel()
         self.warning_status.setObjectName("warning_status")
@@ -401,8 +386,6 @@ class ObjectClassificationWidget(QWidget):
         class_editor_layout.addWidget(self.class_action_row)
         retrain_action_layout.addWidget(self.retrain_button, 1)
         retrain_action_layout.addWidget(self.export_classifier_button, 1)
-        persistence_action_layout.addWidget(self.sync_button, 1)
-        persistence_action_layout.addWidget(self.reload_button, 1)
         self._annotation_shortcuts = self._create_annotation_shortcuts()
 
         self.annotation_feedback = QLabel()
@@ -420,11 +403,6 @@ class ObjectClassificationWidget(QWidget):
         self.classifier_preparation_status.setWordWrap(True)
         self.classifier_preparation_status.hide()
 
-        self.persistence_feedback = QLabel()
-        self.persistence_feedback.setObjectName("persistence_feedback")
-        self.persistence_feedback.setWordWrap(True)
-        self.persistence_feedback.hide()
-
         selector_layout.addRow(self._create_form_label("Coordinate system"), self.coordinate_system_combo)
         selector_layout.addRow(self._create_form_label("Labels element"), self.segmentation_combo)
         selector_layout.addRow(self._create_form_label("Table"), self.table_combo)
@@ -440,11 +418,10 @@ class ObjectClassificationWidget(QWidget):
         content_layout.addWidget(self.auto_train_checkbox)
         content_layout.addWidget(self.retrain_action_row)
         content_layout.addWidget(self.classifier_preparation_status)
-        content_layout.addWidget(self.persistence_action_row)
+        content_layout.addWidget(self.persistence_controls)
         content_layout.addWidget(self.selection_status)
         content_layout.addWidget(self.annotation_feedback)
         content_layout.addWidget(self.classifier_feedback)
-        content_layout.addWidget(self.persistence_feedback)
         content_layout.addWidget(self.warning_status)
         content_layout.addStretch(1)
 
@@ -584,14 +561,6 @@ class ObjectClassificationWidget(QWidget):
         if event.sdata is not self.selected_spatialdata:
             return
 
-        # The Write Table State button represents the shared dirty state of the
-        # complete selected table. It must therefore react to every selected-
-        # table event published through HarpyAppState—regardless of which
-        # napari-harpy widget produced it or whether it changed .obs, .obsm, or
-        # .uns. Refresh before the domain-specific filters below can return.
-        if event.table_name == self.selected_table_name:
-            self._update_persistence_controls()
-
         if event.source == _SPATIAL_QUERY_ANNOTATION_SOURCE:
             self._consume_spatial_query_annotation(event)
             return
@@ -606,7 +575,7 @@ class ObjectClassificationWidget(QWidget):
         previous_table_name = self.selected_table_name
         previous_table_names = tuple(self._table_names)
         previous_feature_key = self.selected_feature_key
-        self._set_persistence_feedback("")
+        self.persistence_controls.clear_feedback()
         # Prefer the event table only when the widget had no table context yet;
         # otherwise a newly created table must not steal an existing selection.
         preferred_table_name = event.table_name if previous_table_name is None and not previous_table_names else None
@@ -735,7 +704,7 @@ class ObjectClassificationWidget(QWidget):
         self._apply_status_card_spec(self.classifier_preparation_status, None)
         self._set_annotation_feedback("")
         self._apply_status_card_spec(self.classifier_feedback, None)
-        self._set_persistence_feedback("")
+        self.persistence_controls.clear_feedback()
 
     def _on_primary_labels_layers_changed(self) -> None:
         if self._is_preparing_labels_layer or self._is_handling_coordinate_system_change:
@@ -1142,15 +1111,16 @@ class ObjectClassificationWidget(QWidget):
             effective_table_name,
             self.selected_coordinate_system,
         )
-        self._persistence_controller.bind(
+        self.persistence_controls.bind(
             self.selected_spatialdata,
-            effective_table_name,
+            self.selected_table_name,
             self.selected_segmentation_name,
+            binding_error=self._table_binding_error,
         )
         self._annotation_controller.activate_layer()
         self._refresh_layer_styling()
         self._set_annotation_feedback("")
-        self._set_persistence_feedback("")
+        self.persistence_controls.clear_feedback()
         self._update_selection_status()
 
     def _update_selection_status(self) -> None:
@@ -1163,7 +1133,7 @@ class ObjectClassificationWidget(QWidget):
         self._update_annotation_controls()
         self._update_color_by_controls()
         self._update_classifier_controls()
-        self._update_persistence_controls()
+        self.persistence_controls.refresh()
 
     def _selected_feature_matrix_metadata_state(self) -> FeatureMatrixMetadataState | None:
         if (
@@ -1205,7 +1175,7 @@ class ObjectClassificationWidget(QWidget):
             feature_matrix_metadata_state = self._selected_feature_matrix_metadata_state()
             self._update_feature_matrix_metadata_controls(feature_matrix_metadata_state)
             self._update_classifier_controls()
-            self._update_persistence_controls()
+            self.persistence_controls.refresh()
             set_status_card(
                 self.warning_status,
                 title="Feature Metadata Warning",
@@ -1431,52 +1401,6 @@ class ObjectClassificationWidget(QWidget):
 
         return "label value"
 
-    def _update_persistence_controls(self) -> None:
-        can_sync = self._persistence_controller.can_sync
-        can_write = self._persistence_controller.can_write_table_state
-        can_reload = self._persistence_controller.can_reload
-        self.sync_button.setEnabled(can_write)
-        self.reload_button.setEnabled(can_reload)
-
-        if self.selected_spatialdata is None or self.selected_table_name is None:
-            sync_tooltip = (
-                "Choose a backed SpatialData annotation table to enable writing annotations, predictions, "
-                "and classifier metadata to disk."
-            )
-            reload_tooltip = (
-                "Choose a backed SpatialData annotation table to enable discarding the current in-memory table state "
-                "and reloading the table from disk."
-            )
-        elif self._table_binding_error is not None:
-            sync_tooltip = self._table_binding_error
-            reload_tooltip = self._table_binding_error
-        elif not can_sync or not can_reload:
-            sync_tooltip = "The selected SpatialData dataset is not backed by zarr, so the in-memory table state cannot be written to disk."
-            reload_tooltip = "The selected SpatialData dataset is not backed by zarr, so the table state cannot be reloaded from disk."
-        else:
-            table_store_path = self._persistence_controller.selected_table_store_path
-            destination = self.selected_spatialdata.path if table_store_path is None else table_store_path
-            has_unsynced_table_changes = self._persistence_controller.has_unsynced_table_changes
-            if has_unsynced_table_changes:
-                sync_tooltip = (
-                    f'Write annotations, predictions, and classifier metadata for "{self.selected_table_name}" '
-                    f'to "{destination}".'
-                )
-            else:
-                sync_tooltip = (
-                    f'The selected "{self.selected_table_name}" table has no unsynced local in-memory changes to write.'
-                )
-            reload_tooltip = (
-                f'Discard the current in-memory "{self.selected_table_name}" table state and reload the table from '
-                f'"{destination}".'
-            )
-            if has_unsynced_table_changes:
-                sync_tooltip += " Unsynced local in-memory table changes are present."
-                reload_tooltip += " Unsynced local in-memory table changes would be discarded."
-
-        self._set_tooltip(self.sync_button, sync_tooltip)
-        self._set_tooltip(self.reload_button, reload_tooltip)
-
     def _update_color_by_controls(self) -> None:
         has_table = self.selected_table_name is not None and self._table_binding_error is None
         self.color_by_combo.setEnabled(has_table)
@@ -1597,34 +1521,36 @@ class ObjectClassificationWidget(QWidget):
 
         return "Write predictions only for eligible rows from the selected labels element."
 
-    def _write_to_zarr(self) -> None:
-        # TODO: consider disabling write while classifier retraining is pending
-        # so "Write Table State" always snapshots a settled table state.
-        self._write_selected_table_to_zarr()
-
     def _write_selected_table_to_zarr(
         self,
         *,
         show_feedback: bool = True,
         feedback_message: str | None = None,
     ) -> bool:
-        try:
-            self._persistence_controller.write_table_state()
-        except ValueError as error:
-            self._set_persistence_feedback(str(error), error=True)
+        if not self.persistence_controls.write_table_state(
+            show_feedback=show_feedback,
+            feedback_message=feedback_message,
+        ):
             return False
 
-        if show_feedback:
-            destination = self._selected_table_store_destination()
-            message = feedback_message or (
-                f'Wrote "{self.selected_table_name}" annotations, predictions, and classifier metadata to "{destination}".'
-            )
-            self._set_persistence_feedback(message, error=False)
         self._update_selection_status()
         return True
 
     def _reload_from_zarr(self) -> None:
-        if not self._persistence_controller.has_unsynced_table_changes:
+        """Coordinate a Reload request emitted by the persistence controls.
+
+        This is the Object Classification-specific host boundary for
+        ``TablePersistenceControls.reload_requested``. No table component has
+        been replaced when this method starts.
+
+        A clean table proceeds immediately. A dirty table first resolves the
+        Write / Discard / Cancel decision. Only an accepted transition calls
+        ``_reload_selected_table_from_zarr()``, which freezes classifier work
+        immediately before asking ``PersistenceController`` to replace the
+        live table components, then rebinds and resets Object Classification
+        from the restored state.
+        """
+        if not self.persistence_controls.controller.has_unsynced_table_changes:
             self._reload_selected_table_from_zarr()
             return
 
@@ -1636,7 +1562,7 @@ class ObjectClassificationWidget(QWidget):
             if not self._write_selected_table_to_zarr(show_feedback=False):
                 return
 
-            source = self._selected_table_store_destination()
+            source = self.persistence_controls.selected_table_store_destination()
             self._reload_selected_table_from_zarr(
                 feedback_message=(
                     f'Wrote local table state and reloaded "{self.selected_table_name}" table state from "{source}".'
@@ -1658,17 +1584,17 @@ class ObjectClassificationWidget(QWidget):
             # failures, and similar user-facing problems). A future cleanup may
             # replace this broad catch with a dedicated reload error type once
             # the persistence-layer error boundary is formalized.
-            self._persistence_controller.reload_table_state()
+            self.persistence_controls.controller.reload_table_state()
         except ValueError as error:
-            self._set_persistence_feedback(str(error), error=True)
+            self.persistence_controls.set_feedback(str(error), error=True)
             return False
 
         self._refresh_feature_matrix_keys()
         self._bind_current_selection()
         self._classifier_controller.reset_after_reload()
-        source = self._selected_table_store_destination()
+        source = self.persistence_controls.selected_table_store_destination()
         message = feedback_message or f'Reloaded "{self.selected_table_name}" table state from "{source}".'
-        self._set_persistence_feedback(message, error=False)
+        self.persistence_controls.set_feedback(message)
         return True
 
     def _prompt_dirty_reload_decision(self) -> _DirtyReloadDecision:
@@ -1719,21 +1645,6 @@ class ObjectClassificationWidget(QWidget):
         if result == 2:
             return _DirtyReloadDecision.RELOAD_DISCARD
         return _DirtyReloadDecision.CANCEL
-
-    def _set_persistence_feedback(self, message: str, *, error: bool = False) -> None:
-        if not message:
-            self.persistence_feedback.setText("")
-            self.persistence_feedback.setVisible(False)
-            return
-
-        kind = "error" if error else "success"
-        title = "Persistence Error" if error else "Persistence Updated"
-        set_status_card(
-            self.persistence_feedback,
-            title=title,
-            lines=[message],
-            kind=kind,
-        )
 
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id
@@ -1955,14 +1866,7 @@ class ObjectClassificationWidget(QWidget):
                 source=source,
             )
         )
-        self._set_persistence_feedback("")
-
-    def _selected_table_store_destination(self) -> Path | str | None:
-        table_store_path = self._persistence_controller.selected_table_store_path
-        if table_store_path is None or self.selected_spatialdata is None:
-            return None if self.selected_spatialdata is None else self.selected_spatialdata.path
-
-        return table_store_path
+        self.persistence_controls.clear_feedback()
 
 
 def _sanitize_export_stem(value: str) -> str:

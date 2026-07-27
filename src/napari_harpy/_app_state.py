@@ -79,6 +79,27 @@ class TableStateChangedEvent:
         object.__setattr__(self, "regions", regions)
 
 
+@dataclass(frozen=True)
+class TableDirtyStateChangedEvent:
+    """Report a table-wide dirty transition derived from the shared manifest.
+
+    This event is a synchronization notification for persistence controls. It
+    does not describe an AnnData mutation and is not a second source of dirty
+    truth; consumers that bind later must read the current state from
+    ``HarpyAppState``.
+    """
+
+    sdata: SpatialData
+    table_name: str
+    is_dirty: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.table_name, str) or not self.table_name:
+            raise ValueError("Table dirty-state events require a non-empty table name.")
+        if not isinstance(self.is_dirty, bool):
+            raise ValueError("Table dirty-state events require a boolean dirty state.")
+
+
 class _TableMutationToken:
     """Opaque identity token for one accepted in-memory table mutation."""
 
@@ -251,7 +272,10 @@ class HarpyAppState(QObject):
 
     ``HarpyAppState`` also owns shared session-level dirty-table tracking, so
     in-memory table divergence from disk is modeled as shared viewer state
-    rather than as widget-local state.
+    rather than as widget-local state. ``table_dirty_state_changed`` reports
+    only table-wide dirty-boolean transitions so already-bound persistence
+    controls remain synchronized; it is derived from the manifest and does not
+    replace component-level ``table_state_changed`` events.
 
     A dirty table component can become clean only through one of three
     accepted transitions:
@@ -271,6 +295,7 @@ class HarpyAppState(QObject):
 
     sdata_changed = Signal(object)
     table_state_changed = Signal(object)
+    table_dirty_state_changed = Signal(object)
     shapes_element_written = Signal(object)
     coordinate_system_changed = Signal(object)
 
@@ -416,10 +441,16 @@ class HarpyAppState(QObject):
         if selection_key is None:  # pragma: no cover - event validation makes this unreachable.
             return
 
+        was_dirty = bool(self._dirty_table_tokens.get(selection_key))
         mutation_token = _TableMutationToken()
         manifest = self._dirty_table_tokens.setdefault(selection_key, {})
         for path in event.paths:
             manifest[path] = mutation_token
+        self._emit_table_dirty_transition(
+            event.sdata,
+            event.table_name,
+            was_dirty=was_dirty,
+        )
         self.table_state_changed.emit(event)
 
     def record_persisted_table_change(
@@ -439,12 +470,18 @@ class HarpyAppState(QObject):
         selection_key = self._selection_key(event.sdata, event.table_name)
         if selection_key is None:  # pragma: no cover - event validation makes this unreachable.
             return
+        was_dirty = bool(self._dirty_table_tokens.get(selection_key))
         manifest = self._dirty_table_tokens.get(selection_key)
         if manifest is not None:
             for dirty_path in tuple(manifest):
                 if any(_path_covers(reloaded_path, dirty_path) for reloaded_path in event.paths):
                     del manifest[dirty_path]
             self._drop_empty_manifest(selection_key)
+        self._emit_table_dirty_transition(
+            event.sdata,
+            event.table_name,
+            was_dirty=was_dirty,
+        )
         self.table_state_changed.emit(event)
 
     def is_table_dirty(self, sdata: SpatialData | None, table_name: str | None) -> bool:
@@ -489,6 +526,7 @@ class HarpyAppState(QObject):
         selection_key = self._selection_key(snapshot.sdata, snapshot.table_name)
         if selection_key is None:  # pragma: no cover - snapshot validation makes this unreachable.
             return
+        was_dirty = bool(self._dirty_table_tokens.get(selection_key))
         manifest = self._dirty_table_tokens.get(selection_key)
         if manifest is None:
             return
@@ -499,6 +537,30 @@ class HarpyAppState(QObject):
             if manifest.get(path) is captured_token:
                 del manifest[path]
         self._drop_empty_manifest(selection_key)
+        self._emit_table_dirty_transition(
+            snapshot.sdata,
+            snapshot.table_name,
+            was_dirty=was_dirty,
+        )
+
+    def _emit_table_dirty_transition(
+        self,
+        sdata: SpatialData,
+        table_name: str,
+        *,
+        was_dirty: bool,
+    ) -> None:
+        """Notify bound controls only when the table-wide dirty state changed."""
+        is_dirty = self.is_table_dirty(sdata, table_name)
+        if is_dirty == was_dirty:
+            return
+        self.table_dirty_state_changed.emit(
+            TableDirtyStateChangedEvent(
+                sdata=sdata,
+                table_name=table_name,
+                is_dirty=is_dirty,
+            )
+        )
 
     def _drop_empty_manifest(self, selection_key: tuple[int, str]) -> None:
         if not self._dirty_table_tokens.get(selection_key):

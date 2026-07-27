@@ -218,10 +218,10 @@ _SUCCESS_FEEDBACK_STYLE = STATUS_CARD_PALETTE["success"]
 
 
 def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: str) -> None:
-    assert "Persistence Updated" in widget.persistence_feedback.text()
-    assert expected_message in widget.persistence_feedback.text()
+    assert "Persistence Updated" in widget.persistence_controls.feedback_label.text()
+    assert expected_message in widget.persistence_controls.feedback_label.text()
 
-    stylesheet = widget.persistence_feedback.styleSheet()
+    stylesheet = widget.persistence_controls.feedback_label.styleSheet()
     assert f"color: {_SUCCESS_FEEDBACK_STYLE['text']}" in stylesheet
     assert f"background-color: {_SUCCESS_FEEDBACK_STYLE['background']}" in stylesheet
     assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
@@ -457,7 +457,7 @@ def test_widget_initial_action_rows_fit_current_minimum_width(qtbot) -> None:
     assert widget.scroll_content.sizeHint().width() <= viewport_width
     assert widget.auto_train_checkbox.minimumSizeHint().width() <= available_content_width
     assert widget.retrain_action_row.minimumSizeHint().width() <= available_content_width
-    assert widget.persistence_action_row.minimumSizeHint().width() <= available_content_width
+    assert widget.persistence_controls.action_row.minimumSizeHint().width() <= available_content_width
 
 
 def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialData) -> None:
@@ -545,10 +545,10 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     assert widget.selected_instance_id is None
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.retrain_button)))
     assert widget.retrain_button.text() == "Train Classifier"
-    assert widget.sync_button.text() == "Write Table State"
-    assert widget.reload_button.text() == "Reload Table State"
-    assert not widget.sync_button.isEnabled()
-    assert not widget.reload_button.isEnabled()
+    assert widget.persistence_controls.write_button.text() == "Write Table State"
+    assert widget.persistence_controls.reload_button.text() == "Reload Table State"
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert not widget.persistence_controls.reload_button.isEnabled()
     assert not widget.retrain_button.isEnabled()
     assert len(viewer.layers) == 1
     assert viewer.layers.selection.active is None
@@ -897,8 +897,8 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     assert not widget.color_by_combo.isEnabled()
     assert not widget.class_spinbox.isEnabled()
     assert not widget.retrain_button.isEnabled()
-    assert not widget.sync_button.isEnabled()
-    assert not widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert not widget.persistence_controls.reload_button.isEnabled()
 
 
 def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_neutrally(
@@ -928,7 +928,7 @@ def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_ne
     assert widget._annotation_controller._selected_table_name is None
     assert widget._classifier_controller._selected_table_name is None
     assert widget._viewer_styling_controller._selected_table_name is None
-    assert widget._persistence_controller._selected_table_name is None
+    assert widget.persistence_controls.controller._selected_table_name is None
     assert isinstance(layer.colormap, DirectLabelColormap)
     np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
     np.testing.assert_allclose(layer.colormap.map(5), np.asarray(to_rgba(DEFAULT_NEUTRAL_COLOR), dtype=np.float32))
@@ -941,8 +941,8 @@ def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_ne
     assert not widget.auto_train_checkbox.isEnabled()
     assert not widget.retrain_button.isEnabled()
     assert not widget.export_classifier_button.isEnabled()
-    assert not widget.sync_button.isEnabled()
-    assert not widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert not widget.persistence_controls.reload_button.isEnabled()
     assert widget.warning_status.isHidden()
     pd.testing.assert_frame_equal(table.obs, previous_obs)
     assert table.uns == previous_uns
@@ -1171,8 +1171,8 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
 
     assert widget.register_feature_matrix_button.isEnabled()
     assert widget.retrain_button.isEnabled() is False
-    assert widget._persistence_controller.has_unsynced_table_changes is False
-    assert not widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
+    assert not widget.persistence_controls.write_button.isEnabled()
 
     widget.register_feature_matrix_button.click()
 
@@ -1181,8 +1181,8 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     assert widget.register_feature_matrix_button.isEnabled() is False
     assert widget.retrain_button.isEnabled()
     assert widget.warning_status.isHidden()
-    assert widget._persistence_controller.has_unsynced_table_changes is True
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
     assert mark_dirty_reasons == ["feature matrix metadata registered"]
     assert len(emitted_events) == 1
     assert isinstance(emitted_events[0], TableStateChangedEvent)
@@ -1222,7 +1222,7 @@ def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_ef
     _assert_feature_metadata_warning_card(widget)
     assert "registration failed" in widget.warning_status.text()
     assert widget.register_feature_matrix_button.isEnabled()
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert mark_dirty_reasons == []
 
 
@@ -1259,7 +1259,7 @@ def test_widget_register_feature_matrix_button_ignores_stale_click_after_externa
 
     assert registration_calls == []
     assert mark_dirty_reasons == []
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert widget.register_feature_matrix_button.isEnabled() is False
 
 
@@ -1571,7 +1571,7 @@ def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbo
     widget._classifier_controller.mark_dirty = record_mark_dirty  # type: ignore[method-assign]
 
     assert widget.selected_feature_key is None
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
     table.obsm["features_new"] = np.arange(table.n_obs, dtype=np.float64).reshape(table.n_obs, 1)
     app_state.record_table_mutation(
@@ -1584,7 +1584,7 @@ def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbo
 
     assert widget.feature_matrix_combo.count() == 1
     assert widget.selected_feature_key == "features_new"
-    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert mark_dirty_reasons == []
 
 
@@ -1659,7 +1659,7 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     assert widget._classifier_controller.is_training is False
     assert widget._classifier_controller.is_dirty is True
     assert widget.selected_feature_key == "features_1"
-    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert "overwritten" in widget.classifier_feedback.text()
 
 
@@ -1686,7 +1686,7 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
     ] == previous_items
     assert widget.selected_feature_key == "features_1"
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
 
 def test_widget_ignores_non_feature_matrix_write_events(qtbot, sdata_blobs: SpatialData) -> None:
@@ -1919,7 +1919,7 @@ def test_widget_refreshes_persistence_for_any_selected_table_event(
         lambda *, reason=None: domain_calls.append(f"dirty:{reason}"),
     )
 
-    assert not widget.sync_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
 
     app_state.record_table_mutation(
         TableStateChangedEvent(
@@ -1932,8 +1932,8 @@ def test_widget_refreshes_persistence_for_any_selected_table_event(
         )
     )
 
-    assert widget.sync_button.isEnabled()
-    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert domain_calls == []
 
 
@@ -1953,8 +1953,8 @@ def test_widget_does_not_refresh_persistence_for_unrelated_table_event(
     select_segmentation(widget)
     refresh_calls: list[str] = []
     monkeypatch.setattr(
-        widget,
-        "_update_persistence_controls",
+        widget.persistence_controls,
+        "refresh",
         lambda: refresh_calls.append("refresh"),
     )
 
@@ -1972,7 +1972,7 @@ def test_widget_does_not_refresh_persistence_for_unrelated_table_event(
     )
 
     assert refresh_calls == []
-    assert not widget.sync_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
 
 
 @pytest.mark.parametrize("clean_transition", ["persisted_change", "reload"])
@@ -1999,7 +1999,7 @@ def test_widget_disables_write_when_shared_table_event_cleans_selected_table(
     app_state.record_table_mutation(dirty_event)
     snapshot = app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table")
 
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.write_button.isEnabled()
 
     if clean_transition == "persisted_change":
         app_state.record_persisted_table_change(dirty_event, snapshot)
@@ -2016,7 +2016,7 @@ def test_widget_disables_write_when_shared_table_event_cleans_selected_table(
         )
 
     assert app_state.is_table_dirty(backed_sdata_blobs, "table") is False
-    assert not widget.sync_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
 
 
 def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_selection(
@@ -2050,7 +2050,7 @@ def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_sel
     assert widget.selected_table_name == "table"
     assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
     assert widget.selected_feature_key == "features_1"
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
 
 def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_available(
@@ -2092,7 +2092,7 @@ def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_availabl
     assert _combo_texts(widget.table_combo) == ["new_table"]
     assert widget.selected_table_name == "new_table"
     assert widget.selected_feature_key == "features_new"
-    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert mark_dirty_reasons == []
 
 
@@ -2793,7 +2793,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
 
     assert schedule_calls == []
     assert mark_dirty_reasons == []
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
@@ -2804,7 +2804,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     assert [(call.instance_id, call.class_id) for call in row_scoped_refresh_calls] == [(5, 3)]
     assert call_order == ["row_scoped_refresh", "mark_dirty"]
     assert refresh_calls == []
-    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
 
     widget.auto_train_checkbox.setChecked(True)
     layer.selected_label = 6
@@ -2832,11 +2832,11 @@ def test_widget_disables_sync_for_clean_backed_spatialdata(qtbot, backed_sdata_b
     qtbot.addWidget(widget)
     select_segmentation(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert not widget.sync_button.isEnabled()
-    assert widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert widget.persistence_controls.reload_button.isEnabled()
     assert 'The selected "table" table has no unsynced local in-memory changes to write.' in sync_tooltip
     assert f'Discard the current in-memory "table" table state and reload the table from "{expected_table_path}".' in (
         reload_tooltip
@@ -2857,20 +2857,20 @@ def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sy
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget._persistence_controller.has_unsynced_table_changes is True
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
-    widget.sync_button.click()
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    widget.persistence_controls.write_button.click()
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget._persistence_controller.has_unsynced_table_changes is False
-    assert not widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
+    assert not widget.persistence_controls.write_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." not in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." not in reload_tooltip
 
@@ -2887,14 +2887,14 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     layer.selected_label = 5
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
-    assert widget.sync_button.isEnabled()
-    widget.sync_button.click()
+    assert widget.persistence_controls.write_button.isEnabled()
+    widget.persistence_controls.write_button.click()
 
     reread = read_zarr(backed_sdata_blobs.path)
     mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert not widget.sync_button.isEnabled()
-    assert widget.reload_button.isEnabled()
+    assert not widget.persistence_controls.write_button.isEnabled()
+    assert widget.persistence_controls.reload_button.isEnabled()
     _assert_persistence_success_feedback(
         widget,
         f'Wrote "table" annotations, predictions, and classifier metadata to "{expected_table_path}".',
@@ -2929,20 +2929,20 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
 
     widget.retrain_button.click()
     qtbot.waitUntil(
         lambda: (
-            widget._persistence_controller.has_unsynced_table_changes and table.obs[PRED_CLASS_COLUMN].notna().any()
+            widget.persistence_controls.controller.has_unsynced_table_changes and table.obs[PRED_CLASS_COLUMN].notna().any()
         ),
         timeout=5000,
     )
-    sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
-    reload_tooltip = unescape(widget.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    sync_tooltip = unescape(widget.persistence_controls.write_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
+    reload_tooltip = unescape(widget.persistence_controls.reload_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
-    assert widget._persistence_controller.has_unsynced_table_changes is True
-    assert widget.sync_button.isEnabled()
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.write_button.isEnabled()
     assert "Unsynced local in-memory table changes are present." in sync_tooltip
     assert "Unsynced local in-memory table changes would be discarded." in reload_tooltip
 
@@ -2971,13 +2971,13 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
         lambda: widget_module._DirtyReloadDecision.CANCEL,
     )
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
     reread = read_zarr(backed_sdata_blobs.path)
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is True
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].isna().all()
 
@@ -3002,13 +3002,13 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
         lambda: widget_module._DirtyReloadDecision.WRITE,
     )
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     reread = read_zarr(backed_sdata_blobs.path)
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].tolist() == [3]
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].tolist() == [3]
     _assert_persistence_success_feedback(
@@ -3040,13 +3040,13 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
         lambda: widget_module._DirtyReloadDecision.RELOAD_DISCARD,
     )
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     mask = (table.obs["region"] == "blobs_labels") & (table.obs["instance_id"] == 5)
     reread = read_zarr(backed_sdata_blobs.path)
     disk_mask = (reread["table"].obs["region"] == "blobs_labels") & (reread["table"].obs["instance_id"] == 5)
 
-    assert widget._persistence_controller.has_unsynced_table_changes is False
+    assert widget.persistence_controls.controller.has_unsynced_table_changes is False
     assert table.obs.loc[mask, USER_CLASS_COLUMN].isna().all()
     assert reread["table"].obs.loc[disk_mask, USER_CLASS_COLUMN].isna().all()
     _assert_persistence_success_feedback(widget, f'Reloaded "table" table state from "{expected_table_path}".')
@@ -3073,7 +3073,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
     layer.selected_label = int(table.obs["instance_id"].iloc[-1])
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     mask = (table.obs["region"] == "blobs_labels") & (
         table.obs["instance_id"] == int(table.obs["instance_id"].iloc[-1])
@@ -3111,7 +3111,7 @@ def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, ba
     uns = dict(table.uns)
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     feature_matrix_items = [
         widget.feature_matrix_combo.itemText(index) for index in range(widget.feature_matrix_combo.count())
@@ -3202,7 +3202,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
     }
     _write_disk_table_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    widget.reload_button.click()
+    widget.persistence_controls.reload_button.click()
 
     assert workers[0].quit_called is True
     assert widget._classifier_controller.is_training is False
