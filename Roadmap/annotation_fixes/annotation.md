@@ -111,7 +111,7 @@ labels colormap produced by the existing full-refresh path.
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/viewer_styling.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 ### Behavior Matrix
 
@@ -407,7 +407,7 @@ After Phase 2B, with auto training disabled:
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/widget.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py` if controller callback behavior needs a focused
   test
 
@@ -533,7 +533,7 @@ When unchecked:
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/widget.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 ### State Model
 
@@ -712,7 +712,7 @@ the broad work that Phase 3 is meant to remove:
 
 - `src/napari_harpy/core/annotation.py`
 - `src/napari_harpy/widgets/object_classification/annotation_controller.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_class_palette.py` or a new focused annotation-core test if useful
 
 ### Design Constraints
@@ -922,7 +922,7 @@ It will not remove:
 ### Files
 
 - `src/napari_harpy/widgets/object_classification/viewer_styling.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - Add a focused viewer-styling test file if that keeps tests clearer.
 
 ### Tests
@@ -1032,7 +1032,7 @@ one UI refresh cycle:
 - `src/napari_harpy/widgets/object_classification/widget.py`
 - `src/napari_harpy/widgets/object_classification/controller.py` if a small
   controller-side cache or invalidation hook is clearer
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py` only if controller-side behavior changes
 
 ### Tests
@@ -1273,7 +1273,7 @@ Keep the branching contained and easy to debug:
 - `src/napari_harpy/widgets/object_classification/viewer_styling.py`
 - `src/napari_harpy/widgets/object_classification/annotation_controller.py`
 - `src/napari_harpy/widgets/object_classification/widget.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - Add a focused viewer-styling test file if that keeps tests clearer.
 
 ### Tests
@@ -1401,7 +1401,7 @@ are actually cleared or written.
 
 - `src/napari_harpy/widgets/object_classification/viewer_styling.py`
 - `src/napari_harpy/widgets/object_classification/widget.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_viewer_styling.py`
 
 ### Tests
@@ -1456,7 +1456,7 @@ parenting and an explicit shutdown contract:
 - `src/napari_harpy/widgets/object_classification/controller.py`
 - `src/napari_harpy/widgets/object_classification/widget.py`
 - `tests/test_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 ### Implementation Notes
 
@@ -1698,12 +1698,12 @@ Run focused checks after each phase:
 ```bash
 source .venv/bin/activate
 ruff check src/napari_harpy tests
-pytest -q tests/test_widget.py
+pytest -q tests/test_object_classification_widget.py
 ```
 
 Run broader checks before merging the full annotation-performance set:
 
 ```bash
 source .venv/bin/activate
-pytest -q tests/test_widget.py tests/test_classifier.py tests/test_persistence.py
+pytest -q tests/test_object_classification_widget.py tests/test_classifier.py tests/test_persistence.py
 ```

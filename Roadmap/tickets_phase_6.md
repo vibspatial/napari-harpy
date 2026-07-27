@@ -378,7 +378,7 @@ Lock in the reload semantics with controller-level and widget-level tests.
 ### Suggested files
 
 - `tests/test_persistence.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - possibly new targeted tests for reload helpers
 
 ### Acceptance criteria

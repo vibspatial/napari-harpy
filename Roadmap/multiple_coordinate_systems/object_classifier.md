@@ -223,7 +223,7 @@ Files:
 - optionally `src/napari_harpy/widgets/_object_classification_widget.py` if
   `Train Classifier` is temporarily disabled in this slice
 - `tests/test_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 Expected outcome:
 
@@ -265,7 +265,7 @@ Files:
 - `src/napari_harpy/datasets.py`
 - `tests/test_classifier.py`
 - `tests/conftest.py`
-- optionally `tests/test_widget.py` once widget-level multi-region assertions
+- optionally `tests/test_object_classification_widget.py` once widget-level multi-region assertions
   need the same fixture surface
 
 Expected outcome:
@@ -399,7 +399,7 @@ Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
 - `src/napari_harpy/_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 Expected outcome:
 
@@ -499,7 +499,7 @@ Files:
 - `src/napari_harpy/_classifier.py`
 - `tests/test_classifier.py`
 - `tests/test_persistence.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 Expected outcome:
 
@@ -664,7 +664,7 @@ Files:
 
 - `src/napari_harpy/widgets/_object_classification_widget.py`
 - `src/napari_harpy/_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py`
 
 Expected outcome:
@@ -708,7 +708,7 @@ Scope:
 Files:
 
 - `tests/test_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 - `tests/test_persistence.py`
 
 Expected outcome:
@@ -840,7 +840,7 @@ Files:
 - `src/napari_harpy/widgets/_object_classification_widget.py`
 - `src/napari_harpy/widgets/_object_classification_status_card.py`
 - `src/napari_harpy/_classifier.py`
-- `tests/test_widget.py`
+- `tests/test_object_classification_widget.py`
 
 Expected outcome:
 

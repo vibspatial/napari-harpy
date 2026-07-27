@@ -7390,6 +7390,8 @@ mutation and table-state publication succeed.
 
 ### Slice 7c: Object Classification consumption of Spatial Query annotations
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 This slice implements the deferred cross-widget consumer for effective Spatial
@@ -7510,7 +7512,160 @@ single-instance row-scoped styling optimization.
 - consuming an external event never records another mutation or changes shared
   dirty paths.
 
-### Slice 7d: User-facing annotation status terminology
+### Slice 7d: Shared table dirty-state UI synchronization
+
+#### Responsibility boundary
+
+`HarpyAppState` already owns the authoritative per-viewer dirty-table manifest.
+Dirty state is keyed by `SpatialData` identity and table name, with a distinct
+mutation token for each dirty component path. This shared state is correct
+regardless of which napari-harpy widget mutated the table.
+
+The remaining gap is only UI refresh. Reuse the existing
+`HarpyAppState.table_state_changed` signal rather than adding a second dirty
+state event. Every supported cross-widget table mutation, already-persisted
+change, and reload already publishes this signal after reconciling the shared
+dirty manifest.
+
+The persistence UI does not need a `TableDirtySnapshot`. Snapshots capture
+component mutation tokens so a write can later acknowledge only the state it
+actually persisted. The UI needs only the current table-wide boolean and must
+query it through `PersistenceController.has_unsynced_table_changes`, which
+delegates to `HarpyAppState.is_table_dirty()`.
+
+#### Existing notification contract
+
+```text
+record_table_mutation()
+    → install fresh dirty-component tokens
+    → emit table_state_changed
+
+record_persisted_table_change()
+    → acknowledge only captured tokens that are still current
+    → emit table_state_changed
+
+record_table_reload()
+    → clear only dirty paths restored from storage
+    → emit table_state_changed
+```
+
+When Object Classification receives any of these events, the manifest already
+contains the authoritative post-operation state. It can therefore refresh its
+Write Table State control without interpreting the event source, component
+paths, change kind, or regions.
+
+`acknowledge_table_write()` does not independently publish
+`table_state_changed`. This is already handled for the currently implemented
+Write Table State action:
+
+```text
+Object Classification: Write Table State clicked
+    ↓
+PersistenceController.write_table_state()
+    ↓
+snapshot and write every dirty component path for the selected table
+    ↓
+acknowledge_table_write()
+    → clear only successfully persisted paths whose mutation tokens are current
+    ↓
+return to Object Classification
+    ↓
+_update_selection_status()
+    ↓
+_update_persistence_controls()
+    ↓
+disable Write Table State when the shared table is now clean
+```
+
+The action is generic because it writes all dirty paths captured for the table,
+including paths produced by other napari-harpy widgets; it is not restricted to
+Object Classification annotations or classifier output. Object Classification
+is currently the only widget exposing this generic Write Table State action,
+so its explicit post-write refresh covers the dirty-to-clean transition without
+a second shared event. If another independent widget later gains the same
+generic persistence action, revisit the shared write-completion notification
+at that point.
+
+Mutation-token safety remains unchanged. A stale write acknowledgement cannot
+clear a component that received a newer token while persistence was running.
+The next UI refresh therefore continues to observe the table as dirty.
+
+#### Object Classification consumer
+
+Extend Object Classification's existing `table_state_changed` handler so
+persistence synchronization occurs before source-specific early returns:
+
+```text
+receive TableStateChangedEvent
+    ↓
+validate event type and SpatialData identity
+    ↓
+event belongs to the selected table
+    ↓
+refresh only the persistence controls
+    ↓
+continue with existing source/path-specific handling
+```
+
+The persistence refresh must run for every current-table event, including
+canonical-center `.obsm`/`.uns` writes, Spatial Query annotations to columns
+other than `user_class`, feature-extraction changes, classifier writes,
+already-persisted changes, and reloads. Unrelated datasets and tables are
+ignored.
+
+This general persistence step must not rebind controllers, refresh Labels
+styling, invalidate the classifier, publish another event, or inspect the
+mutation source. After it runs, the existing source-specific branches retain
+their current domain behavior.
+
+The Write Table State control follows this invariant:
+
+```text
+selected table is backed
+and its Object Classification binding is valid
+and HarpyAppState reports the table dirty
+    → enabled
+
+otherwise
+    → disabled
+```
+
+Selection and binding changes continue to refresh persistence controls through
+the existing widget refresh path. Object Classification's own successful
+generic table write continues to disable the control through its existing
+post-write refresh.
+
+Direct table mutation without calling the appropriate `HarpyAppState`
+recording method remains outside the supported cross-widget contract and
+cannot be expected to refresh any widget.
+
+#### Deliverables
+
+- Object Classification's existing table-state handler refreshing persistence
+  controls for every current-dataset/current-table event before domain-specific
+  filtering;
+- no new app-state event, snapshot type, dirty boolean, or duplicated manifest;
+- focused Object Classification tests covering canonical-cache paths,
+  unrelated annotation columns, already-persisted events, reloads, other
+  datasets/tables, and dirty-to-clean button updates;
+- preservation of the existing local post-write control refresh.
+
+#### Exit criteria
+
+- any accepted napari-harpy mutation of the selected table enables Write Table
+  State immediately when the table is backed and its binding is valid;
+- successful persistence or reload disables Write Table State immediately only
+  when no newer or remaining dirty components exist;
+- a stale write acknowledgement cannot disable the control after a newer
+  mutation;
+- cross-widget persistence UI synchronization uses `table_state_changed` and
+  the authoritative shared manifest rather than a second notification system;
+- persistence readiness does not depend on table-event source, component type,
+  or domain-specific widget consumption;
+- the general persistence refresh introduces no duplicate mutation records,
+  styling refreshes, classifier invalidations, or cross-widget imports.
+
+### Slice 7e: User-facing annotation status terminology
 
 #### Responsibility boundary
 

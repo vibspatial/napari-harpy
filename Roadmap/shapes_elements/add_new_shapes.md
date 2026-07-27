@@ -1410,13 +1410,13 @@ Implemented in:
 - `src/napari_harpy/widgets/object_classification/widget.py`;
 - `src/napari_harpy/widgets/viewer/widget.py`;
 - `tests/test_app_state.py`;
-- `tests/test_widget.py`;
+- `tests/test_object_classification_widget.py`;
 - `tests/test_viewer_widget.py`.
 
 Verified with:
 
-- `.venv/bin/pytest tests/test_app_state.py tests/test_widget.py tests/test_viewer_widget.py -q`;
-- `.venv/bin/ruff check src/napari_harpy/_app_state.py src/napari_harpy/widgets/object_classification/widget.py src/napari_harpy/widgets/viewer/widget.py tests/test_app_state.py tests/test_widget.py tests/test_viewer_widget.py`.
+- `.venv/bin/pytest tests/test_app_state.py tests/test_object_classification_widget.py tests/test_viewer_widget.py -q`;
+- `.venv/bin/ruff check src/napari_harpy/_app_state.py src/napari_harpy/widgets/object_classification/widget.py src/napari_harpy/widgets/viewer/widget.py tests/test_app_state.py tests/test_object_classification_widget.py tests/test_viewer_widget.py`.
 
 Purpose:
 

@@ -187,8 +187,8 @@ Add focused tests around selection and styling:
 
 Useful verification commands:
 
-- `.venv/bin/pytest tests/test_viewer_styling.py tests/test_widget.py`
-- `.venv/bin/ruff check src/napari_harpy/widgets/object_classification tests/test_viewer_styling.py tests/test_widget.py`
+- `.venv/bin/pytest tests/test_viewer_styling.py tests/test_object_classification_widget.py`
+- `.venv/bin/ruff check src/napari_harpy/widgets/object_classification tests/test_viewer_styling.py tests/test_object_classification_widget.py`
 
 ## Non-Goals
 
