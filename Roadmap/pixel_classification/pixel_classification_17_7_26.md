@@ -1825,13 +1825,47 @@ Deliver:
 - independent image and scale selection per workflow target;
 - shared channel schema resolved by unique channel names;
 - shared class schema across all annotation layers;
-- deterministic class- and target-balanced sampling;
+- deterministic pooled sampling with one global 50,000-candidate cap per class,
+  allocated fairly across contributing targets as defined below;
 - one pooled Random Forest;
 - one active-target prediction at a time;
 - training summary showing contributed pixels by target and class;
 - pooled classifier provenance listing every contributing workflow ID and
   annotation revision;
 - compatibility checks for channel schema and raw-intensity assumptions.
+
+The 50,000-candidate limit applies **per class across the complete training
+pool**, not per target and class. For each class:
+
+1. count its annotated pixels independently in every selected target without
+   reading marker intensities;
+2. exclude targets with zero annotated pixels for that class from its allocation
+   calculation;
+3. set the class budget to the smaller of 50,000 and the class's total annotated
+   count across all targets;
+4. divide that budget as evenly as possible among contributing targets;
+5. when a target has fewer annotated pixels than its provisional allocation,
+   use all of them and redistribute the unused allocation evenly among targets
+   that still have remaining capacity;
+6. assign any indivisible integer remainder in stable workflow-ID order;
+7. sample the resulting allocation without replacement within each target,
+   using the same bounded annotation-first selection contract as single-target
+   training;
+8. read only the selected marker rows and exclude non-finite rows without
+   replacement sampling.
+
+This is a deterministic max-min-fair allocation. It allows small targets to
+contribute all their examples, prevents a densely annotated target from
+dominating while other targets have capacity, and keeps the total training
+matrix bounded by `50,000 * number_of_classes` regardless of target count. Do
+not oversample small targets or duplicate rows. Continue to use
+`class_weight="balanced_subsample"` for remaining class imbalance; the first
+pooled implementation does not add separate per-target estimator weights.
+
+Canonicalize target processing by stable workflow ID before allocation and
+sampling so changing target-card order cannot change the result. A one-target
+pooled request must delegate to the same sampling path and produce the same
+candidate rows as single-target training.
 
 Targets may have different `(y, x)` shapes and different scale-key strings.
 Compare their dimensionless relative spacing and report mismatches, but do not
@@ -1848,8 +1882,13 @@ Acceptance criteria:
   workflow manifest; prediction-only workflows are never pooled training
   inputs;
 - channel order and class meaning are identical across targets;
-- sampling is deterministic and its per-target, per-class contribution is
-  visible;
+- each class contributes at most 50,000 candidates across the complete pool,
+  independent of the number of selected targets;
+- per-target, per-class allocations follow the deterministic max-min-fair rule,
+  redistribute unused capacity, and do not oversample or duplicate rows;
+- changing target-card order does not change allocations or sampled candidates;
+- the training summary reports annotated, allocated, sampled,
+  non-finite-excluded, and used counts for every target and class;
 - one invalid target fails validation clearly and cannot silently disappear
   from training;
 - widget and future headless pooled training use the same core function.
@@ -2170,8 +2209,12 @@ Core tests:
 - rejection of normal standalone persisted prediction Labels without a
   prediction-only workflow record;
 - one-target pooled-core equivalence with the single-target path;
-- deterministic per-target, per-class pooled sampling and contribution
-  summaries;
+- deterministic global per-class pooled caps, max-min-fair target allocation,
+  unused-capacity redistribution, and integer-remainder handling;
+- pooled sampling invariance to target-card order, without replacement or
+  duplicated rows;
+- annotated, allocated, sampled, non-finite-excluded, and used contribution
+  summaries for every target and class;
 - pooled validation failure when any requested target is invalid;
 
 Widget tests:
