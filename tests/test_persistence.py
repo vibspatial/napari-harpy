@@ -513,6 +513,21 @@ def test_persistence_controller_replaces_selected_table_with_reloaded_snapshot(
     assert backed_sdata_blobs.locate_element(reloaded_table) == ["tables/table"]
 
 
+def test_persistence_controller_captures_exact_reload_request(
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    controller = PersistenceController()
+    controller.bind(backed_sdata_blobs, "table", "blobs_labels")
+
+    request = controller.capture_table_reload_request(source="object_classification")
+
+    assert request.sdata is backed_sdata_blobs
+    assert request.table_name == "table"
+    assert request.region_name == "blobs_labels"
+    assert request.source == "object_classification"
+    assert request.paths
+
+
 def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs: SpatialData) -> None:
     app_state = HarpyAppState()
     controller = PersistenceController(app_state)
@@ -706,7 +721,7 @@ def test_persistence_controller_rejects_reload_when_spatialdata_attrs_missing(
         controller.reload_table_state()
 
 
-def test_persistence_controller_rejects_reload_when_selected_segmentation_is_no_longer_annotated(
+def test_persistence_controller_rejects_reload_when_selected_region_is_no_longer_annotated(
     backed_sdata_blobs: SpatialData,
 ) -> None:
     controller = PersistenceController()
@@ -722,5 +737,5 @@ def test_persistence_controller_rejects_reload_when_selected_segmentation_is_no_
     }
     _write_disk_snapshot_state(backed_sdata_blobs, obs=obs, obsm=obsm, uns=uns)
 
-    with pytest.raises(ValueError, match="no longer annotates the selected labels element"):
+    with pytest.raises(ValueError, match="no longer annotates the selected spatial element"):
         controller.reload_table_state()
