@@ -1,22 +1,39 @@
-"""Reusable controls for writing and requesting reload of shared table state."""
+"""Reusable controls for writing and reloading shared table state."""
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING
 
-from qtpy.QtCore import Qt, Signal
-from qtpy.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtCore import Qt
+from qtpy.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_harpy._app_state import HarpyAppState, TableDirtyStateChangedEvent
 from napari_harpy.widgets.persistence.controller import PersistenceController
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
+    PRIMARY_BUTTON_STYLESHEET,
+    SECONDARY_BUTTON_STYLESHEET,
+    WARNING_BUTTON_STYLESHEET,
     format_tooltip,
     set_status_card,
 )
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
+
+
+class _DirtyReloadDecision(Enum):
+    WRITE = "write"
+    RELOAD_DISCARD = "reload_discard"
+    CANCEL = "cancel"
 
 
 class TablePersistenceControls(QWidget):
@@ -26,42 +43,48 @@ class TablePersistenceControls(QWidget):
     directly, acknowledge the persisted mutation tokens, and let the shared
     dirty-state event refresh every bound control.
 
-    Reload cannot be executed directly by this component. Replacing live table
-    components requires coordinated pre-reload preparation and post-reload
-    recovery by every affected workflow. The Reload button therefore does not
-    call ``PersistenceController`` directly. It emits ``reload_requested`` and
-    requires its current host—or the future shared reload coordinator—to
-    coordinate the accepted transition:
+    Reload is also generic at this boundary. This component resolves Write /
+    Discard / Cancel and then captures one immutable ``TableReloadRequest``.
+    Before replacing any in-memory AnnData components,
+    ``PersistenceController`` passes that request through ``HarpyAppState``.
+    App state calls ``prepare_for_table_reload()`` on every registered workflow.
+    Unrelated workflows ignore the request; workflows using the selected table
+    stop work that must not survive its replacement. For example, Object
+    Classification freezes pending or running classifier work. Only then does
+    ``PersistenceController`` reload the table components. Workflows adopt the
+    restored table from the post-reload table-state event.
 
         Reload button clicked
             ↓
-        TablePersistenceControls.reload_requested
+        controls resolve clean versus dirty-table behavior
             ↓
-        host resolves clean versus dirty-table behavior
+        PersistenceController captures the accepted request
             ↓
-        host performs its pre-reload preparation
+        HarpyAppState prepares every affected participant
             ↓
-        PersistenceController reloads the table
+        PersistenceController executes the captured request
             ↓
-        host rebinds and refreshes from the restored state
+        workflows adopt the restored state from the post-reload event
     """
-
-    reload_requested = Signal()
 
     def __init__(
         self,
         app_state: HarpyAppState,
         *,
         write_content_description: str = "table state",
+        reload_source: str = "table_persistence_controls",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         if not isinstance(write_content_description, str) or not write_content_description:
             raise ValueError("Persistence controls require a non-empty write-content description.")
+        if not isinstance(reload_source, str) or not reload_source:
+            raise ValueError("Persistence controls require a non-empty reload source.")
 
         self._app_state = app_state
         self._controller = PersistenceController(app_state)
         self._write_content_description = write_content_description
+        self._reload_source = reload_source
         self._selected_spatialdata: SpatialData | None = None
         self._selected_table_name: str | None = None
         self._binding_error: str | None = None
@@ -90,7 +113,7 @@ class TablePersistenceControls(QWidget):
         self.reload_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.reload_button.setMinimumHeight(28)
         self.reload_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
-        self.reload_button.clicked.connect(self.reload_requested.emit)
+        self.reload_button.clicked.connect(self.reload_table_state)
 
         action_layout.addWidget(self.write_button, 1)
         action_layout.addWidget(self.reload_button, 1)
@@ -115,7 +138,7 @@ class TablePersistenceControls(QWidget):
         self,
         sdata: SpatialData | None,
         table_name: str | None,
-        labels_name: str | None = None,
+        region_name: str | None = None,
         *,
         binding_error: str | None = None,
     ) -> None:
@@ -127,7 +150,7 @@ class TablePersistenceControls(QWidget):
         self._selected_table_name = table_name
         self._binding_error = binding_error
         effective_table_name = None if binding_error is not None else table_name
-        self._controller.bind(sdata, effective_table_name, labels_name)
+        self._controller.bind(sdata, effective_table_name, region_name)
         self.clear_feedback()
         self.refresh()
 
@@ -210,6 +233,59 @@ class TablePersistenceControls(QWidget):
             self.set_feedback(message)
         return True
 
+    def reload_table_state(self) -> bool:
+        """Resolve user intent and execute one participant-safe table reload.
+
+        A clean table reloads immediately. A dirty table first presents the
+        Write / Discard / Cancel decision:
+
+        clean
+            → continue with reload
+
+        dirty
+            ├── Write
+            │      → persist local changes
+            │      → continue with reload
+            ├── Discard
+            │      → continue without writing
+            └── Cancel
+                   → stop before capturing a TableReloadRequest
+
+        Only an accepted transition captures a request, prepares registered
+        workflows, and replaces the selected in-memory table components from
+        disk.
+        """
+        wrote_before_reload = False
+        if self._controller.has_unsynced_table_changes:
+            decision = self._prompt_dirty_reload_decision()
+            if decision is _DirtyReloadDecision.CANCEL:
+                return False
+            if decision is _DirtyReloadDecision.WRITE:
+                if not self.write_table_state(show_feedback=False):
+                    return False
+                wrote_before_reload = True
+            elif decision is not _DirtyReloadDecision.RELOAD_DISCARD:
+                raise RuntimeError(f"Unhandled dirty reload decision: {decision!r}")
+
+        try:
+            request = self._controller.capture_table_reload_request(
+                source=self._reload_source,
+            )
+            self._controller.reload_table_request(request)
+        except Exception as error:  # noqa: BLE001 - this UI boundary must report participant and reload failures.
+            self.set_feedback(str(error), error=True)
+            return False
+
+        destination = self.selected_table_store_destination()
+        if wrote_before_reload:
+            message = (
+                f'Wrote local table state and reloaded "{self._selected_table_name}" table state from "{destination}".'
+            )
+        else:
+            message = f'Reloaded "{self._selected_table_name}" table state from "{destination}".'
+        self.set_feedback(message)
+        return True
+
     def clear_feedback(self) -> None:
         """Hide any previous persistence outcome."""
         self.set_feedback("")
@@ -236,7 +312,61 @@ class TablePersistenceControls(QWidget):
         store_path = self._controller.selected_store_path
         return "" if store_path is None else str(store_path)
 
+    def _prompt_dirty_reload_decision(self) -> _DirtyReloadDecision:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Unsynced Table Changes")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(560)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+
+        warning_message = (
+            f'Table "{self._selected_table_name}" has in-memory changes that have not been written to zarr.'
+            if self._selected_table_name is not None
+            else "The selected table has in-memory changes that have not been written to zarr."
+        )
+        warning_card = QLabel()
+        warning_card.setWordWrap(True)
+        set_status_card(
+            warning_card,
+            title="Unsynced Changes",
+            lines=[warning_message],
+            kind="warning",
+        )
+        layout.addWidget(warning_card)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+        write_button = QPushButton("Write table state and reload")
+        discard_button = QPushButton("Reload table state and discard local edits")
+        cancel_button = QPushButton("Cancel")
+
+        write_button.setStyleSheet(PRIMARY_BUTTON_STYLESHEET)
+        discard_button.setStyleSheet(WARNING_BUTTON_STYLESHEET)
+        cancel_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
+
+        button_row.addWidget(write_button)
+        button_row.addWidget(discard_button)
+        button_row.addWidget(cancel_button)
+        layout.addLayout(button_row)
+
+        write_button.clicked.connect(lambda: dialog.done(1))
+        discard_button.clicked.connect(lambda: dialog.done(2))
+        cancel_button.clicked.connect(dialog.reject)
+        cancel_button.setDefault(True)
+
+        result = dialog.exec()
+        if result == 1:
+            return _DirtyReloadDecision.WRITE
+        if result == 2:
+            return _DirtyReloadDecision.RELOAD_DISCARD
+        return _DirtyReloadDecision.CANCEL
+
     def _on_table_dirty_state_changed(self, event: object) -> None:
+        """Refresh Write readiness and Reload warnings after a dirty transition."""
         if not isinstance(event, TableDirtyStateChangedEvent):
             return
         if event.sdata is not self._selected_spatialdata or event.table_name != self._selected_table_name:

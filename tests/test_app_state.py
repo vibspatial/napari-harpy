@@ -15,6 +15,7 @@ from napari_harpy._app_state import (
     HarpyAppState,
     ShapesElementWrittenEvent,
     TableDirtyStateChangedEvent,
+    TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
@@ -295,6 +296,44 @@ def test_harpy_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
 
     assert state.is_table_dirty(sdata_blobs, "table") is True
     assert state.snapshot_table_dirty_state(sdata_blobs, "table").paths == frozenset({obs_path})
+
+
+def test_harpy_app_state_prepares_registered_table_reload_participants_by_identity(
+    sdata_blobs,
+) -> None:
+    state = HarpyAppState()
+    calls: list[tuple[str, TableReloadRequest]] = []
+
+    class Participant:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+            calls.append((self.name, request))
+
+    first = Participant("first")
+    second = Participant("second")
+    request = TableReloadRequest(
+        sdata=sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obs", ("user_class",))}),
+        region_name="blobs_labels",
+        source="test",
+    )
+
+    state.register_table_reload_participant(first)
+    state.register_table_reload_participant(first)
+    state.register_table_reload_participant(second)
+    state.prepare_for_table_reload(request)
+
+    assert calls == [("first", request), ("second", request)]
+    assert state.unregister_table_reload_participant(first) is True
+    assert state.unregister_table_reload_participant(first) is False
+
+    calls.clear()
+    state.prepare_for_table_reload(request)
+
+    assert calls == [("second", request)]
 
 
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:

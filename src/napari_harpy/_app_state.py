@@ -83,10 +83,12 @@ class TableStateChangedEvent:
 class TableDirtyStateChangedEvent:
     """Report a table-wide dirty transition derived from the shared manifest.
 
-    This event is a synchronization notification for persistence controls. It
-    does not describe an AnnData mutation and is not a second source of dirty
-    truth; consumers that bind later must read the current state from
-    ``HarpyAppState``.
+    This event keeps every bound ``TablePersistenceControls`` UI synchronized
+    when any workflow makes the selected table dirty or clean. In particular,
+    controls use it to update Write-button readiness and the Reload tooltip
+    warning about unsynced changes. It does not describe an AnnData mutation
+    and is not a second source of dirty truth; consumers that bind later must
+    read the current state from ``HarpyAppState``.
     """
 
     sdata: SpatialData
@@ -98,6 +100,61 @@ class TableDirtyStateChangedEvent:
             raise ValueError("Table dirty-state events require a non-empty table name.")
         if not isinstance(self.is_dirty, bool):
             raise ValueError("Table dirty-state events require a boolean dirty state.")
+
+
+@dataclass(frozen=True)
+class TableReloadRequest:
+    """Identify one accepted table reload before live state is replaced.
+
+    ``region_name`` is optional validation context for the spatial element
+    currently using the table. It does not restrict the reload to that region's
+    rows.
+
+    Parameters
+    ----------
+    sdata
+        Exact SpatialData object whose live table will be restored.
+    table_name
+        Name of the table to restore.
+    paths
+        Fully expanded component paths that the accepted reload will replace.
+    region_name
+        Optional Labels or Shapes element against which the restored table
+        binding must remain valid.
+    source
+        Workflow or reusable control that initiated the reload request.
+    """
+
+    sdata: SpatialData
+    table_name: str
+    paths: frozenset[TableComponentPath]
+    region_name: str | None
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.table_name, str) or not self.table_name:
+            raise ValueError("Table reload requests require a non-empty table name.")
+        paths = frozenset(self.paths)
+        if not paths:
+            raise ValueError("Table reload requests require at least one component path.")
+        object.__setattr__(self, "paths", paths)
+        if self.region_name is not None and (not isinstance(self.region_name, str) or not self.region_name):
+            raise ValueError("Table reload request region names must be non-empty strings.")
+        if not isinstance(self.source, str) or not self.source:
+            raise ValueError("Table reload requests require a non-empty source.")
+
+
+class TableReloadParticipant(Protocol):
+    """Prepare one table-consuming workflow before an accepted reload.
+
+    A class satisfies this structural protocol by implementing
+    ``prepare_for_table_reload()``; inheritance is not required. Participants
+    compare the immutable request with the table they consume and ignore
+    unrelated requests.
+    """
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Invalidate work that must not survive the requested table reload."""
 
 
 class _TableMutationToken:
@@ -308,6 +365,7 @@ class HarpyAppState(QObject):
         self.viewer_adapter = ViewerAdapter(viewer=viewer, layer_bindings=self.layer_bindings)
         self._dirty_table_tokens: dict[tuple[int, str], dict[TableComponentPath, _TableMutationToken]] = {}
         self._coordinate_system_change_participant: CoordinateSystemChangeParticipant | None = None
+        self._table_reload_participants: list[TableReloadParticipant] = []
 
     def set_sdata(self, sdata: SpatialData | None) -> None:
         """Set the loaded SpatialData object and notify listeners."""
@@ -426,6 +484,36 @@ class HarpyAppState(QObject):
             return False
         self._coordinate_system_change_participant = None
         return True
+
+    def register_table_reload_participant(
+        self,
+        participant: TableReloadParticipant,
+    ) -> None:
+        """Register one workflow for shared table-reload preparation."""
+        if any(current is participant for current in self._table_reload_participants):
+            return
+        self._table_reload_participants.append(participant)
+
+    def unregister_table_reload_participant(
+        self,
+        participant: TableReloadParticipant,
+    ) -> bool:
+        """Unregister ``participant`` by identity without affecting other workflows."""
+        for index, current in enumerate(self._table_reload_participants):
+            if current is participant:
+                del self._table_reload_participants[index]
+                return True
+        return False
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Prepare every registered workflow before replacing in-memory table components from disk.
+
+        Iterate over a stable snapshot so participant teardown or registration
+        during a callback cannot skip or duplicate another participant in this
+        accepted transition.
+        """
+        for participant in tuple(self._table_reload_participants):
+            participant.prepare_for_table_reload(request)
 
     def clear_coordinate_system(self, *, source: str | None = None) -> bool:
         """Clear the shared active coordinate system."""

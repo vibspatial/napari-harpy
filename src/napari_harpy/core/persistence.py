@@ -126,7 +126,7 @@ def reload_table_components(
     *,
     table_name: str,
     paths: frozenset[TableComponentPath],
-    labels_name: str | None = None,
+    region_name: str | None = None,
 ) -> TableComponentReloadResult:
     """Reload selected table components in place from a backed zarr store.
 
@@ -148,7 +148,7 @@ def reload_table_components(
         table_name=table_name,
         disk_obs=disk_obs,
         disk_attrs=disk_attrs,
-        labels_name=labels_name,
+        region_name=region_name,
     )
 
     reload_obs = any(path.component == "obs" for path in normalized_paths)
@@ -350,7 +350,7 @@ def _validate_reload_binding(
     table_name: str,
     disk_obs: object,
     disk_attrs: object,
-    labels_name: str | None,
+    region_name: str | None,
 ) -> None:
     if not isinstance(disk_obs, pd.DataFrame):
         raise ValueError(f"Reloaded obs for table `{table_name}` must be a DataFrame.")
@@ -399,12 +399,12 @@ def _validate_reload_binding(
             f"Cannot reload table `{table_name}`: `{disk_instance_key}` values do not exactly match row by row."
         )
 
-    if labels_name is not None:
+    if region_name is not None:
         regions = _normalize_regions(disk_attrs.get(TableModel.REGION_KEY))
-        if labels_name not in regions:
+        if region_name not in regions:
             raise ValueError(
-                f"Cannot reload table `{table_name}` for labels element `{labels_name}`: "
-                "the disk table no longer annotates the selected labels element."
+                f"Cannot reload table `{table_name}` for spatial element `{region_name}`: "
+                "the disk table no longer annotates the selected spatial element."
             )
 
 
@@ -413,4 +413,4 @@ def _normalize_regions(region: str | Sequence[str] | None) -> tuple[str, ...]:
         return ()
     if isinstance(region, str):
         return (region,)
-    return tuple(str(labels_name) for labels_name in region)
+    return tuple(str(region_name) for region_name in region)

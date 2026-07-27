@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
+from napari_harpy._app_state import (
+    HarpyAppState,
+    TableReloadRequest,
+    TableStateChangedEvent,
+)
 from napari_harpy.core.persistence import (
     TableComponentPath,
     TableComponentReloadResult,
@@ -27,7 +31,7 @@ class PersistenceController:
     def __init__(self, app_state: HarpyAppState | None = None) -> None:
         self._app_state = HarpyAppState() if app_state is None else app_state
         self._selected_spatialdata: SpatialData | None = None
-        self._selected_labels_name: str | None = None
+        self._selected_region_name: str | None = None
         self._selected_table_name: str | None = None
 
     @property
@@ -73,10 +77,10 @@ class PersistenceController:
         store_path = self.selected_store_path
         return None if store_path is None else store_path / table_path
 
-    def bind(self, sdata: SpatialData | None, table_name: str | None, labels_name: str | None = None) -> None:
+    def bind(self, sdata: SpatialData | None, table_name: str | None, region_name: str | None = None) -> None:
         """Bind persistence to the selected SpatialData table."""
         self._selected_spatialdata = sdata
-        self._selected_labels_name = labels_name
+        self._selected_region_name = region_name
         self._selected_table_name = table_name
 
     def write_table_state(self) -> str:
@@ -104,21 +108,65 @@ class PersistenceController:
         """Reload explicit, already-expanded component paths from disk."""
         sdata = self._require_selected_spatialdata(action="reloading from zarr")
         table_name = self._require_selected_table_name(action="reloading from zarr")
-        result = reload_table_components(
-            sdata,
+        request = TableReloadRequest(
+            sdata=sdata,
             table_name=table_name,
             paths=paths,
-            labels_name=self._selected_labels_name,
+            region_name=self._selected_region_name,
+            source="persistence_controller",
+        )
+        return self.reload_table_request(request)
+
+    def capture_table_reload_request(
+        self,
+        *,
+        source: str,
+    ) -> TableReloadRequest:
+        """Capture the exact current full-table reload target."""
+        sdata = self._require_selected_spatialdata(action="reloading from zarr")
+        table_name = self._require_selected_table_name(action="reloading from zarr")
+        dirty_snapshot = self._app_state.snapshot_table_dirty_state(sdata, table_name)
+        paths = build_full_table_reload_paths(
+            sdata,
+            table_name=table_name,
+            extra_paths=dirty_snapshot.paths,
+        )
+        return TableReloadRequest(
+            sdata=sdata,
+            table_name=table_name,
+            paths=paths,
+            region_name=self._selected_region_name,
+            source=source,
+        )
+
+    def reload_table_request(
+        self,
+        request: TableReloadRequest,
+    ) -> TableComponentReloadResult:
+        """Prepare participants and execute one captured reload request exactly."""
+        self._app_state.prepare_for_table_reload(request)
+        return self._apply_table_reload_request(request)
+
+    def _apply_table_reload_request(
+        self,
+        request: TableReloadRequest,
+    ) -> TableComponentReloadResult:
+        """Replace and publish the components from one prepared request."""
+        result = reload_table_components(
+            request.sdata,
+            table_name=request.table_name,
+            paths=request.paths,
+            region_name=request.region_name,
         )
         regions = (
-            get_table_metadata(sdata, table_name).regions
+            get_table_metadata(request.sdata, request.table_name).regions
             if any(path.component in ("obs", "obsm") for path in result.reloaded_paths)
             else ()
         )
         self._app_state.record_table_reload(
             TableStateChangedEvent(
-                sdata=sdata,
-                table_name=table_name,
+                sdata=request.sdata,
+                table_name=request.table_name,
                 paths=result.reloaded_paths,
                 regions=regions,
                 change_kind="reloaded",
@@ -129,15 +177,8 @@ class PersistenceController:
 
     def reload_table_state(self) -> str:
         """Reload all supported table components through the selective API."""
-        sdata = self._require_selected_spatialdata(action="reloading from zarr")
-        table_name = self._require_selected_table_name(action="reloading from zarr")
-        dirty_snapshot = self._app_state.snapshot_table_dirty_state(sdata, table_name)
-        paths = build_full_table_reload_paths(
-            sdata,
-            table_name=table_name,
-            extra_paths=dirty_snapshot.paths,
-        )
-        return self.reload_table_components(paths).table_path
+        request = self.capture_table_reload_request(source="persistence_controller")
+        return self.reload_table_request(request).table_path
 
     def _require_selected_spatialdata(self, *, action: str = "syncing to zarr") -> SpatialData:
         if self._selected_spatialdata is None:
