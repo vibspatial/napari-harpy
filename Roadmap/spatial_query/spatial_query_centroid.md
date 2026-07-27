@@ -4,8 +4,8 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8a, except that the standalone Slice
-6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8b
+Implementation is complete through Slice 8b, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8c
 and later slices remain planned.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -7842,6 +7842,8 @@ second host is enabled.
 
 ### Slice 8b: Shared table-reload protocol and Object Classification migration
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 This slice introduces one shared table-reload protocol and proves it by
@@ -7878,7 +7880,7 @@ class TableReloadRequest:
 
 
 class TableReloadParticipant(Protocol):
-    def prepare_table_reload(
+    def prepare_for_table_reload(
         self,
         request: TableReloadRequest,
     ) -> None: ...
@@ -8034,10 +8036,11 @@ resolve Write / Discard / Cancel when the table is dirty
 `TablePersistenceControls.reload_requested` remains the zero-payload UI intent.
 The reusable persistence controls, rather than their Object Classification
 host, resolve that intent through the generic decision boundary. They then ask
-`PersistenceController` to capture the immutable request, ask `HarpyAppState`
-to prepare all participants, and execute the same captured request. No host
-widget may bypass this shared UI reload path by calling
-`PersistenceController.reload_table_state()` directly.
+`PersistenceController` to capture the immutable request and submit that same
+request for reload. The controller's public request-execution boundary always
+asks `HarpyAppState` to prepare all participants immediately before applying
+the request, so another controller caller cannot accidentally bypass
+preparation. No host widget may implement a separate UI reload lifecycle.
 
 #### Object Classification migration
 
@@ -8048,7 +8051,7 @@ TablePersistenceControls.reload_requested
     ↓
 reusable Write / Discard / Cancel boundary
     ↓
-Object Classification.prepare_table_reload()
+Object Classification.prepare_for_table_reload()
     → ClassifierController.freeze_for_reload()
     ↓
 PersistenceController reloads the table
