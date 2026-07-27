@@ -275,6 +275,7 @@ def test_annotation_widget_shapes_context_updates_reuse_spatial_query_cache_insp
     assert labels_index >= 0
     spatial_query.labels_combo.setCurrentIndex(labels_index)
     spatial_query.new_column_edit.setText("reviewed_annotation")
+    spatial_query.annotation_value_edit.setText("tumor")
 
     assert inspection_count == 1
     cache_report = spatial_query.cache_report
@@ -677,6 +678,7 @@ def test_annotation_widget_clean_saved_target_change_keeps_saved_layer_without_w
     assert labels_index >= 0
     spatial_query.labels_combo.setCurrentIndex(labels_index)
     spatial_query.new_column_edit.setText("reviewed_annotation")
+    spatial_query.annotation_value_edit.setText("tumor")
     spatial_query_cache_report = spatial_query.cache_report
     assert spatial_query_cache_report is not None
     widget.create_layer_button.click()
