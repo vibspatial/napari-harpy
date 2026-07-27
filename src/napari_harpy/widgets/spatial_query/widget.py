@@ -6,7 +6,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtWidgets import QFormLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import (
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSpinBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from napari_harpy._app_state import (
     HarpyAppState,
@@ -19,6 +28,7 @@ from napari_harpy.core.object_classification.classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
@@ -27,11 +37,17 @@ from napari_harpy.core.spatial_query import (
     CanonicalCacheUpdateAction,
     CanonicalCenterQueryResult,
     CanonicalCentersResult,
+    SpatialAnnotationValue,
+    SpatialAnnotationValueKind,
+    apply_spatial_annotation,
     build_canonical_source_signature,
     get_compatible_spatial_annotation_column_names,
     inspect_canonical_cache,
     parse_canonical_metadata,
+    prepare_spatial_annotation,
     require_compatible_spatial_annotation_column,
+    summarize_spatial_annotation,
+    validate_and_resolve_spatial_annotation_value_kind,
 )
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
@@ -51,6 +67,8 @@ from napari_harpy.widgets.shared_styles import (
 from napari_harpy.widgets.spatial_query.controller import SpatialQueryController
 from napari_harpy.widgets.spatial_query.status_card import (
     _SpatialQueryStatusCardSpec,
+    build_spatial_annotation_failure_status_card_spec,
+    build_spatial_annotation_outcome_status_card_spec,
     build_spatial_query_execution_status_card_spec,
     build_spatial_query_status_card_spec,
 )
@@ -64,13 +82,37 @@ if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 type _TargetColumnMode = Literal["existing", "new"]
+type _AnnotationAction = Literal["set", "remove"]
 
 
 @dataclass(frozen=True)
-class _AnnotationTargetResolution:
+class _AnnotationColumnResolution:
+    """Validated destination column selection and categorical value kind."""
+
     mode: _TargetColumnMode | None
     column_name: str | None
     error: str | None
+    value_kind: SpatialAnnotationValueKind | None = None
+
+    def __post_init__(self) -> None:
+        if self.mode not in (None, "existing", "new"):
+            raise ValueError(f"Unsupported annotation column mode: {self.mode!r}.")
+        if self.value_kind not in (None, "string", "positive_integer"):
+            raise ValueError(f"Unsupported spatial annotation value kind: {self.value_kind!r}.")
+
+        if self.error is None:
+            if self.mode is None or self.column_name is None or self.value_kind is None:
+                raise ValueError(
+                    "A ready annotation column resolution requires a mode, column name, and value kind."
+                )
+            if not self.column_name:
+                raise ValueError("Annotation column name must not be empty.")
+            return
+
+        if self.error == "":
+            raise ValueError("Annotation column resolution error must not be empty.")
+        if self.mode is not None or self.column_name is not None or self.value_kind is not None:
+            raise ValueError("An invalid annotation column resolution must contain only an error.")
 
     @property
     def is_ready(self) -> bool:
@@ -86,8 +128,55 @@ class _AnnotationTargetResolution:
 
 
 @dataclass(frozen=True)
+class _AnnotationMutationResolution:
+    """Validated Set/Remove action and normalized annotation value."""
+
+    action: _AnnotationAction | None
+    value: SpatialAnnotationValue
+    error: str | None
+
+    def __post_init__(self) -> None:
+        if self.action not in (None, "set", "remove"):
+            raise ValueError(f"Unsupported spatial annotation action: {self.action!r}.")
+
+        if self.error is not None:
+            if self.error == "":
+                raise ValueError("Annotation mutation resolution error must not be empty.")
+            if self.action is not None or self.value is not None:
+                raise ValueError("An invalid annotation mutation resolution must contain only an error.")
+            return
+
+        if self.action is None:
+            raise ValueError("A ready annotation mutation resolution requires an action.")
+        if self.action == "remove":
+            if self.value is not None:
+                raise ValueError("Remove annotation must not carry an annotation value.")
+            return
+
+        if isinstance(self.value, str):
+            if not self.value:
+                raise ValueError("String annotation value must not be empty.")
+            return
+        if isinstance(self.value, bool) or not isinstance(self.value, int) or self.value <= 0:
+            raise ValueError("Set annotation requires a non-empty string or positive integer value.")
+
+    @property
+    def is_ready(self) -> bool:
+        return self.error is None
+
+    @property
+    def description(self) -> str | None:
+        if not self.is_ready or self.action is None:
+            return None
+        if self.action == "remove":
+            return "Action: Remove annotation. Existing matched values will be cleared."
+        value = f'"{self.value}"' if isinstance(self.value, str) else str(self.value)
+        return f"Action: Set annotation to {value}. Different matched values will be replaced."
+
+
+@dataclass(frozen=True)
 class _SpatialQueryRunIntent:
-    """Immutable UI and domain inputs accepted by one Run action."""
+    """Immutable UI and domain inputs accepted by one Apply action."""
 
     sdata: SpatialData
     shapes_name: str
@@ -96,13 +185,26 @@ class _SpatialQueryRunIntent:
     table_name: str
     column_mode: _TargetColumnMode
     column_name: str
+    annotation_action: _AnnotationAction
+    annotation_value: SpatialAnnotationValue
+
+    def __post_init__(self) -> None:
+        if self.annotation_action == "remove":
+            if self.column_mode != "existing" or self.annotation_value is not None:
+                raise ValueError("Remove annotation requires an existing target and no annotation value.")
+        elif self.annotation_action == "set":
+            if self.annotation_value is None:
+                raise ValueError("Set annotation requires a typed annotation value.")
+        else:
+            raise ValueError(f"Unsupported spatial annotation action: {self.annotation_action!r}.")
 
 
 _PREFERRED_ANNOTATION_COLUMN_NAME = "spatial_annotation"
 _OBJECT_CLASSIFICATION_COLUMNS = frozenset((USER_CLASS_COLUMN, PRED_CLASS_COLUMN, PRED_CONFIDENCE_COLUMN))
-_INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit")
+_INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox, QLineEdit, QSpinBox")
 _FIELD_MIN_WIDTH = 180
 CANONICAL_CACHE_UPDATE_SOURCE = "spatial_query_canonical_centers"
+SPATIAL_QUERY_ANNOTATION_SOURCE = "spatial_query_annotation"
 _CACHE_UPDATE_CHANGE_KINDS: dict[CanonicalCacheUpdateAction, TableChangeKind] = {
     CanonicalCacheUpdateAction.CREATE: "created",
     CanonicalCacheUpdateAction.EXTEND: "updated",
@@ -121,10 +223,11 @@ class SpatialQuery(QWidget):
 
     As a child of ``AnnotationWidget``, this independently embeddable widget
     receives coordinate-system and Shapes state only through
-    ``apply_annotation_context()``. Run captures one immutable intent and
-    delegates sequential center calculation and containment work to its
-    controller. The child owns shared cache-event publication; annotation
-    review and Apply are added by the next slice.
+    ``apply_annotation_context()``. Apply Annotation captures one immutable
+    column, action, and value intent and delegates sequential center
+    calculation and containment work to its controller. The child owns cache
+    and annotation event publication and applies the captured annotation
+    immediately after a non-empty accepted query result.
 
     CanonicalCacheReport lifecycle
     ------------------------------
@@ -162,6 +265,7 @@ class SpatialQuery(QWidget):
         self._canonical_input_inspection_error: str | None = None
         self._layer_styling_error: str | None = None
         self._active_run_intent: _SpatialQueryRunIntent | None = None
+        self._annotation_outcome_status: _SpatialQueryStatusCardSpec | None = None
         self._show_execution_status = False
         self._controller = SpatialQueryController(
             on_state_changed=self._on_controller_state_changed,
@@ -215,13 +319,49 @@ class SpatialQuery(QWidget):
             )
         )
 
+        self.annotation_action_combo = self._create_combo(
+            "spatial_query_annotation_action_combo",
+            "Choose whether matched labeled objects receive or lose an annotation.",
+        )
+        self.annotation_action_combo.addItem("Set annotation", "set")
+        self.annotation_action_combo.addItem("Remove annotation", "remove")
+
+        self.annotation_value_edit = QLineEdit()
+        self.annotation_value_edit.setObjectName("spatial_query_annotation_value_edit")
+        self.annotation_value_edit.setAccessibleName("Annotation value")
+        self.annotation_value_edit.setPlaceholderText("Enter annotation value")
+        self.annotation_value_edit.setMinimumWidth(_FIELD_MIN_WIDTH)
+        self.annotation_value_edit.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.annotation_value_edit.setToolTip(
+            format_tooltip("Enter the non-empty string annotation assigned to every matched labeled object.")
+        )
+
+        self.annotation_class_spinbox = QSpinBox()
+        self.annotation_class_spinbox.setObjectName("spatial_query_annotation_class_spinbox")
+        self.annotation_class_spinbox.setAccessibleName("Positive integer annotation value")
+        self.annotation_class_spinbox.setRange(1, 2_147_483_647)
+        self.annotation_class_spinbox.setValue(1)
+        self.annotation_class_spinbox.setMinimumWidth(_FIELD_MIN_WIDTH)
+        self.annotation_class_spinbox.setStyleSheet(_INPUT_CONTROL_STYLESHEET)
+        self.annotation_class_spinbox.setToolTip(
+            format_tooltip("Choose the positive integer class assigned to every matched labeled object.")
+        )
+
+        self.annotation_value_stack = QStackedWidget()
+        self.annotation_value_stack.setObjectName("spatial_query_annotation_value_stack")
+        self.annotation_value_stack.addWidget(self.annotation_value_edit)
+        self.annotation_value_stack.addWidget(self.annotation_class_spinbox)
+
         self.existing_column_label = create_form_label("Existing column")
         self.new_column_label = create_form_label("New column name")
+        self.annotation_value_label = create_form_label("Annotation value")
         form_layout.addRow(create_form_label("Labels"), self.labels_combo)
         form_layout.addRow(create_form_label("Table"), self.table_combo)
         form_layout.addRow(create_form_label("Target mode"), self.column_mode_combo)
         form_layout.addRow(self.existing_column_label, self.existing_column_combo)
         form_layout.addRow(self.new_column_label, self.new_column_edit)
+        form_layout.addRow(create_form_label("Action"), self.annotation_action_combo)
+        form_layout.addRow(self.annotation_value_label, self.annotation_value_stack)
         root_layout.addLayout(form_layout)
 
         self.status_label = QLabel()
@@ -229,13 +369,15 @@ class SpatialQuery(QWidget):
         self.status_label.setWordWrap(True)
         root_layout.addWidget(self.status_label)
 
-        self.run_button = QPushButton("Run spatial query")
+        self.run_button = QPushButton("Apply Annotation")
         self.run_button.setObjectName("spatial_query_run_button")
-        self.run_button.setAccessibleName("Run spatial query")
+        self.run_button.setAccessibleName("Apply annotation")
         self.run_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.run_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
         self.run_button.setToolTip(
-            format_tooltip("Evaluate canonical label centers against the selected saved Shapes geometry.")
+            format_tooltip(
+                "Find labeled objects inside the selected saved Shapes geometry and apply the configured annotation."
+            )
         )
 
         root_layout.addWidget(self.run_button)
@@ -245,6 +387,9 @@ class SpatialQuery(QWidget):
         self.column_mode_combo.currentIndexChanged.connect(self._on_column_mode_changed)
         self.existing_column_combo.currentIndexChanged.connect(self._on_existing_column_changed)
         self.new_column_edit.textChanged.connect(self._on_new_column_changed)
+        self.annotation_action_combo.currentIndexChanged.connect(self._on_annotation_action_changed)
+        self.annotation_value_edit.textChanged.connect(self._on_annotation_value_changed)
+        self.annotation_class_spinbox.valueChanged.connect(self._on_annotation_value_changed)
         self.run_button.clicked.connect(self._run_spatial_query)
         self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
         self._app_state.table_state_changed.connect(self._on_table_state_changed)
@@ -295,8 +440,19 @@ class SpatialQuery(QWidget):
 
     @property
     def selected_column_name(self) -> str | None:
-        resolution = self._resolve_annotation_target()
+        resolution = self._resolve_annotation_column()
         return resolution.column_name if resolution.is_ready else None
+
+    @property
+    def selected_annotation_action(self) -> _AnnotationAction | None:
+        value = self.annotation_action_combo.currentData()
+        return cast(_AnnotationAction, value) if value in ("set", "remove") else None
+
+    @property
+    def selected_annotation_value(self) -> SpatialAnnotationValue:
+        column_resolution = self._resolve_annotation_column()
+        mutation_resolution = self._resolve_annotation_mutation(column_resolution)
+        return mutation_resolution.value if mutation_resolution.is_ready else None
 
     @property
     def cache_report(self) -> CanonicalCacheReport | None:
@@ -491,6 +647,7 @@ class SpatialQuery(QWidget):
         self.existing_column_combo.setEnabled(bool(column_names))
         self.new_column_edit.setEnabled(table_name is not None)
         self._set_column_control_visibility()
+        self._reset_annotation_input_for_target()
 
     def _inspect_canonical_centers_cache(self) -> None:
         self._canonical_cache_report = None
@@ -555,6 +712,7 @@ class SpatialQuery(QWidget):
         if self.selected_column_mode == "new":
             with QSignalBlocker(self.existing_column_combo):
                 self.existing_column_combo.setCurrentIndex(-1)
+        self._reset_annotation_input_for_target()
         self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
 
@@ -562,11 +720,24 @@ class SpatialQuery(QWidget):
         del index
         self._invalidate_run()
         self._layer_styling_error = None
+        self._reset_annotation_input_for_target()
         self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
 
     def _on_new_column_changed(self, text: str) -> None:
         del text
+        self._invalidate_run()
+        self._refresh_controls_and_status()
+
+    def _on_annotation_action_changed(self, index: int) -> None:
+        """Update the UI after switching between Set and Remove annotation."""
+        del index
+        self._invalidate_run()
+        self._sync_annotation_input_controls(self._resolve_annotation_column())
+        self._refresh_controls_and_status()
+
+    def _on_annotation_value_changed(self, value: object) -> None:
+        del value
         self._invalidate_run()
         self._refresh_controls_and_status()
 
@@ -584,12 +755,14 @@ class SpatialQuery(QWidget):
         if self._controller.is_running:
             return
 
+        self._annotation_outcome_status = None
         sdata = self.selected_spatialdata
         shapes_name = self._annotation_context.saved_shapes_name
         coordinate_system = self.selected_coordinate_system
         labels_name = self.selected_labels_name
         table_name = self.selected_table_name
-        target = self._resolve_annotation_target()
+        column_resolution = self._resolve_annotation_column()
+        mutation_resolution = self._resolve_annotation_mutation(column_resolution)
         if (
             sdata is None
             or shapes_name is None
@@ -597,9 +770,11 @@ class SpatialQuery(QWidget):
             or labels_name is None
             or table_name is None
             or self._annotation_context.has_unsaved_shapes_changes
-            or not target.is_ready
-            or target.mode is None
-            or target.column_name is None
+            or not column_resolution.is_ready
+            or column_resolution.mode is None
+            or column_resolution.column_name is None
+            or not mutation_resolution.is_ready
+            or mutation_resolution.action is None
         ):
             self._refresh_controls_and_status()
             return
@@ -628,8 +803,10 @@ class SpatialQuery(QWidget):
             coordinate_system=coordinate_system,
             labels_name=labels_name,
             table_name=table_name,
-            column_mode=target.mode,
-            column_name=target.column_name,
+            column_mode=column_resolution.mode,
+            column_name=column_resolution.column_name,
+            annotation_action=mutation_resolution.action,
+            annotation_value=mutation_resolution.value,
         )
         self._show_execution_status = True
         operation_accepted = self._controller.start_spatial_query(
@@ -646,7 +823,7 @@ class SpatialQuery(QWidget):
         self._refresh_controls_and_status()
 
     def _on_centers_ready(self, result: CanonicalCentersResult) -> None:
-        """Publish an accepted cache mutation before containment review."""
+        """Publish an accepted cache mutation before annotation Apply."""
         intent = self._active_run_intent
         if intent is None or not self._run_intent_matches_current_selection(intent):
             self._invalidate_run()
@@ -680,16 +857,77 @@ class SpatialQuery(QWidget):
         )
 
     def _on_query_ready(self, result: CanonicalCenterQueryResult) -> None:
-        """Accept a non-empty current query result without annotating the table."""
+        """Apply the captured annotation intent to one accepted query result."""
         intent = self._active_run_intent
         if intent is None or not self._run_intent_matches_current_selection(intent):
             self._invalidate_run()
             return
-        # Slice 7a deliberately ends here. This accepted callback result and
-        # the captured target intent become the review inputs in the next slice.
+
+        try:
+            preparation = prepare_spatial_annotation(
+                intent.sdata,
+                query_result=result,
+                column_name=intent.column_name,
+                column_mode=intent.column_mode,
+            )
+            summary = summarize_spatial_annotation(
+                preparation,
+                intent.annotation_value,
+            )
+            apply_result = apply_spatial_annotation(
+                intent.sdata,
+                preparation,
+                summary,
+            )
+            if apply_result.annotation_changed != (summary.changed_count > 0):
+                raise RuntimeError("Spatial annotation Apply returned an inconsistent mutation result.")
+        except Exception as error:  # noqa: BLE001 - Qt callback boundary must report domain failures.
+            message = str(error).strip() or f"{type(error).__name__} while applying the annotation."
+            self._annotation_outcome_status = build_spatial_annotation_failure_status_card_spec(message)
+            self._refresh_controls_and_status()
+            return
+
+        if not apply_result.annotation_changed:
+            self._annotation_outcome_status = build_spatial_annotation_outcome_status_card_spec(summary)
+            self._refresh_controls_and_status()
+            return
+
+        changed_paths = {TableComponentPath("obs", (intent.column_name,))}
+        if apply_result.palette_changed:
+            changed_paths.add(TableComponentPath("uns", (f"{intent.column_name}_colors",)))
+        self._app_state.record_table_mutation(
+            TableStateChangedEvent(
+                sdata=intent.sdata,
+                table_name=intent.table_name,
+                paths=frozenset(changed_paths),
+                regions=(intent.labels_name,),
+                change_kind="created" if intent.column_mode == "new" else "updated",
+                source=SPATIAL_QUERY_ANNOTATION_SOURCE,
+            )
+        )
+
+        if intent.column_mode == "new":
+            # Promote the newly created column only after its atomic table
+            # mutation and shared table event have both been accepted. The
+            # refresh blocks child signals, so it cannot launch or invalidate
+            # an operation while the query worker is finishing.
+            self._refresh_columns(
+                preferred_mode="existing",
+                preferred_existing_column=intent.column_name,
+                preferred_new_column="",
+            )
+
+        self._layer_styling_error = None
+        self._apply_existing_column_styling()
+        self._annotation_outcome_status = build_spatial_annotation_outcome_status_card_spec(
+            summary,
+            layer_styling_error=self._layer_styling_error,
+        )
+        self._refresh_controls_and_status()
 
     def _run_intent_matches_current_selection(self, intent: _SpatialQueryRunIntent) -> bool:
-        target = self._resolve_annotation_target()
+        column_resolution = self._resolve_annotation_column()
+        mutation_resolution = self._resolve_annotation_mutation(column_resolution)
         return (
             self.selected_spatialdata is intent.sdata
             and self.selected_coordinate_system == intent.coordinate_system
@@ -697,9 +935,12 @@ class SpatialQuery(QWidget):
             and not self._annotation_context.has_unsaved_shapes_changes
             and self.selected_labels_name == intent.labels_name
             and self.selected_table_name == intent.table_name
-            and target.mode == intent.column_mode
-            and target.column_name == intent.column_name
-            and target.is_ready
+            and column_resolution.mode == intent.column_mode
+            and column_resolution.column_name == intent.column_name
+            and column_resolution.is_ready
+            and mutation_resolution.action == intent.annotation_action
+            and mutation_resolution.value == intent.annotation_value
+            and mutation_resolution.is_ready
         )
 
     def _invalidate_run(self) -> None:
@@ -712,6 +953,7 @@ class SpatialQuery(QWidget):
         controls and status after applying its configuration change.
         """
         self._active_run_intent = None
+        self._annotation_outcome_status = None
         self._show_execution_status = False
         self._controller.cancel_active_operation()
 
@@ -766,8 +1008,8 @@ class SpatialQuery(QWidget):
         except (KeyError, TypeError, ValueError) as error:
             self._layer_styling_error = str(error)
 
-    def _resolve_annotation_target(self) -> _AnnotationTargetResolution:
-        """Resolve the selected Existing or New annotation target.
+    def _resolve_annotation_column(self) -> _AnnotationColumnResolution:
+        """Resolve the selected Existing or New annotation column.
 
         For New mode with an empty draft:
 
@@ -791,14 +1033,14 @@ class SpatialQuery(QWidget):
                             New-column name
         ```
 
-        Placeholder text is visual guidance only and never becomes a target
-        value.
+        Placeholder text is visual guidance only and never becomes a column
+        name.
         """
         mode = self.selected_column_mode
         sdata = self.selected_spatialdata
         table_name = self.selected_table_name
         if table_name is None or sdata is None:
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error="Choose a linked table before configuring the annotation target.",
@@ -806,18 +1048,33 @@ class SpatialQuery(QWidget):
         if mode == "existing":
             column_name = self._selected_existing_column_name()
             if column_name is None:
-                return _AnnotationTargetResolution(
+                return _AnnotationColumnResolution(
                     mode=None,
                     column_name=None,
                     error="Choose a compatible existing categorical column.",
                 )
-            return _AnnotationTargetResolution(
+            try:
+                table = sdata.tables[table_name]
+                if column_name not in table.obs.columns:
+                    raise ValueError(f"Existing annotation column `{column_name}` is not present.")
+                value_kind = validate_and_resolve_spatial_annotation_value_kind(
+                    table.obs[column_name],
+                    column_name=column_name,
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                return _AnnotationColumnResolution(
+                    mode=None,
+                    column_name=None,
+                    error=str(error),
+                )
+            return _AnnotationColumnResolution(
                 mode=mode,
                 column_name=column_name,
                 error=None,
+                value_kind=value_kind,
             )
         if mode != "new":
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error="Choose Existing column or New column.",
@@ -835,7 +1092,7 @@ class SpatialQuery(QWidget):
                         _PREFERRED_ANNOTATION_COLUMN_NAME,
                     )
                 except ValueError:
-                    return _AnnotationTargetResolution(
+                    return _AnnotationColumnResolution(
                         mode=None,
                         column_name=None,
                         error=(
@@ -844,7 +1101,7 @@ class SpatialQuery(QWidget):
                             "integers. Choose another compatible Existing column or enter a different New-column name."
                         ),
                     )
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error="Enter a new annotation column name.",
@@ -856,7 +1113,7 @@ class SpatialQuery(QWidget):
                 "Annotation column name",
             )
         except ValueError as error:
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error=str(error),
@@ -864,13 +1121,13 @@ class SpatialQuery(QWidget):
 
         table_metadata = get_table_metadata(sdata, table_name)
         if column_name in (table_metadata.region_key, table_metadata.instance_key):
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error=f'Annotation column "{column_name}" cannot be a table linkage column.',
             )
         if column_name in _OBJECT_CLASSIFICATION_COLUMNS:
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error=(
@@ -882,7 +1139,7 @@ class SpatialQuery(QWidget):
             try:
                 require_compatible_spatial_annotation_column(table, column_name)
             except ValueError:
-                return _AnnotationTargetResolution(
+                return _AnnotationColumnResolution(
                     mode=None,
                     column_name=None,
                     error=(
@@ -891,16 +1148,99 @@ class SpatialQuery(QWidget):
                         "compatible Existing column or enter a different New-column name."
                     ),
                 )
-            return _AnnotationTargetResolution(
+            return _AnnotationColumnResolution(
                 mode=None,
                 column_name=None,
                 error=f'New annotation column "{column_name}" already exists.',
             )
-        return _AnnotationTargetResolution(
+        return _AnnotationColumnResolution(
             mode=mode,
             column_name=column_name,
             error=None,
+            value_kind="string",
         )
+
+    def _resolve_annotation_mutation(
+        self,
+        column_resolution: _AnnotationColumnResolution,
+    ) -> _AnnotationMutationResolution:
+        if not column_resolution.is_ready:
+            return _AnnotationMutationResolution(
+                action=None,
+                value=None,
+                error="Choose a valid annotation column before configuring its value.",
+            )
+
+        action = self.selected_annotation_action
+        if action == "remove":
+            if column_resolution.mode != "existing":
+                return _AnnotationMutationResolution(
+                    action=None,
+                    value=None,
+                    error="Remove annotation is available only for an existing column.",
+                )
+            return _AnnotationMutationResolution(action="remove", value=None, error=None)
+        if action != "set":
+            return _AnnotationMutationResolution(
+                action=None,
+                value=None,
+                error="Choose Set annotation or Remove annotation.",
+            )
+
+        if column_resolution.value_kind == "string":
+            value = self.annotation_value_edit.text().strip()
+            if not value:
+                return _AnnotationMutationResolution(
+                    action=None,
+                    value=None,
+                    error="Enter a non-empty annotation value.",
+                )
+            return _AnnotationMutationResolution(action="set", value=value, error=None)
+        if column_resolution.value_kind == "positive_integer":
+            return _AnnotationMutationResolution(
+                action="set",
+                value=int(self.annotation_class_spinbox.value()),
+                error=None,
+            )
+        raise ValueError(f"Unsupported spatial annotation value kind: {column_resolution.value_kind!r}.")
+
+    def _reset_annotation_input_for_target(self) -> None:
+        """Reset action/value drafts after the selected annotation column changes."""
+        with QSignalBlocker(self.annotation_action_combo):
+            set_index = self.annotation_action_combo.findData("set")
+            if set_index >= 0:
+                self.annotation_action_combo.setCurrentIndex(set_index)
+        with QSignalBlocker(self.annotation_value_edit):
+            self.annotation_value_edit.clear()
+        with QSignalBlocker(self.annotation_class_spinbox):
+            self.annotation_class_spinbox.setValue(1)
+        self._sync_annotation_input_controls(self._resolve_annotation_column())
+
+    def _sync_annotation_input_controls(
+        self,
+        column_resolution: _AnnotationColumnResolution,
+    ) -> None:
+        """Show only actions and the value editor supported by the current column."""
+        remove_index = self.annotation_action_combo.findData("remove")
+        with QSignalBlocker(self.annotation_action_combo):
+            if column_resolution.mode == "existing" and remove_index < 0:
+                self.annotation_action_combo.addItem("Remove annotation", "remove")
+            elif column_resolution.mode != "existing" and remove_index >= 0:
+                self.annotation_action_combo.removeItem(remove_index)
+            if self.annotation_action_combo.currentIndex() < 0 and self.annotation_action_combo.count():
+                self.annotation_action_combo.setCurrentIndex(0)
+
+        column_ready = column_resolution.is_ready
+        self.annotation_action_combo.setEnabled(column_ready)
+        if column_resolution.value_kind == "positive_integer":
+            self.annotation_value_stack.setCurrentWidget(self.annotation_class_spinbox)
+        else:
+            self.annotation_value_stack.setCurrentWidget(self.annotation_value_edit)
+
+        show_value = column_ready and self.selected_annotation_action == "set"
+        self.annotation_value_label.setVisible(show_value)
+        self.annotation_value_stack.setVisible(show_value)
+        self.annotation_value_stack.setEnabled(show_value)
 
     def _refresh_controls_and_status(self) -> None:
         """Refresh Run readiness and status without reinspecting the cache."""
@@ -915,43 +1255,68 @@ class SpatialQuery(QWidget):
                 "for the complete Spatial Query selection."
             )
 
-        target_resolution = self._resolve_annotation_target()
+        column_resolution = self._resolve_annotation_column()
+        self._sync_annotation_input_controls(column_resolution)
+        mutation_resolution = self._resolve_annotation_mutation(column_resolution)
         has_report = self._canonical_cache_report is not None
         self.run_button.setEnabled(
             has_report
             and self._canonical_input_inspection_error is None
             and self._annotation_context.saved_shapes_name is not None
             and not self._annotation_context.has_unsaved_shapes_changes
-            and target_resolution.is_ready
+            and column_resolution.is_ready
+            and mutation_resolution.is_ready
             and not self._controller.is_running
         )
 
-        if self._show_execution_status:
-            self._apply_status_card_spec(
-                self.status_label,
-                build_spatial_query_execution_status_card_spec(
-                    message=self._controller.status_message,
-                    kind=self._controller.status_kind,
-                    is_running=self._controller.is_running,
-                ),
-            )
-            return
+        status_spec = self._resolve_status_card_spec(
+            column_resolution,
+            mutation_resolution,
+        )
+        self._apply_status_card_spec(self.status_label, status_spec)
 
-        self._apply_status_card_spec(
-            self.status_label,
-            build_spatial_query_status_card_spec(
-                has_spatialdata=self.selected_spatialdata is not None,
-                coordinate_system=self.selected_coordinate_system,
-                saved_shapes_name=self._annotation_context.saved_shapes_name,
-                has_unsaved_shapes_changes=self._annotation_context.has_unsaved_shapes_changes,
-                labels_name=self.selected_labels_name,
-                table_name=self.selected_table_name,
-                cache_report=self._canonical_cache_report,
-                canonical_input_inspection_error=self._canonical_input_inspection_error,
-                target_error=target_resolution.error,
-                target_description=target_resolution.description,
-                layer_styling_error=self._layer_styling_error,
-            ),
+    def _resolve_status_card_spec(
+        self,
+        column_resolution: _AnnotationColumnResolution,
+        mutation_resolution: _AnnotationMutationResolution,
+    ) -> _SpatialQueryStatusCardSpec:
+        """Return the highest-priority status card for the current widget state."""
+        if self._controller.is_running:
+            if not self._show_execution_status:
+                raise RuntimeError("A running Spatial Query operation must expose execution status.")
+            return build_spatial_query_execution_status_card_spec(
+                message=self._controller.status_message,
+                kind=self._controller.status_kind,
+                is_running=True,
+            )
+
+        if self._annotation_outcome_status is not None:
+            return self._annotation_outcome_status
+
+        # An accepted Run can finish without reaching annotation Apply, for
+        # example when no centroids match or a worker fails. Preserve that
+        # final controller message instead of returning to readiness status.
+        if self._show_execution_status:
+            return build_spatial_query_execution_status_card_spec(
+                message=self._controller.status_message,
+                kind=self._controller.status_kind,
+                is_running=False,
+            )
+
+        return build_spatial_query_status_card_spec(
+            has_spatialdata=self.selected_spatialdata is not None,
+            coordinate_system=self.selected_coordinate_system,
+            saved_shapes_name=self._annotation_context.saved_shapes_name,
+            has_unsaved_shapes_changes=self._annotation_context.has_unsaved_shapes_changes,
+            labels_name=self.selected_labels_name,
+            table_name=self.selected_table_name,
+            cache_report=self._canonical_cache_report,
+            canonical_input_inspection_error=self._canonical_input_inspection_error,
+            annotation_column_error=column_resolution.error,
+            annotation_column_description=column_resolution.description,
+            annotation_mutation_error=mutation_resolution.error if column_resolution.is_ready else None,
+            annotation_mutation_description=mutation_resolution.description,
+            layer_styling_error=self._layer_styling_error,
         )
 
     def _set_column_control_visibility(self) -> None:

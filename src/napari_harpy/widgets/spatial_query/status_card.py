@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from napari_harpy.core.spatial_query import CanonicalCacheReport, CanonicalCacheState
+from napari_harpy.core.spatial_query import (
+    CanonicalCacheReport,
+    CanonicalCacheState,
+    SpatialAnnotationSummary,
+)
 from napari_harpy.widgets.shared_styles import StatusCardKind, validate_status_card_kind
 
 _FIRST_CALCULATION_TOOLTIP = (
@@ -48,6 +52,67 @@ def build_spatial_query_execution_status_card_spec(
     )
 
 
+def build_spatial_annotation_outcome_status_card_spec(
+    summary: SpatialAnnotationSummary,
+    *,
+    layer_styling_error: str | None = None,
+) -> _SpatialQueryStatusCardSpec:
+    """Build the final status for one accepted annotation Apply."""
+    if not isinstance(summary, SpatialAnnotationSummary):
+        raise TypeError("Spatial annotation outcome status requires a SpatialAnnotationSummary.")
+
+    if summary.changed_count == 0:
+        if summary.is_removal:
+            lines = (
+                f"No annotations needed removal across {summary.matched_count} matched labeled objects.",
+                f"Already missing: {summary.unchanged_count}.",
+            )
+        else:
+            lines = (
+                f"All {summary.matched_count} matched labeled objects already have "
+                f"{_format_annotation_value(summary.annotation_value)}.",
+                f"Already equal: {summary.unchanged_count}.",
+            )
+        return _SpatialQueryStatusCardSpec(
+            title="No Annotation Changes",
+            lines=lines,
+            kind="info",
+        )
+
+    if summary.is_removal:
+        lines = (
+            f"Removed annotations from {summary.removal_count} matched labeled objects.",
+            f"Already missing: {summary.unchanged_count}.",
+        )
+    else:
+        lines = (
+            f"Applied {_format_annotation_value(summary.annotation_value)} "
+            f"to {summary.changed_count} matched labeled objects.",
+            f"Overwritten: {summary.overwrite_count}. Already equal: {summary.unchanged_count}.",
+        )
+
+    if layer_styling_error is not None:
+        lines = (*lines, f"Labels styling could not be refreshed: {layer_styling_error}")
+    return _SpatialQueryStatusCardSpec(
+        title="Annotation Applied",
+        lines=lines,
+        kind="warning" if layer_styling_error is not None else "success",
+    )
+
+
+def build_spatial_annotation_failure_status_card_spec(
+    error: str,
+) -> _SpatialQueryStatusCardSpec:
+    """Build the final status for a rejected annotation Apply."""
+    if not isinstance(error, str) or not error:
+        raise ValueError("Spatial annotation failure status requires a non-empty error.")
+    return _SpatialQueryStatusCardSpec(
+        title="Annotation Failed",
+        lines=(error, "Review the current annotation inputs and apply again."),
+        kind="error",
+    )
+
+
 def build_spatial_query_status_card_spec(
     *,
     has_spatialdata: bool,
@@ -58,8 +123,10 @@ def build_spatial_query_status_card_spec(
     table_name: str | None,
     cache_report: CanonicalCacheReport | None,
     canonical_input_inspection_error: str | None,
-    target_error: str | None,
-    target_description: str | None,
+    annotation_column_error: str | None,
+    annotation_column_description: str | None,
+    annotation_mutation_error: str | None,
+    annotation_mutation_description: str | None,
     layer_styling_error: str | None,
 ) -> _SpatialQueryStatusCardSpec:
     """Build the unified Spatial Query status from already-derived child state."""
@@ -112,10 +179,16 @@ def build_spatial_query_status_card_spec(
         )
     if canonical_input_inspection_error is not None:
         raise ValueError("A canonical cache report and canonical input inspection error cannot be supplied together.")
-    if target_error is not None:
+    if annotation_column_error is not None:
         return _SpatialQueryStatusCardSpec(
-            title="Annotation Target Not Ready",
-            lines=(target_error,),
+            title="Annotation Column Not Ready",
+            lines=(annotation_column_error,),
+            kind="warning",
+        )
+    if annotation_mutation_error is not None:
+        return _SpatialQueryStatusCardSpec(
+            title="Annotation Value Required",
+            lines=(annotation_mutation_error,),
             kind="warning",
         )
     if layer_styling_error is not None:
@@ -133,7 +206,8 @@ def build_spatial_query_status_card_spec(
         title="Spatial Query Ready",
         lines=(
             f'Shapes "{saved_shapes_name}" will query labels "{labels_name}".',
-            f"Target: {target_description or 'unknown annotation column'}.",
+            f"Target: {annotation_column_description or 'unknown annotation column'}.",
+            annotation_mutation_description or "Annotation action is not configured.",
             cache_line,
         ),
         kind=kind,
@@ -174,3 +248,9 @@ def _build_ready_cache_status(
         )
 
     raise ValueError(f"Unsupported canonical cache state `{report.state}`.")
+
+
+def _format_annotation_value(value: object) -> str:
+    if isinstance(value, str):
+        return f'"{value}"'
+    return str(value)
