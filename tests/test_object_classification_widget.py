@@ -93,11 +93,7 @@ def _spatial_query_annotation_event(
     return TableStateChangedEvent(
         sdata=sdata,
         table_name=table_name,
-        paths=(
-            frozenset({TableComponentPath("obs", (USER_CLASS_COLUMN,))})
-            if paths is None
-            else paths
-        ),
+        paths=(frozenset({TableComponentPath("obs", (USER_CLASS_COLUMN,))}) if paths is None else paths),
         regions=("blobs_labels",),
         change_kind="updated",
         source=source,
@@ -1822,11 +1818,7 @@ def test_widget_ignores_unrelated_spatial_query_annotation_events(
 
     event_sdata = sdata_blobs_multi_region if event_kind == "other_sdata" else sdata_blobs
     table_name = "other_table" if event_kind == "other_table" else "table"
-    paths = (
-        frozenset({TableComponentPath("uns", (USER_CLASS_COLORS_KEY,))})
-        if event_kind == "other_path"
-        else None
-    )
+    paths = frozenset({TableComponentPath("uns", (USER_CLASS_COLORS_KEY,))}) if event_kind == "other_path" else None
     widget._on_table_state_changed(
         _spatial_query_annotation_event(
             event_sdata,
@@ -1881,6 +1873,150 @@ def test_widget_rejects_invalid_spatial_query_user_class_state_without_retrainin
     assert "Table Binding Invalid" in widget.selection_status.text()
     assert mark_dirty_reasons == []
     assert schedule_calls == []
+
+
+@pytest.mark.parametrize(
+    ("source", "paths"),
+    [
+        (
+            "spatial_query_canonical_centers",
+            frozenset(
+                {
+                    TableComponentPath("obsm", ("spatial_canonical",)),
+                    TableComponentPath("uns", ("spatial_coordinates", "spatial_canonical")),
+                }
+            ),
+        ),
+        (
+            "spatial_query_annotation",
+            frozenset({TableComponentPath("obs", ("another_annotation",))}),
+        ),
+    ],
+)
+def test_widget_refreshes_persistence_for_any_selected_table_event(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+    source: str,
+    paths: frozenset[TableComponentPath],
+) -> None:
+    """Keep Write Table State synchronized for every selected-table mutation.
+
+    Persistence readiness is table-wide, so domain-specific event filtering
+    must not hide changes produced by other napari-harpy widgets or components.
+    """
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    domain_calls: list[str] = []
+    monkeypatch.setattr(widget, "_bind_current_selection", lambda: domain_calls.append("bind"))
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: domain_calls.append(f"dirty:{reason}"),
+    )
+
+    assert not widget.sync_button.isEnabled()
+
+    app_state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=backed_sdata_blobs,
+            table_name="table",
+            paths=paths,
+            regions=("blobs_labels",),
+            change_kind="updated",
+            source=source,
+        )
+    )
+
+    assert widget.sync_button.isEnabled()
+    assert widget._persistence_controller.has_unsynced_table_changes is True
+    assert domain_calls == []
+
+
+@pytest.mark.parametrize("event_identity", ["other_sdata", "other_table"])
+def test_widget_does_not_refresh_persistence_for_unrelated_table_event(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+    sdata_blobs_multi_region: SpatialData,
+    event_identity: str,
+) -> None:
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    refresh_calls: list[str] = []
+    monkeypatch.setattr(
+        widget,
+        "_update_persistence_controls",
+        lambda: refresh_calls.append("refresh"),
+    )
+
+    event_sdata = sdata_blobs_multi_region if event_identity == "other_sdata" else backed_sdata_blobs
+    table_name = "table_multi" if event_identity == "other_sdata" else "other_table"
+    app_state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=event_sdata,
+            table_name=table_name,
+            paths=frozenset({TableComponentPath("obs", ("another_annotation",))}),
+            regions=("blobs_labels",),
+            change_kind="updated",
+            source="spatial_query_annotation",
+        )
+    )
+
+    assert refresh_calls == []
+    assert not widget.sync_button.isEnabled()
+
+
+@pytest.mark.parametrize("clean_transition", ["persisted_change", "reload"])
+def test_widget_disables_write_when_shared_table_event_cleans_selected_table(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+    clean_transition: str,
+) -> None:
+    """Disable Write Table State after persistence or reload cleans the shared manifest."""
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+    dirty_event = TableStateChangedEvent(
+        sdata=backed_sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obs", ("another_annotation",))}),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source="spatial_query_annotation",
+    )
+    app_state.record_table_mutation(dirty_event)
+    snapshot = app_state.snapshot_table_dirty_state(backed_sdata_blobs, "table")
+
+    assert widget.sync_button.isEnabled()
+
+    if clean_transition == "persisted_change":
+        app_state.record_persisted_table_change(dirty_event, snapshot)
+    else:
+        app_state.record_table_reload(
+            TableStateChangedEvent(
+                sdata=backed_sdata_blobs,
+                table_name="table",
+                paths=dirty_event.paths,
+                regions=("blobs_labels",),
+                change_kind="reloaded",
+                source="persistence_controller",
+            )
+        )
+
+    assert app_state.is_table_dirty(backed_sdata_blobs, "table") is False
+    assert not widget.sync_button.isEnabled()
 
 
 def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_selection(
@@ -2797,8 +2933,9 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
 
     widget.retrain_button.click()
     qtbot.waitUntil(
-        lambda: widget._persistence_controller.has_unsynced_table_changes
-        and table.obs[PRED_CLASS_COLUMN].notna().any(),
+        lambda: (
+            widget._persistence_controller.has_unsynced_table_changes and table.obs[PRED_CLASS_COLUMN].notna().any()
+        ),
         timeout=5000,
     )
     sync_tooltip = unescape(widget.sync_button.toolTip()).replace("&#8203;", "").replace("\u200b", "")

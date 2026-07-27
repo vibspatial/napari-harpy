@@ -7514,6 +7514,8 @@ single-instance row-scoped styling optimization.
 
 ### Slice 7d: Shared table dirty-state UI synchronization
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 `HarpyAppState` already owns the authoritative per-viewer dirty-table manifest.

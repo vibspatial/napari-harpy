@@ -583,6 +583,15 @@ class ObjectClassificationWidget(QWidget):
             return
         if event.sdata is not self.selected_spatialdata:
             return
+
+        # The Write Table State button represents the shared dirty state of the
+        # complete selected table. It must therefore react to every selected-
+        # table event published through HarpyAppState—regardless of which
+        # napari-harpy widget produced it or whether it changed .obs, .obsm, or
+        # .uns. Refresh before the domain-specific filters below can return.
+        if event.table_name == self.selected_table_name:
+            self._update_persistence_controls()
+
         if event.source == _SPATIAL_QUERY_ANNOTATION_SOURCE:
             self._consume_spatial_query_annotation(event)
             return
@@ -1764,7 +1773,8 @@ class ObjectClassificationWidget(QWidget):
             regions=change.regions,
             source=change.source,
         )
-        self._update_persistence_controls()
+        # _record_table_mutation() synchronously publishes table_state_changed;
+        # the shared handler refreshes persistence controls for this table.
 
     def _on_classifier_prediction_state_changed(self) -> None:
         # Prediction changes are the classifier-owned table changes that affect
