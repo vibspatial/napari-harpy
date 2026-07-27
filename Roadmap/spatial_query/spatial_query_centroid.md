@@ -7873,6 +7873,7 @@ class TableReloadRequest:
     sdata: SpatialData
     table_name: str
     paths: frozenset[TableComponentPath]
+    region_name: str | None
     source: str
 
 
@@ -7883,10 +7884,36 @@ class TableReloadParticipant(Protocol):
     ) -> None: ...
 ```
 
-The final API may refine the names, but it must retain the distinction between
-pre-reload preparation and post-reload adoption. Multiple participants must be
-registrable without introducing widget-to-widget dependencies. Participants
-ignore requests for datasets or tables they do not consume.
+`region_name` captures the optional spatial element against which the table is
+currently being used. It may identify a Labels or Shapes element. Reload
+validation uses it to require that the restored table still annotates that
+element. It does not restrict component reload to rows belonging to that
+region. The persistence operation must not read the name later from a possibly
+changed widget or controller selection.
+
+Slice 8b also removes the existing Labels-specific terminology from the generic
+persistence implementation. Rename `labels_name` to `region_name` throughout:
+
+- `TablePersistenceControls.bind()`;
+- `PersistenceController.bind()` and its stored selected-region state;
+- `PersistenceController.reload_table_components()`;
+- the core `reload_table_components()` and `_validate_reload_binding()`
+  boundaries;
+- the corresponding validation messages and focused tests.
+
+This rename is limited to generic table persistence. Object Classification and
+Spatial Query may continue to use `labels_name` for fields and operations that
+genuinely require a Labels element. Their selected Labels name is passed to the
+persistence boundary as its generic `region_name`.
+
+The protocol retains a strict distinction between pre-reload preparation and
+post-reload adoption. `HarpyAppState` owns explicit multi-participant
+registration, unregistration, and preparation dispatch. Participants register
+when their workflow is constructed and unregister during teardown. Registration
+must support multiple simultaneous table consumers without introducing
+widget-to-widget dependencies. Each participant compares the request with the
+dataset and table it currently consumes, ignores unrelated requests, and never
+infers the target from the initiating widget.
 
 #### UI intent versus accepted reload request
 
@@ -7900,10 +7927,11 @@ reload_requested
 
 TableReloadRequest
     → accepted immutable operation identity
-    → “reload these paths from this exact table in this exact SpatialData”
+    → “reload these paths for this optional spatial-region binding from this exact
+       table in this exact SpatialData”
 ```
 
-The coordinator constructs no `TableReloadRequest` when the user cancels.
+The shared reload path constructs no `TableReloadRequest` when the user cancels.
 After Write succeeds or Discard is accepted, it captures one request and passes
 that same object to every participant and to the reload operation:
 
@@ -7915,7 +7943,7 @@ resolve Write / Discard / Cancel
     │      → construct no TableReloadRequest
     │
     └── accepted
-           → capture sdata / table_name / paths / source once
+           → capture sdata / table_name / paths / region_name / source once
            → Object Classification prepares from that request
            → every other registered participant prepares from that request
            → PersistenceController reloads that same target
@@ -7925,8 +7953,9 @@ resolve Write / Discard / Cancel
 Participants must not infer the reload target from their current UI selection
 or from the initiating widget. They compare the immutable request with the
 dataset and table they consume, ignore unrelated requests, and prepare only
-when affected. This prevents the coordinator and separate workflows from
-independently reading mutable selections and acting on different targets.
+when affected. This prevents the shared persistence components and separate
+workflows from independently reading mutable selections and acting on different
+targets.
 
 #### Why Write has no participant request
 
@@ -7958,9 +7987,29 @@ The two immutable objects therefore have distinct responsibilities:
 | `TableDirtySnapshot` | Ensure Write acknowledges only the state it actually persisted |
 | `TableReloadRequest` | Tell every workflow exactly which accepted Reload it must prepare for |
 
-#### Shared reload coordinator
+#### Shared reload ownership
 
-The coordinator owns the accepted transition:
+The shared transition is divided across the existing architectural owners:
+
+```text
+TablePersistenceControls
+    → present the generic Write / Discard / Cancel decision
+    → present success or failure feedback
+
+PersistenceController
+    → capture the exact accepted TableReloadRequest
+    → execute that exact request
+
+HarpyAppState
+    → register and unregister TableReloadParticipant objects
+    → dispatch pre-reload preparation to every affected participant
+
+TableStateChangedEvent(change_kind="reloaded")
+    → notify consumers to adopt the restored state after success
+```
+
+No separate workflow-specific coordinator is introduced. Together these shared
+components own the accepted transition:
 
 ```text
 reload_requested
@@ -7982,18 +8031,22 @@ resolve Write / Discard / Cancel when the table is dirty
            → publish one accepted post-reload event
 ```
 
-`TablePersistenceControls` continues to emit `reload_requested`; it never calls
-`PersistenceController.reload_table_state()` directly. The coordinator is the
-only UI reload path.
+`TablePersistenceControls.reload_requested` remains the zero-payload UI intent.
+The reusable persistence controls, rather than their Object Classification
+host, resolve that intent through the generic decision boundary. They then ask
+`PersistenceController` to capture the immutable request, ask `HarpyAppState`
+to prepare all participants, and execute the same captured request. No host
+widget may bypass this shared UI reload path by calling
+`PersistenceController.reload_table_state()` directly.
 
 #### Object Classification migration
 
 Object Classification is the first registered participant:
 
 ```text
-Object Classification reload_requested
+TablePersistenceControls.reload_requested
     ↓
-shared reload coordinator
+reusable Write / Discard / Cancel boundary
     ↓
 Object Classification.prepare_table_reload()
     → ClassifierController.freeze_for_reload()
@@ -8012,25 +8065,55 @@ Object Classification adopts restored state
 The migration must preserve the current messages, dirty decision behavior,
 selection fallbacks, and stale-worker protection. Its purpose is architectural:
 Object Classification must stop owning a private reload lifecycle while its
-observable behavior remains unchanged.
+observable behavior remains unchanged. Its post-reload adoption moves out of
+the private reload call stack and into its consumer for the existing accepted
+`TableStateChangedEvent(change_kind="reloaded")`.
 
-#### Decisions to resolve before implementation
+#### Failure and completion contract
 
-- finalize `TableReloadRequest` fields and the participant registration and
-  teardown lifecycle;
-- choose the shared reload coordinator owner and the reusable decision-dialog
-  boundary;
-- define failure behavior when participant preparation raises before mutation;
-- keep post-reload adoption on the existing reload event or document a
-  separate accepted-reload callback if one is genuinely required;
-- preserve the existing rule that stale classifier results cannot mutate
-  reloaded state.
+Every non-success path is explicit:
+
+```text
+Cancel
+    → construct no TableReloadRequest
+    → prepare no participant
+    → mutate no table or dirty manifest
+
+Write failure
+    → stop before request capture and participant preparation
+    → preserve the current live table and dirty state
+
+participant preparation failure
+    → stop before persistence mutation
+    → publish no post-reload event
+    → present the error through the reusable persistence feedback
+
+reload validation or assignment failure
+    → restore the complete prior in-memory table components
+    → publish no post-reload event
+    → present the error through the reusable persistence feedback
+
+successful reload
+    → record the restored paths in the shared dirty manifest
+    → publish exactly one accepted post-reload event
+    → affected consumers adopt the restored state from that event
+```
+
+Participant preparation is conservative pre-mutation invalidation. It may
+invalidate pending or active work whose captured table state would become
+obsolete, but it must not mutate AnnData or infer a new selection. Such
+invalidation must remain safe if a later participant or the reload operation
+fails. The existing post-reload event is the only success-adoption boundary; no
+second accepted-reload callback or event is introduced.
 
 #### Deliverables
 
 - an immutable reload request and explicit participant protocol;
-- multi-participant registration without direct widget dependencies;
-- one shared reload coordinator owning Write / Discard / Cancel;
+- `HarpyAppState` multi-participant registration, dispatch, and teardown without
+  direct widget dependencies;
+- reusable persistence controls owning the generic Write / Discard / Cancel
+  presentation;
+- `PersistenceController` capture and execution of one exact accepted request;
 - Object Classification migrated as the first participant;
 - existing Object Classification post-reload rebinding and styling preserved;
 - focused clean, Write, Discard, Cancel, failure, and late-worker tests;
@@ -8043,6 +8126,8 @@ observable behavior remains unchanged.
 - participant preparation always happens before live table replacement;
 - Cancel changes no controller, table, dirty-manifest, layer, or UI state;
 - a failed Write never proceeds to participant preparation or reload;
+- participant preparation or reload failure never emits a post-reload event;
+- reload failure restores the complete prior supported in-memory table state;
 - an accepted reload cannot be followed by an older classifier result mutating
   the restored table;
 - one accepted reload emits one post-reload table event.
@@ -8058,7 +8143,7 @@ proven by Object Classification rather than introducing another reload path.
 ```text
 Spatial Query reload_requested
     ↓
-shared reload coordinator
+shared reload path
     ↓
 prepare every participant targeting the table
     → Object Classification freezes affected classifier work
