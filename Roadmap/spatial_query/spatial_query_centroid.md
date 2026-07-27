@@ -8145,6 +8145,8 @@ second accepted-reload callback or event is introduced.
 
 ### Slice 8c: Spatial Query reload integration
 
+**Implementation status: Planned.**
+
 #### Responsibility boundary
 
 This slice adds the second reload participant and exposes the reusable
@@ -8161,7 +8163,6 @@ shared reload path
 prepare every participant targeting the table
     → Object Classification freezes affected classifier work
     → Spatial Query invalidates its active operation
-    → any other registered asynchronous table consumer invalidates affected work
     ↓
 reload the table once
     ↓
@@ -8174,58 +8175,171 @@ Spatial Query owns its selected Labels element and table, so the persistence
 controls live in the Spatial Query child rather than the parent Annotation
 widget.
 
-#### Spatial Query post-reload adoption
+#### Persistence-controls ownership and binding
 
-Reload replaces live `.obs`, `.obsm`, and `.uns` components. Spatial Query must
-therefore rebuild every derived UI and viewer state that may refer to the old
-table:
+The Spatial Query child constructs one `TablePersistenceControls` with
+`reload_source="spatial_query"` and lays it out beneath the Apply Annotation
+action. It binds the controls to the child's exact current selection:
 
 ```text
-accepted Spatial Query table reload
-    → invalidate any captured Run intent or worker identity
-    → refresh compatible table-column controls
-    → re-inspect the canonical-center cache
-    → refresh readiness and persistence presentation
-    → reapply the selected Existing-column style
-      or the deliberate New-column neutral style
+sdata
+    → selected SpatialData
+
+table_name
+    → selected annotating table
+
+region_name
+    → selected Labels element
 ```
+
+The controls are rebound only when the selected SpatialData, Labels element, or
+table changes. Ordinary status-card and control refreshes must not rebind them,
+because `TablePersistenceControls.bind()` deliberately clears persistence
+feedback. When there is no complete table selection, the controls bind to no
+table and remain disabled.
+
+The shared `TableDirtyStateChangedEvent` contract from Slice 8a keeps the
+Spatial Query and Object Classification Write buttons and Reload warnings
+synchronized. Spatial Query must not introduce widget-local dirty state or a
+separate write/reload implementation. Writing from either control persists the
+complete shared dirty-path snapshot for that table, including changes produced
+by the other workflow.
+
+#### Spatial Query pre-reload participation
+
+The Spatial Query child registers itself as a `TableReloadParticipant` when it
+is constructed and unregisters during Qt teardown. Its participant method
+matches the immutable request by SpatialData identity and table name:
+
+```python
+def prepare_for_table_reload(
+    self,
+    request: TableReloadRequest,
+) -> None:
+    if (
+        request.sdata is not self.selected_spatialdata
+        or request.table_name != self.selected_table_name
+    ):
+        return
+
+    self._invalidate_run()
+```
+
+Matching does not additionally require the same `region_name`: one AnnData
+table may annotate multiple spatial regions, and replacing that shared table
+can invalidate work captured for any of them. This first implementation also
+does not filter by `request.paths`. Any replacement within the selected table
+is conservatively treated as relevant because `.obs`, `.obsm`, and `.uns` can
+respectively affect annotation intent, canonical centers, cache metadata, or
+viewer styling.
+
+`_invalidate_run()` clears the accepted immutable Run intent and invalidates the
+controller's active operation identity before any in-memory table component is
+replaced. Late center-calculation and containment-query callbacks are therefore
+ignored. As with the Slice 8b participant contract, this conservative
+invalidation is allowed to remain in effect if a later participant or the
+reload itself fails; preparation must not mutate AnnData.
+
+#### Spatial Query post-reload adoption
+
+The existing `TableStateChangedEvent(change_kind="reloaded")` consumer becomes
+the pure post-success adoption boundary. Pre-reload invalidation no longer
+belongs to that handler. For an event targeting the selected SpatialData and
+table, Spatial Query rebuilds every derived UI and viewer state that may refer
+to the replaced `.obs`, `.obsm`, or `.uns` components:
+
+```text
+accepted reload of the selected table
+    → refresh compatible annotation-column controls
+      → preserve the selected Existing column when it remains compatible
+      → otherwise use the existing deterministic named-default/New fallback
+      → preserve the user's New-column draft
+    → re-inspect the canonical-center cache
+    → clear any previous layer-styling error
+    → call _apply_explicit_labels_styling()
+      → reapply the selected Existing-column style
+      → or reapply the deliberate New-column neutral style
+    → refresh readiness and status presentation
+```
+
+The selected Labels element and table remain selected. Core reload validation
+has already required that the restored table remains bound to the selected
+`region_name`; column compatibility, cache state, and styling are the derived
+state that must be recalculated.
 
 Object Classification must remain protected when Spatial Query initiates the
 reload, and must perform its Slice 8b post-reload adoption for the same table.
-The final styling call follows the existing last-styling-wins contract; no
-styling ownership is introduced.
+Both workflows may synchronously reapply their selected primary-Labels style
+while consuming the post-reload event. The existing last-styling-wins contract
+is intentional: whichever affected consumer styles the shared layer last
+defines its visible presentation. This slice introduces neither global styling
+ownership nor a cross-widget styling priority. Every applied style must,
+however, derive from the restored table rather than the pre-reload state.
 
-#### Decisions to resolve before implementation
+#### Cross-widget accepted flow
 
-- define how the Spatial Query child binds and lays out
-  `TablePersistenceControls`;
-- define the exact Spatial Query pre-reload participant method and which active
-  operation identities it invalidates;
-- audit Feature Extraction and other asynchronous table consumers and register
-  them when their late results could target the reloaded table;
-- define deterministic post-reload ordering when more than one workflow
-  reapplies primary-Labels styling.
+```text
+Spatial Query Reload button clicked
+    ↓
+TablePersistenceControls.reload_table_state()
+    ↓
+resolve clean or Write / Discard / Cancel
+    ↓ accepted
+capture one TableReloadRequest
+    ↓
+HarpyAppState prepares matching participants
+    → Spatial Query invalidates accepted or active Run work
+    → Object Classification freezes affected classifier work
+    ↓
+PersistenceController replaces the selected in-memory table components once
+    ↓
+publish one TableStateChangedEvent(change_kind="reloaded")
+    ↓
+Spatial Query refreshes columns, cache state, status, and styling
+Object Classification rebinds, resets, and reapplies its selected styling
+```
+
+Feature Extraction and other asynchronous table consumers are explicitly
+outside Slice 8c. Their reload interaction requires a separate audit because
+backed Feature Extraction may write through Harpy while working, unlike
+Spatial Query's mutation-free workers. Slice 8e performs that multi-widget
+audit and registers another participant when late Feature Extraction work can
+target a reloaded table.
 
 #### Deliverables
 
-- reusable persistence controls bound to the Spatial Query table selection;
-- Spatial Query registered as a reload participant;
-- pre-reload invalidation of captured Spatial Query work;
-- post-reload column, canonical-cache, status, and styling refresh;
-- cross-widget tests where either Object Classification or Spatial Query
-  initiates reload;
-- focused late-result and last-styling-wins tests.
+- reusable persistence controls beneath Apply Annotation, bound to the exact
+  selected SpatialData, table, and Labels region;
+- Spatial Query participant registration and identity-safe teardown;
+- conservative pre-reload invalidation of accepted and active Spatial Query
+  work for the selected table;
+- post-reload compatible-column fallback, canonical-cache reinspection,
+  status refresh, and explicit Existing/New Labels styling;
+- shared dirty-state synchronization without widget-local persistence state;
+- cross-widget tests where Spatial Query initiates a reload of a table also
+  consumed by Object Classification;
+- focused unrelated-request, late-result, column-fallback, cache, styling,
+  single-replacement, and single-event tests.
 
 #### Exit criteria
 
-- either workflow may initiate Reload without bypassing another affected
-  workflow's preparation;
-- only the selected dataset and table participants prepare and refresh;
-- no stale Spatial Query or classifier result mutates restored state;
+- Spatial Query can initiate Reload without bypassing any registered workflow
+  that consumes the selected table;
+- Spatial Query prepares only for the exact selected SpatialData and table;
+- no late center-calculation, containment-query, or classifier result mutates
+  the restored table;
+- Cancel and failed Write construct no request and therefore do not invalidate
+  Spatial Query work;
 - both persistence controls reflect the same authoritative dirty state;
+- a successful reload preserves a still-compatible Existing-column choice and
+  the user's New-column draft, while applying the documented fallback when an
+  Existing column disappears or becomes incompatible;
+- the post-reload canonical-cache report, status card, and primary-Labels style
+  derive from the restored table;
 - no primary Labels layer retains table-backed colors or features derived from
   the pre-reload table after adoption completes;
-- one reload request results in at most one table replacement.
+- one accepted reload results in exactly one table replacement and one
+  post-reload table event.
 
 ### Slice 8d: SpatialData replacement and close guard
 
@@ -8301,6 +8415,9 @@ not a place to introduce another dirty-state or persistence model.
 
 - multi-widget tests with Viewer, Annotation/Spatial Query, and Object
   Classification sharing one `HarpyAppState`;
+- an audit of asynchronous Feature Extraction reload interaction, with
+  registration as a `TableReloadParticipant` when late Feature Extraction work
+  can target a reloaded table;
 - backed-zarr tests proving that canonical centers, annotation columns,
   companion palettes, classifier state, and feature-matrix metadata are written
   and reloaded together through explicit component encodings;
