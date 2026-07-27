@@ -7669,37 +7669,255 @@ cannot be expected to refresh any widget.
 - the general persistence refresh introduces no duplicate mutation records,
   styling refreshes, classifier invalidations, or cross-widget imports.
 
-### Slice 8: Persistence UX and cross-widget synchronization
+### Slice 8a: Shared primary-Labels styling ownership
 
-Deliverables:
+#### Responsibility boundary
 
-- the parent Annotation widget, including its Spatial Query child, Viewer, and
-  remaining cross-widget refresh behavior consuming `table_state_changed`
-  without feedback loops, extending rather than reimplementing the Slice 7c
-  `user_class` event integration;
-- shared primary-label color-source ownership implementing the rule that the
-  most recent explicit coloring action controls the layer, so later unrelated
-  table events cannot let another widget silently reclaim its styling;
-- reusable Write Table State and Reload Table from zarr UI components backed by
-  the generalized PersistenceController;
-- dirty reload write/discard/cancel behavior;
-- dirty-dataset close/replacement guard;
-- multi-widget and backed-zarr integration tests.
+Viewer, Object Classification, and Spatial Query can all style the same primary
+napari Labels layer. Today each workflow applies its styling directly. This
+slice introduces one shared ownership contract so an automatic refresh from one
+workflow cannot silently replace a color source explicitly selected in another.
 
-Exit criteria:
+The most recent explicit user coloring action owns the primary Labels styling.
+An automatic table-state event may refresh that active style when its exact
+table, region, and column inputs changed, but it must never claim styling
+ownership by itself.
+
+The contract must distinguish:
+
+```text
+explicit user action
+    → may claim primary-Labels styling ownership
+    → apply the selected table color source or deliberate neutral style
+
+automatic relevant table event
+    → current owner may refresh its active style
+    → ownership remains unchanged
+
+automatic unrelated table event
+    → do not restyle the layer
+    → ownership remains unchanged
+
+primary Labels layer removed or selection context replaced
+    → clear the stale ownership record
+```
+
+Explicit actions include selecting a Viewer color source, selecting an Object
+Classification color mode, selecting a Spatial Query Existing column or
+deliberate New-column neutral view, and completing an effective Spatial Query
+annotation Apply. Merely constructing a widget or receiving a shared event is
+not an explicit action.
+
+#### Decisions to resolve before implementation
+
+- define the minimal shared style-ownership record and whether it belongs in
+  `HarpyAppState`, the viewer adapter, or the primary-layer binding;
+- define the stable workflow-owner identifiers without importing widgets into
+  one another;
+- define exact ownership cleanup for layer deletion, Labels selection changes,
+  coordinate-system changes, and SpatialData replacement;
+- define the event/path relevance checks for table-backed color sources,
+  including `user_class`, classifier outputs, and ordinary Spatial Annotation
+  columns.
+
+#### Deliverables
+
+- one shared primary-Labels style-ownership contract;
+- explicit ownership claims from Viewer, Object Classification, and Spatial
+  Query;
+- owner-preserving refreshes for relevant `table_state_changed` events;
+- removal of any automatic styling path that can reclaim a layer merely because
+  another widget published an unrelated table event;
+- focused ownership-transfer, relevant-refresh, unrelated-event, and cleanup
+  tests.
+
+#### Exit criteria
+
+- the most recent explicit coloring action controls the shared primary Labels
+  layer;
+- relevant mutations refresh the currently owned style without changing its
+  owner;
+- unrelated events never change the visible color source;
+- styling never mutates AnnData or marks a table dirty;
+- widgets remain coupled only through shared app/viewer state.
+
+### Slice 8b: Reusable table persistence controls
+
+#### Responsibility boundary
+
+`PersistenceController` already provides the generic component-level Write and
+Reload operations. Object Classification currently owns the only Write Table
+State and Reload Table State buttons, their feedback, and the dirty-reload
+prompt. This slice extracts that UI behavior into a reusable persistence
+component without duplicating persistence or dirty-state truth.
+
+The reusable component binds to:
+
+```text
+SpatialData
+table_name
+optional labels_name
+    ↓
+PersistenceController
+    ↓
+HarpyAppState shared dirty manifest
+```
+
+Object Classification and the parent Annotation workflow must use the same
+component contract. Canonical centers, annotation columns, palettes, classifier
+state, and feature-matrix paths remain one union of dirty table components; no
+workflow-specific write button may persist only its own contribution.
+
+#### Write-completion synchronization decision
+
+Slice 7d could rely on `table_state_changed` plus an Object Classification-local
+post-write refresh because only one generic Write Table State action existed.
+That assumption no longer holds when independent reusable controls are visible.
+A successful `acknowledge_table_write()` changes shared dirty state without
+changing the live table and therefore does not naturally produce a
+`TableStateChangedEvent`.
+
+Before implementation, choose and document one shared write-completion
+notification contract. It must:
+
+- refresh every persistence component bound to the written table;
+- report the authoritative post-acknowledgement dirty boolean;
+- leave a component enabled when a newer mutation token or another dirty path
+  remains;
+- avoid representing persistence acknowledgement as a fake AnnData mutation;
+- avoid a second dirty manifest or widget-local dirty boolean.
+
+If a dedicated dirty-state notification is introduced, it is a narrow UI
+notification derived from the existing `HarpyAppState` manifest, not a second
+source of truth. Domain consumers continue to use `table_state_changed` for
+actual live-table mutations and reloads.
+
+#### Deliverables
+
+- a reusable Write Table State / Reload Table State UI component backed by
+  `PersistenceController`;
+- Object Classification migrated to that component without behavior loss;
+- persistence controls available to the parent Annotation workflow for its
+  selected table;
+- shared dirty-to-clean UI synchronization after generic writes;
+- the existing dirty-reload Write / Discard / Cancel interaction implemented
+  once in the reusable component;
+- focused tests for multiple controls bound to the same and different tables.
+
+#### Exit criteria
+
+- every bound control reflects one authoritative shared dirty manifest;
+- writing from either workflow immediately refreshes every control for that
+  table;
+- Write Table State persists the union of supported dirty paths and clears only
+  successfully written paths whose captured mutation tokens are still current;
+- Reload uses the generalized selective component API;
+- no full-AnnData rewrite or workflow-specific persistence implementation is
+  introduced.
+
+### Slice 8c: Reload and SpatialData replacement guards
+
+#### Responsibility boundary
+
+Reload and SpatialData replacement can invalidate live widget selections,
+editable Shapes state, table bindings, and asynchronous work. These transitions
+must be coordinated before destructive state replacement rather than repaired
+independently by widgets afterward.
+
+Two transitions require explicit contracts:
+
+```text
+Reload selected table state
+    → resolve Write / Discard / Cancel when the table is dirty
+    → invalidate or freeze work that captured the affected table
+    → reload supported components
+    → publish one accepted reload event
+    → refresh bound widgets from the reloaded table
+
+Replace or clear the active SpatialData
+    → inspect unsaved Shapes state and every dirty table in the old dataset
+    → resolve Write / Discard / Cancel
+    → cancel when the user rejects the transition
+    → invalidate active work before accepting replacement
+    → remove old layers and publish the new shared dataset
+```
+
+The current `HarpyAppState.set_sdata()` transition removes layers and replaces
+the shared dataset without consulting the dirty-table manifest. This slice must
+move dataset replacement safety to a shared pre-change boundary so correctness
+does not depend on which widget initiated the change.
+
+#### Decisions to resolve before implementation
+
+- define the pre-reload notification or participant contract used to invalidate
+  Spatial Query, Object Classification, Feature Extraction, and other work
+  targeting the affected table;
+- define the shared SpatialData replacement participant/coordinator and how it
+  composes unsaved Shapes confirmation with dirty-table confirmation;
+- define Write / Discard / Cancel behavior for multiple dirty tables and for
+  unbacked SpatialData where Write is unavailable;
+- define when dirty-manifest entries for an accepted discarded/replaced dataset
+  are removed;
+- define failure behavior when writing one of multiple tables succeeds and a
+  later write fails;
+- preserve the existing rule that stale worker results cannot mutate reloaded
+  or replaced state.
+
+#### Deliverables
+
+- shared table-reload pre-change coordination;
+- a dirty SpatialData replacement/close guard covering Shapes edits and dirty
+  tables;
+- explicit multi-table and unbacked-dataset decisions;
+- cancellation/invalidation of work captured before an accepted reload or
+  replacement;
+- cleanup of obsolete dirty-manifest and layer-binding state;
+- focused Write / Discard / Cancel and late-result tests.
+
+#### Exit criteria
+
+- Cancel leaves the current dataset, layers, edit session, table state, and
+  dirty manifest unchanged;
+- accepted reload/replacement cannot be followed by a late result mutating the
+  restored or newly selected state;
+- no dirty table or unsaved Shapes edit is silently discarded;
+- partial write failures remain visible and do not falsely mark unwritten state
+  clean;
+- the guard is enforced at the shared state-transition boundary.
+
+### Slice 8d: Multi-widget backed-zarr integration
+
+#### Responsibility boundary
+
+This slice verifies the combined contracts from Slices 8a–8c against one shared
+viewer and backed SpatialData store. It is an integration and hardening slice,
+not a place to introduce another styling, dirty-state, or persistence model.
+
+#### Deliverables
+
+- multi-widget tests with Viewer, Annotation/Spatial Query, and Object
+  Classification sharing one `HarpyAppState`;
+- backed-zarr tests proving that canonical centers, annotation columns,
+  companion palettes, classifier state, and feature-matrix metadata are written
+  and reloaded together through explicit component encodings;
+- ownership tests proving that cross-widget events preserve the most recent
+  explicit primary-Labels color source;
+- stale-token tests where a newer mutation arrives while an older write is in
+  progress;
+- reload and SpatialData replacement tests with pending/running workers;
+- assertions that no feedback loop, duplicate mutation record, unrelated
+  classifier invalidation, or full-AnnData rewrite occurs.
+
+#### Exit criteria
 
 - all widgets observe one current in-memory table state;
-- canonical centers, annotation columns, and changed companion palettes
-  persist/reload together;
-- Write Table State persists the union of supported dirty components through
-  AnnData element encodings and clears only successfully written unchanged
-  component mutation tokens;
-- no full-AnnData rewrite occurs;
-- no event loop or unrelated classifier invalidation;
-- annotation coloring follows only relevant current-table, current-region,
-  current-obs-column events and never dirties the table merely by styling;
-- no late task affects a reloaded/replaced table;
-- there is no competing widget-local dirty truth.
+- all persistence controls observe one shared dirty state;
+- annotation coloring follows only the active owner and relevant current-table,
+  current-region, current-column events;
+- canonical centers and annotation state persist/reload without a full table
+  rewrite;
+- no late work affects reloaded or replaced state;
+- there is no competing widget-local dirty or styling truth.
 
 ### Slice 9: Production hardening and release gate
 
