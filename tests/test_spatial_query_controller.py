@@ -317,7 +317,10 @@ def test_zero_match_query_does_not_publish_query_ready(
 
     assert accepted_queries == []
     assert controller.status_kind == "info"
-    assert controller.status_message == "No instance centroids found in the annotation."
+    assert (
+        controller.status_message
+        == "No instances from the selected Labels element have their center inside the selected Shapes."
+    )
 
 
 def test_active_query_worker_error_stops_operation_without_delivering_result(

@@ -345,7 +345,10 @@ class SpatialQueryController:
 
         count = result.matched_instance_count
         if count == 0:
-            self._set_status("No instance centroids found in the annotation.", kind="info")
+            self._set_status(
+                "No instances from the selected Labels element have their center inside the selected Shapes.",
+                kind="info",
+            )
             return
 
         noun = "centroid" if count == 1 else "centroids"

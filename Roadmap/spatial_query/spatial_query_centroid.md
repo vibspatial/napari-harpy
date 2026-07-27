@@ -966,8 +966,9 @@ before querying.
    `prepare_spatial_annotation()`, which resolves returned IDs to current table
    rows through the selected-region `region_key` and `instance_key` binding and
    validates the current canonical-center provenance.
-9. If no centroids match, show No instance centroids found in the
-   annotation and make no annotation-column changes.
+9. If no centroids match, show No instances from the selected Labels element
+   have their center inside the selected Shapes and make no annotation-column
+   changes.
 10. Otherwise summarize the captured Set/Remove value and immediately call
     `apply_spatial_annotation()` on the main thread.
 11. After an effective mutation, publish one table-state event, refresh
@@ -7079,7 +7080,8 @@ the current parent and selector context before proceeding.
 
 If `matched_instance_count == 0`:
 
-- show a neutral `No instance centroids found` outcome;
+- show a neutral `No instances from the selected Labels element have their
+  center inside the selected Shapes` outcome;
 - do not call `prepare_spatial_annotation()`;
 - do not mutate annotation state;
 - retain any accepted canonical cache update and its dirty paths.
@@ -7666,85 +7668,6 @@ cannot be expected to refresh any widget.
   or domain-specific widget consumption;
 - the general persistence refresh introduces no duplicate mutation records,
   styling refreshes, classifier invalidations, or cross-widget imports.
-
-### Slice 7e: User-facing annotation status terminology
-
-#### Responsibility boundary
-
-Spatial Query remains the internal domain and architectural name, but it is
-not the workflow users need to understand. From the user's perspective, the
-selected saved Shapes element determines which labeled objects receive an
-annotation. Slice 7b already replaces the old query-only action with
-`Apply Annotation`; this slice completes the visible execution and status
-language around that action. It does not rename Python modules, classes,
-methods, controller phases, events, tests, or roadmap concepts.
-
-`Apply Annotation` is deliberate: one accepted action finds the matching
-labeled objects and mutates the selected table automatically after successful
-query and freshness validation.
-
-#### Execution-status language
-
-Replace the developer-facing execution titles with:
-
-```text
-worker active
-    → Applying Annotation
-
-worker, preflight, or atomic Apply error
-    → Annotation Failed
-
-effective mutation
-    → Annotation Applied
-
-zero-match result
-    → No Matching Objects
-
-no-op result
-    → No Annotation Changes
-```
-
-Ordinary visible controller messages must describe labeled objects and the
-annotation workflow rather than cache, canonical-center, centroid, containment,
-or Spatial Query implementation details. Use language equivalent to:
-
-```text
-canonical-center calculation
-    → Preparing labeled objects from "<labels>" for annotation.
-
-containment query
-    → Finding labeled objects inside "<shapes>".
-
-non-empty result
-    → Found <N> labeled object(s); applying the annotation.
-
-zero-match result
-    → No labeled objects were found inside the selected shapes.
-```
-
-Failures retain the useful underlying error detail, but their user-facing
-title and leading message describe an annotation failure. Applied and removed
-annotation outcomes report the effective mutation and exact counts implemented
-by Slice 7b; they must not be relabeled as merely query completion.
-
-#### Deliverables
-
-- annotation-oriented running, failure, applied, zero-match, and no-op
-  status-card titles;
-- annotation-oriented center-calculation, geometry-evaluation, match, and
-  no-match messages;
-- focused status-card and widget/controller message tests updated to assert the
-  user-facing terminology.
-
-#### Exit criteria
-
-- the visible Apply Annotation workflow does not require the user to understand
-  the term Spatial Query;
-- ordinary execution messages do not expose centroid or canonical-cache
-  implementation terminology;
-- the primary action clearly communicates that a successful query immediately
-  mutates the selected annotation column;
-- internal Spatial Query APIs and architectural terminology remain unchanged.
 
 ### Slice 8: Persistence UX and cross-widget synchronization
 
