@@ -83,6 +83,27 @@ def _feature_table_event(
     )
 
 
+def _spatial_query_annotation_event(
+    sdata: SpatialData,
+    *,
+    table_name: str = "table",
+    paths: frozenset[TableComponentPath] | None = None,
+    source: str = "spatial_query_annotation",
+) -> TableStateChangedEvent:
+    return TableStateChangedEvent(
+        sdata=sdata,
+        table_name=table_name,
+        paths=(
+            frozenset({TableComponentPath("obs", (USER_CLASS_COLUMN,))})
+            if paths is None
+            else paths
+        ),
+        regions=("blobs_labels",),
+        change_kind="updated",
+        source=source,
+    )
+
+
 class DummyEventEmitter:
     def __init__(self) -> None:
         self._callbacks: list[Callable[[object], None]] = []
@@ -1717,6 +1738,149 @@ def test_widget_ignores_feature_matrix_writes_for_other_sdata(
     assert _combo_texts(widget.feature_matrix_combo) == previous_feature_items
     assert widget.selected_table_name == "table"
     assert widget.selected_feature_key == "features_1"
+
+
+@pytest.mark.parametrize("auto_train_enabled", [False, True])
+def test_widget_consumes_spatial_query_user_class_event_without_republishing(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+    auto_train_enabled: bool,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    table = sdata_blobs.tables["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        [1, 2, *([pd.NA] * (table.n_obs - 2))],
+        categories=[1, 2],
+    )
+    table.uns.pop(USER_CLASS_COLORS_KEY, None)
+
+    mark_dirty_reasons: list[str | None] = []
+    schedule_calls: list[str] = []
+    full_styling_calls: list[str] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "schedule_retrain",
+        lambda: schedule_calls.append("schedule") or True,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_refresh_layer_styling",
+        lambda: full_styling_calls.append("refresh"),
+    )
+    widget.auto_train_checkbox.setChecked(auto_train_enabled)
+
+    emitted_events: list[TableStateChangedEvent] = []
+    app_state.table_state_changed.connect(emitted_events.append)
+    event = _spatial_query_annotation_event(sdata_blobs)
+    app_state.record_table_mutation(event)
+
+    assert full_styling_calls == ["refresh"]
+    assert mark_dirty_reasons == ["the annotations changed"]
+    assert schedule_calls == (["schedule"] if auto_train_enabled else [])
+    assert USER_CLASS_COLORS_KEY not in table.uns
+    assert emitted_events == [event]
+    assert app_state.is_table_dirty(sdata_blobs, "table")
+
+
+@pytest.mark.parametrize(
+    ("event_kind", "expected_source"),
+    [
+        ("other_sdata", "spatial_query_annotation"),
+        ("other_table", "spatial_query_annotation"),
+        ("other_source", "object_classification_annotation"),
+        ("other_path", "spatial_query_annotation"),
+    ],
+)
+def test_widget_ignores_unrelated_spatial_query_annotation_events(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+    sdata_blobs_multi_region: SpatialData,
+    event_kind: str,
+    expected_source: str,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    rebind_calls: list[str] = []
+    monkeypatch.setattr(widget, "_bind_current_selection", lambda: rebind_calls.append("bind"))
+
+    event_sdata = sdata_blobs_multi_region if event_kind == "other_sdata" else sdata_blobs
+    table_name = "other_table" if event_kind == "other_table" else "table"
+    paths = (
+        frozenset({TableComponentPath("uns", (USER_CLASS_COLORS_KEY,))})
+        if event_kind == "other_path"
+        else None
+    )
+    widget._on_table_state_changed(
+        _spatial_query_annotation_event(
+            event_sdata,
+            table_name=table_name,
+            paths=paths,
+            source=expected_source,
+        )
+    )
+
+    assert rebind_calls == []
+
+
+def test_widget_rejects_invalid_spatial_query_user_class_state_without_retraining(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    layer = make_blobs_labels_layer(sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+    qtbot.addWidget(widget)
+    select_segmentation(widget)
+
+    table = sdata_blobs.tables["table"]
+    table.obs[USER_CLASS_COLUMN] = pd.Categorical(
+        np.zeros(table.n_obs, dtype=np.int64),
+        categories=[0],
+    )
+    mark_dirty_reasons: list[str | None] = []
+    schedule_calls: list[str] = []
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "mark_dirty",
+        lambda *, reason=None: mark_dirty_reasons.append(reason),
+    )
+    monkeypatch.setattr(
+        widget._classifier_controller,
+        "schedule_retrain",
+        lambda: schedule_calls.append("schedule") or True,
+    )
+    widget.auto_train_checkbox.setChecked(True)
+
+    app_state.record_table_mutation(_spatial_query_annotation_event(sdata_blobs))
+
+    assert widget._table_binding_error is not None
+    assert widget._annotation_controller.labels_layer is layer
+    assert widget._classifier_controller._selected_table_name is None
+    assert isinstance(layer.colormap, DirectLabelColormap)
+    np.testing.assert_allclose(layer.colormap.map(0), np.zeros(4, dtype=np.float32))
+    np.testing.assert_allclose(layer.colormap.map(5), np.asarray(to_rgba(DEFAULT_NEUTRAL_COLOR), dtype=np.float32))
+    assert "Table Binding Invalid" in widget.selection_status.text()
+    assert mark_dirty_reasons == []
+    assert schedule_calls == []
 
 
 def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_selection(

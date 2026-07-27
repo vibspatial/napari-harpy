@@ -422,9 +422,24 @@ class ClassifierController:
         return context_changed
 
     def mark_dirty(self, reason: str | None = None) -> None:
-        """Mark the current classifier outputs as stale after an input change."""
+        """Invalidate older asynchronous work and mark classifier outputs stale."""
         if self._is_shutdown:
             return
+
+        # mark_dirty() is also the asynchronous job-invalidation boundary:
+        #
+        # a pending or active classifier job captures the current inputs
+        #     ↓
+        # an annotation, feature matrix, or other classifier input changes
+        #     ↓
+        # invalidate the captured job identity
+        #     ↓
+        # any late result fails the identity guard in _on_worker_returned()
+        #
+        # Auto-train being disabled prevents a replacement job from starting;
+        # it does not guarantee that no older job is still pending or running.
+        # That older work must still be invalidated.
+        self._invalidate_async_jobs()
 
         if self._get_bound_table() is None:
             self._is_dirty = False

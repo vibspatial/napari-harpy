@@ -135,6 +135,7 @@ _TABLE_WIDE_PREDICTION_SCOPE_LABEL = "All eligible rows in table"
 _SELECTED_SEGMENTATION_TRAINING_SCOPE_LABEL = "Selected labels element only"
 _WRITE_TABLE_STATE_BUTTON_TEXT = "Write Table State"
 _RELOAD_TABLE_STATE_BUTTON_TEXT = "Reload Table State"
+_SPATIAL_QUERY_ANNOTATION_SOURCE = "spatial_query_annotation"
 _CLASS_EDITOR_STYLESHEET = (
     f"QWidget#class_editor {{background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; border-radius: 10px;}}"
@@ -582,6 +583,9 @@ class ObjectClassificationWidget(QWidget):
             return
         if event.sdata is not self.selected_spatialdata:
             return
+        if event.source == _SPATIAL_QUERY_ANNOTATION_SOURCE:
+            self._consume_spatial_query_annotation(event)
+            return
         if event.source != "feature_extraction":
             return
 
@@ -616,6 +620,44 @@ class ObjectClassificationWidget(QWidget):
         ):
             self._classifier_controller.invalidate_for_feature_matrix_overwrite(previous_feature_key)
 
+        self._update_selection_status()
+
+    def _consume_spatial_query_annotation(self, event: TableStateChangedEvent) -> None:
+        """Refresh Object Classification after an external user-class annotation."""
+        if event.table_name != self.selected_table_name:
+            return
+        if TableComponentPath("obs", (USER_CLASS_COLUMN,)) not in event.paths:
+            return
+
+        # We run self._bind_current_selection() because:
+        #
+        # Spatial Query has already mutated the live AnnData table
+        #     → table.obs["user_class"] changed
+        #     → table.uns["user_class_colors"] may also have changed
+        #         ↓
+        # TableStateChangedEvent is published
+        #     → says which components changed
+        #     → does not carry the changed instance IDs
+        #         ↓
+        # Object Classification receives the event
+        #     → re-read and validate the current live table
+        #     → refresh its controls from that table
+        #     → rebuild complete Labels styling from that table
+        self._bind_current_selection()
+        if self._table_binding_error is not None:
+            # Rebinding rejected the changed table, detached it from the
+            # controllers, cancelled classifier work captured from its former
+            # valid state, and applied the existing neutral invalid-table UI.
+            return
+
+        # External user-class changes invalidate classifier inputs just like
+        # annotations made in this widget. mark_dirty() also rejects pending or
+        # active work captured before this event; Auto-train owns the single
+        # optional replacement request.
+        with self._defer_classifier_control_updates():
+            self._classifier_controller.mark_dirty(reason="the annotations changed")
+            if self._auto_train_enabled:
+                self._classifier_controller.schedule_retrain()
         self._update_selection_status()
 
     def _refresh_label_options(self) -> None:

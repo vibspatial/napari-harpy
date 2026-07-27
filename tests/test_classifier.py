@@ -343,6 +343,74 @@ def test_classifier_controller_refuses_export_when_model_is_dirty(
         controller.export_classifier(tmp_path / "dirty.harpy-classifier.joblib")
 
 
+@pytest.mark.parametrize("schedule_replacement", [False, True])
+def test_classifier_controller_mark_dirty_invalidates_active_worker_and_ignores_late_result(
+    sdata_blobs: SpatialData,
+    schedule_replacement: bool,
+) -> None:
+    _set_deterministic_features(sdata_blobs)
+    _set_feature_metadata(sdata_blobs)
+    _set_user_classes(sdata_blobs, {1: 1, 2: 1, 24: 2, 25: 2})
+    workers: list[_DeferredWorker] = []
+    table_state_changes: list[classifier_module.ClassifierTableStateChange] = []
+
+    def fake_create_training_worker(job):
+        worker = _DeferredWorker(
+            classifier_module.ClassifierJobResult(
+                job_id=job.job_id,
+                feature_key=job.feature_key,
+                labels_name=job.labels_name,
+                table_name=job.table_name,
+                pred_classes=np.full(job.prediction_scope.table_row_positions.shape, 1, dtype=np.int64),
+                pred_confidences=np.full(job.prediction_scope.table_row_positions.shape, 0.9, dtype=np.float64),
+                trained_at="2026-07-27T09:00:00+00:00",
+                model_params=dict(classifier_module.RANDOM_FOREST_PARAMS),
+                summary=job.summary,
+            )
+        )
+        workers.append(worker)
+        return worker
+
+    controller = ClassifierController(
+        debounce_interval_ms=0,
+        on_table_state_changed=table_state_changes.append,
+    )
+    controller.bind(sdata_blobs, "blobs_labels", "table", "features_1")
+    controller._create_training_worker = fake_create_training_worker  # type: ignore[method-assign]
+
+    assert controller.retrain_now() is True
+    worker = workers[0]
+    assert controller.is_training is True
+
+    controller.mark_dirty(reason="the annotations changed")
+
+    assert worker.quit_called is True
+    assert controller.is_training is False
+    assert controller.is_dirty is True
+
+    replacement_worker = None
+    if schedule_replacement:
+        assert controller.schedule_retrain(immediate=True) is True
+        replacement_worker = workers[1]
+        assert replacement_worker.started is True
+
+    worker.emit_returned()
+
+    table = sdata_blobs.tables["table"]
+    assert PRED_CLASS_COLUMN not in table.obs
+    assert PRED_CONFIDENCE_COLUMN not in table.obs
+    assert table_state_changes == []
+    assert controller.is_dirty is True
+    assert controller.is_training is schedule_replacement
+
+    if replacement_worker is not None:
+        replacement_worker.emit_returned()
+        assert PRED_CLASS_COLUMN in table.obs
+        assert PRED_CONFIDENCE_COLUMN in table.obs
+        assert len(table_state_changes) == 1
+        assert controller.is_dirty is False
+
+
 def test_classifier_controller_refuses_export_while_training(tmp_path, sdata_blobs: SpatialData) -> None:
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
