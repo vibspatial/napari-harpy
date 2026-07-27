@@ -15,18 +15,23 @@ from spatialdata.transformations import Identity, set_transformation
 
 import napari_harpy.widgets.spatial_query.widget as widget_module
 from napari_harpy._app_state import TableStateChangedEvent
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     CanonicalCacheState,
+    CanonicalCenterQueryResult,
     CanonicalCentersResult,
     apply_canonical_cache_update,
     build_canonical_cache_update_payload,
+    inspect_canonical_cache,
+    read_canonical_centers_from_cache,
 )
 from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
 from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
 from napari_harpy.widgets.spatial_query.widget import (
     CANONICAL_CACHE_UPDATE_SOURCE,
+    SPATIAL_QUERY_ANNOTATION_SOURCE,
     SpatialQuery,
 )
 
@@ -105,6 +110,24 @@ def _add_default_annotation_column(sdata: SpatialData) -> None:
     )
 
 
+def _query_result(sdata: SpatialData, *, count: int = 2) -> CanonicalCenterQueryResult:
+    report = inspect_canonical_cache(sdata, table_name="table", labels_name="blobs_labels")
+    if report.state is not CanonicalCacheState.VALID:
+        centers = np.zeros((report.binding.n_obs, 3), dtype=np.float64)
+        payload = build_canonical_cache_update_payload(
+            binding=report.binding,
+            centers=centers,
+            source_signature=report.source_signature,
+        )
+        apply_canonical_cache_update(sdata, payload)
+        report = inspect_canonical_cache(sdata, table_name="table", labels_name="blobs_labels")
+    canonical_centers = read_canonical_centers_from_cache(sdata, report)
+    return CanonicalCenterQueryResult(
+        canonical_centers=canonical_centers,
+        matched_instance_ids=np.sort(canonical_centers.binding.instance_ids)[:count],
+    )
+
+
 def _status_text(label) -> str:
     return unescape(label.text())
 
@@ -119,6 +142,7 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     assert widget.table_combo.isEnabled() is False
     assert widget.run_button.isEnabled() is False
     assert widget.status_label.objectName() == "spatial_query_status_label"
+    assert widget.run_button.text() == "Apply Annotation"
     assert not hasattr(widget, "cache_status_label")
     assert not hasattr(widget, "readiness_status_label")
     assert "No SpatialData Loaded" in _status_text(widget.status_label)
@@ -171,6 +195,9 @@ def test_spatial_query_shell_requires_an_explicit_new_column_name_and_captures_r
 
     widget.new_column_edit.setText("reviewed_annotation")
     assert widget.selected_column_name == "reviewed_annotation"
+    assert widget.run_button.isEnabled() is False
+    assert "Enter a non-empty annotation value" in _status_text(widget.status_label)
+    widget.annotation_value_edit.setText("tumor")
     assert widget.run_button.isEnabled() is True
     assert inspection_calls == 1  # Status rendering reuses the captured report.
 
@@ -187,6 +214,9 @@ def test_spatial_query_shell_requires_an_explicit_new_column_name_and_captures_r
     assert starts[0][0] is sdata_blobs
     assert starts[0][1] is widget.cache_report
     assert starts[0][2:] == ("blobs_circles", "global")
+    assert widget._active_run_intent is not None
+    assert widget._active_run_intent.annotation_action == "set"
+    assert widget._active_run_intent.annotation_value == "tumor"
     assert inspection_calls == 2  # Run performs one fresh authoritative inspection.
     pd.testing.assert_frame_equal(sdata_blobs.tables["table"].obs, obs_before)
     assert sdata_blobs.tables["table"].uns == uns_before
@@ -267,6 +297,42 @@ def test_spatial_query_shell_lists_user_class_but_excludes_classifier_outputs(
     assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
     pd.testing.assert_frame_equal(table.obs, obs_before)
     assert table.uns == uns_before
+
+
+def test_spatial_query_shell_uses_typed_set_editor_and_explicit_remove_action(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    table = sdata_blobs.tables["table"]
+    table.obs["user_class"] = pd.Categorical([pd.NA] * table.n_obs, categories=[])
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("existing"))
+    widget.existing_column_combo.setCurrentIndex(widget.existing_column_combo.findData("user_class"))
+
+    assert widget.annotation_value_stack.currentWidget() is widget.annotation_class_spinbox
+    assert widget.selected_annotation_action == "set"
+    assert widget.selected_annotation_value == 1
+    assert widget.run_button.isEnabled()
+
+    widget.annotation_class_spinbox.setValue(4)
+    assert widget.selected_annotation_value == 4
+
+    widget.annotation_action_combo.setCurrentIndex(widget.annotation_action_combo.findData("remove"))
+
+    assert widget.selected_annotation_action == "remove"
+    assert widget.selected_annotation_value is None
+    assert widget.annotation_value_stack.isHidden()
+    assert widget.run_button.isEnabled()
+
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("new"))
+
+    assert widget.annotation_action_combo.findData("remove") == -1
+    assert widget.selected_annotation_action == "set"
+    assert widget.annotation_value_stack.currentWidget() is widget.annotation_value_edit
 
 
 def test_spatial_query_shell_rejects_reserved_object_classification_new_columns(
@@ -377,6 +443,7 @@ def test_spatial_query_shell_explains_incompatible_preferred_column_with_empty_n
     widget.new_column_edit.setText("reviewed_annotation")
 
     assert widget.selected_column_name == "reviewed_annotation"
+    widget.annotation_value_edit.setText("tumor")
     assert widget.run_button.isEnabled() is True
 
 
@@ -391,6 +458,7 @@ def test_spatial_query_shell_clears_new_column_draft_when_table_changes(
     _select_labels(widget)
 
     widget.new_column_edit.setText("draft_annotation")
+    widget.annotation_value_edit.setText("tumor")
     assert widget.selected_column_name == "draft_annotation"
     assert widget.run_button.isEnabled() is True
 
@@ -442,6 +510,7 @@ def test_spatial_query_shell_keeps_invalid_cache_ready_for_recalculation(
     widget.apply_annotation_context(_context(sdata_blobs))
     _select_labels(widget)
     widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
 
     report = widget.cache_report
     assert report is not None
@@ -536,6 +605,7 @@ def test_spatial_query_shell_tracks_only_its_selected_primary_labels_layer(
 
     _select_labels(widget)
     widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
     selected_layer = widget.app_state.viewer_adapter.get_loaded_primary_labels_layer(
         sdata_blobs,
         "blobs_labels",
@@ -573,6 +643,7 @@ def test_spatial_query_child_publishes_accepted_cache_update_once(
     widget.apply_annotation_context(_context(sdata_blobs))
     _select_labels(widget)
     widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
     monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
     emitted_events: list[TableStateChangedEvent] = []
     widget.app_state.table_state_changed.connect(emitted_events.append)
@@ -609,7 +680,84 @@ def test_spatial_query_child_publishes_accepted_cache_update_once(
     assert widget.cache_report.state is CanonicalCacheState.VALID
 
 
-def test_spatial_query_child_invalidates_captured_run_when_target_changes(
+def test_spatial_query_child_applies_new_annotation_and_publishes_exact_paths(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    query_result = _query_result(sdata_blobs, count=2)
+    table = sdata_blobs.tables["table"]
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("spatial_annotation")
+    widget.annotation_value_edit.setText("tumor")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    emitted_events: list[TableStateChangedEvent] = []
+    widget.app_state.table_state_changed.connect(emitted_events.append)
+
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    widget._on_query_ready(query_result)
+
+    matched_rows = query_result.binding.row_positions[
+        np.isin(query_result.binding.instance_ids, query_result.matched_instance_ids)
+    ]
+    assert table.obs["spatial_annotation"].iloc[matched_rows].tolist() == ["tumor", "tumor"]
+    assert table.obs["spatial_annotation"].drop(table.obs.index[matched_rows]).isna().all()
+    assert table.uns["spatial_annotation_colors"]
+    assert len(emitted_events) == 1
+    event = emitted_events[0]
+    assert event.source == SPATIAL_QUERY_ANNOTATION_SOURCE
+    assert event.change_kind == "created"
+    assert event.regions == ("blobs_labels",)
+    assert event.paths == frozenset(
+        {
+            TableComponentPath("obs", ("spatial_annotation",)),
+            TableComponentPath("uns", ("spatial_annotation_colors",)),
+        }
+    )
+    assert widget.selected_column_mode == "existing"
+    assert widget.selected_column_name == "spatial_annotation"
+    assert widget.new_column_edit.text() == ""
+    assert "Annotation Applied" in _status_text(widget.status_label)
+    assert "Overwritten: 0" in _status_text(widget.status_label)
+    assert widget.app_state.snapshot_table_dirty_state(sdata_blobs, "table").paths == event.paths
+
+
+def test_spatial_query_child_removes_annotation_without_palette_event(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    query_result = _query_result(sdata_blobs, count=2)
+    table = sdata_blobs.tables["table"]
+    table.obs["spatial_annotation"] = pd.Categorical(["tumor"] * table.n_obs, categories=["tumor"])
+    table.uns["spatial_annotation_colors"] = ["#ff0000"]
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.annotation_action_combo.setCurrentIndex(widget.annotation_action_combo.findData("remove"))
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    emitted_events: list[TableStateChangedEvent] = []
+    widget.app_state.table_state_changed.connect(emitted_events.append)
+
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    widget._on_query_ready(query_result)
+
+    matched_rows = query_result.binding.row_positions[
+        np.isin(query_result.binding.instance_ids, query_result.matched_instance_ids)
+    ]
+    assert table.obs["spatial_annotation"].iloc[matched_rows].isna().all()
+    assert table.uns["spatial_annotation_colors"] == ["#ff0000"]
+    assert len(emitted_events) == 1
+    assert emitted_events[0].change_kind == "updated"
+    assert emitted_events[0].paths == frozenset({TableComponentPath("obs", ("spatial_annotation",))})
+    assert "Removed annotations from 2 matched labeled objects" in _status_text(widget.status_label)
+
+
+def test_spatial_query_child_invalidates_captured_run_when_annotation_value_changes(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     sdata_blobs: SpatialData,
@@ -619,6 +767,7 @@ def test_spatial_query_child_invalidates_captured_run_when_target_changes(
     widget.apply_annotation_context(_context(sdata_blobs))
     _select_labels(widget)
     widget.new_column_edit.setText("first_annotation")
+    widget.annotation_value_edit.setText("tumor")
     monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
     cancellation_calls = 0
 
@@ -631,8 +780,8 @@ def test_spatial_query_child_invalidates_captured_run_when_target_changes(
     qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
     assert widget._active_run_intent is not None
 
-    widget.new_column_edit.setText("second_annotation")
+    widget.annotation_value_edit.setText("stroma")
 
     assert cancellation_calls == 1
     assert widget._active_run_intent is None
-    assert widget._show_execution_status is False
+    assert widget._status_card_spec is None
