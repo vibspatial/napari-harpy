@@ -8417,12 +8417,49 @@ to the previous `SpatialData`. The accepted transition must additionally:
 - remove old Harpy-managed viewer layers and their bindings;
 - release any active Shapes edit session without a second confirmation;
 - remove every dirty-manifest entry belonging to the replaced `SpatialData`;
-- ensure late Spatial Query, Object Classification, or Feature Extraction
-  results cannot mutate the replacement dataset or republish obsolete state.
+- ensure late worker results cannot mutate the replacement dataset or
+  republish obsolete application state.
 
 Discarded dirty components are removed from the session manifest without
 pretending that they were written or reloaded. No table-state persistence event
 is emitted for this deliberate session discard.
+
+#### Asynchronous replacement boundary
+
+Object Classification and Spatial Query perform their accepted table mutations
+on the main thread after validating the active job or operation identity.
+Rebinding them to the replacement `SpatialData` cancels their pending work and
+clears that identity. Any queued result from the old dataset is therefore
+ignored before it can mutate a table or publish an event.
+
+Feature Extraction has a different boundary. Its worker calls Harpy's
+self-persisting `add_feature_matrix()` operation with the exact old
+`SpatialData` captured by the job. Requesting worker cancellation cannot
+guarantee interruption after that Harpy call has started. An already-running
+Feature Extraction operation is therefore allowed to finish against its
+captured old in-memory object and backed store:
+
+```text
+Feature Extraction worker captured old SpatialData
+    ↓
+user accepts SpatialData replacement
+    ↓
+Feature Extraction controller is rebound
+    → clear the active job identity
+    → request worker cancellation
+    ↓
+already-running Harpy write may finish against the old store
+    ↓
+late returned signal is ignored
+    → publish no Feature Extraction table-state event
+    → refresh no widget from the obsolete result
+    → mutate nothing in the replacement SpatialData
+```
+
+Replacement does not wait for, roll back, or report completion of that old
+self-persisting operation. Preventing the old store write itself would require
+cooperative cancellation inside Harpy or a shared cross-widget operation
+blocker and is outside this slice.
 
 #### Explicit non-goals
 
@@ -8431,6 +8468,8 @@ is emitted for this deliberate session discard.
 - no multi-table partial-write recovery;
 - no special replacement path for unbacked `SpatialData`;
 - no new participant/coordinator protocol for replacement;
+- no guarantee that a self-persisting Feature Extraction call already running
+  against the old store is interrupted or rolled back;
 - no napari application-close interception or close confirmation.
 
 Closing napari may therefore still discard unsaved state without a warning. A
@@ -8459,8 +8498,11 @@ requirement; it is not part of this slice.
 - Proceed replaces the dataset without attempting implicit persistence and
   removes all obsolete session state belonging to the previous dataset;
 - programmatic replacement is explicit and remains usable in headless mode;
-- accepted replacement cannot be followed by late work mutating the old or
-  newly selected dataset;
+- late Object Classification and Spatial Query results cannot mutate the
+  replacement dataset or publish obsolete state;
+- an already-running Feature Extraction call may finish against its captured
+  old store, but its late result cannot mutate the replacement dataset,
+  publish table-state events, or refresh widgets;
 - a destructive direct `set_sdata()` call without discard authorization fails
   loudly;
 - application-close guarding remains outside this slice.
