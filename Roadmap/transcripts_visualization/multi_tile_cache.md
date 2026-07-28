@@ -1,0 +1,1698 @@
+# Multiscale Transcript Tile Cache and Tiled Renderer
+
+Status: authoritative investigation and implementation roadmap
+
+Last updated: 2026-07-28
+
+## Authority and relationship to older documents
+
+This document is the authoritative roadmap for:
+
+- the persistent multiscale visualization cache for transcript-like points;
+- viewport-driven tile selection and asynchronous loading;
+- CPU and GPU tile residency;
+- the dedicated napari/VisPy transcript renderer;
+- the boundary between the existing direct points path and the tiled path.
+
+Where this document conflicts with the following notes, this document wins:
+
+- `Transcripts_Tile_cache.md`
+- `phase_1_spatial_first_cache.md`
+- `visualizing_transcripts.md`
+- `visualizing_transcripts_tiled_multiscale.md`
+- `neuroglancer_napari_points_cache_recommendations.md`
+- `ticket_napari_harpy.md`
+
+Those files remain useful research and implementation history. They should not
+be treated as current contracts for sampling, budgets, physical layout, or
+napari integration.
+
+`transcripts_gene_index_napari.md` remains authoritative for the existing
+direct points-selection fallback. It is not the architecture for the tiled
+renderer.
+
+## Executive decision
+
+Harpy will keep SpatialData points as the canonical transcript data and build a
+separate, deletable visualization cache. Every cache level remains a point
+representation; there is no raster fallback at coarse zoom.
+
+The production tiled path will not repeatedly replace one monolithic
+`napari.layers.Points.data` array. It will use a dedicated, read-only transcript
+layer and a tiled rendering backend whose GPU buffers survive viewport changes.
+The normal napari Points path remains available for small selections, fallback,
+debugging, and correctness comparison.
+
+The durable investment is:
+
+1. the cache contract;
+2. immutable tile payloads;
+3. viewport and LOD planning;
+4. request scheduling and cache lifecycles;
+5. a small rendering-backend interface.
+
+VisPy is the first rendering backend, but VisPy-specific decisions must not leak
+into cache construction or tile planning.
+
+## Goals
+
+The completed system must:
+
+- visualize transcript datasets far larger than can be materialized in one
+  napari Points layer;
+- show points at every zoom level;
+- guarantee a bounded whole-dataset overview;
+- show exact source membership when the visible exact tiles fit the render
+  budget;
+- read only the Parquet row groups needed for the viewport;
+- retain overlapping CPU and GPU tiles across pan and zoom;
+- preserve stable gene colors and cheap gene visibility changes;
+- keep the GUI responsive while disk reads and decoding happen in background
+  workers;
+- reject stale asynchronous results and prevent mixed-source or mixed-LOD
+  displays;
+- keep the direct points path working when no tiled cache is available.
+
+## Non-goals for the first production version
+
+The first production version does not need:
+
+- raster or density-image rendering at coarse zoom;
+- editing, adding, moving, or deleting transcripts through napari tools;
+- a complete public napari extension API for custom layer renderers;
+- 3D transcript rendering;
+- remote/object-store cache construction;
+- exact gene-selective Parquet reads;
+- per-transcript GPU picking;
+- Morton ordering as a required part of the format;
+- a second on-disk warm-cache format.
+
+Exact gene-selective IO, richer picking, remote stores, and alternative
+rendering backends are later extensions. The initial format must not make them
+impossible.
+
+## Current repository state
+
+### Implemented and reusable
+
+`src/napari_harpy/_transcript_tiles.py` already contains tested building blocks
+for:
+
+- cache and level dataclasses;
+- validation of backed SpatialData points elements;
+- coordinate, gene, and transcript-id validation;
+- bounds and regular-grid metadata;
+- deterministic gene dictionary construction;
+- `genes.parquet` writing;
+- conversion to tile-local `float32` coordinates;
+- finest-level tile annotation;
+- tile-specific Parquet row-group writing;
+- manifest-row collection for physical row groups;
+- staged replacement and rollback helpers.
+
+`tests/test_transcript_tiles.py` covers these primitives. At the time this
+roadmap was written, its focused test module passed 103 tests.
+
+### Not implemented
+
+The repository does not yet contain:
+
+- a public end-to-end cache builder;
+- sampled coarse-level construction;
+- an internal stable row id when no transcript id is supplied;
+- final `metadata.json` and `manifest.parquet` writers;
+- a completed-cache marker and complete reader validation;
+- source-staleness inspection;
+- a runtime tile store;
+- viewport-to-tile planning;
+- LOD selection;
+- a request scheduler or byte-bounded CPU tile cache;
+- a dedicated transcript layer;
+- a tile-retaining VisPy renderer or GPU cache;
+- tiled-mode UI and lifecycle integration.
+
+The active viewer path still validates and scans the source Dask dataframe,
+filters selected values, applies global random sampling, materializes one
+selection, and creates a normal napari Points layer. The current controller
+reports tiled-cache construction as unavailable.
+
+### Consequence
+
+The existing code is best described as tested writer primitives, not as an
+almost-complete multiscale feature. The production replacement starts from a
+fresh package at:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/
+```
+
+The new package may re-express proven contracts and algorithms from
+`_transcript_tiles.py`, but it must not import that private module. This keeps
+the replacement independently testable and makes eventual removal of the old
+module straightforward.
+
+`src/napari_harpy/_transcript_tiles.py` and
+`tests/test_transcript_tiles.py` remain temporarily as implementation history,
+behavioral references, and a source of useful test cases. They are removed only
+after the new builder, reader, and product integration have replaced every
+required use. The removal is a dedicated cleanup change, not part of the first
+implementation slice.
+
+## Locked design decisions
+
+These decisions should be treated as requirements unless a later ADR explicitly
+changes them.
+
+### Implementation ownership and work blocks
+
+The work is divided into four explicit blocks:
+
+1. physical source resolution and validation;
+2. persistent cache construction;
+3. cache reading, tile planning, and scheduling;
+4. napari/VisPy rendering and Harpy integration.
+
+Block 3 is deliberately separate from rendering. The renderer consumes
+immutable tile payloads and snapshots; it does not know about Dask, Parquet
+file discovery, manifests, source validation, or cache publication.
+
+The first implementation slice is Block 1. Cache writing does not begin until
+the source-resolution and validation result is a stable, tested contract.
+
+The core cache package must not import Qt, napari, or VisPy. Napari-specific
+code belongs under a viewer-facing package such as:
+
+```text
+src/napari_harpy/viewer/multi_scale_points/
+```
+
+Private napari registration details remain isolated at that boundary.
+
+### Canonical data and cache ownership
+
+- The SpatialData points element remains canonical.
+- `transcripts_vis/` is a Harpy-owned derived cache.
+- The cache may be deleted and rebuilt without changing canonical data.
+- Cache coordinates are stored in the native coordinate space of the points
+  element.
+- The selected SpatialData transform is applied by the napari layer, not baked
+  into every cached point.
+
+### Point-only LODs
+
+- Every level contains point rows.
+- The finest level has full source membership.
+- Coarse rows are actual source transcript representatives, not centroids with
+  invented identities.
+- Every representative retains a source or cache-stable point identity.
+- No coarse level is replaced with a raster.
+
+### Self-contained, nested levels
+
+Each level is independently renderable:
+
+```text
+level_0 ⊆ level_1 ⊆ ... ⊆ level_n
+level_n = exact source membership
+```
+
+The same representative may therefore occur in several levels. This modest
+storage duplication keeps runtime semantics simple: choose one level and render
+it. It also reduces visual instability during LOD changes.
+
+Harpy will not use Neuroglancer-style residual/disjoint levels in the first
+format. Residual levels require cumulative multi-level reads or mixed-level
+rendering, which conflicts with the initial one-active-LOD contract.
+
+### Gene-aware coarse sampling
+
+The first shippable sampled pyramid must be spatially and gene aware. A
+spatial-only version is not an acceptable final milestone because it can erase
+rare genes from overviews and would knowingly require later replacement.
+
+The exact sampling algorithm is settled by the Phase 1 construction spike, but it
+must guarantee:
+
+- deterministic results for the same source identity and build parameters;
+- actual source rows as representatives;
+- stable pseudo-random priority based on a named, versioned hash algorithm;
+- spatial stratification within a tile;
+- gene-aware allocation within spatial strata;
+- monotonically increasing membership from coarse to fine;
+- no level or tile budget overrun;
+- no dependence on Python's randomized `hash()`;
+- deterministic tie-breaking;
+- documented behavior when no source transcript-id column is available.
+
+Gene-aware sampling does not imply gene-selective disk reads. The first runtime
+may still load an unfiltered visible tile and apply gene visibility in the GPU
+palette.
+
+### Tile geometry and sampling density are different concepts
+
+Tile size answers:
+
+> Which spatial payloads should be read for this viewport?
+
+Sampling density answers:
+
+> How many representative points should be drawn at this LOD?
+
+They must not be inferred from each other. A small physical region can contain
+hundreds of millions of transcripts and require several density LODs even if
+all levels share the same one-tile grid.
+
+Consequently:
+
+- level count must not be derived only from dataset extent;
+- two levels may use the same tile size but different sampling densities;
+- level metadata records both grid geometry and sampling semantics;
+- the planner uses both screen scale and manifest counts.
+
+### Separate budgets
+
+The following settings have distinct meanings:
+
+`overview_point_budget`
+: Maximum total point count in the complete coarsest level.
+
+`max_rows_per_row_group`
+: Physical Parquet IO shard size. It does not control visual sampling.
+
+`level_sampling_target`
+: A level-specific sampling density or point target recorded in level
+  metadata.
+
+`render_point_budget`
+: Runtime maximum for visible core tiles plus the configured prefetch policy.
+  It may be larger than the build-time overview budget.
+
+`cpu_cache_byte_budget`
+: Maximum decoded CPU tile-cache memory.
+
+`gpu_cache_byte_budget`
+: Maximum retained GPU tile-buffer memory for one rendering context.
+
+These values must not be collapsed into one `coarse_tile_budget`.
+
+The coarsest-level invariant is:
+
+```text
+sum(manifest.n_points where level == 0) <= overview_point_budget
+```
+
+The cache advertises the actual coarsest count as its minimum supported
+whole-dataset render budget.
+
+### Runtime IO
+
+- Dask is appropriate for offline construction.
+- Runtime tile reads use PyArrow against known Parquet files and row groups.
+- Interactive camera updates do not construct or execute a Dask graph.
+- Runtime payloads are immutable, contiguous arrays suitable for CPU caching
+  and GPU upload.
+
+### Rendering
+
+- A normal napari Points layer is not the production camera-driven hot path.
+- The renderer retains independently addressable GPU tile payloads.
+- Camera movement reuses resident buffers.
+- Palette, gene visibility, opacity, and point-size updates do not reupload
+  coordinate buffers.
+- Disk and Parquet work never touches VisPy objects.
+- GPU creation, upload, and deletion occur on the GUI/OpenGL thread.
+- The physical GPU representation is private to the rendering backend.
+
+### LOD transitions
+
+- Same-level pan retains overlapping tiles and loads only entering tiles.
+- A cross-level transition keeps the active level visible until all new core
+  tiles are GPU-ready.
+- A new LOD activates as one immutable snapshot.
+- No active snapshot mixes cache generations, source signatures, or levels.
+- Small zoom changes use hysteresis so they do not oscillate between levels.
+
+## Target architecture
+
+The complete system has an offline construction side and a runtime side:
+
+```text
+SpatialData points element + explicit Parquet path
+                         │
+                         ▼
+              PointsSourceResolver
+                         │
+                         ▼
+              PointsSourceValidator
+             footers + bounded scans
+                         │
+                         ▼
+              ValidatedPointsSource
+                         │
+                         ▼
+              MultiscaleCacheBuilder
+       exact level → sampled levels → publish
+                         │
+                         ▼
+              completed transcripts_vis/
+                         │
+          ┌──────────────┴──────────────┐
+          ▼                             ▼
+ TranscriptTileStore             freshness/status
+          │
+          ▼
+ planner → scheduler → backend → napari
+```
+
+The initial source and construction package is:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/
+  __init__.py
+  models.py
+  source.py
+  validation.py
+  signature.py
+```
+
+Only add modules when their responsibility becomes concrete. Cache
+construction is expected to add:
+
+```text
+  schema.py
+  builder.py
+  exact_level.py
+  sampling.py
+  parquet_writer.py
+  manifest.py
+  publication.py
+```
+
+Runtime cache consumption is expected to add:
+
+```text
+  store.py
+  planner.py
+  scheduler.py
+```
+
+`__init__.py` exposes a deliberately small public API. Implementation modules
+remain private unless a stable external use case is identified.
+
+The runtime flow is:
+
+```text
+                         napari camera + canvas + dims
+                                      │
+                                      ▼
+TranscriptLayerModel ───────► TranscriptTilePlanner
+persistent user state             viewport + LOD policy
+         │                              │
+         │                              ▼
+         │                     TranscriptTileScheduler
+         │                 generations + priorities + CPU LRU
+         │                              │
+         │                    tile requests / immutable payloads
+         │                              │
+         └──────────────► TranscriptTileStore
+                           metadata + manifest + PyArrow
+                                      │
+                                      ▼
+                         RenderSnapshot + TilePayloads
+                                      │
+                                      ▼
+                         TranscriptRenderBackend
+                                      │
+                                      └── VisPy backend
+                                          GPU LRU + upload queue
+                                          compact point visual
+                                          gene palette
+```
+
+### `TranscriptLayerModel`
+
+The layer model is the persistent, view-independent object shown in napari's
+layer list.
+
+It owns:
+
+- an immutable transcript dataset reference;
+- selected gene ids;
+- gene palette and visibility state;
+- point size;
+- render and prefetch settings;
+- user-visible status;
+- normal napari visibility, opacity, blending, and transforms.
+
+It does not own:
+
+- a full `N x 2` point array;
+- camera position;
+- current viewport tiles;
+- Dask dataframes;
+- open Parquet readers;
+- VisPy nodes or GPU buffers.
+
+The model should subclass napari `Layer`, not `Points`. Presenting transient
+viewport/LOD contents as `layer.data` would incorrectly imply that they are the
+canonical transcript collection.
+
+Napari already uses `Layer.source` for provenance. Use a name such as
+`transcript_dataset` or `transcript_source_ref` for the transcript source.
+
+The layer extent always reports complete dataset bounds. It must not change as
+tiles enter and leave the viewport.
+
+### `TranscriptDatasetRef`
+
+This immutable value object identifies one cache and its canonical source:
+
+```python
+@dataclass(frozen=True)
+class TranscriptDatasetRef:
+    spatialdata_identity: object
+    points_name: str
+    coordinate_system: str
+    cache_location: object
+    cache_schema_version: str
+    cache_generation_id: str
+    source_signature: str
+```
+
+The concrete `cache_location` API must leave room for a future filesystem/URI
+abstraction even if the first writer supports local paths only.
+
+### `TranscriptTileStore`
+
+The store is independent of Qt, napari, and VisPy.
+
+It owns:
+
+- parsed and validated cache metadata;
+- the gene dictionary;
+- the tile/row-group manifest index;
+- PyArrow row-group reads;
+- decoding of tile-local coordinates and features;
+- a byte-bounded CPU LRU, if the cache is shared at store scope.
+
+Core operations:
+
+```python
+class TranscriptTileStore:
+    @classmethod
+    def from_path(cls, path: Path) -> "TranscriptTileStore": ...
+
+    def tiles_intersecting(
+        self,
+        *,
+        level: int,
+        data_bounds: tuple[float, float, float, float],
+    ) -> tuple["TileKey", ...]: ...
+
+    def estimated_point_count(
+        self,
+        tile_keys: tuple["TileKey", ...],
+    ) -> int: ...
+
+    def load_tile(self, key: "TileKey") -> "TilePayload": ...
+```
+
+One logical tile may consist of several physical row-group shards. The store
+combines those shards into one immutable `TilePayload`; the renderer does not
+need to know how many files or row groups backed the tile.
+
+### `TranscriptTilePlanner`
+
+The planner is pure policy. Given a view description and cache metadata, it
+returns a render plan without starting IO.
+
+Inputs include:
+
+- inverse-transformed viewport bounds in cache data coordinates;
+- canvas size and data-units-per-screen-pixel;
+- available levels and their sampling metadata;
+- manifest point counts;
+- render budget;
+- prefetch margin;
+- previous level for hysteresis.
+
+LOD selection chooses the finest level satisfying both:
+
+1. its sampling density is appropriate for the screen scale;
+2. visible core tiles and the specified budget policy fit the render budget.
+
+The exact level is chosen whenever its visible core tiles fit.
+
+The initial implementation may budget core plus prefetch together. If this
+causes unnecessary coarse LOD selection, core tiles must remain hard-bounded
+while prefetch becomes a soft, separately capped budget. That choice is part of
+the Phase 2 planner benchmark.
+
+### `TranscriptTileScheduler`
+
+There is one scheduler per `(viewer canvas, transcript layer)` pair.
+
+It owns:
+
+- monotonically increasing view generations;
+- core and prefetch priorities;
+- bounded concurrency;
+- cancellation intent;
+- in-flight request bookkeeping;
+- stale-result rejection;
+- CPU cache interaction;
+- renderer upload requests;
+- pending and active render snapshots.
+
+Conceptual tile lifecycle:
+
+```text
+ABSENT
+  -> REQUESTED
+  -> LOADING
+  -> CPU_READY
+  -> UPLOAD_QUEUED
+  -> GPU_READY
+  -> ACTIVE
+  -> CACHED
+  -> EVICTED
+```
+
+Stale results may populate the CPU cache if their source identity is still
+valid. They may never activate an obsolete render plan.
+
+Rapid camera events are coalesced. The scheduler must not start an unbounded
+sequence of reads during a wheel gesture or animated pan.
+
+### `RenderSnapshot`
+
+The scheduler hands the renderer immutable snapshots:
+
+```python
+@dataclass(frozen=True)
+class RenderSnapshot:
+    generation: int
+    cache_generation_id: str
+    source_signature: str
+    level: int
+    core_tile_keys: tuple["TileKey", ...]
+    prefetch_tile_keys: tuple["TileKey", ...]
+    expected_point_count: int
+```
+
+The renderer activates a pending cross-level snapshot only when all core tiles
+are GPU-ready.
+
+### `TranscriptRenderBackend`
+
+The scheduler depends on a small protocol rather than on VisPy:
+
+```python
+class TranscriptRenderBackend(Protocol):
+    def enqueue_upload(self, tile: "TilePayload") -> None: ...
+    def is_ready(self, key: "TileKey") -> bool: ...
+    def activate(self, snapshot: RenderSnapshot) -> None: ...
+    def update_style(self, style: "TranscriptStyle") -> None: ...
+    def evict(self, key: "TileKey") -> None: ...
+    def close(self) -> None: ...
+```
+
+This boundary allows tests to use a fake backend and allows the VisPy
+implementation to change its internal buffer strategy without changing the
+store or scheduler.
+
+### VisPy backend
+
+The first production backend owns:
+
+- per-context GPU tile handles;
+- a byte-bounded GPU LRU;
+- active and pending snapshot pinning;
+- a GUI-thread upload queue;
+- a per-frame upload byte/time budget;
+- tile visibility;
+- a compact point shader;
+- gene palette and gene-visibility lookup;
+- point-size and opacity uniforms;
+- context loss and cleanup.
+
+The intended GPU vertex payload is approximately:
+
+```text
+x_rel: float32
+y_rel: float32
+gene_id: uint16, uint32, or exactly represented float32
+```
+
+Disk and CPU dtypes do not have to equal GPU attribute dtypes. In particular,
+the cache may store `gene_id` as `uint32` while a compatibility-oriented VisPy
+prototype uses `float32` in the vertex buffer.
+
+Transcript ids remain CPU-side unless a measured picking design requires them
+on the GPU.
+
+Whether the backend uses one scene node per tile, several VBOs in one visual,
+pooled buffer ranges, or a future multi-draw path is deliberately not part of
+the architecture contract.
+
+## Physical source resolution and validation
+
+### First implementation slice
+
+Source resolution and validation are implemented before cache writing. The
+result is not merely successful return versus exception; it is an immutable
+build input containing all source facts needed by later stages.
+
+A representative model is:
+
+```python
+@dataclass(frozen=True)
+class ValidatedPointsSource:
+    parquet_path: Path
+    parquet_files: tuple[ParquetSourceFile, ...]
+    x_column: str
+    y_column: str
+    gene_column: str
+    transcript_id_column: str | None
+    row_count: int
+    partition_row_offsets: tuple[int, ...]
+    bounds: PointsBounds
+    source_schema: pa.Schema
+    gene_table: pa.Table
+    source_signature: str
+    source_signature_method: str
+    fallback_identity_policy: str
+```
+
+The precise names may change during implementation, but the separation between
+an unresolved source and a validated immutable build input is required.
+
+### Explicit physical source
+
+The fast path receives or resolves the physical Parquet dataset explicitly. It
+does not reverse-engineer an arbitrary Dask expression graph.
+
+The intended API separation is:
+
+```python
+def resolve_spatialdata_points_source(
+    sdata: SpatialData,
+    points_name: str,
+    *,
+    x: str = "x",
+    y: str = "y",
+    gene: str = "gene",
+    transcript_id: str | None = None,
+) -> ParquetPointsSource: ...
+
+
+def validate_parquet_points_source(
+    source: ParquetPointsSource,
+) -> ValidatedPointsSource: ...
+```
+
+The resolver uses SpatialData to locate the element and its `points.parquet`
+dataset. A lower-level caller may supply both a Dask dataframe and explicit
+Parquet path, but the path remains authoritative for the fast build. Arbitrary
+filtered or transformed Dask dataframes are not silently assumed to map
+one-to-one to that physical dataset.
+
+### Structural preflight
+
+The metadata-first preflight:
+
+- verifies that the path is a readable Parquet dataset;
+- creates a deterministic relative file inventory;
+- validates compatible schemas across files and row groups;
+- validates required column names and physical types;
+- collects file sizes, row counts, row-group counts, and available statistics;
+- computes deterministic source-fragment row offsets;
+- derives bounds from trustworthy statistics when possible;
+- records when a bounded data scan is required;
+- computes the versioned source signature.
+
+This stage should normally inspect Parquet footers without decoding all point
+rows.
+
+### Bounded content validation
+
+Only checks that cannot be established safely from metadata perform data reads:
+
+- missing, NaN, or infinite coordinates;
+- missing or normalized-empty genes;
+- gene normalization collisions and exact counts;
+- transcript-id nulls and uniqueness when an id is supplied;
+- bounds when usable Parquet statistics are absent.
+
+Reads use bounded PyArrow batches. Dictionary-encoded genes are handled by
+normalizing dictionary values once and aggregating their integer indices rather
+than converting every transcript value through Python strings.
+
+Every derived fact records its evidence method where useful:
+
+```text
+PARQUET_METADATA
+STREAMING_SCAN
+CALLER_PROVIDED
+```
+
+The validator must fail clearly when required correctness cannot be established.
+It must not claim full validation based only on incomplete or untrustworthy
+statistics.
+
+### Validation acceptance dataset
+
+The first real-data acceptance target is:
+
+```text
+sdata_xenium_full_data_core.zarr/
+  points/transcripts_global_ROI1/points.parquet
+```
+
+At the time of investigation it contains:
+
+- 136,578,750 rows;
+- 65 Parquet files and 168 row groups;
+- 5,122 normalized genes;
+- `x`, `y`, and `gene` source columns;
+- `x` bounds approximately `[38.3088, 54047.2059]`;
+- `y` bounds approximately `[22.7206, 37581.4706]`;
+- no globally unique source transcript-id column.
+
+The validation slice must report those counts and the measured coordinate
+bounds without materializing the complete dataframe, produce deterministic
+fragment offsets and a repeatable source signature, and remain within a
+documented bounded-memory envelope.
+
+## Persistent cache contract
+
+### Target layout
+
+The logical cache layout is:
+
+```text
+<sdata.zarr>/
+  <resolved points element path>/
+    points.parquet
+    transcripts_vis/
+      metadata.json
+      manifest.parquet
+      genes.parquet
+      levels/
+        level_0/
+          part-00000.parquet
+          ...
+        level_1/
+          ...
+        level_n/
+          ...
+      COMPLETED
+```
+
+The points-element path must be resolved through SpatialData. Do not assume it
+is always `points/<points_name>`, and do not infer the physical Parquet path by
+inspecting Dask graph internals.
+
+All paths stored in metadata or the manifest are relative to the cache root.
+
+`COMPLETED` is written only after every required file has been written and
+validated. A reader rejects caches without it.
+
+For local filesystems, every build—including the first build—uses a unique
+sibling staging directory and installs the completed directory with a rename.
+An incomplete build is never written directly into the final visible cache
+path.
+
+Remote/object-store transactional publication needs a generation-directory plus
+pointer design and is deferred.
+
+### Schema versioning
+
+The existing constant is `harpy-transcripts-vis-0.1`, but no public
+end-to-end builder currently exists.
+
+- If no `0.1` cache has been used outside development, the format may be
+  redefined before the first public builder.
+- If any such cache must remain readable, introduce
+  `harpy-transcripts-vis-0.2`.
+- Readers reject unsupported versions; they do not guess.
+
+### `metadata.json`
+
+Required cache identity:
+
+- `schema_version`
+- `cache_generation_id`
+- `created_by` package and version
+
+Required source identity:
+
+- points element name;
+- resolved element path;
+- source row count;
+- source schema summary;
+- coordinate, gene, and transcript-id column names;
+- source-signature method and value.
+
+Required geometry:
+
+- `x_origin`, `y_origin`;
+- `x_min`, `x_max`, `y_min`, `y_max`;
+- axis convention;
+- coordinate dtype contract.
+
+Required level records, ordered from coarsest to finest:
+
+- `level`;
+- `tile_size`;
+- grid shape or equivalent validated grid bounds;
+- `is_exact`;
+- total stored point count;
+- sampling-policy name and version;
+- sampling target or density;
+- level directory.
+
+Required build parameters:
+
+- `leaf_tile_size`;
+- `overview_point_budget`;
+- `max_rows_per_row_group`;
+- stable hash algorithm and seed;
+- sampler name/version and parameters;
+- fallback row-identity policy.
+
+`metadata.json` is the source of truth for cache semantics. The manifest is the
+source of truth for physical tile/row-group locations and actual stored counts.
+
+### Cache and source identity
+
+Two identities solve different problems.
+
+`cache_generation_id`
+: A fresh UUID or equivalent for each successful build. It prevents runtime
+  mixing of decoded or GPU-resident tiles from different cache builds.
+
+`source_signature`
+: Evidence that the cache still corresponds to the canonical points source.
+
+The source-signature method must be explicit and versioned. A local first
+version may combine resolved source location, Parquet file inventory, schema,
+file sizes/footer row counts, and source row count. If the method is not a
+cryptographic content hash, the UI and API must not claim stronger guarantees
+than it provides.
+
+The reader reports at least:
+
+```text
+VALID
+STALE
+UNVERIFIABLE
+INVALID
+ABSENT
+```
+
+A cache generation id is mandatory even when source freshness is
+`UNVERIFIABLE`.
+
+### Grid convention
+
+Coordinates and tile indices use the points element's native data space.
+
+For one level:
+
+```text
+tile_x = floor((x - x_origin) / tile_size)
+tile_y = floor((y - y_origin) / tile_size)
+tile_id = f"{level}/{tile_x}/{tile_y}"
+```
+
+Tile cells are half-open in each dimension. Grid shape must be computed from
+the maximum assigned tile indices, not assumed solely from the numeric extent.
+This handles points that lie exactly on a tile boundary, including the source
+maximum.
+
+The coarsest grid should normally cover the complete dataset in one tile by
+choosing a tile size strictly greater than the maximum coordinate span. This
+makes the global overview budget straightforward. The format must still support
+more than one coarsest tile if a later builder deliberately chooses that
+layout; the global coarsest budget remains mandatory.
+
+### `genes.parquet`
+
+Required columns:
+
+```text
+gene_id: uint32
+gene: string
+n_transcripts: uint64
+```
+
+Gene labels are normalized according to one documented policy, assigned stable
+ids in deterministic order, and never inferred from GPU palette order.
+
+### `manifest.parquet`
+
+One row describes one physical Parquet row group:
+
+```text
+schema_version: string
+level: int16
+level_file: string
+tile_id: string
+tile_x: uint32
+tile_y: uint32
+n_points: int64
+row_group: int32
+tile_shard: int32
+```
+
+Requirements:
+
+- every row group contains rows for exactly one logical tile;
+- one tile may have several row-group shards;
+- manifest rows are deterministically ordered;
+- shard numbering is deterministic;
+- all `level_file` values are cache-root-relative;
+- summing `n_points` for a tile equals the rows read from all of its shards;
+- summing `n_points` for a level equals the level count in metadata;
+- no manifest row points outside the completed cache root.
+
+The manifest should be sorted/indexable by `(level, tile_y, tile_x,
+tile_shard)`. Whether the whole compact manifest is loaded into memory or
+queried as an Arrow dataset is decided from benchmarked manifest size.
+
+### Level payload columns
+
+Required:
+
+```text
+tile_id
+tile_x
+tile_y
+x_rel: float32
+y_rel: float32
+gene_id: uint32
+point_identity
+```
+
+`point_identity` is:
+
+- the validated source transcript id when supplied; or
+- a cache-internal `uint64` row id created before sampling and propagated
+  through every level.
+
+The source transcript id may be integral or string typed. The stable hashing
+contract must define its canonical byte encoding.
+
+Tile-local coordinates reconstruct native coordinates:
+
+```text
+x = x_origin + tile_x * tile_size + x_rel
+y = y_origin + tile_y * tile_size + y_rel
+```
+
+The exact level means full membership, not full-precision coordinate storage.
+Canonical full-precision coordinates remain in `points.parquet`.
+
+Optional future columns such as representative weight, cell id, or quality
+metrics require explicit schema evolution. Do not copy arbitrary source columns
+into every visualization level by default.
+
+## Level and sampling construction
+
+### Level discovery
+
+The builder considers both:
+
+- spatial extent relative to the requested leaf tile size;
+- source point count and the desired density progression.
+
+It must create at least:
+
+- one sampled coarsest level when exact source count exceeds the overview
+  budget;
+- one exact finest level.
+
+For a small source whose entire exact representation is within the overview
+budget, one exact level is sufficient.
+
+Additional density-only levels may share tile geometry. Additional spatial
+levels may halve tile size without changing density by the same ratio. Both
+properties are explicit in metadata.
+
+### Stable row identity
+
+Sampling begins by assigning every source row a stable identity.
+
+When a validated transcript-id column is supplied:
+
+- values must be non-null and unique;
+- canonical byte encoding is documented;
+- repartitioning the source must not change sampled membership.
+
+Without such a column:
+
+- assign a unique `uint64` build row id from deterministic partition offsets
+  and row positions;
+- guarantee reproducibility only while input row order and partitioning remain
+  stable;
+- record this weaker policy in metadata.
+
+### Sampling contract
+
+The Phase 1 construction spike must produce a concrete, versioned sampler
+specification.
+The expected family is:
+
+1. start from candidates retained by the next finer level;
+2. annotate candidates with the current level's tile and micro-grid cell;
+3. allocate the tile target across occupied spatial strata;
+4. allocate each stratum target across genes with a bounded rarity-aware rule;
+5. rank candidates using a stable hash of level, spatial stratum, gene id,
+   stable row identity, and seed;
+6. keep the deterministic winners;
+7. sort output deterministically before writing.
+
+The gene-allocation function should start with a bounded concave count transform
+such as `sqrt(n)` or `log1p(n)`, plus a clipped global-rarity modifier. Exact
+weights and minimum-allocation behavior must be benchmarked on skewed synthetic
+and real transcript datasets.
+
+The sampler must define behavior when:
+
+- occupied spatial strata exceed the available target;
+- genes in one stratum exceed the available target;
+- all points share one coordinate;
+- one gene dominates a tile;
+- many singleton genes occur in one tile;
+- a hash collision occurs;
+- a tile is split across Dask partitions.
+
+### Why not finish the old spatial-only sampler first
+
+The cache is an offline derived artifact whose quality determines every coarse
+view. Shipping a knowingly gene-blind sampler would create misleading
+biological overviews and consume implementation effort that the gene-aware
+sampler would replace. The writer should move directly from exact-level
+primitives to the specified gene-aware sampled levels.
+
+## Physical Parquet layout: benchmark before freezing
+
+The current writer processes source Dask partitions independently. This keeps
+construction simple, but one logical tile can be scattered across many part
+files. A cold viewport read could then require many file opens and small random
+row-group reads.
+
+The Phase 1 construction benchmark must compare:
+
+### Layout A: current partition-local writing
+
+- no global shuffle;
+- one part file per source partition;
+- the same tile may occur in many files.
+
+### Layout B: hash shuffle by logical tile
+
+- rows for one tile are co-located before writing;
+- dense tiles still split into row groups;
+- fewer files per tile;
+- higher construction shuffle and memory cost.
+
+### Layout C: deterministic tile buckets
+
+- logical tiles map to a bounded set of writer buckets;
+- each bucket contains several tiles;
+- pathological dense tiles receive deterministic sub-shards;
+- balances file count, locality, and construction memory.
+
+Measure:
+
+- total build time;
+- peak memory;
+- shuffle volume;
+- total disk size;
+- number of files;
+- manifest size;
+- row groups and files touched per logical tile;
+- cold and warm single-tile latency;
+- viewport latency for small, medium, and large views;
+- behavior on local SSD and, if relevant, networked storage.
+
+The top-level manifest contract deliberately supports all three layouts.
+Implementation must not freeze the physical writer strategy until this benchmark
+is reviewed.
+
+## View planning
+
+### Viewport calculation
+
+For each plan:
+
+1. obtain the visible canvas rectangle in world coordinates;
+2. inverse-transform its corners through the transcript layer transform;
+3. construct a conservative data-coordinate AABB;
+4. intersect it with cache bounds;
+5. compute core tiles;
+6. add the configured prefetch halo.
+
+For rotation or shear, the inverse-transformed viewport is a polygon. Querying
+its AABB may load extra tiles but must never omit visible data.
+
+Axis order must be explicit at every boundary:
+
+- cache metadata and Parquet columns use `x`, `y`;
+- napari coordinate arrays use `y`, `x`;
+- transforms declare their input and output axes;
+- `TilePayload.positions_yx_local` is named accordingly.
+
+### LOD selection
+
+For every candidate level:
+
+- find intersecting core and prefetch tiles;
+- sum manifest counts;
+- evaluate sampling spacing against data-units-per-screen-pixel;
+- evaluate the configured budget policy.
+
+Choose the finest eligible level. Exact wins whenever its core tiles fit.
+
+Do not apply normal query-time random trimming after choosing a level. A level
+is a trusted deterministic representation. If no level satisfies the supported
+runtime budget, use the coarsest level and report a cache/build configuration
+error rather than silently changing sampling semantics.
+
+### Hysteresis
+
+Switching thresholds must include hysteresis based on both screen scale and
+point budget. Small camera changes must not alternate between adjacent levels.
+
+## Scheduling and cache policy
+
+### Request priorities
+
+Order work approximately as:
+
+1. missing core tiles for the pending snapshot;
+2. same-level tiles entering the current viewport;
+3. core tiles needed to improve from fallback to target LOD;
+4. prefetch halo tiles;
+5. speculative work, if ever enabled.
+
+Priorities are recomputed when a new generation arrives.
+
+### Cancellation and stale results
+
+Cancellation is cooperative. A read already executing inside PyArrow may
+finish. On completion:
+
+- validate cache generation and source signature;
+- allow a still-useful payload into the CPU cache;
+- never activate it for an obsolete render generation.
+
+### CPU cache
+
+The CPU LRU is bounded by decoded bytes, not tile count.
+
+It stores immutable renderer-independent `TilePayload`s and never stores VisPy
+objects. Active and pending core tiles are pinned. Prefetch tiles may be evicted
+before core tiles.
+
+Sharing a CPU cache across multiple canvases is allowed only when keys include
+the full cache generation and decode contract.
+
+### GPU cache
+
+The GPU cache belongs to one OpenGL context/canvas.
+
+It is byte-bounded and pins:
+
+- active snapshot tiles;
+- pending core tiles;
+- buffers currently uploading.
+
+Eviction and deletion happen only with the correct GL context active.
+
+### Upload metering
+
+GPU uploads are queued and limited per frame by bytes and/or elapsed time.
+Large bursts must not freeze camera interaction. Upload completion notifies the
+scheduler so pending snapshots can activate.
+
+## Gene palette and filtering
+
+The GPU receives a dense gene id per resident point and a small lookup resource:
+
+```text
+gene_id -> RGBA + enabled
+```
+
+Changing:
+
+- gene color;
+- gene visibility;
+- global opacity;
+- point size;
+- selected-gene highlighting
+
+must not reupload point coordinates.
+
+Hidden resident genes still consume vertex processing. This is acceptable in
+the first tiled mode because the LOD budget bounds total resident vertices.
+
+The first production version may read all genes in a visible tile and filter in
+the renderer. Exact gene-selective IO requires a later physical layout/index
+extension; a metadata-only gene index is insufficient if row groups still mix
+all genes.
+
+## Picking
+
+Initial picking is CPU-side and separate from rendering:
+
+1. convert the cursor from world to cache data coordinates;
+2. identify the active tile;
+3. search an optional small spatial index over its CPU payload;
+4. ignore disabled genes;
+5. return point identity, gene, coordinates, and LOD status.
+
+At a sampled level, the result is a real representative transcript and must be
+reported as sampled. At the exact level, it is an exact visible source row.
+
+Picking is not required for the first rendering spike, but the payload contract
+must retain enough identity to add it without rebuilding the cache.
+
+## Napari integration boundary
+
+Napari currently lacks a stable public plugin API for mapping an arbitrary
+custom Layer subclass to custom Qt controls and a custom VisPy layer.
+
+All private napari integration must be isolated in a narrow adapter such as:
+
+```text
+napari_harpy/viewer/_napari_transcript_registration.py
+```
+
+The rest of the cache, store, planner, scheduler, and backend protocol must be
+testable without importing napari private modules.
+
+The tiled feature needs an explicit napari compatibility policy. The project's
+broad existing `napari>=0.4.18` dependency cannot imply that a private custom
+renderer is supported across every historical minor version.
+
+Before product integration:
+
+- select the napari minor versions supported by the tiled renderer;
+- add compatibility tests for those versions;
+- feature-detect or fail clearly outside that range;
+- track upstream custom-renderer registration work;
+- align scheduler concepts with napari progressive-loading work without making
+  an experimental image/labels implementation a runtime dependency.
+
+## Implementation phases
+
+### Phase 0: physical source resolution and validation
+
+Deliverables:
+
+- create `core/multi_scale_cache_points/` as the new implementation home;
+- implement immutable unresolved and validated source models;
+- resolve backed SpatialData points elements to explicit Parquet datasets;
+- implement deterministic Parquet file inventory and fragment offsets;
+- validate schema and available footer statistics;
+- implement bounded PyArrow scans for checks that require row data;
+- build the normalized gene table efficiently;
+- implement and version the source-signature method;
+- document the fallback row-identity policy;
+- instrument stage time, decoded bytes, and peak memory;
+- add tiny, adversarial, and real-data validation tests.
+
+Exit criteria:
+
+- the implementation does not import `_transcript_tiles.py`;
+- the fast path never reverse-engineers a Dask graph;
+- the validation package imports neither Qt, napari, nor VisPy;
+- missing or incompatible Parquet sources fail before cache writing;
+- metadata-only facts avoid full scans;
+- all streaming reads have bounded batch sizes;
+- fallback ids can be derived deterministically from validated fragment offsets;
+- the Xenium acceptance dataset reports 136,578,750 rows and 5,122 genes;
+- repeated validation produces the same ordered inventory and source signature.
+
+### Phase 1: persistent cache construction
+
+Begin with an internal exact-level performance spike:
+
+- benchmark 256- and 512-unit exact tiles on the Xenium acceptance dataset;
+- use numeric construction keys rather than per-row Python `tile_id` strings;
+- preserve bounded concurrency and memory;
+- implement partition-local Layout A first;
+- measure Layout C only if read locality or fragmentation requires it;
+- retain the row-group-per-logical-tile manifest invariant.
+
+Then complete the cache builder:
+
+- define the new dataclasses and cache schema in the new package;
+- generate a fresh cache-generation id and consume the validated source
+  signature;
+- implement stable fallback row identity;
+- write the exact level from the validated source;
+- construct sampled levels from retained finer-level candidates or normalized
+  exact tiles, not by repeatedly rescanning the original source;
+- implement gene-aware nested sampled levels;
+- enforce the global coarsest-level budget;
+- write metadata and manifest;
+- validate the complete staged cache;
+- publish with completion marker and atomic replacement;
+- expose the public backed-points-element builder.
+
+Exit criteria:
+
+- exact coordinate reconstruction is within documented tolerance;
+- exact level has full membership and identity coverage;
+- every sampled level is deterministic and nested;
+- coarsest total never exceeds the overview budget;
+- manifest accounting matches physical row groups;
+- rebuilding cannot expose an incomplete cache;
+- building never writes an incomplete cache at the final visible path;
+- full build time, peak memory, level sizes, and fragmentation are recorded on
+  the Xenium acceptance dataset.
+
+An exact-only artifact may be used internally for performance work, but it is
+not published as a completed multiscale cache when the source exceeds the
+overview budget.
+
+### Phase 2: runtime store, planner, and scheduler
+
+Implement:
+
+- validate metadata, manifest, files, row groups, and completion marker;
+- expose cache freshness state;
+- build the manifest lookup;
+- load and combine physical row-group shards with PyArrow;
+- return immutable tile payloads;
+- perform no Dask computation;
+- viewport transform and conservative bounds;
+- core and prefetch tile selection;
+- screen-scale and budget-aware LOD;
+- hysteresis;
+- immutable plans and snapshots;
+- generations and stale-result rejection;
+- bounded worker concurrency;
+- CPU byte LRU and pinning;
+- same-level incremental pan behavior;
+- atomic cross-level activation;
+- lifecycle shutdown.
+
+Exit criteria:
+
+- reader tests do not import Qt, napari, or VisPy;
+- real-data cold tile latency meets the measured target;
+- deterministic planner tests cover boundary-touching viewports and transforms;
+- stale loads cannot activate;
+- snapshots cannot mix cache generations or levels;
+- repeated nearby views hit the CPU cache;
+- invisible or removed layers stop scheduling work;
+- all scheduler tests run against a fake backend.
+
+### Phase 3: production VisPy backend
+
+Start with an in-memory renderer spike using synthetic immutable tiles. It must
+demonstrate:
+
+- resident tile buffers survive pan;
+- only entering tiles upload;
+- palette and visibility changes do not upload coordinates;
+- cross-level activation is atomic;
+- upload metering keeps interaction responsive;
+- cleanup releases GPU resources.
+
+The spike compares one standard VisPy marker visual per tile with one lean
+transcript point visual using compact attributes. The result informs the first
+VisPy backend without changing the backend protocol.
+
+Implement:
+
+- transcript tile visual;
+- compact vertex payload;
+- gene palette/visibility lookup;
+- per-context GPU LRU;
+- GUI-thread upload queue;
+- per-frame upload metering;
+- active/pending pinning;
+- atomic snapshot visibility;
+- context cleanup;
+- diagnostics for resident points, bytes, queue depth, and latency.
+
+Exit criteria:
+
+- an already resident tile is uploaded at most once before eviction;
+- camera transforms do not rebuild resident VBOs;
+- style changes do not upload coordinates;
+- GPU memory stays within its configured budget;
+- LOD changes do not show random mixed-level tiles;
+- removal releases resources and disconnects events;
+- benchmarks cover supported GPUs and napari versions.
+
+### Phase 4: napari and Harpy product integration
+
+Implement:
+
+- dedicated TranscriptLayerModel;
+- private registration adapter;
+- layer controls and status;
+- viewer widget entry point;
+- cache build/rebuild/status workflow;
+- tiled-mode controller lifecycle;
+- coordinate-system transform integration;
+- direct-path fallback;
+- user-visible diagnostics and error recovery.
+
+The existing direct points path remains:
+
+- the behavior when no cache is available;
+- a small selection workflow;
+- a correctness comparison for exact tiled views;
+- a fallback when the tiled renderer is unsupported.
+
+Exit criteria:
+
+- opening tiled mode does not materialize the full source dataframe;
+- fit-to-view uses the bounded point overview;
+- zoomed exact views match the direct path for the same rows;
+- pan and zoom reuse resident GPU tiles;
+- layer visibility/removal and SpatialData replacement are safe;
+- tiled-mode failures do not corrupt canonical data or the previous cache.
+
+Migration cleanup occurs only after those criteria pass:
+
+- switch all required imports and entry points to the new package;
+- migrate or replace useful tests from `tests/test_transcript_tiles.py`;
+- verify the direct fallback remains intact;
+- remove `src/napari_harpy/_transcript_tiles.py` in a dedicated cleanup change.
+
+### Phase 5: gene-selective IO and advanced interaction
+
+Only after measured need:
+
+- add per-tile gene counts for subset-aware planning;
+- change physical row-group layout or add gene-aware shards;
+- read only selected-gene row groups;
+- choose exact LOD for small gene selections even in broad spatial views;
+- add efficient picking and metadata lookup;
+- add remote-store publication and reads.
+
+This phase requires a new schema version if physical row-group semantics change.
+
+## Test strategy
+
+### Source resolution and validation
+
+Test:
+
+- missing, non-Parquet, and unreadable paths;
+- deterministic file ordering;
+- incompatible file and row-group schemas;
+- missing required columns and unsupported physical types;
+- metadata-derived and scan-derived row counts and bounds;
+- missing, NaN, and infinite coordinates;
+- missing, empty, whitespace-padded, and colliding normalized genes;
+- dictionary-encoded and plain-string genes;
+- transcript-id nulls and duplicates;
+- deterministic fragment offsets and fallback identities;
+- repeatable source signatures and inventory-change detection;
+- bounded batch reads;
+- no dependency on Dask graph inspection;
+- no Qt, napari, or VisPy imports.
+
+### Cache writer
+
+Test:
+
+- invalid and empty sources;
+- missing/non-finite coordinates;
+- missing/empty genes;
+- invalid and duplicate transcript ids;
+- stable fallback ids;
+- tile-boundary coordinates;
+- deterministic gene ids;
+- exact membership;
+- coordinate reconstruction;
+- deterministic nested sampling;
+- rare-gene and spatial-stratum preservation;
+- global and per-level budgets;
+- dense-tile sharding;
+- cross-partition tile co-location semantics;
+- manifest accounting;
+- source signature;
+- first build and rebuild rollback;
+- incomplete-cache rejection.
+
+### Store and planner
+
+Test:
+
+- unsupported schema;
+- absent/stale/unverifiable/invalid states;
+- missing or corrupt files;
+- row-group schema mismatch;
+- tile intersection at every boundary;
+- rotated/sheared conservative bounds;
+- YX/XY conventions;
+- point-count estimates;
+- core versus prefetch budgeting;
+- exact-level shortcut;
+- hysteresis;
+- density-only levels with equal tile sizes.
+
+### Scheduler
+
+Test:
+
+- request priority;
+- concurrency bounds;
+- cancellation;
+- generation changes;
+- stale completion;
+- CPU LRU pinning and eviction;
+- same-level overlap reuse;
+- atomic cross-level transitions;
+- errors retaining the previous display;
+- invisible/removed layer shutdown.
+
+### Renderer
+
+Test or instrument:
+
+- GUI-thread-only GPU mutation;
+- upload count per tile;
+- coordinate buffers unaffected by palette changes;
+- point-size and opacity uniforms;
+- GPU LRU byte accounting;
+- active/pending pinning;
+- context cleanup;
+- no source or LOD mixing;
+- large coordinate precision using tile-local positions.
+
+## Benchmark datasets and metrics
+
+Use at least:
+
+1. a tiny deterministic fixture for exact correctness;
+2. a dense compact fixture where extent alone would incorrectly produce one
+   LOD;
+3. a spatially skewed fixture with hotspots and empty regions;
+4. a gene-skewed fixture with dominant and rare genes;
+5. a medium real Xenium or equivalent transcript dataset;
+6. a large real or synthetic dataset exercising many tiles and row groups.
+
+Record:
+
+- build time and peak memory;
+- size per level and total cache overhead;
+- manifest size;
+- cold and warm tile latency;
+- files and row groups touched per viewport;
+- planner time;
+- CPU cache hit rate and bytes;
+- GPU upload bytes and time per frame;
+- active/resident point counts;
+- same-level pan latency;
+- cold and warm LOD transition latency;
+- palette/gene-visibility update latency;
+- resource cleanup.
+
+Initial runtime targets should be treated as hypotheses until measured:
+
+- default visible render target around 100,000 points;
+- configurable stronger-hardware target around 150,000-200,000 points;
+- warm pan/zoom median under 100 ms;
+- common cold tile view under 300 ms;
+- no interaction-blocking upload burst.
+
+The cache format must not hard-code one machine's runtime budget.
+
+## Architecture invariants
+
+These invariants are suitable as tests and review gates:
+
+- camera movement never mutates a canonical transcript dataframe;
+- camera movement never replaces one monolithic Points layer in tiled mode;
+- camera movement never rebuilds an already resident tile VBO;
+- a tile uploads at most once between GPU insertion and eviction;
+- palette and gene visibility changes never reupload coordinates;
+- no render snapshot mixes cache generations;
+- no active snapshot mixes LOD levels;
+- sampled rows always identify real source transcripts;
+- the exact level has full source membership;
+- the complete coarsest level fits the declared overview budget;
+- interactive reads touch only manifest-selected row groups;
+- no interactive read executes a Dask graph;
+- active and pending tiles are protected from LRU eviction;
+- stale asynchronous results cannot activate themselves;
+- worker threads never touch VisPy objects;
+- the layer extent is independent of current resident tiles;
+- layer removal disconnects camera events and releases GPU resources;
+- incomplete caches never validate as usable;
+- canonical SpatialData points are never mutated by cache construction or
+  rendering.
+
+## Upstream alignment
+
+Relevant upstream and neighboring work:
+
+- napari progressive loading:
+  https://github.com/napari/napari/pull/9067
+- napari multiresolution non-image layers:
+  https://github.com/napari/napari/issues/1019
+- napari custom layer-to-visual registration:
+  https://github.com/napari/napari/issues/4121
+- napari large-points discussion:
+  https://github.com/napari/napari/issues/6148
+- Neuroglancer precomputed annotation spatial index:
+  https://github.com/google/neuroglancer/blob/master/src/datasource/precomputed/annotations.md
+- deck.gl TileLayer scheduling and refinement:
+  https://deck.gl/docs/api-reference/geo-layers/tile-layer
+- Odon point renderer and in-memory LOD reference:
+  https://github.com/alexcoulton/odon
+
+Harpy should reuse concepts and align interfaces where practical. It should not
+wait for napari to deliver a transcript-specific renderer, and it should not
+make experimental napari progressive-loading internals a required dependency.
+
+## Immediate next actions
+
+Do not proceed directly to the old coarse-writer slice and do not add the new
+builder to `_transcript_tiles.py`.
+
+The next work should be:
+
+1. create the empty `core/multi_scale_cache_points/` package boundary;
+2. define unresolved and validated Parquet source models;
+3. implement explicit SpatialData-to-Parquet resolution;
+4. implement footer-first validation and bounded PyArrow content scans;
+5. implement the versioned source signature and fallback identity policy;
+6. validate and benchmark the Xenium acceptance dataset;
+7. review the validation contract before beginning the exact-level writer;
+8. then run the exact tile-size/layout benchmark and sampler work in Phase 1.
+
+This order addresses the decisions most likely to force a costly rewrite if
+they are deferred.
