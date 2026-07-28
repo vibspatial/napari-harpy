@@ -4,8 +4,8 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8b, except that the standalone Slice
-6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8c
+Implementation is complete through Slice 8c, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8d
 and later slices remain planned.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -8145,7 +8145,7 @@ second accepted-reload callback or event is introduced.
 
 ### Slice 8c: Spatial Query reload integration
 
-**Implementation status: Planned.**
+**Implementation status: Implemented.**
 
 #### Responsibility boundary
 

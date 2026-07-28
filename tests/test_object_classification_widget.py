@@ -49,6 +49,7 @@ from napari_harpy.core.object_classification.classifier_export import (
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
 from napari_harpy.viewer.labels_colormap import CompactLabelColormap
+from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -59,6 +60,7 @@ from napari_harpy.widgets.object_classification.widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
 from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
+from napari_harpy.widgets.spatial_query.widget import SpatialQuery
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -3103,6 +3105,51 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     assert feature_matrix_items == ["disk_features", "features_1", "features_2"]
     assert widget.selected_feature_key == "features_1"
     assert "Current class: 7." in widget.selection_status.text()
+
+
+def test_spatial_query_reload_prepares_object_classification_for_shared_table(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    """A Spatial Query reload must freeze Object Classification through shared app state before reloading their table."""
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    object_classification = HarpyWidget(viewer)
+    spatial_query = SpatialQuery(viewer)
+    qtbot.addWidget(object_classification)
+    qtbot.addWidget(spatial_query)
+    select_segmentation(object_classification)
+    spatial_query.apply_annotation_context(
+        AnnotationContext(
+            sdata=backed_sdata_blobs,
+            coordinate_system="global",
+            shapes_target=ShapesAnnotationTarget.edit_existing("blobs_circles"),
+            has_unsaved_shapes_changes=False,
+        )
+    )
+    labels_index = spatial_query.labels_combo.findData("blobs_labels")
+    assert labels_index >= 0
+    spatial_query.labels_combo.setCurrentIndex(labels_index)
+    assert object_classification.selected_table_name == spatial_query.selected_table_name == "table"
+
+    freeze_calls: list[str] = []
+    monkeypatch.setattr(
+        object_classification._classifier_controller,
+        "freeze_for_reload",
+        lambda: freeze_calls.append("freeze"),
+    )
+    reload_events: list[TableStateChangedEvent] = []
+    object_classification.app_state.table_state_changed.connect(
+        lambda event: reload_events.append(event) if event.change_kind == "reloaded" else None
+    )
+
+    spatial_query.persistence_controls.reload_button.click()
+
+    assert freeze_calls == ["freeze"]
+    assert len(reload_events) == 1
+    assert reload_events[0].sdata is backed_sdata_blobs
+    assert reload_events[0].table_name == "table"
 
 
 def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, backed_sdata_blobs: SpatialData) -> None:
