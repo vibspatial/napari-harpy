@@ -5,8 +5,8 @@
 Final product specification and implementation plan.
 
 Implementation is complete through Slice 8d, except that the standalone Slice
-6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8e
-remains planned.
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slices 8e
+and 8f remain planned.
 
 This document supersedes the raster-overlap query algorithm described in
 spatial_query.md. It retains the agreed user interface, table mutation,
@@ -8302,9 +8302,8 @@ Object Classification rebinds, resets, and reapplies its selected styling
 Feature Extraction and other asynchronous table consumers are explicitly
 outside Slice 8c. Their reload interaction requires a separate audit because
 backed Feature Extraction may write through Harpy while working, unlike
-Spatial Query's mutation-free workers. Slice 8e performs that multi-widget
-audit and registers another participant when late Feature Extraction work can
-target a reloaded table.
+Spatial Query's mutation-free workers. Slice 8e performs that focused audit
+and hardens Feature Extraction against same-table reload races.
 
 #### Deliverables
 
@@ -8509,21 +8508,163 @@ requirement; it is not part of this slice.
   loudly;
 - application-close guarding remains outside this slice.
 
-### Slice 8e: Multi-widget backed-zarr integration
+### Slice 8e: Feature Extraction table-reload hardening
 
 #### Responsibility boundary
 
-This slice verifies the combined contracts from Slices 8a–8d against one shared
-viewer and backed SpatialData store. It is an integration and hardening slice,
-not a place to introduce another dirty-state or persistence model.
+This slice resolves the remaining interaction between asynchronous Feature
+Extraction and the shared table-reload protocol.
+
+Feature Extraction differs from Object Classification and Spatial Query:
+`hp.tb.add_feature_matrix()` receives the `SpatialData` captured by the worker
+and, for backed data, writes the feature matrix and its companion metadata
+through to zarr before the worker returns. Ignoring a late callback prevents
+obsolete UI and application-state publication, but it cannot undo or prevent a
+Harpy write that has already started.
+
+That behavior is acceptable for Slice 8d SpatialData replacement because the
+worker continues against the deliberately abandoned old store. It is not safe
+for a reload of the same table in the same store:
+
+```text
+Feature Extraction writes to backed table A
+    ↓
+another widget reloads table A while that write is active
+    ↓
+reload restores table A from disk
+    ↓
+the old Harpy operation may finish afterward
+    → table A changes after the accepted reload boundary
+    → restored in-memory and persisted feature state may diverge
+```
+
+The deliberately conservative policy is to reject a reload while Feature
+Extraction has active work that can write to the exact requested
+`SpatialData` and table. Requesting worker cancellation is not sufficient
+because cancellation cannot guarantee interruption inside an already-running
+Harpy call. Reload does not wait for the worker and does not attempt rollback.
+The user waits for Feature Extraction to finish and can then request Reload
+again.
+
+#### Shared reload participation
+
+`FeatureExtractionWidget` registers as a `TableReloadParticipant` with the
+shared `HarpyAppState` and unregisters by identity during Qt teardown. Its
+active operation must expose or retain enough immutable target identity to
+compare a `TableReloadRequest` with the running job:
+
+```text
+HarpyAppState.prepare_for_table_reload(request)
+    ↓
+FeatureExtractionWidget.prepare_for_table_reload(request)
+    ├── no active Feature Extraction job
+    │      → allow reload
+    │
+    ├── active job targets another SpatialData or table
+    │      → allow reload
+    │
+    └── active job targets request.sdata and request.table_name
+           → reject reload with user-facing feedback
+           → leave the Feature Extraction job running
+           → replace no table components
+           → emit no post-reload event
+```
+
+The shared persistence controls already surface participant failures as a
+Persistence Error. The message must identify the affected table and explain
+that Feature Extraction is still writing it and must finish before Reload can
+proceed.
+
+Participant preparation remains free of AnnData mutation. As documented by
+the shared reload protocol, an earlier participant may already have
+conservatively invalidated its work before a later participant rejects the
+reload; that invalidation is allowed to remain.
+
+#### Post-reload Feature Extraction adoption
+
+Feature Extraction also consumes the successful
+`TableStateChangedEvent(change_kind="reloaded")` for its currently selected
+SpatialData and table. This is a post-success adoption boundary, not another
+reload trigger.
+
+The widget refreshes table choices, feature-matrix output-key state, overwrite
+readiness, and controller bindings from the restored live table. It publishes
+no second table mutation or reload event. Events for another SpatialData or
+table are ignored.
+
+Because a reload targeting an active Feature Extraction job is rejected,
+post-reload adoption never races an accepted matching worker. A completed or
+unrelated worker follows its existing result and shared table-state contracts.
+
+#### SpatialData replacement remains distinct
+
+This slice does not change the Slice 8d replacement policy:
+
+```text
+Feature Extraction captured old SpatialData
+    ↓
+user accepts replacement
+    ↓
+widget/controller rebinds and clears the old active job identity
+    ↓
+already-running Harpy work may finish against the old store
+    ↓
+late callback is ignored
+    → no obsolete table-state event
+    → no replacement-widget refresh
+    → no mutation of the replacement SpatialData
+```
+
+Feature Extraction therefore blocks only an accepted reload of the exact table
+that its active worker can still write. It does not block replacement of the
+complete SpatialData session.
 
 #### Deliverables
 
-- multi-widget tests with Viewer, Annotation/Spatial Query, and Object
-  Classification sharing one `HarpyAppState`;
-- an audit of asynchronous Feature Extraction reload interaction, with
-  registration as a `TableReloadParticipant` when late Feature Extraction work
-  can target a reloaded table;
+- Feature Extraction registration as an identity-safe
+  `TableReloadParticipant`;
+- immutable active-job target identity sufficient to compare exact
+  `SpatialData` and table ownership;
+- user-facing rejection of same-table reload while a Feature Extraction Harpy
+  write is active;
+- allowance for reloads targeting unrelated SpatialData objects or tables;
+- post-reload refresh of Feature Extraction table, output-key, overwrite, and
+  controller state from restored components;
+- preservation of the existing Slice 8d old-store replacement behavior;
+- focused matching-request, unrelated-request, teardown, post-reload adoption,
+  no-duplicate-event, and late-result tests.
+
+#### Exit criteria
+
+- no accepted reload can be followed by a late Feature Extraction write to the
+  same backed table;
+- rejecting a matching reload replaces no in-memory table components and emits
+  no post-reload table-state event;
+- an unrelated reload is not blocked by Feature Extraction;
+- after the matching worker finishes, Reload can proceed normally;
+- successful reload adoption reflects restored feature matrices and metadata
+  without publishing a feedback mutation;
+- SpatialData replacement remains non-blocking with respect to already-running
+  Feature Extraction work against the abandoned old store;
+- no widget-local reload or dirty-state model is introduced.
+
+### Slice 8f: Multi-widget backed-zarr integration
+
+#### Responsibility boundary
+
+This slice verifies the combined contracts from Slices 8a–8e against one shared
+viewer and backed SpatialData store. It is an integration and hardening slice,
+not a place to introduce another dirty-state, reload, or persistence model.
+
+The tests should be organized as focused integration scenarios sharing a
+backed-store fixture rather than as one large end-to-end test. Production code
+changes are limited to defects exposed by those combined scenarios.
+
+#### Deliverables
+
+- multi-widget tests with Viewer, Annotation/Spatial Query, Object
+  Classification, and Feature Extraction where relevant, sharing one
+  `HarpyAppState`;
 - backed-zarr tests proving that canonical centers, annotation columns,
   companion palettes, classifier state, and feature-matrix metadata are written
   and reloaded together through explicit component encodings;
@@ -8547,6 +8688,8 @@ not a place to introduce another dirty-state or persistence model.
 - canonical centers and annotation state persist/reload without a full table
   rewrite;
 - no late work affects reloaded or replaced state;
+- a matching active Feature Extraction write blocks Reload, while unrelated
+  Feature Extraction work does not;
 - there is no competing widget-local dirty truth.
 
 ### Slice 9: Production hardening and release gate
