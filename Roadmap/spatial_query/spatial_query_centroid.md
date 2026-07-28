@@ -4,9 +4,8 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8e, except that the standalone Slice
-6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8f
-remains planned.
+Implementation is complete through Slice 8f, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p.
 
 This document supersedes the raster-overlap query algorithm described in
 spatial_query.md. It retains the agreed user interface, table mutation,
@@ -8774,6 +8773,43 @@ replacement of the complete SpatialData session.
 - no widget-local reload or dirty-state model is introduced.
 
 ### Slice 8f: Multi-widget backed-zarr integration
+
+**Implementation status: Implemented.**
+
+The focused backed-zarr integration module verifies five combined boundaries:
+
+```text
+mixed Spatial Query and Object Classification mutations
+    → one shared dirty state
+    → one component-aware write
+    → every bound persistence control becomes clean
+    → declared components round-trip without unrelated table rewrites
+
+Feature Extraction persisted-change acknowledgement
+    → clears only captured current feature paths
+    → preserves another producer's dirty paths
+    → preserves newer same-path mutation tokens
+
+shared reload with all three table-consuming workflows
+    → prepares Spatial Query and Object Classification
+    → rejects while matching Feature Extraction work remains in flight
+    → succeeds after that work finishes
+    → every bound workflow adopts one published reload event
+
+Spatial Query styling followed by Object Classification styling
+    → both reuse the same primary Labels layer
+    → the later explicit styling action is visible
+
+complete SpatialData replacement with old work in flight
+    → late Spatial Query and Feature Extraction callbacks are ignored
+    → old Feature Extraction may finish only against its captured old store
+    → replacement table state receives no obsolete mutation or event
+```
+
+No new production architecture was required: the combined scenarios pass
+through the shared dirty-state, component-persistence, reload-participant,
+viewer-styling, and SpatialData-replacement contracts implemented by the
+preceding slices.
 
 #### Responsibility boundary
 
