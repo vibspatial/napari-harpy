@@ -8341,67 +8341,129 @@ target a reloaded table.
 - one accepted reload results in exactly one table replacement and one
   post-reload table event.
 
-### Slice 8d: SpatialData replacement and close guard
+### Slice 8d: Explicit SpatialData replacement confirmation
 
 #### Responsibility boundary
 
-Replacing or clearing the active `SpatialData` is a broader destructive
-transition than reloading one table. The current `HarpyAppState.set_sdata()`
-removes layers and replaces the shared dataset without consulting unsaved
-Shapes state or the dirty-table manifest. This slice moves replacement safety
-to a shared pre-change boundary.
+Replacing or clearing the active `SpatialData` discards the complete current
+Harpy session. The current `HarpyAppState.set_sdata()` removes layers and
+replaces the shared dataset without first requiring explicit authorization to
+discard unsaved Shapes edits or dirty table components.
+
+This slice introduces one deliberately simple contract: replacing an already
+loaded `SpatialData` requires explicit discard authorization. It does not
+offer to persist state during the replacement transition. Users who want to
+keep table changes must use the existing Write Table State action before
+loading another container.
 
 ```text
-Replace or clear the active SpatialData
+A SpatialData container is already loaded
     ↓
-inspect unsaved Shapes edit state
+user requests another container
     ↓
-inspect every dirty table in the old dataset
+“Any unsaved changes will be lost.”
     ↓
-resolve Write / Discard / Cancel
+Proceed / Cancel
     ├── Cancel
-    │      → preserve the current dataset, layers, edits, and manifest
+    │      → preserve the current SpatialData
+    │      → preserve its layers and active edit session
+    │      → preserve every dirty-table manifest entry
     │
-    └── accepted
-           → write or deliberately discard each dirty table
-           → invalidate work captured from the old dataset
-           → release old edit sessions and bindings
-           → remove old layers
-           → publish the new shared dataset
+    └── Proceed
+           → explicitly accept discarding the current session
+           → replace the shared SpatialData
+           → invalidate work captured from the old SpatialData
+           → release old edit sessions and layer bindings
+           → discard dirty-manifest entries for the old SpatialData
 ```
 
-#### Decisions to resolve before implementation
+The confirmation is shown whenever a user-facing action replaces one loaded
+container with another. It does not inspect individual dirty tables or Shapes
+sessions. This keeps replacement independent of table backing, the number of
+dirty tables, and the particular workflows that produced the unsaved state.
+The wording says that unsaved changes *may* be lost rather than claiming that
+the current container is known to be dirty.
 
-- define the SpatialData replacement participant/coordinator and how it composes
-  unsaved Shapes confirmation with dirty-table confirmation;
-- define Write / Discard / Cancel behavior for multiple dirty tables;
-- define behavior for unbacked SpatialData where Write is unavailable;
-- define when dirty-manifest entries for an accepted discarded or replaced
-  dataset are removed;
-- define deterministic failure behavior when writing one of multiple tables
-  succeeds and a later write fails;
-- define close behavior separately from replacement only if their accepted
-  outcomes differ.
+#### Replacement routes
+
+The Viewer Load SpatialData button is not the only replacement route. The same
+contract must cover:
+
+- the Viewer Load SpatialData action;
+- the napari SpatialData zarr reader used by napari File Open;
+- `Interactive(sdata, viewer=existing_viewer)` and other explicit programmatic
+  replacement through the shared app state.
+
+User-facing Viewer and reader replacements show the Proceed / Cancel dialog
+before authorizing replacement. `Interactive(...)` is itself an explicit API
+request and authorizes replacement without opening a modal dialog; headless
+use must never require GUI confirmation.
+
+`HarpyAppState.set_sdata()` remains the shared enforcement boundary. An initial
+load, or setting the exact already-active object again, is non-destructive and
+requires no authorization. Replacing the active object or clearing it must
+carry explicit discard authorization; bypassing that contract fails loudly.
+Cancel is represented by not invoking the destructive shared transition.
+
+#### Accepted replacement cleanup
+
+After Proceed, replacement deliberately discards the old in-memory session. No
+table write or persistence acknowledgement is attempted.
+
+The existing synchronous `sdata_changed` adoption path remains responsible for
+rebinding widgets and invalidating controller work whose captured inputs belong
+to the previous `SpatialData`. The accepted transition must additionally:
+
+- remove old Harpy-managed viewer layers and their bindings;
+- release any active Shapes edit session without a second confirmation;
+- remove every dirty-manifest entry belonging to the replaced `SpatialData`;
+- ensure late Spatial Query, Object Classification, or Feature Extraction
+  results cannot mutate the replacement dataset or republish obsolete state.
+
+Discarded dirty components are removed from the session manifest without
+pretending that they were written or reloaded. No table-state persistence event
+is emitted for this deliberate session discard.
+
+#### Explicit non-goals
+
+- no per-table Write / Discard / Cancel decision during replacement;
+- no automatic persistence of dirty tables;
+- no multi-table partial-write recovery;
+- no special replacement path for unbacked `SpatialData`;
+- no new participant/coordinator protocol for replacement;
+- no napari application-close interception or close confirmation.
+
+Closing napari may therefore still discard unsaved state without a warning. A
+close guard can be considered separately if that UX becomes a product
+requirement; it is not part of this slice.
 
 #### Deliverables
 
-- a shared SpatialData replacement/close request and participant boundary;
-- one confirmation flow covering unsaved Shapes edits and every dirty table;
-- explicit multi-table, unbacked-dataset, and partial-write behavior;
-- cancellation/invalidation of work captured from the old dataset;
+- one reusable Proceed / Cancel confirmation for user-facing SpatialData
+  replacement routes;
+- explicit destructive-transition authorization at
+  `HarpyAppState.set_sdata()`;
+- Viewer and napari-reader integration with the same confirmation contract;
+- explicit non-modal replacement authorization for `Interactive(...)`;
 - cleanup of obsolete dirty-manifest, edit-session, and layer-binding state;
-- focused replacement, close, Cancel, partial-failure, and late-result tests.
+- focused initial-load, Cancel, Proceed, reader, programmatic replacement, and
+  late-result tests.
 
 #### Exit criteria
 
-- Cancel leaves the current dataset, layers, edit session, table state, and
+- an initial `SpatialData` load requires no confirmation;
+- Viewer and napari-reader replacement cannot discard the current session
+  without the user choosing Proceed;
+- Cancel leaves the current dataset, layers, edit session, table values, and
   dirty manifest unchanged;
-- no dirty table or unsaved Shapes edit is silently discarded;
-- accepted replacement or close cannot be followed by late work mutating the
-  old or newly selected dataset;
-- partial write failures remain visible and do not falsely mark unwritten state
-  clean;
-- the guard is enforced at the shared `SpatialData` transition boundary.
+- Proceed replaces the dataset without attempting implicit persistence and
+  removes all obsolete session state belonging to the previous dataset;
+- programmatic replacement is explicit and remains usable in headless mode;
+- accepted replacement cannot be followed by late work mutating the old or
+  newly selected dataset;
+- a destructive direct `set_sdata()` call without discard authorization fails
+  loudly;
+- application-close guarding remains outside this slice.
 
 ### Slice 8e: Multi-widget backed-zarr integration
 
