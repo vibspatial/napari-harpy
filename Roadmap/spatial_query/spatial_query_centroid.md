@@ -9017,7 +9017,295 @@ The backed integration scenarios verify that:
   tokens;
 - there is no competing widget-local dirty truth.
 
-### Slice 8g: Explicit Shapes reload from backing store
+### Slice 8g: Exact Shapes-element backing-store I/O
+
+**Implementation status: Planned.**
+
+napari-harpy introduces one focused core boundary for reading and writing an
+individual Shapes element in a backed SpatialData store:
+
+```text
+src/napari_harpy/core/spatialdata_io/
+    __init__.py
+    shapes.py
+```
+
+This deliberately avoids converting the existing
+`core/spatialdata.py` module into a package merely to obtain a nested
+`core/spatialdata/io/shapes.py` path. The new package contains backing-store
+I/O helpers; the existing module retains its current SpatialData discovery,
+binding, and viewer-facing helpers.
+
+The initial public core API is:
+
+```python
+def read_shapes_element_from_store(
+    sdata: SpatialData,
+    shapes_name: str,
+) -> GeoDataFrame: ...
+
+
+def write_shapes_element_to_store(
+    sdata: SpatialData,
+    shapes_name: str,
+    element: GeoDataFrame,
+    *,
+    overwrite: bool,
+) -> None: ...
+```
+
+Both helpers require a zarr-backed `SpatialData`. They operate on exactly
+`shapes/<shapes_name>` and must not parse, materialize, replace, or rewrite any
+unrelated Shapes element. The Shapes Annotation conversion and edit-validity
+logic remains outside this module: the writer receives an already parsed
+SpatialData Shapes `GeoDataFrame`, including its transformations.
+
+#### Motivation and responsibility boundary
+
+The current Harpy overwrite path performs collection-wide reads:
+
+```text
+Save one small Shapes element
+    ↓
+hp.sh.add_shapes()
+    ↓
+write a temporary Shapes element
+    ↓
+read every Shapes element
+    ↓
+delete and rewrite the requested element
+    ↓
+read every Shapes element again
+    ↓
+delete the temporary element
+```
+
+This makes saving a small annotation depend on the size of unrelated Shapes
+elements in the same store. A store containing hundreds of thousands of cell
+polygons can therefore make overwriting a four-row annotation take several
+seconds even though converting and writing the requested element itself is
+cheap.
+
+The new boundary changes that dependency:
+
+```text
+Save one Shapes element
+    ↓
+stage only that element
+    ↓
+replace only shapes/<shapes_name>
+    ↓
+read back only shapes/<shapes_name>
+    ↓
+touch no unrelated Shapes payload
+```
+
+Slice 8g owns exact named Shapes disk I/O and migrates the existing **Save
+shapes** create and overwrite paths to it. The following Slice 8h owns the
+explicit **Reload shapes** UI and consumes the same exact reader. This slice
+does not introduce widget controls, Shapes reload events, or table persistence
+semantics.
+
+#### Exact reader contract
+
+`read_shapes_element_from_store()`:
+
+- requires `sdata.is_backed()` and an available backing path;
+- addresses only `<sdata.path>/shapes/<shapes_name>`;
+- fails loudly when the requested element is absent or cannot be parsed as a
+  supported SpatialData Shapes format;
+- returns a `GeoDataFrame` with its stored index, geometry, columns, and
+  coordinate transformations restored;
+- does not mutate `sdata`, its live `shapes` mapping, the viewer, or the store;
+  and
+- never calls collection-level `read_zarr(..., selection=("shapes",))`.
+
+SpatialData currently exposes the required multi-version Shapes parsing through
+its internal exact-element reader rather than a public named-element API.
+napari-harpy may isolate that private import inside
+`core/spatialdata_io/shapes.py` instead of copying SpatialData's GeoParquet,
+legacy format, and transformation parsing. No other napari-harpy module may
+import that private reader directly. A future public SpatialData exact-element
+API can therefore replace this one adapter without changing widget or core
+callers.
+
+#### Exact writer contract
+
+`write_shapes_element_to_store()` validates the operation boundary before
+changing disk state:
+
+- `sdata` is backed and its backing path remains available;
+- `shapes_name` identifies a Shapes element rather than another SpatialData
+  element type;
+- `element` is a SpatialData-compatible Shapes `GeoDataFrame` with coordinate
+  transformations;
+- `overwrite=False` rejects an existing on-disk target; and
+- `overwrite=True` requires an existing Shapes target and captures its exact
+  persisted value for rollback.
+
+The writer uses SpatialData's supported element write/delete operations for the
+physical mutation. It does not implement a second Shapes serialization format
+and does not call Harpy's collection-oriented incremental I/O helper.
+
+Create and overwrite share a staged commit:
+
+```text
+validate the exact target and incoming GeoDataFrame
+    ↓
+write the incoming element under a collision-free temporary Shapes name
+    ↓
+temporary write succeeds?
+    ├── no
+    │      → clean up the partial temporary element
+    │      → leave the target and live mapping unchanged
+    │      → raise
+    │
+    └── yes
+           → for overwrite, delete only the old exact target
+           → write the incoming element under the requested name
+           → exact-read the committed requested element
+           → install that materialized value in sdata.shapes[shapes_name]
+           → remove the temporary element
+```
+
+The successful live mapping contains the exact materialized disk value rather
+than a GeoDataFrame still associated with the temporary staging name. No
+temporary name remains in the live mapping or backing store after successful
+cleanup.
+
+#### Failure and rollback semantics
+
+The writer preserves the previously accepted live and disk state when a normal
+Python exception occurs:
+
+```text
+target write fails after staging succeeded
+    ↓
+remove any partial requested target
+    ↓
+overwrite
+    → restore the exact previously persisted target
+    → restore the previous live mapping value
+
+create
+    → restore target absence
+    → restore the previous live mapping state
+    ↓
+clean up the staged element
+    ↓
+raise the original write failure
+```
+
+If rollback or staging cleanup also fails, the raised error must identify both
+the original failure and the exact retained temporary Shapes name so the
+recoverable data is discoverable. Cleanup must never silently delete the only
+remaining complete copy.
+
+This is exception-safe, process-level replacement—not a transactional
+filesystem primitive. A process crash between delete and rewrite, concurrent
+writers targeting the same name, remote object-store transactionality, and
+automatic recovery of staging elements left by a killed process are explicit
+non-goals. The collision-free staging name reduces accidental interference but
+does not constitute a multi-process lock.
+
+#### Shapes Annotation Save integration
+
+The existing Shapes Annotation core continues to:
+
+- convert the napari Shapes layer into a validated SpatialData
+  `GeoDataFrame`;
+- retain source-index identity, active geometry, linked-table checks, and
+  coordinate transformations;
+- decide whether the action is create or overwrite; and
+- publish the existing successful Shapes-write event and update the clean edit
+  snapshot only after the writer returns successfully.
+
+Only the persistence mechanism changes:
+
+```text
+create_shapes_element() / overwrite_shapes_element()
+    ↓
+build and validate the requested Shapes GeoDataFrame
+    ↓
+write_shapes_element_to_store(...)
+    ↓
+success
+    → adopt the materialized live Shapes element
+    → continue the existing saved-session promotion/refresh
+
+failure
+    → preserve the active editable layer and session as dirty
+    → publish no successful Shapes-write event
+    → surface the actionable save error
+```
+
+The create and overwrite paths no longer call `hp.sh.add_shapes()`. This does
+not change Shapes validation, table-link behavior, event provenance, or viewer
+session ownership.
+
+#### Performance and compatibility contract
+
+Performance acceptance is structural rather than based on cross-platform wall
+clock thresholds:
+
+- exact read parses one requested Shapes payload;
+- create writes one staged payload and one requested payload;
+- overwrite additionally reads/restores only the requested old payload when
+  required for rollback;
+- no operation invokes a collection-wide Shapes read;
+- no unrelated Shapes GeoDataFrame is materialized; and
+- no unrelated SpatialData element is written or deleted.
+
+The exact reader must retain compatibility with the Shapes formats supported by
+the installed SpatialData version, including restored transformations. Isolating
+SpatialData's reader is preferred to duplicating those version branches.
+
+#### Non-goals
+
+- defining a general exact-element reader/writer for images, labels, points, or
+  tables;
+- replacing SpatialData's Shapes serialization implementation;
+- changing Shapes Annotation validation or napari conversion;
+- collection-wide Shapes reload;
+- asynchronous Save, progress reporting, or performance budgets;
+- multi-process locking, crash-consistent filesystem transactions, or orphaned
+  staging recovery;
+- moving this helper into Harpy as part of this slice.
+
+#### Deliverables
+
+- `core/spatialdata_io/__init__.py` with the exact Shapes I/O exports;
+- `core/spatialdata_io/shapes.py` containing the isolated exact reader and
+  staged writer;
+- migration of Shapes Annotation create and overwrite persistence away from
+  `hp.sh.add_shapes()`;
+- focused exact-read tests covering geometry, index, columns, supported stored
+  format, and coordinate transformations;
+- focused create and overwrite round-trip tests;
+- failure-injection coverage proving preservation of the previous live/disk
+  target and discoverable retained staging data when cleanup cannot complete;
+- structural assertions that collection-level `read_zarr` and unrelated Shapes
+  reads/writes are not used; and
+- no timing-based or cross-platform regression threshold.
+
+#### Exit criteria
+
+- saving one Shapes element no longer reads every Shapes element in the store;
+- reading one Shapes element materializes only the requested named payload and
+  restores its coordinate transformations;
+- successful create and overwrite leave disk and
+  `sdata.shapes[shapes_name]` describing the same materialized element;
+- successful operations leave no staging element in memory or on disk;
+- an ordinary staging or target-write failure preserves the previously accepted
+  target and active editable session;
+- a secondary cleanup/rollback failure reports the retained recoverable data
+  rather than silently discarding it;
+- Shapes Annotation publishes success only after the exact writer commits;
+- unrelated Shapes and other SpatialData elements remain untouched; and
+- the following explicit Shapes reload slice can reuse the same exact reader
+  without defining another disk-I/O path.
+
+### Slice 8h: Explicit Shapes reload from backing store
 
 **Implementation status: Planned.**
 
@@ -9040,7 +9328,7 @@ current Shapes edit session has unsaved changes?
     └── no
            → continue without a discard confirmation
     ↓
-read the Shapes collection from disk and select the requested element
+read the requested Shapes element directly from disk
     ↓
 validate it with the shared Shapes edit-validity contract
     ↓
@@ -9080,14 +9368,12 @@ session. The new action must instead read the element explicitly from the
 backing store and finish with the same selected target open as a clean
 edit-existing session.
 
-No new general persistence controller is introduced. SpatialData's public
-`read_zarr(..., selection=...)` API selects top-level element collections rather
-than one named element. A focused core boundary therefore uses
-`read_zarr(sdata.path, selection=("shapes",))`, selects
-`disk_sdata.shapes[shapes_name]` from that temporary result, and returns the
-validated disk value without mutating widget state. This reads no images,
-labels, points, or tables. It deliberately avoids private SpatialData readers
-and custom GeoParquet parsing merely to load one Shapes name.
+No new general persistence controller is introduced. The action uses
+`read_shapes_element_from_store()` from Slice 8g, which loads the requested
+named Shapes payload and restores its stored transformations without reading
+unrelated Shapes, images, labels, points, or tables. The widget does not call a
+private SpatialData reader or implement custom GeoParquet parsing directly;
+that compatibility boundary remains isolated in `core/spatialdata_io/shapes.py`.
 
 The Shapes Annotation child owns the subsequent in-memory element replacement,
 viewer-layer replacement, edit-session reconstruction, clean-snapshot capture,
@@ -9107,14 +9393,15 @@ restore until the first successful **Save shapes** promotes the session to
 `edit_existing`. The tooltip must explain this distinction. It is also disabled
 for an unbacked SpatialData object because “from disk” has no defined source.
 
-Button-readiness refresh does not read the Shapes collection merely to inspect
-the persisted transformations. Whether the disk element still provides the
-selected coordinate system is validated after the user clicks **Reload shapes**,
-as part of the disk-value preflight below.
+Button-readiness refresh does not parse the persisted Shapes payload merely to
+inspect its transformations. Whether the disk element still provides the
+selected coordinate system is validated after the user clicks **Reload
+shapes**, as part of the disk-value preflight below.
 
 The button does not become a second Save action. **Save shapes** continues to
-write the editable layer through the existing Harpy Shapes path; **Reload
-shapes** discards in-memory layer edits and adopts the persisted element.
+write the editable layer through the Slice 8g exact writer; **Reload shapes**
+discards in-memory layer edits and adopts the persisted element through the
+matching exact reader.
 
 #### Dirty-session confirmation
 
@@ -9150,11 +9437,9 @@ edit-existing session.
 
 #### Disk read, validation, and failure atomicity
 
-The operation reads the public `selection=("shapes",)` collection and then
-selects only `shapes_name` for validation and adoption. Reading every Shapes
-element is an accepted limitation of the installed public SpatialData API. It
-must not read images, labels, points, or tables, and it must not use private
-SpatialData readers to simulate unsupported exact-name selection.
+The operation exact-reads `shapes_name` through the Slice 8g core boundary. It
+must not read any other Shapes element, image, labels element, points element,
+or table.
 
 Before removing the current napari layer or replacing the live
 `sdata.shapes[shapes_name]` value, the disk value is captured and checked:
@@ -9274,8 +9559,9 @@ from the same event. No consumer republishes a feedback reload event.
 - a secondary **Reload shapes** action with backed/edit-existing readiness and
   clear tooltips;
 - reload-specific use of the existing discard-confirmation UI;
-- Shapes-collection disk read through SpatialData's public selection API,
-  followed by shared edit-validity validation of the requested element;
+- exact named-element disk read through
+  `read_shapes_element_from_store()`, followed by shared edit-validity
+  validation of the requested element;
 - rollback-safe replacement of the live Shapes element, primary viewer layer,
   locked edit session, and clean snapshot;
 - a typed successful Shapes reload event distinct from the existing write event;
@@ -9291,9 +9577,9 @@ from the same event. No consumer republishes a feedback reload event.
 - a dirty reload cannot proceed without explicit user confirmation;
 - Cancel preserves the exact live element, editable layer, session, dirty state,
   parent context, and accepted Spatial Query work;
-- an accepted reload obtains the requested element from a freshly read disk
-  Shapes collection rather than rebuilding from a potentially stale in-memory
-  mapping;
+- an accepted reload obtains the requested element through a fresh exact disk
+  read rather than rebuilding from a potentially stale in-memory mapping or
+  reading unrelated Shapes elements;
 - successful reload keeps the same Shapes target and coordinate system open as a
   clean edit-existing session;
 - disk-read, validation, replacement, or viewer-registration failure does not
