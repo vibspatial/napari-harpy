@@ -8546,26 +8546,68 @@ Harpy call. Reload does not wait for the worker and does not attempt rollback.
 The user waits for Feature Extraction to finish and can then request Reload
 again.
 
+Here, *active work* means every Harpy worker that has started but has not yet
+emitted `finished`. It includes a worker whose result is no longer accepted by
+the current UI state and a worker for which `quit()` has already been
+requested. `FeatureExtractionController.is_running` and `active_job_id`
+currently describe only the accepted current operation and are therefore not
+sufficient reload guards:
+
+```text
+Feature Extraction starts a Harpy write to table A
+    ↓
+the widget selection changes
+    ↓
+quit() is requested
+    ↓
+the accepted current worker/job identity is cleared
+    ↓
+the non-cooperative Harpy call may still be writing table A
+    ↓
+Reload table A must still be rejected until that worker emits finished
+```
+
+The controller must therefore distinguish two lifecycles:
+
+```text
+accepted current job
+    → controls current widget running/status state
+    → only its returned result may refresh the widget or publish table state
+
+in-flight Harpy jobs
+    → every started job whose worker has not emitted finished
+    → includes cancelled or superseded jobs
+    → protects exact SpatialData/table reloads
+```
+
+The existing immutable `FeatureExtractionJob` already captures the required
+`SpatialData` and table identity. A controller-owned registry such as
+`_in_flight_jobs: dict[int, FeatureExtractionJob]` records each job at launch
+and removes it only from the worker's `finished` callback. Requesting
+cancellation or invalidating result acceptance must not remove it from this
+registry. The `finished` callback must remove a matching in-flight entry even
+when that job is no longer the accepted current job.
+
 #### Shared reload participation
 
 `FeatureExtractionWidget` registers as a `TableReloadParticipant` with the
 shared `HarpyAppState` and unregisters by identity during Qt teardown. Its
-active operation must expose or retain enough immutable target identity to
-compare a `TableReloadRequest` with the running job:
+controller exposes enough read-only in-flight target information to compare a
+`TableReloadRequest` with every not-yet-finished Harpy job:
 
 ```text
 HarpyAppState.prepare_for_table_reload(request)
     ↓
 FeatureExtractionWidget.prepare_for_table_reload(request)
-    ├── no active Feature Extraction job
+    ├── no in-flight Feature Extraction job
     │      → allow reload
     │
-    ├── active job targets another SpatialData or table
+    ├── every in-flight job targets another SpatialData or table
     │      → allow reload
     │
-    └── active job targets request.sdata and request.table_name
+    └── any in-flight job targets request.sdata and request.table_name
            → reject reload with user-facing feedback
-           → leave the Feature Extraction job running
+           → leave accepted and cancelled Harpy work undisturbed
            → replace no table components
            → emit no post-reload event
 ```
@@ -8580,6 +8622,21 @@ the shared reload protocol, an earlier participant may already have
 conservatively invalidated its work before a later participant rejects the
 reload; that invalidation is allowed to remain.
 
+This subtle distinction must be documented next to
+`FeatureExtractionWidget.prepare_for_table_reload()`. Its docstring or an
+adjacent explanatory comment must state that the method checks controller-owned
+in-flight jobs rather than only `is_running` or `active_job_id`, and why a
+cancelled or superseded worker remains reload-relevant until `finished`. The
+code should preserve a concise form of this flow:
+
+```text
+quit requested
+    → returned result is no longer accepted
+    → Harpy write may still be running
+    → keep its table target in _in_flight_jobs
+    → block a matching Reload until finished
+```
+
 #### Post-reload Feature Extraction adoption
 
 Feature Extraction also consumes the successful
@@ -8592,9 +8649,10 @@ readiness, and controller bindings from the restored live table. It publishes
 no second table mutation or reload event. Events for another SpatialData or
 table are ignored.
 
-Because a reload targeting an active Feature Extraction job is rejected,
-post-reload adoption never races an accepted matching worker. A completed or
-unrelated worker follows its existing result and shared table-state contracts.
+Because a reload targeting any matching in-flight Feature Extraction job is
+rejected, post-reload adoption never races an accepted matching worker. A
+completed or unrelated worker follows its existing result and shared
+table-state contracts.
 
 #### SpatialData replacement remains distinct
 
@@ -8605,7 +8663,9 @@ Feature Extraction captured old SpatialData
     ↓
 user accepts replacement
     ↓
-widget/controller rebinds and clears the old active job identity
+widget/controller rebinds
+    → clear the old accepted current-job identity
+    → retain its in-flight target until the worker emits finished
     ↓
 already-running Harpy work may finish against the old store
     ↓
@@ -8616,14 +8676,15 @@ late callback is ignored
 ```
 
 Feature Extraction therefore blocks only an accepted reload of the exact table
-that its active worker can still write. It does not block replacement of the
-complete SpatialData session.
+that any of its in-flight workers can still write. It does not block
+replacement of the complete SpatialData session.
 
 #### Deliverables
 
 - Feature Extraction registration as an identity-safe
   `TableReloadParticipant`;
-- immutable active-job target identity sufficient to compare exact
+- controller-owned in-flight job tracking, separate from accepted current-job
+  state, with immutable target identity sufficient to compare exact
   `SpatialData` and table ownership;
 - user-facing rejection of same-table reload while a Feature Extraction Harpy
   write is active;
@@ -8631,13 +8692,17 @@ complete SpatialData session.
 - post-reload refresh of Feature Extraction table, output-key, overwrite, and
   controller state from restored components;
 - preservation of the existing Slice 8d old-store replacement behavior;
-- focused matching-request, unrelated-request, teardown, post-reload adoption,
-  no-duplicate-event, and late-result tests.
+- explicit code documentation at `prepare_for_table_reload()` explaining why
+  cancelled or superseded jobs remain in-flight reload guards;
+- focused current-job, cancelled-but-unfinished-job, unrelated-request,
+  teardown, post-reload adoption, no-duplicate-event, and late-result tests.
 
 #### Exit criteria
 
 - no accepted reload can be followed by a late Feature Extraction write to the
   same backed table;
+- a cancelled or superseded worker continues to block a matching reload until
+  its `finished` signal removes its in-flight target;
 - rejecting a matching reload replaces no in-memory table components and emits
   no post-reload table-state event;
 - an unrelated reload is not blocked by Feature Extraction;
