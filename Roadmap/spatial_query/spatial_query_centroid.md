@@ -9047,7 +9047,7 @@ def load_shapes_element_from_store(
 ) -> GeoDataFrame: ...
 
 
-def write_shapes_element_to_store(
+def write_shapes_element(
     sdata: SpatialData,
     shapes_name: str,
     element: GeoDataFrame,
@@ -9056,11 +9056,16 @@ def write_shapes_element_to_store(
 ) -> GeoDataFrame: ...
 ```
 
-Both helpers require a zarr-backed `SpatialData`. They operate on exactly
-`shapes/<shapes_name>` and must not parse, materialize, replace, or rewrite any
-unrelated Shapes element. The Shapes Annotation conversion and edit-validity
-logic remains outside this module: the writer receives an already parsed
-SpatialData Shapes `GeoDataFrame`, including its transformations.
+The loader requires a zarr-backed `SpatialData`; there is no persisted source
+to load for an unbacked object. The writer supports both backed and unbacked
+`SpatialData`. For a backed object it synchronizes exactly
+`shapes/<shapes_name>` with the live mapping. For an unbacked object it updates
+only the live mapping. Neither operation may parse, materialize, replace, or
+rewrite any unrelated Shapes element.
+
+The Shapes Annotation conversion and edit-validity logic remains outside this
+module: the writer receives an already parsed SpatialData Shapes
+`GeoDataFrame`, including its transformations.
 
 The public helpers own synchronization between the requested disk element and
 the live `SpatialData` mapping:
@@ -9072,14 +9077,19 @@ load
     → install it in sdata.shapes[shapes_name]
 
 write
-    → commit the requested element to disk
-    → exact-read the committed value
-    → install it in sdata.shapes[shapes_name]
+    ├── unbacked SpatialData
+    │      → install the validated element in sdata.shapes[shapes_name]
+    │
+    └── backed SpatialData
+           → commit the requested element to disk
+           → exact-read the committed value
+           → install it in sdata.shapes[shapes_name]
 ```
 
 Callers do not separately assign `sdata.shapes[shapes_name]`. Both helpers
-return the exact `GeoDataFrame` installed in the live mapping. They remain
-unaware of napari layers, edit sessions, status cards, and application events.
+return the same `GeoDataFrame` installed in the live mapping; for backed data
+this is the exact materialized disk value. They remain unaware of napari
+layers, edit sessions, status cards, and application events.
 
 #### Motivation and responsibility boundary
 
@@ -9151,6 +9161,59 @@ The validation hook allows a workflow to reject a disk value before the live
 package. Slice 8h supplies the shared Shapes edit-validity and selected
 coordinate-system checks through this hook.
 
+For example, a Shapes element may have been changed externally since the
+current edit session was opened:
+
+```text
+current in-memory Shapes element
+    → valid Polygon geometry
+    → provides the selected coordinate system
+    → remains open in Shapes Annotation
+
+persisted element changed externally
+    → now contains unsupported geometry
+    → or no longer provides the selected coordinate system
+    ↓
+Reload shapes
+    ↓
+exact-read persisted candidate
+    ↓
+validate_before_install(candidate)
+    ├── raises
+    │      → keep the previous sdata.shapes value
+    │      → keep the current viewer layer and edit session
+    │      → report that Reload could not be completed
+    │
+    └── succeeds
+           → install candidate in sdata.shapes[shapes_name]
+           → continue viewer-layer and edit-session reconstruction
+```
+
+`validate_before_install` is a one-shot synchronous function argument. The
+loader neither stores nor registers it, and it is not an application event or
+participant. It is invoked exactly once with the fully parsed candidate before
+the live-mapping assignment. Returning normally accepts the candidate; raising
+rejects it and leaves the existing live mapping unchanged.
+
+This hook is the minimal bridge between two ownership boundaries:
+
+```text
+core/spatialdata_io
+    → exact storage parsing
+    → live sdata.shapes installation
+
+Shapes Annotation caller
+    → geometry edit-validity
+    → selected-coordinate-system validity
+```
+
+Installing first and validating afterward would require rollback from a
+temporarily invalid live `SpatialData`. Exposing a separate public pure reader
+and installation call would return normal `sdata.shapes` replacement to the
+caller. Moving the edit-validity rules into the I/O package would couple generic
+storage code to one widget workflow. The synchronous validation hook avoids all
+three alternatives while preserving the single-call loader.
+
 SpatialData currently exposes the required multi-version Shapes parsing through
 its internal exact-element reader rather than a public named-element API.
 `core/spatialdata_io/shapes.py` therefore contains a private, side-effect-free
@@ -9160,25 +9223,46 @@ and transformation parsing. No other napari-harpy module may import or call
 that private adapter directly. A future public SpatialData exact-element API
 can replace this one adapter without changing public core or widget callers.
 
-#### Exact writer contract
+#### Unified writer contract
 
-`write_shapes_element_to_store()` validates the operation boundary before
-changing disk state:
+`write_shapes_element()` validates the operation boundary before changing live
+or disk state:
 
-- `sdata` is backed and its backing path remains available;
 - `shapes_name` identifies a Shapes element rather than another SpatialData
   element type;
 - `element` is a SpatialData-compatible Shapes `GeoDataFrame` with coordinate
   transformations;
-- `overwrite=False` rejects an existing on-disk target; and
-- `overwrite=True` requires an existing Shapes target and captures its exact
-  persisted value for rollback.
+- when the target is absent, the operation creates it whether `overwrite` is
+  `False` or `True`;
+- when the target exists, `overwrite=False` rejects the replacement and
+  `overwrite=True` permits it; and
+- for backed data, the backing path remains available and the live/disk target
+  presence agrees before mutation begins.
 
-The writer uses SpatialData's supported element write/delete operations for the
-physical mutation. It does not implement a second Shapes serialization format
-and does not call Harpy's collection-oriented incremental I/O helper.
+These overwrite semantics deliberately preserve the current Shapes Annotation
+contract:
 
-Create and overwrite share a staged commit:
+```text
+target absent
+    → overwrite=False: create
+    → overwrite=True: create
+
+target exists
+    → overwrite=False: reject
+    → overwrite=True: replace
+```
+
+For an unbacked `SpatialData`, the writer installs the element directly in the
+live mapping after validation and returns that installed `GeoDataFrame`. If
+installation raises, it restores the previous live mapping state. No staging or
+disk operation is involved.
+
+For a backed `SpatialData`, the writer uses SpatialData's supported element
+write/delete operations for the physical mutation. It does not implement a
+second Shapes serialization format and does not call Harpy's
+collection-oriented incremental I/O helper.
+
+Backed create and overwrite share a staged commit:
 
 ```text
 validate the exact target and incoming GeoDataFrame
@@ -9207,8 +9291,8 @@ cleanup.
 
 #### Failure and rollback semantics
 
-The writer preserves the previously accepted live and disk state when a normal
-Python exception occurs:
+The backed writer preserves the previously accepted live and disk state when a
+normal Python exception occurs:
 
 ```text
 target write fails after staging succeeded
@@ -9248,21 +9332,26 @@ The existing Shapes Annotation core continues to:
   `GeoDataFrame`;
 - retain source-index identity, active geometry, linked-table checks, and
   coordinate transformations;
+- parse the converted value with `ShapesModel.parse(..., transformations=...)`
+  before calling the writer, replacing the model-preparation work previously
+  performed inside `hp.sh.add_shapes()`;
 - decide whether the action is create or overwrite; and
 - publish the existing successful Shapes-write event and update the clean edit
   snapshot only after the writer returns successfully.
 
-Only the persistence mechanism changes:
+Only the Shapes installation and persistence mechanism changes:
 
 ```text
 create_shapes_element() / overwrite_shapes_element()
     ↓
 build and validate the requested Shapes GeoDataFrame
     ↓
-write_shapes_element_to_store(...)
+parse it as a SpatialData Shapes element with the requested transformations
+    ↓
+write_shapes_element(...)
     ↓
 success
-    → sdata.shapes already contains the materialized committed element
+    → sdata.shapes already contains the installed element
     → continue the existing saved-session promotion/refresh
 
 failure
@@ -9280,10 +9369,11 @@ session ownership.
 Performance acceptance is structural rather than based on cross-platform wall
 clock thresholds:
 
+- an unbacked write performs no disk I/O;
 - exact load parses and installs one requested Shapes payload;
-- create writes one staged payload and one requested payload;
-- overwrite additionally reads/restores only the requested old payload when
-  required for rollback;
+- backed create writes one staged payload and one requested payload;
+- backed overwrite additionally reads/restores only the requested old payload
+  when required for rollback;
 - no operation invokes a collection-wide Shapes read;
 - no unrelated Shapes GeoDataFrame is materialized; and
 - no unrelated SpatialData element is written or deleted.
@@ -9310,12 +9400,14 @@ preferred to duplicating those version branches.
 - `core/spatialdata_io/__init__.py` with the exact Shapes I/O exports;
 - `core/spatialdata_io/shapes.py` containing the stateful public loader,
   isolated private exact reader, and staged writer;
-- migration of Shapes Annotation create and overwrite persistence away from
-  `hp.sh.add_shapes()`;
+- migration of backed and unbacked Shapes Annotation create and overwrite away
+  from `hp.sh.add_shapes()`, with explicit `ShapesModel.parse()` model
+  preparation;
 - focused exact-load tests covering live-mapping replacement, geometry, index,
   columns, supported stored format, coordinate transformations, and
   validation-before-install failure;
-- focused create and overwrite round-trip tests;
+- focused unbacked create/overwrite and backed create/overwrite round-trip
+  tests, including creation with `overwrite=True`;
 - failure-injection coverage proving preservation of the previous live/disk
   target and discoverable retained staging data when cleanup cannot complete;
 - structural assertions that collection-level `read_zarr` and unrelated Shapes
@@ -9325,10 +9417,14 @@ preferred to duplicating those version branches.
 #### Exit criteria
 
 - saving one Shapes element no longer reads every Shapes element in the store;
+- unbacked create and overwrite continue to update the live `SpatialData`
+  without requiring a zarr store;
+- an absent target is created regardless of the `overwrite` value, while an
+  existing target requires `overwrite=True`;
 - loading one Shapes element materializes only the requested named payload,
   restores its coordinate transformations, and installs it in the live
   `sdata.shapes` mapping;
-- successful create and overwrite leave disk and
+- successful backed create and overwrite leave disk and
   `sdata.shapes[shapes_name]` describing the same materialized element;
 - successful operations leave no staging element in memory or on disk;
 - an ordinary staging or target-write failure preserves the previously accepted
