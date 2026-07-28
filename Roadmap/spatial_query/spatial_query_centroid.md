@@ -9017,6 +9017,280 @@ The backed integration scenarios verify that:
   tokens;
 - there is no competing widget-local dirty truth.
 
+### Slice 8g: Explicit Shapes reload from backing store
+
+**Implementation status: Planned.**
+
+The Annotation widget adds a clear **Reload shapes** action for restoring the
+selected existing Shapes element from its backing zarr store:
+
+```text
+Reload shapes clicked
+    ↓
+selected target is an existing Shapes element in a backed SpatialData
+    ↓
+current Shapes edit session has unsaved changes?
+    ├── yes
+    │      → show “Discard Unsaved Shapes Annotations”
+    │      ├── Cancel
+    │      │      → change nothing
+    │      └── Discard annotations and reload
+    │             → continue
+    │
+    └── no
+           → continue without a discard confirmation
+    ↓
+read only the selected Shapes element from disk
+    ↓
+validate it with the shared Shapes edit-validity contract
+    ↓
+replace the live sdata.shapes element and primary napari Shapes layer
+    ↓
+reopen the same edit-existing session
+    ↓
+capture a new clean snapshot
+    ↓
+publish the successful reload and show “Shapes Reloaded”
+```
+
+The confirmation is required only when the current editable layer differs from
+its clean snapshot. A clean session reloads immediately; asking the user to
+discard annotations when no unsaved annotations exist would be misleading.
+
+#### Responsibility boundary
+
+This is a Shapes-specific reload boundary. It does not use the table dirty
+manifest, `TableReloadRequest`, or the shared table-reload participant protocol.
+Reloading Shapes changes neither AnnData nor the canonical-centers cache:
+
+```text
+Reload shapes
+    → restore one sdata.shapes element from disk
+    → replace its primary napari Shapes layer
+    → invalidate work that captured the previous Shapes geometry
+    → do not reload or mark any table component
+    → do not recalculate canonical centers
+```
+
+The existing Shapes discard path is not the complete implementation for this
+action. `_discard_annotation_layer()` removes the editable layer and calls
+`ViewerAdapter.ensure_shapes_loaded()`, which reconstructs the layer from the
+current in-memory `sdata.shapes` mapping. It then releases the child edit
+session. The new action must instead read the element explicitly from the
+backing store and finish with the same selected target open as a clean
+edit-existing session.
+
+No new general persistence controller is introduced. A focused core boundary
+may read one selected `shapes/<name>` element through SpatialData's selective
+read API and return the validated disk value without mutating widget state. The
+Shapes Annotation child owns the subsequent in-memory element replacement,
+viewer-layer replacement, edit-session reconstruction, clean-snapshot capture,
+and user feedback.
+
+#### Button readiness and placement
+
+`ShapesAnnotation` exposes a secondary **Reload shapes** button near the existing
+Shapes actions. It is enabled only when:
+
+- the parent-selected target is `edit_existing`;
+- the current `SpatialData` object is backed by zarr;
+- the exact selected Shapes element exists in that backing store; and
+- the selected coordinate system remains available for that element.
+
+The action is disabled for `create_new`: there is no persisted element to
+restore until the first successful **Save shapes** promotes the session to
+`edit_existing`. The tooltip must explain this distinction. It is also disabled
+for an unbacked SpatialData object because “from disk” has no defined source.
+
+The button does not become a second Save action. **Save shapes** continues to
+write the editable layer through the existing Harpy Shapes path; **Reload
+shapes** discards in-memory layer edits and adopts the persisted element.
+
+#### Dirty-session confirmation
+
+The existing discard dialog and styling are reused with reload-specific text:
+
+```text
+window title
+    “Discard Unsaved Shapes Annotations”
+
+message
+    “Reloading <shapes_name> from disk will discard the current
+     unsaved shape annotations.”
+
+actions
+    “Discard annotations and reload”
+    “Cancel”
+```
+
+Cancel is a strict no-op:
+
+- keep the exact napari layer and its geometry/features;
+- keep the locked `_ShapesAnnotationSession`;
+- keep the current clean snapshot and dirty state;
+- keep the parent `AnnotationContext`;
+- replace no `sdata.shapes` element;
+- emit no Shapes reload event; and
+- invalidate no Spatial Query operation.
+
+The reload action must not route through `try_close_edit_session()`: that method
+exists to release a session before a coordinate-system or Shapes-target change.
+Reload keeps both parent selections and replaces the contents behind the same
+edit-existing session.
+
+#### Disk read, validation, and failure atomicity
+
+The operation reads only the exact selected Shapes element. It must not reopen
+the complete SpatialData store merely to restore one element.
+
+Before removing the current napari layer or replacing the live
+`sdata.shapes[shapes_name]` value, the disk value is captured and checked:
+
+- the selected SpatialData still has the same backing path;
+- `shapes/<shapes_name>` still exists on disk;
+- the value is a Shapes GeoDataFrame;
+- `validate_existing_shapes_source_geodataframe()` accepts it;
+- the selected coordinate system remains available; and
+- the element can satisfy the existing primary-Shapes edit contract, including
+  active geometry, source-index identity, Polygon, and Polygon-with-holes
+  requirements.
+
+Read or validation failure leaves the current live element, napari layer,
+session, snapshot, dirty state, and parent context untouched. The existing
+**Could Not Reload Shapes** status-card family reports the actionable error.
+
+The commit boundary must also be rollback-safe. If replacing the live element
+or rebuilding/registering the primary layer fails after preflight, restore the
+previous in-memory element and edit session rather than silently losing the
+user's editable layer. Emit the reload event only after the complete replacement
+and session reconstruction succeed.
+
+#### Successful session adoption
+
+An accepted reload preserves selection ownership:
+
+```text
+before
+    AnnotationContext.shapes_target
+        → edit_existing(<shapes_name>)
+    selected coordinate system
+        → <coordinate_system>
+    ShapesAnnotation session
+        → possibly dirty
+
+after
+    AnnotationContext.shapes_target
+        → edit_existing(<shapes_name>)
+    selected coordinate system
+        → unchanged
+    ShapesAnnotation session
+        → rebuilt from the disk GeoDataFrame
+        → clean
+    primary napari Shapes layer
+        → rebuilt from the disk element
+        → active in the viewer
+```
+
+The rebuilt `_ShapesAnnotationSession.source_geodataframe`, source-index feature
+name, linked-table warning state, viewer binding, and clean layer snapshot must
+all describe the reloaded disk value. Parent dirty state becomes `False` exactly
+once when the previous session was dirty.
+
+Reloading Shapes does not reload linked tables. If an externally modified Shapes
+element no longer agrees with a linked table, the existing linked-table and
+query validation contracts remain authoritative; this slice does not attempt to
+merge or repair independently persisted elements.
+
+#### Reload publication and stale-work invalidation
+
+A successful reload needs explicit provenance even when the previous session
+was already clean. In that case the parent `AnnotationContext` has the same
+SpatialData, coordinate system, Shapes target, and
+`has_unsaved_shapes_changes=False` before and after the operation, so ordinary
+context comparison cannot reveal that the geometry changed.
+
+Introduce a typed shared notification such as:
+
+```python
+@dataclass(frozen=True)
+class ShapesElementReloadedEvent:
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    source: str = "shapes_annotation"
+```
+
+`HarpyAppState` publishes this event only after a successful disk reload and
+clean-session reconstruction. It is separate from `ShapesElementWrittenEvent`:
+a reload adopted persisted state and did not write an element.
+
+The matching Spatial Query child consumes this event and invalidates any
+accepted or running operation that captured the previous Shapes geometry:
+
+```text
+Shapes element reloaded successfully
+    ↓
+matching Spatial Query operation exists
+    → reject its late worker result
+    → apply no annotation from the old polygon snapshot
+    → refresh Run controls and status from the current context
+
+no matching operation
+    → no query-side mutation
+```
+
+Matching requires the same `SpatialData` identity, Shapes name, and coordinate
+system. Unrelated Shapes reloads are ignored. Viewer controls that derive
+available Shapes fields or presentation state from the live element may refresh
+from the same event. No consumer republishes a feedback reload event.
+
+#### Non-goals
+
+- reloading `create_new` layers that have never been saved;
+- reloading all Shapes elements or the complete SpatialData container;
+- monitoring the backing store for external changes;
+- merging disk geometry with unsaved napari edits;
+- reloading, repairing, or marking linked tables dirty;
+- adding Shapes undo history;
+- introducing an asynchronous worker, progress bar, or Shapes reload
+  participant protocol;
+- treating a reload as a Shapes write.
+
+#### Deliverables
+
+- a secondary **Reload shapes** action with backed/edit-existing readiness and
+  clear tooltips;
+- reload-specific use of the existing discard-confirmation UI;
+- selective disk read and shared edit-validity validation for one Shapes
+  element;
+- rollback-safe replacement of the live Shapes element, primary viewer layer,
+  locked edit session, and clean snapshot;
+- a typed successful Shapes reload event distinct from the existing write event;
+- matching Spatial Query stale-operation invalidation and required Viewer
+  refresh;
+- focused Cancel, accepted dirty reload, clean external-change reload,
+  unavailable-target, and failure-preservation tests.
+
+#### Exit criteria
+
+- **Reload shapes** is available only for a selected existing Shapes element in
+  a backed SpatialData store;
+- a dirty reload cannot proceed without explicit user confirmation;
+- Cancel preserves the exact live element, editable layer, session, dirty state,
+  parent context, and accepted Spatial Query work;
+- an accepted reload reads the exact element from disk rather than rebuilding
+  from a potentially stale in-memory mapping;
+- successful reload keeps the same Shapes target and coordinate system open as a
+  clean edit-existing session;
+- disk-read, validation, replacement, or viewer-registration failure does not
+  discard the current editable session;
+- a successful clean-to-clean reload still invalidates matching Spatial Query
+  work captured from the previous geometry;
+- unrelated Spatial Query work is not invalidated;
+- no table component, canonical-centers cache, or disk Shapes value is mutated by
+  Reload; and
+- one successful reload publishes one typed reload event and no feedback event.
+
 ### Slice 9: Production hardening and release gate
 
 Deliverables:
