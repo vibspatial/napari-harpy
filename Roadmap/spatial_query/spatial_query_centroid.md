@@ -9040,7 +9040,7 @@ current Shapes edit session has unsaved changes?
     └── no
            → continue without a discard confirmation
     ↓
-read only the selected Shapes element from disk
+read the Shapes collection from disk and select the requested element
     ↓
 validate it with the shared Shapes edit-validity contract
     ↓
@@ -9080,10 +9080,16 @@ session. The new action must instead read the element explicitly from the
 backing store and finish with the same selected target open as a clean
 edit-existing session.
 
-No new general persistence controller is introduced. A focused core boundary
-may read one selected `shapes/<name>` element through SpatialData's selective
-read API and return the validated disk value without mutating widget state. The
-Shapes Annotation child owns the subsequent in-memory element replacement,
+No new general persistence controller is introduced. SpatialData's public
+`read_zarr(..., selection=...)` API selects top-level element collections rather
+than one named element. A focused core boundary therefore uses
+`read_zarr(sdata.path, selection=("shapes",))`, selects
+`disk_sdata.shapes[shapes_name]` from that temporary result, and returns the
+validated disk value without mutating widget state. This reads no images,
+labels, points, or tables. It deliberately avoids private SpatialData readers
+and custom GeoParquet parsing merely to load one Shapes name.
+
+The Shapes Annotation child owns the subsequent in-memory element replacement,
 viewer-layer replacement, edit-session reconstruction, clean-snapshot capture,
 and user feedback.
 
@@ -9094,13 +9100,17 @@ Shapes actions. It is enabled only when:
 
 - the parent-selected target is `edit_existing`;
 - the current `SpatialData` object is backed by zarr;
-- the exact selected Shapes element exists in that backing store; and
-- the selected coordinate system remains available for that element.
+- the exact selected Shapes element exists in that backing store.
 
 The action is disabled for `create_new`: there is no persisted element to
 restore until the first successful **Save shapes** promotes the session to
 `edit_existing`. The tooltip must explain this distinction. It is also disabled
 for an unbacked SpatialData object because “from disk” has no defined source.
+
+Button-readiness refresh does not read the Shapes collection merely to inspect
+the persisted transformations. Whether the disk element still provides the
+selected coordinate system is validated after the user clicks **Reload shapes**,
+as part of the disk-value preflight below.
 
 The button does not become a second Save action. **Save shapes** continues to
 write the editable layer through the existing Harpy Shapes path; **Reload
@@ -9140,8 +9150,11 @@ edit-existing session.
 
 #### Disk read, validation, and failure atomicity
 
-The operation reads only the exact selected Shapes element. It must not reopen
-the complete SpatialData store merely to restore one element.
+The operation reads the public `selection=("shapes",)` collection and then
+selects only `shapes_name` for validation and adoption. Reading every Shapes
+element is an accepted limitation of the installed public SpatialData API. It
+must not read images, labels, points, or tables, and it must not use private
+SpatialData readers to simulate unsupported exact-name selection.
 
 Before removing the current napari layer or replacing the live
 `sdata.shapes[shapes_name]` value, the disk value is captured and checked:
@@ -9261,8 +9274,8 @@ from the same event. No consumer republishes a feedback reload event.
 - a secondary **Reload shapes** action with backed/edit-existing readiness and
   clear tooltips;
 - reload-specific use of the existing discard-confirmation UI;
-- selective disk read and shared edit-validity validation for one Shapes
-  element;
+- Shapes-collection disk read through SpatialData's public selection API,
+  followed by shared edit-validity validation of the requested element;
 - rollback-safe replacement of the live Shapes element, primary viewer layer,
   locked edit session, and clean snapshot;
 - a typed successful Shapes reload event distinct from the existing write event;
@@ -9278,8 +9291,9 @@ from the same event. No consumer republishes a feedback reload event.
 - a dirty reload cannot proceed without explicit user confirmation;
 - Cancel preserves the exact live element, editable layer, session, dirty state,
   parent context, and accepted Spatial Query work;
-- an accepted reload reads the exact element from disk rather than rebuilding
-  from a potentially stale in-memory mapping;
+- an accepted reload obtains the requested element from a freshly read disk
+  Shapes collection rather than rebuilding from a potentially stale in-memory
+  mapping;
 - successful reload keeps the same Shapes target and coordinate system open as a
   clean edit-existing session;
 - disk-read, validation, replacement, or viewer-registration failure does not
