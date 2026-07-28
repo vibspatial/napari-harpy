@@ -4934,7 +4934,7 @@ def test_shapes_annotation_widget_clears_annotation_state_when_sdata_is_cleared(
     widget.create_layer_button.click()
     layer = viewer.layers[0]
 
-    widget.app_state.clear_sdata()
+    widget.app_state.clear_sdata(discard_current=True)
 
     assert list(viewer.layers) == []
     assert widget.app_state.viewer_adapter.layer_bindings.get_binding(layer) is None

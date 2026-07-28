@@ -367,13 +367,33 @@ class HarpyAppState(QObject):
         self._coordinate_system_change_participant: CoordinateSystemChangeParticipant | None = None
         self._table_reload_participants: list[TableReloadParticipant] = []
 
-    def set_sdata(self, sdata: SpatialData | None) -> None:
-        """Set the loaded SpatialData object and notify listeners."""
+    def set_sdata(
+        self,
+        sdata: SpatialData | None,
+        *,
+        discard_current: bool = False,
+    ) -> None:
+        """Set the shared SpatialData after authorizing destructive replacement.
+
+        An initial assignment and reassigning the exact active object are
+        non-destructive. Replacing or clearing an active object requires
+        ``discard_current=True`` so low-level callers cannot silently bypass
+        the user-facing Proceed / Cancel boundary.
+        """
+        if not isinstance(discard_current, bool):
+            raise TypeError("SpatialData discard authorization must be a boolean.")
+
         old_sdata = self.sdata
         old_coordinate_system = self.coordinate_system
+        replaces_current = old_sdata is not None and old_sdata is not sdata
+        if replaces_current and not discard_current:
+            raise RuntimeError(
+                "Replacing or clearing the active SpatialData requires explicit discard authorization."
+            )
 
-        if old_sdata is not None and old_sdata is not sdata:
+        if replaces_current:
             self.viewer_adapter.remove_layers_for_sdata(old_sdata)
+            self._discard_dirty_state_for_sdata(old_sdata)
 
         self.sdata = sdata
         next_coordinate_system = self._resolve_coordinate_system_for_sdata(sdata, previous=old_coordinate_system)
@@ -382,9 +402,9 @@ class HarpyAppState(QObject):
         # (controllers/widgets that listen via e.g. self._app_state.sdata_changed.connect(self._on_sdata_changed))
         self.sdata_changed.emit(sdata)
 
-    def clear_sdata(self) -> None:
-        """Clear the loaded SpatialData object and notify listeners."""
-        self.set_sdata(None)
+    def clear_sdata(self, *, discard_current: bool = False) -> None:
+        """Clear the loaded SpatialData object after explicit discard authorization."""
+        self.set_sdata(None, discard_current=discard_current)
 
     def set_coordinate_system(
         self,
@@ -671,6 +691,20 @@ class HarpyAppState(QObject):
     def _drop_empty_manifest(self, selection_key: tuple[int, str]) -> None:
         if not self._dirty_table_tokens.get(selection_key):
             self._dirty_table_tokens.pop(selection_key, None)
+
+    def _discard_dirty_state_for_sdata(self, sdata: SpatialData) -> None:
+        """Remove obsolete dirty-table tracking after accepted SpatialData replacement.
+
+        Proceed means the old SpatialData session has been deliberately
+        discarded, so its tables can no longer be written through the active
+        persistence controls. Retaining their mutation tokens would leave
+        obsolete tables marked dirty. This removes only session bookkeeping;
+        it does not mutate AnnData, write to disk, or publish table events.
+        """
+        sdata_id = id(sdata)
+        for selection_key in tuple(self._dirty_table_tokens):
+            if selection_key[0] == sdata_id:
+                del self._dirty_table_tokens[selection_key]
 
     @staticmethod
     def _validate_snapshot_identity(

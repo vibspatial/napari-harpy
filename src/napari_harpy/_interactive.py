@@ -83,7 +83,10 @@ class Interactive:
         self._app_state = get_or_create_app_state(self._viewer)
         self._dock_widgets: dict[str, tuple[Any, Any]] = {}
 
-        self._app_state.set_sdata(sdata)
+        # Constructing Interactive with an existing viewer is itself explicit
+        # programmatic authorization to replace that viewer's current session.
+        # Never open a confirmation dialog here, including in headless mode.
+        self._app_state.set_sdata(sdata, discard_current=True)
         self._ensure_harpy_widgets(widget_ids)
 
         if not headless:

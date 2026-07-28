@@ -509,7 +509,7 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
 
     assert widget.segmentation_combo.count() == 2
 
-    app_state.clear_sdata()
+    app_state.clear_sdata(discard_current=True)
 
     assert widget.selected_coordinate_system is None
     assert widget.selected_segmentation_name is None
