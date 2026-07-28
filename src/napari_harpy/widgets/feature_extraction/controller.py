@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
+from napari_harpy._app_state import TableReloadRequest
 from napari_harpy.core.feature_extraction import (
     FeatureExtractionChannel,
     FeatureExtractionTriplet,
@@ -227,11 +228,11 @@ class FeatureExtractionController:
         self,
         *,
         on_state_changed: Callable[[], None] | None = None,
-        on_table_state_changed: Callable[[FeatureExtractionResult], None] | None = None,
+        on_table_selection_refresh_required: Callable[[FeatureExtractionResult], None] | None = None,
         on_feature_matrix_changed: Callable[[FeatureExtractionResult], None] | None = None,
     ) -> None:
         self._on_state_changed = on_state_changed
-        self._on_table_state_changed = on_table_state_changed
+        self._on_table_selection_refresh_required = on_table_selection_refresh_required
         self._on_feature_matrix_changed = on_feature_matrix_changed
 
         self._selected_spatialdata: SpatialData | None = None
@@ -246,6 +247,17 @@ class FeatureExtractionController:
         self._latest_requested_job_id = 0
         self._active_worker_job_id: int | None = None
         self._active_worker: Any | None = None
+        # `_active_worker` tracks the job whose result the UI will still
+        # accept. It is cleared as soon as cancellation is requested, but
+        # FunctionWorker.quit() cannot interrupt an already-running synchronous
+        # `hp.tb.add_feature_matrix()` call. A cancelled or superseded job may
+        # therefore keep writing its table after the UI considers it stopped.
+        # Retain every launched job here until its worker emits `finished` so
+        # exact-table reloads remain blocked and widget teardown cannot remove
+        # that reload protection too early.
+        self._in_flight_jobs: dict[int, FeatureExtractionJob] = {}
+        self._release_reload_participant: Callable[[], None] | None = None
+        self._is_shutdown = False
 
         self._status_message = FEATURE_EXTRACTION_IDLE_STATUS
         self._status_kind = "warning"
@@ -269,6 +281,11 @@ class FeatureExtractionController:
     def active_job_id(self) -> int | None:
         """Return the currently running feature-extraction job identifier."""
         return self._active_worker_job_id
+
+    @property
+    def has_in_flight_jobs(self) -> bool:
+        """Return whether any launched Harpy call has not emitted ``finished``."""
+        return bool(self._in_flight_jobs)
 
     @property
     def binding_state(self) -> FeatureExtractionBindingState:
@@ -411,6 +428,8 @@ class FeatureExtractionController:
 
     def calculate(self, *, overwrite_feature_key: bool = False) -> bool:
         """Launch feature extraction for the current bound inputs."""
+        if self._is_shutdown:
+            return False
         if self.is_running:
             self._set_status("Feature extraction: calculation is already running.", kind="info")
             return False
@@ -427,6 +446,7 @@ class FeatureExtractionController:
         worker = self._create_feature_extraction_worker(job)
         self._active_worker = worker
         self._active_worker_job_id = job.job_id
+        self._in_flight_jobs[job.job_id] = job
         worker.returned.connect(partial(self._on_worker_returned, job.job_id))
         worker.errored.connect(partial(self._on_worker_errored, job.job_id))
         worker.finished.connect(partial(self._on_worker_finished, job.job_id))
@@ -441,8 +461,87 @@ class FeatureExtractionController:
                 f'Feature extraction: calculating "{job.feature_key}" for {job.triplet_count} extraction targets.',
                 kind="info",
             )
-        worker.start()
+        try:
+            worker.start()
+        except Exception:
+            self._in_flight_jobs.pop(job.job_id, None)
+            self._active_worker = None
+            self._active_worker_job_id = None
+            raise
         return True
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Reject reload while an unfinished Harpy job can still write its table.
+
+        This check deliberately inspects every controller-owned in-flight job,
+        not only ``is_running`` or ``active_job_id``:
+
+        quit requested
+            → returned result is no longer accepted
+            → Harpy write may still be running
+            → keep its table target in ``_in_flight_jobs``
+            → block a matching Reload until ``finished``
+
+        The controller performs no AnnData mutation here. Raising stops the
+        shared reload before live table components are replaced; reusable
+        persistence controls present the message to the user.
+        """
+        if any(
+            job.sdata is request.sdata and job.table_name == request.table_name for job in self._in_flight_jobs.values()
+        ):
+            raise RuntimeError(
+                f'Cannot reload table "{request.table_name}" while Feature Extraction is still writing it. '
+                "Wait for Feature Extraction to finish and try again."
+            )
+
+    def shutdown(self, *args: object) -> None:
+        """Stop accepting results and detach callbacks owned by the Qt widget."""
+        del args
+        if self._is_shutdown:
+            return
+
+        self._is_shutdown = True
+        self._latest_requested_job_id += 1
+        self._cancel_active_worker()
+        self._on_state_changed = None
+        self._on_table_selection_refresh_required = None
+        self._on_feature_matrix_changed = None
+
+    def release_reload_participant_when_safe(self, release: Callable[[], None]) -> None:
+        """Release the detached reload participant after all Harpy calls finish."""
+        if self._release_reload_participant is not None:
+            raise RuntimeError("Feature Extraction reload-participant release is already pending.")
+        self._release_reload_participant = release
+        self._release_reload_participant_if_safe()
+
+    def _release_reload_participant_if_safe(self) -> None:
+        """Run the deferred app-state unregister after all Harpy jobs finish.
+
+        Widget destruction installs an unregister callback through
+        ``release_reload_participant_when_safe()``. Keep that callback pending
+        while any Feature Extraction job remains physically in flight so the
+        controller continues protecting its table from reload. The final
+        worker to finish consumes the callback exactly once.
+
+        This helper is called at both lifecycle boundaries because either one
+        may happen first:
+
+        worker already finished, then widget teardown
+            → the teardown call unregisters immediately
+
+        widget teardown while worker is still busy
+            → the teardown call leaves the unregister pending
+            → the final ``_on_worker_finished()`` call unregisters
+        """
+        if self._in_flight_jobs:
+            return
+
+        release = self._release_reload_participant
+        if release is None:
+            return
+
+        self._release_reload_participant = None
+        release()
 
     def _prepare_feature_extraction_job(
         self,
@@ -545,14 +644,14 @@ class FeatureExtractionController:
         if self._on_state_changed is not None:
             self._on_state_changed()
 
-    def _notify_table_state_changed(self, result: FeatureExtractionResult) -> None:
+    def _notify_table_selection_refresh_required(self, result: FeatureExtractionResult) -> None:
         # Keep this local widget refresh hook separate from the shared
-        # shared table-state event. The owning widget uses the
-        # concrete result to refresh table choices and, after create-table
-        # writes, promote the new table into normal existing-table mode before
-        # downstream widgets consume the shared semantic event.
-        if self._on_table_state_changed is not None:
-            self._on_table_state_changed(result)
+        # table-state event. The owning widget uses the concrete result to
+        # refresh table choices and, after create-table writes, promote the new
+        # table into normal existing-table mode before downstream widgets
+        # consume the shared semantic event.
+        if self._on_table_selection_refresh_required is not None:
+            self._on_table_selection_refresh_required(result)
 
     def _notify_feature_matrix_changed(self, result: FeatureExtractionResult) -> None:
         if self._on_feature_matrix_changed is None or self._selected_spatialdata is None:
@@ -636,9 +735,7 @@ class FeatureExtractionController:
         if self._active_worker is None:
             return
 
-        quit_worker = getattr(self._active_worker, "quit", None)
-        if callable(quit_worker):
-            quit_worker()
+        self._active_worker.quit()
         self._active_worker = None
         self._active_worker_job_id = None
 
@@ -649,7 +746,7 @@ class FeatureExtractionController:
         if job_id != self._latest_requested_job_id or job_id != self._active_worker_job_id:
             return
 
-        self._notify_table_state_changed(result)
+        self._notify_table_selection_refresh_required(result)
         self._notify_feature_matrix_changed(result)
         self._set_status(
             "Feature extraction: "
@@ -666,13 +763,17 @@ class FeatureExtractionController:
         self._set_status(f"Feature extraction: calculation failed: {error}", kind="error")
 
     def _on_worker_finished(self, job_id: int) -> None:
-        if job_id != self._active_worker_job_id:
-            return
+        # Remove reload protection for every finished job, including one whose
+        # result was cancelled or superseded and is no longer the active job.
+        self._in_flight_jobs.pop(job_id, None)
 
-        self._active_worker = None
-        self._active_worker_job_id = None
-        if self._on_state_changed is not None:
-            self._on_state_changed()
+        if job_id == self._active_worker_job_id:
+            self._active_worker = None
+            self._active_worker_job_id = None
+            if self._on_state_changed is not None:
+                self._on_state_changed()
+
+        self._release_reload_participant_if_safe()
 
     def _get_bound_table(self) -> AnnData | None:
         if self._selected_spatialdata is None or self._selected_table_name is None or self._create_table:
