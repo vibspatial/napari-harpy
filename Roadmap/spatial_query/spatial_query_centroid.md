@@ -4,9 +4,9 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8d, except that the standalone Slice
-6m was deferred and its Spatial Annotation work moved to Slice 6p. Slices 8e
-and 8f remain planned.
+Implementation is complete through Slice 8e, except that the standalone Slice
+6m was deferred and its Spatial Annotation work moved to Slice 6p. Slice 8f
+remains planned.
 
 This document supersedes the raster-overlap query algorithm described in
 spatial_query.md. It retains the agreed user interface, table mutation,
@@ -8510,6 +8510,8 @@ requirement; it is not part of this slice.
 
 ### Slice 8e: Feature Extraction table-reload hardening
 
+**Implementation status: Implemented.**
+
 #### Responsibility boundary
 
 This slice resolves the remaining interaction between asynchronous Feature
@@ -8590,15 +8592,21 @@ when that job is no longer the accepted current job.
 
 #### Shared reload participation
 
-`FeatureExtractionWidget` registers as a `TableReloadParticipant` with the
-shared `HarpyAppState` and unregisters by identity during Qt teardown. Its
-controller exposes enough read-only in-flight target information to compare a
-`TableReloadRequest` with every not-yet-finished Harpy job:
+`FeatureExtractionController` registers as a `TableReloadParticipant` with the
+shared `HarpyAppState` on behalf of `FeatureExtractionWidget`. The controller,
+rather than the QWidget, owns this participation because exact-table reload
+protection must survive Qt teardown while an old non-cooperative Harpy call is
+still in flight. Widget destruction shuts down result publication and requests
+worker cancellation; participant unregistration is deferred until every
+in-flight worker has emitted `finished`.
+
+The controller compares a `TableReloadRequest` with every not-yet-finished
+Harpy job:
 
 ```text
 HarpyAppState.prepare_for_table_reload(request)
     ↓
-FeatureExtractionWidget.prepare_for_table_reload(request)
+FeatureExtractionController.prepare_for_table_reload(request)
     ├── no in-flight Feature Extraction job
     │      → allow reload
     │
@@ -8623,11 +8631,12 @@ conservatively invalidated its work before a later participant rejects the
 reload; that invalidation is allowed to remain.
 
 This subtle distinction must be documented next to
-`FeatureExtractionWidget.prepare_for_table_reload()`. Its docstring or an
-adjacent explanatory comment must state that the method checks controller-owned
-in-flight jobs rather than only `is_running` or `active_job_id`, and why a
-cancelled or superseded worker remains reload-relevant until `finished`. The
-code should preserve a concise form of this flow:
+`FeatureExtractionController.prepare_for_table_reload()`. Its docstring or an
+adjacent explanatory comment must state that the method checks all
+controller-owned in-flight jobs rather than only `is_running` or
+`active_job_id`, and why a cancelled or superseded worker remains
+reload-relevant until `finished`. The code should preserve a concise form of
+this flow:
 
 ```text
 quit requested
@@ -8636,6 +8645,31 @@ quit requested
     → keep its table target in _in_flight_jobs
     → block a matching Reload until finished
 ```
+
+Qt teardown is also distinct from worker completion. Destroying the widget
+shuts down result acceptance, clears callbacks into the QWidget, and requests
+cancellation, but does not remove a controller participant while a
+non-cooperative Harpy call remains in flight:
+
+```text
+FeatureExtractionWidget destroyed
+    ↓
+FeatureExtractionController.shutdown()
+    → detach callbacks into the deleted QWidget
+    → request cancellation
+    → retain every unfinished job target
+    ↓
+no in-flight jobs
+    → unregister the controller participant immediately
+
+one or more in-flight jobs
+    → retain the controller participant in HarpyAppState
+    → continue blocking exact-table Reload
+    → last worker emits finished
+    → unregister the detached controller participant
+```
+
+This deferred release must not retain the destroyed QWidget itself.
 
 #### Post-reload Feature Extraction adoption
 
@@ -8681,8 +8715,9 @@ replacement of the complete SpatialData session.
 
 #### Deliverables
 
-- Feature Extraction registration as an identity-safe
-  `TableReloadParticipant`;
+- Feature Extraction controller registration as an identity-safe
+  `TableReloadParticipant`, with unregistration deferred beyond QWidget
+  teardown while old Harpy calls remain in flight;
 - controller-owned in-flight job tracking, separate from accepted current-job
   state, with immutable target identity sufficient to compare exact
   `SpatialData` and table ownership;
@@ -8694,8 +8729,10 @@ replacement of the complete SpatialData session.
 - preservation of the existing Slice 8d old-store replacement behavior;
 - explicit code documentation at `prepare_for_table_reload()` explaining why
   cancelled or superseded jobs remain in-flight reload guards;
+- safe deferred participant release after QWidget destruction;
 - focused current-job, cancelled-but-unfinished-job, unrelated-request,
-  teardown, post-reload adoption, no-duplicate-event, and late-result tests.
+  teardown, shared-control rejection, post-reload adoption,
+  no-duplicate-event, and late-result tests.
 
 #### Exit criteria
 
@@ -8707,6 +8744,8 @@ replacement of the complete SpatialData session.
   no post-reload table-state event;
 - an unrelated reload is not blocked by Feature Extraction;
 - after the matching worker finishes, Reload can proceed normally;
+- destroying the widget cannot expose a table still targeted by its unfinished
+  Harpy worker to Reload and does not retain the destroyed QWidget;
 - successful reload adoption reflects restored feature matrices and metadata
   without publishing a feedback mutation;
 - SpatialData replacement remains non-blocking with respect to already-running
