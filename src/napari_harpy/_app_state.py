@@ -506,11 +506,29 @@ class HarpyAppState(QObject):
         return False
 
     def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
-        """Prepare every registered workflow before replacing in-memory table components from disk.
+        """Notify table-consuming workflows before live components are reloaded.
 
-        Iterate over a stable snapshot so participant teardown or registration
-        during a callback cannot skip or duplicate another participant in this
-        accepted transition.
+        ``PersistenceController`` calls this shared app-state boundary after a
+        reload request has been accepted and immediately before it replaces
+        the requested in-memory table components from disk. Each registered
+        ``TableReloadParticipant`` receives the same immutable request and
+        decides whether it consumes that SpatialData table. Affected workflows
+        can then invalidate pending or active work that captured the old table
+        state.
+
+        This method does not reload the table or publish the post-reload event.
+        The persistence controller performs those steps after every participant
+        has prepared successfully.
+
+        Participants are visited through a stable snapshot so registration or
+        teardown during a callback cannot skip or duplicate another workflow
+        in the accepted transition.
+
+        Parameters
+        ----------
+        request
+            Accepted reload request identifying the table and components that
+            are about to be restored from disk.
         """
         for participant in tuple(self._table_reload_participants):
             participant.prepare_for_table_reload(request)

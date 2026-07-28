@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 from napari_harpy._app_state import (
     HarpyAppState,
     TableChangeKind,
+    TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
@@ -56,6 +57,7 @@ from napari_harpy.core.spatialdata import (
 )
 from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
 from napari_harpy.widgets.annotation.models import AnnotationContext
+from napari_harpy.widgets.persistence.controls import TablePersistenceControls
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CompactComboBox,
@@ -248,6 +250,16 @@ class SpatialQuery(QWidget):
         → only when centers were calculated
         → verifies that the source and table binding did not change
         → guards cache installation
+
+    Table reload lifecycle
+    ----------------------
+    pre-reload ``TableReloadRequest``
+        → ``prepare_for_table_reload()`` invalidates accepted or active Run work
+        → happens before in-memory table components are replaced from disk
+
+    post-reload ``TableStateChangedEvent``
+        → refreshes compatible columns and canonical-cache state
+        → reapplies Existing-column or neutral New-column Labels styling
     """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
@@ -380,6 +392,13 @@ class SpatialQuery(QWidget):
         )
 
         root_layout.addWidget(self.run_button)
+        self.persistence_controls = TablePersistenceControls(
+            self._app_state,
+            write_content_description="canonical centers and spatial annotations",
+            reload_source="spatial_query",
+            parent=self,
+        )
+        root_layout.addWidget(self.persistence_controls)
 
         self.labels_combo.currentIndexChanged.connect(self._on_labels_changed)
         self.table_combo.currentIndexChanged.connect(self._on_table_changed)
@@ -402,7 +421,20 @@ class SpatialQuery(QWidget):
             preferred_existing_column=None,
             preferred_new_column="",
         )
+        self._bind_persistence_controls()
         self._refresh_controls_and_status()
+
+        # A reload initiated by any widget can replace the table consumed by
+        # Spatial Query. Register the child with shared app state so it can
+        # invalidate accepted or active Run work before that replacement.
+        self._app_state.register_table_reload_participant(self)
+        app_state = self._app_state
+        participant = self
+        self.destroyed.connect(
+            lambda *_args, app_state=app_state, participant=participant: app_state.unregister_table_reload_participant(
+                participant
+            )
+        )
 
     @property
     def app_state(self) -> HarpyAppState:
@@ -546,6 +578,7 @@ class SpatialQuery(QWidget):
         self._canonical_cache_report = None
         self._canonical_input_inspection_error = None
         self._layer_styling_error = None
+        self._bind_persistence_controls()
 
     def _on_primary_labels_layers_changed(self) -> None:
         """Clear the selection when its corresponding primary layer disappears."""
@@ -568,22 +601,46 @@ class SpatialQuery(QWidget):
         self._refresh_controls_and_status()
 
     def _on_table_state_changed(self, value: object) -> None:
-        """Invalidate work when its table components are replaced from storage."""
+        """Adopt restored table components after one successful shared reload."""
         if not isinstance(value, TableStateChangedEvent):
             return
-        # This consumer owns reload invalidation only. A reload replaces table
-        # components from storage and may invalidate the captured Run inputs.
-        # Ordinary mutation events, including the canonical-cache update event
-        # emitted by the current Spatial Query Run, follow their own provenance
-        # contracts.
+        # Ordinary mutation events emitted by `_on_centers_ready()` and
+        # `_on_query_ready()` follow their own cache-installation and
+        # annotation-Apply provenance contracts. Pre-reload Run invalidation
+        # happens through `prepare_for_table_reload()`. Only a successful
+        # `change_kind="reloaded"` event reaches the post-reload adoption
+        # logic below.
         if value.change_kind != "reloaded":
             return
         if value.sdata is not self.selected_spatialdata or value.table_name != self.selected_table_name:
             return
 
-        self._invalidate_run()
+        previous_mode = self.selected_column_mode
+        previous_existing_column = self._selected_existing_column_name()
+        previous_new_column = self.new_column_edit.text()
+        self._refresh_columns(
+            preferred_mode=previous_mode,
+            preferred_existing_column=previous_existing_column,
+            preferred_new_column=previous_new_column,
+        )
         self._inspect_canonical_centers_cache()
+        self._layer_styling_error = None
+        self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Invalidate Spatial Query work before its selected table is reloaded."""
+        if request.sdata is not self.selected_spatialdata or request.table_name != self.selected_table_name:
+            return
+        self._invalidate_run()
+
+    def _bind_persistence_controls(self) -> None:
+        """Bind shared persistence controls to the exact Labels/table selection."""
+        self.persistence_controls.bind(
+            self.selected_spatialdata,
+            self.selected_table_name,
+            self.selected_labels_name,
+        )
 
     def _refresh_tables(self, preferred_table: str | None) -> None:
         table_names: list[str] = []
@@ -683,6 +740,7 @@ class SpatialQuery(QWidget):
             preferred_existing_column=previous_existing_column if same_table_context else None,
             preferred_new_column=previous_new_column if same_table_context else "",
         )
+        self._bind_persistence_controls()
         self._inspect_canonical_centers_cache()
         self._apply_explicit_labels_styling()
         self._refresh_controls_and_status()
@@ -696,6 +754,7 @@ class SpatialQuery(QWidget):
             preferred_existing_column=None,
             preferred_new_column="",
         )
+        self._bind_persistence_controls()
         self._inspect_canonical_centers_cache()
         # This callback represents an explicit user table choice. Programmatic
         # table refreshes block the combo signal and therefore do not reclaim
