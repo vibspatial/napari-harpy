@@ -8512,6 +8512,27 @@ requirement; it is not part of this slice.
 
 **Implementation status: Implemented.**
 
+The implemented lifecycle is:
+
+```text
+Feature Extraction worker starts
+    → controller records its immutable SpatialData/table target as in flight
+    ↓
+matching table reload requested
+    → shared app state calls the controller reload participant
+    → reload is rejected until every matching worker emits finished
+    ↓
+successful reload
+    → Feature Extraction adopts the restored live table state
+    → no feedback mutation or duplicate reload event is published
+
+Feature Extraction widget destroyed while work remains in flight
+    → widget callbacks are detached and cancellation is requested
+    → controller remains registered as the reload participant
+    → participant is released after the last in-flight worker finishes
+    → the destroyed QWidget is not retained
+```
+
 #### Responsibility boundary
 
 This slice resolves the remaining interaction between asynchronous Feature
@@ -8760,40 +8781,204 @@ This slice verifies the combined contracts from Slices 8a–8e against one share
 viewer and backed SpatialData store. It is an integration and hardening slice,
 not a place to introduce another dirty-state, reload, or persistence model.
 
-The tests should be organized as focused integration scenarios sharing a
-backed-store fixture rather than as one large end-to-end test. Production code
-changes are limited to defects exposed by those combined scenarios.
+Shared state is scoped to widget selections that resolve to the same
+`SpatialData` object and table:
+
+```text
+widgets bound to the same SpatialData/table
+    → observe the same live AnnData object
+    → observe the same component-level table events
+    → observe the same shared dirty state
+
+widgets deliberately bound to different tables
+    → retain independent selections
+    → are not synchronized by this slice
+```
+
+The tests are organized in a dedicated focused integration module, for example
+`tests/test_multi_widget_backed_zarr.py`, with scenarios sharing a backed-store
+fixture rather than one large end-to-end test. Each scenario instantiates only
+the widgets needed to prove its cross-widget boundary. `ViewerWidget` is
+required for SpatialData replacement coverage, but not for every table
+persistence scenario. A lightweight shared test viewer remains appropriate;
+manual real-napari smoke testing belongs to Slice 9.
+
+Production code changes are limited to defects exposed by these combined
+scenarios. Slice 8f introduces no planned application architecture or
+widget-selection synchronization.
+
+#### Focused integration scenarios
+
+##### Shared dirty state and mixed write
+
+```text
+canonical-cache mutation
+    + Spatial Query annotation and optional palette mutation
+    + Object Classification mutation
+    ↓
+every persistence control bound to that table becomes write-enabled
+    ↓
+Write Table State from any one of those controls
+    ↓
+persist every captured dirty component
+    ↓
+shared dirty state becomes clean
+    ↓
+every bound persistence control becomes write-disabled
+    ↓
+reopen zarr and verify the changed components
+```
+
+The mixed write covers the canonical obsm/uns consistency unit, the complete
+obs dataframe required by an annotation change, changed companion palette
+metadata, and representative classifier metadata or prediction state. It must
+use the existing explicit component encodings and must not call
+`AnnData.write_zarr()` or rewrite unrelated table elements.
+
+Backed Feature Extraction remains an already-persisting producer:
+`hp.tb.add_feature_matrix()` writes its feature-matrix obsm entry and companion
+uns metadata before publishing its accepted `TableStateChangedEvent`. Its
+`record_persisted_table_change()` acknowledgement must clean only the captured
+feature paths whose mutation tokens are still current and must not clean other
+widgets' dirty components.
+
+##### Shared reload adoption
+
+```text
+Reload Table State from one widget
+    ↓
+shared pre-reload participant preparation
+    → Object Classification freezes captured classifier work
+    → Spatial Query invalidates its accepted operation
+    → Feature Extraction permits or rejects the exact request
+    ↓
+one component-aware table reload
+    ↓
+one TableStateChangedEvent(change_kind="reloaded")
+    ↓
+every widget bound to that SpatialData/table adopts restored state
+    → refresh selections and controller bindings
+    → re-inspect canonical-cache state
+    → rebuild currently owned primary-Labels styling from restored values
+    ↓
+publish no feedback mutation or duplicate reload event
+```
+
+The scenario verifies that a reload initiated from any reusable persistence
+control follows the same shared protocol. It does not synchronize widgets
+bound to another table.
+
+##### Primary-Labels styling ownership
+
+```text
+Spatial Query Apply styles the shared primary Labels layer
+    ↓
+an already-running Object Classification job later returns successfully
+    ↓
+Object Classification reapplies its selected Color-by styling
+    ↓
+the later explicit styling action is visible
+```
+
+This verifies the documented last-styling-wins contract. It does not introduce
+a global styling owner or synchronize independently selected annotation
+tables.
+
+##### Late-work and reload safety
+
+Focused combined scenarios verify that:
+
+- a stale or invalidated Spatial Query result cannot update the canonical
+  cache, apply an annotation, publish a table mutation, or restyle the
+  replacement/reloaded session;
+- a stale or invalidated Object Classification result cannot write predictions
+  or restyle the replacement/reloaded session;
+- any physically in-flight Feature Extraction job targeting the exact
+  requested `SpatialData` and table rejects Reload, including cancelled or
+  superseded jobs whose Harpy call has not emitted `finished`;
+- Feature Extraction work targeting another SpatialData object or table does
+  not block the request;
+- Reload succeeds normally after the final matching Feature Extraction worker
+  emits `finished`.
+
+Complete SpatialData replacement retains the accepted Slice 8d exception:
+
+```text
+Feature Extraction captured the old backed SpatialData
+    ↓
+user accepts complete SpatialData replacement
+    ↓
+old Harpy call may finish against its deliberately abandoned old store
+    ↓
+late result is ignored
+    → publish no event into the replacement session
+    → refresh no replacement widget
+    → mutate no replacement SpatialData
+```
+
+The requirement that late work cannot affect replacement state refers to the
+new accepted session; it does not require interrupting or rolling back that old
+Harpy write.
+
+##### Component isolation and stale-token behavior
+
+The backed integration scenarios verify that:
+
+- a mixed write persists only its declared obs, obsm, and uns consistency
+  units;
+- unrelated X, layers, var, varm, obsp, and unrelated obsm/uns entries remain
+  unchanged;
+- a write acknowledgement captured before a newer same-path mutation cannot
+  mark that newer mutation clean;
+- a backed Feature Extraction acknowledgement cannot clear another producer's
+  dirty path;
+- no shared action falls back to a full-AnnData rewrite.
 
 #### Deliverables
 
-- multi-widget tests with Viewer, Annotation/Spatial Query, Object
-  Classification, and Feature Extraction where relevant, sharing one
-  `HarpyAppState`;
-- backed-zarr tests proving that canonical centers, annotation columns,
-  companion palettes, classifier state, and feature-matrix metadata are written
-  and reloaded together through explicit component encodings;
-- last-styling-wins tests covering Spatial Query Apply and later asynchronous
-  Object Classification prediction styling;
-- post-reload tests proving primary-layer colors and features are rebuilt from
-  restored table values;
-- stale-token tests where a newer mutation arrives while an older write is in
-  progress;
-- reload and SpatialData replacement tests with pending/running workers;
-- assertions that no feedback loop, duplicate mutation record, unrelated
-  classifier invalidation, or full-AnnData rewrite occurs.
+- a dedicated focused backed-zarr integration test module using one shared
+  viewer and `HarpyAppState`;
+- same-table multi-widget scenarios with Annotation/Spatial Query, Object
+  Classification, Feature Extraction, and Viewer only where the boundary under
+  test requires them;
+- mixed component round-trip coverage for canonical centers, annotation
+  columns, companion palettes, classifier state, and feature-matrix metadata;
+- shared dirty-control synchronization before and after a write initiated from
+  one reusable persistence control;
+- shared pre-reload preparation and post-reload adoption without feedback
+  mutation or duplicate event publication;
+- last-styling-wins coverage for Spatial Query Apply followed by a later
+  asynchronous Object Classification styling update;
+- stale-token and component-isolation coverage proving that newer or unrelated
+  dirty components survive older acknowledgements;
+- reload and SpatialData replacement coverage with pending or running workers,
+  including the documented old-store Feature Extraction exception;
+- assertions that no feedback loop, duplicate mutation record, unrelated-table
+  classifier invalidation, table-selection synchronization, or full-AnnData
+  rewrite occurs.
 
 #### Exit criteria
 
-- all widgets observe one current in-memory table state;
-- all persistence controls observe one shared dirty state;
+- widgets bound to the same SpatialData/table observe one current in-memory
+  AnnData state without forcing widgets bound to other tables to change their
+  selection;
+- all persistence controls bound to that table observe one shared dirty state;
 - the most recently applied primary-Labels style is visible, including a later
   asynchronous classifier styling update;
 - post-reload primary-layer styling reflects restored table values;
 - canonical centers and annotation state persist/reload without a full table
   rewrite;
-- no late work affects reloaded or replaced state;
+- late Spatial Query and Object Classification work cannot affect reloaded or
+  replacement state;
+- old Feature Extraction work may finish only against its captured abandoned
+  store after complete SpatialData replacement and cannot publish into,
+  refresh, or mutate the replacement session;
 - a matching active Feature Extraction write blocks Reload, while unrelated
-  Feature Extraction work does not;
+  Feature Extraction work does not, and Reload succeeds after the matching
+  worker finishes;
+- one accepted reload produces one post-reload event and no feedback mutation;
+- mixed writes preserve unrelated table elements and newer dirty mutation
+  tokens;
 - there is no competing widget-local dirty truth.
 
 ### Slice 9: Production hardening and release gate
