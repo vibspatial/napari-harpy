@@ -10488,6 +10488,44 @@ Pre-mutation data events remain ignored. If a later edit restores the exact
 clean geometry and row-aligned features, the comparison must disable
 **Save shapes** again.
 
+#### Snapshot performance boundary
+
+The exact snapshot calculation is linear in the complete editable Shapes
+layer: it hashes the ordered shape types and geometry vertices and normalizes
+the row-aligned features. Slice 8l must not add a second calculation merely to
+control the Save button. One completed geometry mutation has one shared
+dirty-state evaluation:
+
+```text
+completed napari Shapes data mutation
+    ↓
+capture the current layer snapshot once
+    ↓
+compare it with the clean snapshot once
+    ↓
+reuse the resulting dirty boolean
+    ├── update Save shapes enabled state
+    └── publish has_unsaved_shapes_changes to the parent
+```
+
+The existing pre-mutation filtering remains part of this performance contract.
+`ADDING`, `REMOVING`, and `CHANGING` events do not calculate dirty state.
+Ordinary interactive geometry editing therefore performs the complete
+comparison after the accepted mutation rather than on every intermediate mouse
+movement.
+
+The completed geometry-event path updates only state that depends on the dirty
+result. It must not call a broader control refresh that also evaluates Reload
+readiness or inspects the backing store. In particular, it must not invoke
+`shapes_element_exists_in_store()` after every geometry mutation. Reload-button
+availability continues to be refreshed at the existing session, target, save,
+and reload lifecycle boundaries.
+
+No cached or independently mutable dirty boolean is introduced. The computed
+boolean may be passed through the synchronous refresh call and reused by its
+consumers, but the exact clean/current snapshot comparison remains the
+authoritative source.
+
 The save action itself must not write an unchanged Shapes element when invoked
 programmatically or through a stale UI event. Existing validation and
 user-facing save-error behavior remain unchanged for genuinely dirty sessions.
@@ -10498,16 +10536,22 @@ user-facing save-error behavior remain unchanged for genuinely dirty sessions.
 - disabling editing actions such as **Create holes** for clean sessions;
 - introducing a second dirty-state owner in the parent Annotation widget;
 - changing Shapes serialization, atomic commit, reload, or discard behavior;
+- adding backing-store inspection to the completed geometry-event path;
+- calculating separate dirty results for the Save button and parent context;
   or
 - adding autosave.
 
 #### Deliverables
 
 - dirty-aware **Save shapes** button readiness;
-- completed geometry-event refresh of Save readiness;
+- one shared dirty-state calculation per completed geometry mutation, reused
+  for Save readiness and parent publication;
+- completed geometry-event refresh of Save readiness without Reload or
+  backing-store inspection;
 - a no-op guard against saving an unchanged session; and
 - focused Shapes Annotation tests for clean open, first mutation, exact
-  restoration, successful save, create-new, and Create-holes readiness.
+  restoration, successful save, create-new, Create-holes readiness, one
+  snapshot calculation, and absence of geometry-event disk inspection.
 
 #### Exit criteria
 
@@ -10517,9 +10561,12 @@ user-facing save-error behavior remain unchanged for genuinely dirty sessions.
 - restoring or successfully saving the clean state disables it again;
 - a new empty layer cannot be saved until it contains an effective change;
 - **Create holes** remains available whenever the annotation layer is otherwise
-  actionable; and
+  actionable;
 - parent dirty-state publication and local Save readiness are derived from the
-  same exact snapshot comparison.
+  same single exact snapshot comparison;
+- pre-mutation events perform no snapshot comparison; and
+- completed geometry events do not inspect the backing store merely to update
+  Save readiness.
 
 ### Slice 9: Production hardening and release gate
 
