@@ -15,7 +15,7 @@ from spatialdata.transformations import Identity, set_transformation
 
 import napari_harpy.widgets.persistence.controls as persistence_controls_module
 import napari_harpy.widgets.spatial_query.widget as widget_module
-from napari_harpy._app_state import TableReloadRequest, TableStateChangedEvent
+from napari_harpy._app_state import ShapesElementReloadedEvent, TableReloadRequest, TableStateChangedEvent
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
@@ -257,6 +257,46 @@ def test_spatial_query_cancelled_dirty_reload_preserves_accepted_run(
     assert widget._active_run_intent is accepted_intent
     assert backed_sdata_blobs.tables["table"].uns["reload_test"] == {"dirty": True}
     assert widget.app_state.is_table_dirty(backed_sdata_blobs, "table")
+
+
+def test_spatial_query_shapes_reload_invalidates_only_a_matching_accepted_run(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    """Reject late query results only when the reloaded Shapes source belongs to that Run."""
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    accepted_intent = widget._active_run_intent
+    assert accepted_intent is not None
+
+    widget.app_state.emit_shapes_element_reloaded(
+        ShapesElementReloadedEvent(
+            sdata=sdata_blobs,
+            shapes_name="other_shapes",
+            coordinate_system="global",
+        )
+    )
+    assert widget._active_run_intent is accepted_intent
+
+    widget.app_state.emit_shapes_element_reloaded(
+        ShapesElementReloadedEvent(
+            sdata=sdata_blobs,
+            shapes_name="blobs_circles",
+            coordinate_system="global",
+        )
+    )
+    assert widget._active_run_intent is None
+
+    widget._on_query_ready(_query_result(sdata_blobs))
+
+    assert "reviewed_annotation" not in sdata_blobs.tables["table"].obs
 
 
 def test_spatial_query_adopts_reloaded_columns_cache_and_neutral_styling(

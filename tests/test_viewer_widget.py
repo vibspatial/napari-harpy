@@ -9,6 +9,7 @@ import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
@@ -23,6 +24,7 @@ import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
+    ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
     TableChangeKind,
     TableStateChangedEvent,
@@ -1215,7 +1217,19 @@ def test_viewer_widget_ignores_classification_table_events_for_other_sdata(qtbot
     assert card._color_source_completer_model.stringList() == ["cell_type"]
 
 
-def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(qtbot, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("event_type", "emitter_name"),
+    [
+        (ShapesElementWrittenEvent, "emit_shapes_element_written"),
+        (ShapesElementReloadedEvent, "emit_shapes_element_reloaded"),
+    ],
+)
+def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(
+    qtbot,
+    monkeypatch,
+    event_type,
+    emitter_name,
+) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
@@ -1262,8 +1276,8 @@ def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(q
     monkeypatch.setattr(widget, "_refresh_points_section", fail_if_rebuilt)
     names["shapes"] = ["shape_a", "new_regions"]
 
-    widget.app_state.emit_shapes_element_written(
-        ShapesElementWrittenEvent(
+    getattr(widget.app_state, emitter_name)(
+        event_type(
             sdata=fake_sdata,
             shapes_name="new_regions",
             coordinate_system="global",

@@ -38,7 +38,11 @@ import napari_harpy.widgets.shapes_annotation._edit_guard as shapes_annotation_e
 import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
 import napari_harpy.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
 import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
-from napari_harpy._app_state import ShapesElementWrittenEvent, get_or_create_app_state
+from napari_harpy._app_state import (
+    ShapesElementReloadedEvent,
+    ShapesElementWrittenEvent,
+    get_or_create_app_state,
+)
 from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
 from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
 from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
@@ -50,6 +54,7 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
 )
+from napari_harpy.core.spatialdata_io import write_shapes_element
 from napari_harpy.viewer.adapter import ShapesLayerBinding
 from napari_harpy.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
@@ -508,6 +513,26 @@ def test_shapes_annotation_child_constructs_without_shared_selectors_or_transiti
     assert not hasattr(widget, "coordinate_system_combo")
     assert not hasattr(widget, "shapes_combo")
     assert widget.app_state._coordinate_system_change_participant is None
+
+
+def test_shapes_annotation_reload_is_disabled_without_an_existing_shapes_selection(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(backed_sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+
+    assert widget._test_parent.annotation_context.shapes_target == (
+        shapes_annotation_widget_module._ShapesAnnotationTarget.create_new()
+    )
+    assert widget.reload_shapes_button.isEnabled() is False
+
+    widget._test_parent.shapes_combo.setCurrentIndex(-1)
+
+    assert widget._test_parent.annotation_context.shapes_target is None
+    assert widget.reload_shapes_button.isEnabled() is False
 
 
 def test_shapes_annotation_child_reapplies_context_for_active_create_new_session(
@@ -4209,6 +4234,8 @@ def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
     assert viewer.layers.selection.active is layer
     assert widget.create_layer_button.isEnabled() is False
     assert widget.save_shapes_button.isEnabled() is True
+    assert widget.reload_shapes_button.isEnabled() is False
+    assert "only for SpatialData opened from a zarr store" in widget.reload_shapes_button.toolTip()
     assert "Existing Shapes Opened" in _status_text(widget)
 
 
@@ -4312,7 +4339,7 @@ def test_shapes_annotation_widget_viewer_load_does_not_steal_active_session(
     assert widget._annotation_session.shapes_name == "blobs_polygons"
 
 
-def test_shapes_annotation_widget_open_existing_target_rejects_multipolygon_source(
+def test_shapes_annotation_widget_omits_multipolygon_source_from_parent_selector(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -4320,16 +4347,63 @@ def test_shapes_annotation_widget_open_existing_target_rejects_multipolygon_sour
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(sdata_blobs)
     widget = _create_embedded_shapes_annotation(qtbot, viewer)
-    widget._test_parent.shapes_combo.setCurrentIndex(
-        _combo_index_for_text(widget._test_parent.shapes_combo, "blobs_multipolygons")
-    )
 
+    assert _combo_index_for_text(widget._test_parent.shapes_combo, "blobs_multipolygons") == -1
     assert list(viewer.layers) == []
     assert widget._annotation_layer is None
     assert widget._annotation_session is None
-    assert widget.create_layer_button.isEnabled() is False
+
+
+def test_shapes_annotation_widget_rejects_stale_invalid_target_before_releasing_session(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(backed_sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    parent = widget._test_parent
+    valid_shapes_name = "blobs_polygons"
+    parent.shapes_combo.setCurrentIndex(
+        _combo_index_for_text(parent.shapes_combo, valid_shapes_name)
+    )
+    layer = widget._annotation_layer
+    session = widget._annotation_session
+    assert isinstance(layer, Shapes)
+    assert session is not None
+
+    # Simulate a selector populated before an externally changed Shapes
+    # element became invalid for editing.
+    invalid_target = shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
+        "blobs_multipolygons"
+    )
+    parent.shapes_combo.addItem("blobs_multipolygons", invalid_target)
+    parent.shapes_combo.setCurrentIndex(parent.shapes_combo.count() - 1)
+
+    assert parent.annotation_context.shapes_target == (
+        shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(valid_shapes_name)
+    )
+    assert parent.shapes_combo.currentText() == valid_shapes_name
+    assert widget._annotation_layer is layer
+    assert widget._annotation_session is session
     assert "Could Not Open Shapes" in _status_text(widget)
     assert "Polygon geometries only" in _status_text(widget)
+
+    _add_polygon(layer, offset=100)
+    assert parent.annotation_context.has_unsaved_shapes_changes is True
+    confirmation_reasons: list[str] = []
+
+    def cancel_reload(*, reason: str) -> bool:
+        confirmation_reasons.append(reason)
+        return False
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", cancel_reload)
+    widget.reload_shapes_button.click()
+
+    assert confirmation_reasons == ["reload"]
+    assert widget._annotation_layer is layer
+    assert parent.annotation_context.has_unsaved_shapes_changes is True
 
 
 def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_session_snapshot(
@@ -5507,6 +5581,163 @@ def test_shapes_annotation_widget_backed_edit_existing_discard_reloads_clean_pri
 
     reread = read_zarr(backed_sdata_blobs.path)
     assert len(reread.shapes[shapes_name]) == initial_row_count
+
+
+def test_shapes_annotation_widget_cancelled_shapes_reload_is_a_strict_no_op(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(backed_sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    shapes_name = "blobs_polygons"
+    widget._test_parent.shapes_combo.setCurrentIndex(
+        _combo_index_for_text(widget._test_parent.shapes_combo, shapes_name)
+    )
+    layer = widget._annotation_layer
+    session = widget._annotation_session
+    live_element = backed_sdata_blobs.shapes[shapes_name]
+    assert isinstance(layer, Shapes)
+    assert session is not None
+    assert widget.reload_shapes_button.isEnabled()
+
+    _add_polygon(layer, offset=100)
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is True
+    context = widget._test_parent.annotation_context
+    status_html = widget.status_label.text()
+    emitted_events: list[ShapesElementReloadedEvent] = []
+    app_state.shapes_element_reloaded.connect(emitted_events.append)
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda *, reason: False)
+    monkeypatch.setattr(
+        shapes_annotation_widget_module,
+        "load_shapes_element_from_store",
+        lambda *args, **kwargs: pytest.fail("Cancel must not read the backing store."),
+    )
+
+    widget.reload_shapes_button.click()
+
+    assert widget._annotation_layer is layer
+    assert widget._annotation_session is session
+    assert backed_sdata_blobs.shapes[shapes_name] is live_element
+    assert widget._test_parent.annotation_context == context
+    assert widget.status_label.text() == status_html
+    assert emitted_events == []
+
+
+@pytest.mark.parametrize("dirty_session", [False, True])
+def test_shapes_annotation_widget_reload_replaces_live_layer_and_publishes_one_event(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    backed_sdata_blobs: SpatialData,
+    dirty_session: bool,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(backed_sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    shapes_name = "blobs_polygons"
+    widget._test_parent.shapes_combo.setCurrentIndex(
+        _combo_index_for_text(widget._test_parent.shapes_combo, shapes_name)
+    )
+    previous_layer = widget._annotation_layer
+    assert isinstance(previous_layer, Shapes)
+
+    persisted_sdata = read_zarr(backed_sdata_blobs.path)
+    persisted_replacement = persisted_sdata.shapes[shapes_name].copy()
+    persisted_replacement.geometry = persisted_replacement.geometry.translate(xoff=100)
+    expected_bounds = persisted_replacement.total_bounds
+    write_shapes_element(
+        persisted_sdata,
+        shapes_name,
+        persisted_replacement,
+        overwrite=True,
+    )
+
+    if dirty_session:
+        _add_polygon(previous_layer, offset=200)
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is dirty_session
+    confirmation_reasons: list[str] = []
+
+    def accept_discard(*, reason: str) -> bool:
+        confirmation_reasons.append(reason)
+        return True
+
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", accept_discard)
+    reloaded_events: list[ShapesElementReloadedEvent] = []
+    written_events: list[ShapesElementWrittenEvent] = []
+    app_state.shapes_element_reloaded.connect(reloaded_events.append)
+    app_state.shapes_element_written.connect(written_events.append)
+
+    widget.reload_shapes_button.click()
+
+    reloaded_layer = widget._annotation_layer
+    assert isinstance(reloaded_layer, Shapes)
+    assert reloaded_layer is not previous_layer
+    assert previous_layer not in viewer.layers
+    assert reloaded_layer in viewer.layers
+    assert viewer.layers.selection.active is reloaded_layer
+    np.testing.assert_allclose(backed_sdata_blobs.shapes[shapes_name].total_bounds, expected_bounds)
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.mode == "edit_existing"
+    assert widget._annotation_session.source_geodataframe is not None
+    np.testing.assert_allclose(widget._annotation_session.source_geodataframe.total_bounds, expected_bounds)
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is False
+    assert confirmation_reasons == (["reload"] if dirty_session else [])
+    assert reloaded_events == [
+        ShapesElementReloadedEvent(
+            sdata=backed_sdata_blobs,
+            shapes_name=shapes_name,
+            coordinate_system="global",
+            source="shapes_annotation_widget",
+        )
+    ]
+    assert written_events == []
+    assert "Shapes Reloaded" in _status_text(widget)
+
+
+def test_shapes_annotation_widget_failed_shapes_reload_preserves_dirty_session(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(backed_sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    shapes_name = "blobs_polygons"
+    widget._test_parent.shapes_combo.setCurrentIndex(
+        _combo_index_for_text(widget._test_parent.shapes_combo, shapes_name)
+    )
+    layer = widget._annotation_layer
+    session = widget._annotation_session
+    live_element = backed_sdata_blobs.shapes[shapes_name]
+    assert isinstance(layer, Shapes)
+    assert session is not None
+
+    _add_polygon(layer, offset=100)
+    context = widget._test_parent.annotation_context
+    assert context.has_unsaved_shapes_changes is True
+    monkeypatch.setattr(widget, "_confirm_discard_annotation_layer", lambda *, reason: True)
+    monkeypatch.setattr(
+        shapes_annotation_widget_module,
+        "load_shapes_element_from_store",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("persisted Shapes validation failed")),
+    )
+    emitted_events: list[ShapesElementReloadedEvent] = []
+    app_state.shapes_element_reloaded.connect(emitted_events.append)
+
+    widget.reload_shapes_button.click()
+
+    assert widget._annotation_layer is layer
+    assert widget._annotation_session is session
+    assert backed_sdata_blobs.shapes[shapes_name] is live_element
+    assert widget._test_parent.annotation_context == context
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is True
+    assert emitted_events == []
+    assert "Could Not Reload Shapes" in _status_text(widget)
+    assert "persisted Shapes validation failed" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_reports_success(

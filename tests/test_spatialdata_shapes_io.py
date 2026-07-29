@@ -13,6 +13,7 @@ from spatialdata.transformations import Identity, get_transformation
 import napari_harpy.core.spatialdata_io.shapes as shapes_io_module
 from napari_harpy.core.spatialdata_io import (
     load_shapes_element_from_store,
+    shapes_element_exists_in_store,
     write_shapes_element,
 )
 
@@ -61,6 +62,9 @@ def test_load_shapes_element_from_store_installs_only_the_exact_element(
         return real_read(path)
 
     monkeypatch.setattr(shapes_io_module, "_spatialdata_read_shapes", record_exact_read)
+
+    assert shapes_element_exists_in_store(sdata, "regions") is True
+    assert shapes_element_exists_in_store(sdata, "missing") is False
 
     loaded = load_shapes_element_from_store(sdata, "regions")
 

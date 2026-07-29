@@ -2112,6 +2112,23 @@ def test_viewer_adapter_ensure_shapes_loaded_adds_polygon_layer_and_registers_bi
     assert labels_events == []
 
 
+def test_viewer_adapter_shapes_replacement_restores_name_after_duplicate_add(sdata_blobs) -> None:
+    viewer = UniqueNameDummyViewer()
+    adapter = ViewerAdapter(viewer)
+    previous = adapter.ensure_shapes_loaded(sdata_blobs, "blobs_polygons", "global")
+
+    replacement = adapter.replace_primary_shapes_layer(
+        sdata_blobs,
+        "blobs_polygons",
+        "global",
+    )
+
+    assert previous.layer not in viewer.layers
+    assert replacement.layer in viewer.layers
+    assert replacement.layer.name == "blobs_polygons"
+    assert len(viewer.layers) == 1
+
+
 def test_viewer_adapter_ensure_shapes_loaded_removes_layer_if_registration_fails(
     monkeypatch,
     sdata_blobs,
