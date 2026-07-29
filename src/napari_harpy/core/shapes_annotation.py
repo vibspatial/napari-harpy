@@ -21,7 +21,6 @@ from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
-    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table,
     get_table_metadata,
 )
@@ -342,24 +341,6 @@ def napari_shapes_layer_to_geodataframe(
     return geodataframe
 
 
-def get_editable_shapes_names_for_coordinate_system(
-    sdata: SpatialData,
-    coordinate_system: str,
-) -> list[str]:
-    """Return Shapes names accepted by the shared edit-validity contract."""
-    editable_names: list[str] = []
-    for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
-        sdata=sdata,
-        coordinate_system=coordinate_system,
-    ):
-        try:
-            validate_existing_shapes_source_geodataframe(sdata.shapes[option.shapes_name])
-        except ValueError:
-            continue
-        editable_names.append(option.shapes_name)
-    return editable_names
-
-
 def _new_shapes_geodataframe_from_features(
     features: pd.DataFrame,
     *,
@@ -487,14 +468,24 @@ def validate_existing_shapes_source_geodataframe(source_geodataframe: object) ->
     if _index_has_missing_values(source_geodataframe.index):
         raise ValueError("`source_geodataframe` index values must not be missing for editing.")
 
-    for row_position, geometry in enumerate(geometry_values):
-        if not isinstance(geometry, Polygon):
-            raise ValueError(
-                "Edit-existing shapes elements must contain Shapely Polygon geometries only. "
-                f"Source row `{row_position}` has unsupported geometry `{type(geometry).__name__}`."
-            )
-        if geometry.is_empty or not geometry.is_valid or geometry.area <= 0:
-            raise ValueError(f"Source polygon row `{row_position}` cannot be edited because it is empty or invalid.")
+    geometry_types = geometry_values.geom_type.to_numpy()
+    unsupported_positions = np.flatnonzero(geometry_types != "Polygon")
+    if unsupported_positions.size:
+        row_position = int(unsupported_positions[0])
+        geometry = geometry_values.iloc[row_position]
+        raise ValueError(
+            "Edit-existing shapes elements must contain Shapely Polygon geometries only. "
+            f"Source row `{row_position}` has unsupported geometry `{type(geometry).__name__}`."
+        )
+
+    invalid_positions = np.flatnonzero(
+        geometry_values.is_empty.to_numpy(dtype=bool)
+        | ~geometry_values.is_valid.to_numpy(dtype=bool)
+        | (geometry_values.area.to_numpy(dtype=float) <= 0)
+    )
+    if invalid_positions.size:
+        row_position = int(invalid_positions[0])
+        raise ValueError(f"Source polygon row `{row_position}` cannot be edited because it is empty or invalid.")
 
     return source_geodataframe
 
