@@ -21,6 +21,7 @@ from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table,
     get_table_metadata,
 )
@@ -341,9 +342,22 @@ def napari_shapes_layer_to_geodataframe(
     return geodataframe
 
 
-def validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
-    """Return an edit-eligible source GeoDataFrame or raise a user-facing error."""
-    return _validate_existing_shapes_source_geodataframe(source_geodataframe)
+def get_editable_shapes_names_for_coordinate_system(
+    sdata: SpatialData,
+    coordinate_system: str,
+) -> list[str]:
+    """Return Shapes names accepted by the shared edit-validity contract."""
+    editable_names: list[str] = []
+    for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+        sdata=sdata,
+        coordinate_system=coordinate_system,
+    ):
+        try:
+            validate_existing_shapes_source_geodataframe(sdata.shapes[option.shapes_name])
+        except ValueError:
+            continue
+        editable_names.append(option.shapes_name)
+    return editable_names
 
 
 def _new_shapes_geodataframe_from_features(
@@ -435,7 +449,7 @@ def _normalize_shapes_layer_conversion(
             index_prefix=_normalize_string_field(conversion.index_prefix, field_name="`index_prefix`"),
         )
     if isinstance(conversion, ExistingShapesLayerConversion):
-        source_geodataframe = _validate_existing_shapes_source_geodataframe(conversion.source_geodataframe)
+        source_geodataframe = validate_existing_shapes_source_geodataframe(conversion.source_geodataframe)
         return ExistingShapesLayerConversion(
             source_geodataframe=source_geodataframe,
             source_shapes_index_feature_name=_normalize_feature_column_name_field(
@@ -456,7 +470,8 @@ def _normalize_feature_column_name_field(value: object, *, field_name: str) -> s
     return value
 
 
-def _validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
+def validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
+    """Return an edit-eligible source GeoDataFrame or raise a user-facing error."""
     if not isinstance(source_geodataframe, gpd.GeoDataFrame):
         raise ValueError("`source_geodataframe` must be a GeoDataFrame.")
 
