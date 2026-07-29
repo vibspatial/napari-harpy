@@ -5,11 +5,11 @@ from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 import geopandas as gpd
-import harpy as hp
 import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 from shapely.geometry import Polygon
+from spatialdata.models import ShapesModel
 from spatialdata.transformations import (
     BaseTransformation,
     Identity,
@@ -24,6 +24,7 @@ from napari_harpy.core.spatialdata import (
     get_table,
     get_table_metadata,
 )
+from napari_harpy.core.spatialdata_io import write_shapes_element
 from napari_harpy.core.validation import (
     normalize_spatialdata_dataframe_column_name,
     normalize_spatialdata_name,
@@ -134,12 +135,14 @@ def create_shapes_element_from_napari_shapes_layer(
         ),
     )
 
-    _ = hp.sh.add_shapes(
-        sdata,
-        input=geodataframe,
-        output_shapes_name=shapes_name,
+    shapes_element = ShapesModel.parse(
+        geodataframe,
         transformations={coordinate_system: Identity()},
-        instance_key=index_name,
+    )
+    write_shapes_element(
+        sdata,
+        shapes_name,
+        shapes_element,
         overwrite=request.overwrite,
     )
 
@@ -197,16 +200,18 @@ def edit_shapes_element_from_napari_shapes_layer(
         ),
     )
 
-    _ = hp.sh.add_shapes(
+    shapes_element = ShapesModel.parse(
+        geodataframe,
+        transformations=transformations,
+    )
+    write_shapes_element(
         sdata,
-        input=geodataframe,
-        output_shapes_name=shapes_name,
+        shapes_name,
+        shapes_element,
         # The viewer adapter gives napari transformed vector coordinates. Saving
         # writes those coordinates as-is in the selected coordinate system, then
         # keeps the original coordinate-system availability through transforms
         # derived before the target element is overwritten.
-        transformations=transformations,
-        instance_key=geodataframe.index.name,
         overwrite=True,
     )
 
