@@ -4,7 +4,7 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8i, except that the standalone Slice
+Implementation is complete through Slice 8j, except that the standalone Slice
 6m was deferred and its Spatial Annotation work moved to Slice 6p.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -10006,7 +10006,7 @@ non-goals.
 
 ### Slice 8j: Explicit Shapes reload from backing store
 
-**Implementation status: Planned.**
+**Implementation status: Implemented.**
 
 The Annotation widget adds a clear **Reload shapes** action for restoring the
 selected existing Shapes element from its backing zarr store:
@@ -10220,7 +10220,7 @@ class ShapesElementReloadedEvent:
     sdata: SpatialData
     shapes_name: str
     coordinate_system: str
-    source: str = "shapes_annotation"
+    source: str = "shapes_annotation_widget"
 ```
 
 `HarpyAppState` publishes this event only after a successful disk reload and
@@ -10295,6 +10295,130 @@ from the same event. No consumer republishes a feedback reload event.
 - no table component, canonical-centers cache, or disk Shapes value is mutated by
   Reload; and
 - one successful reload publishes one typed reload event and no feedback event.
+
+### Slice 8k: Lazy Shapes edit-validity and vectorized validation
+
+Coordinate-system changes must remain cheap regardless of the number or
+complexity of Shapes geometries in the selected SpatialData. Populating the
+parent Shapes selector therefore uses only element names and coordinate-system
+membership. It must not exhaustively validate every candidate GeoDataFrame:
+
+```text
+coordinate system changes
+    ↓
+enumerate Shapes elements in that coordinate system
+    ↓
+populate the Shapes selector
+    ↓
+do not inspect every geometry for edit validity
+```
+
+An element that belongs to the coordinate system may consequently remain
+visible even when its geometry is not editable by Shapes Annotation. This is
+intentional. Edit validity is established lazily when the user requests that
+specific element.
+
+#### Selected-element validation boundary
+
+Selecting an existing Shapes target performs the complete shared edit-validity
+validation before the parent closes or replaces the currently accepted edit
+session:
+
+```text
+user selects an existing Shapes element
+    ↓
+validate only that selected GeoDataFrame
+    ├── invalid
+    │      → reject the requested target
+    │      → restore the previously accepted selector value
+    │      → preserve the existing layer, session, clean snapshot, and dirty state
+    │      → show the user-facing validation error
+    │
+    └── valid
+           → accept the requested target
+           → close the previous session if required
+           → open/adopt the selected Shapes element
+```
+
+The selected element must be validated once for this synchronous
+parent-to-child transition. The Shapes child must not repeat collection-wide
+filtering or immediately repeat the same selected-element validation while
+adopting the accepted parent context. Independent entry points that can be
+called without this UI selection transition—such as core Spatial Query
+construction, explicit Shapes reload, or direct conversion helpers—retain
+their own fail-loud validation boundaries.
+
+This preserves the important rejected-selection contract: requesting an
+unsupported element, including a GeoDataFrame containing Points,
+MultiPolygons, missing row identity, or invalid polygons, never commits that
+target and never releases a dirty session.
+
+#### Vectorized GeoDataFrame validation
+
+`validate_existing_shapes_source_geodataframe()` retains its complete public
+contract but replaces the Python per-row geometry loop with staged vectorized
+GeoPandas/Shapely operations. Validation order remains deterministic:
+
+```text
+validate GeoDataFrame and active geometry column
+    ↓
+validate non-empty, unique, non-missing row identity
+    ↓
+vectorized geometry-type check
+    → reject unsupported geometry before expensive polygon-validity work
+    ↓
+vectorized empty / valid / positive-area checks for Polygon rows
+    ↓
+return the accepted GeoDataFrame unchanged
+```
+
+The first failing row is still reported in user-facing feedback. Geometry type
+is checked as a separate first vectorized stage so a large element containing
+an unsupported geometry does not first calculate validity and area for every
+otherwise supported polygon.
+
+No edit-validity cache is introduced. Caching would require additional
+invalidation contracts for in-memory element replacement and external
+GeoDataFrame mutation, while lazy selected-element validation already removes
+the repeated coordinate-change work.
+
+#### Non-goals
+
+- hiding or disabling every invalid Shapes option before the user selects it;
+- validating all Shapes elements when SpatialData or coordinate system changes;
+- asynchronous selector population or validation progress UI;
+- weakening the shared Shapes edit-validity contract;
+- adding wall-clock performance thresholds; or
+- changing Shapes save, exact reload, table persistence, or Spatial Query
+  geometry semantics.
+
+#### Deliverables
+
+- coordinate-system Shapes enumeration without eager geometry validation;
+- removal of duplicate parent/child candidate filtering during context
+  publication;
+- lazy pre-commit validation of only the requested existing Shapes target;
+- preservation of the previously accepted session and selector state when that
+  target is invalid;
+- staged vectorized type, empty, validity, and area checks in the shared public
+  validator; and
+- focused tests covering cheap context refresh, invalid selection restoration,
+  valid selection adoption, and deterministic vectorized validation errors.
+
+#### Exit criteria
+
+- switching coordinate systems performs no full edit-validity scan over Shapes
+  geometry rows;
+- selector population depends only on Shapes availability in the selected
+  coordinate system;
+- selecting an invalid element does not commit it or discard an existing dirty
+  session;
+- selecting a valid element retains the existing open/edit behavior;
+- one parent-to-child selection transition does not validate all candidates or
+  repeat the same selected-element validation;
+- the vectorized validator accepts and rejects the same GeoDataFrame contracts
+  as the previous row-wise validator; and
+- independent core, reload, and query entry points remain fail-loud.
 
 ### Slice 9: Production hardening and release gate
 
