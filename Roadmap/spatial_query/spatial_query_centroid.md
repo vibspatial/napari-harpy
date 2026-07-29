@@ -4,7 +4,7 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8f, except that the standalone Slice
+Implementation is complete through Slice 8g, except that the standalone Slice
 6m was deferred and its Spatial Annotation work moved to Slice 6p.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -9019,7 +9019,7 @@ The backed integration scenarios verify that:
 
 ### Slice 8g: Exact Shapes-element backing-store I/O
 
-**Implementation status: Planned.**
+**Implementation status: Implemented.**
 
 napari-harpy introduces one focused core boundary for reading and writing an
 individual Shapes element in a backed SpatialData store:
@@ -9133,7 +9133,8 @@ touch no unrelated Shapes payload
 
 Slice 8g owns exact named Shapes disk I/O and live-`SpatialData`
 synchronization, and migrates the existing **Save shapes** create and overwrite
-paths to it. The following Slice 8h owns the explicit **Reload shapes** UI and
+paths to it. Slice 8h optimizes the backed writer's exact local commit. The
+following Slice 8i owns the explicit **Reload shapes** UI and
 consumes the same exact loader. This slice does not introduce widget controls,
 Shapes reload events, or table persistence semantics.
 
@@ -9158,7 +9159,7 @@ Shapes reload events, or table persistence semantics.
 
 The validation hook allows a workflow to reject a disk value before the live
 `SpatialData` changes without moving workflow-specific edit rules into the I/O
-package. Slice 8h supplies the shared Shapes edit-validity and selected
+package. Slice 8i supplies the shared Shapes edit-validity and selected
 coordinate-system checks through this hook.
 
 For example, a Shapes element may have been changed externally since the
@@ -9438,7 +9439,213 @@ preferred to duplicating those version branches.
 - the following explicit Shapes reload slice can reuse the same exact loader
   without defining another disk-I/O path.
 
-### Slice 8h: Explicit Shapes reload from backing store
+### Slice 8h: Exact local Shapes commit optimization
+
+**Implementation status: Planned.**
+
+The Slice 8g writer already avoids collection-wide Shapes reads, but its backed
+overwrite path still delegates each physical transition to SpatialData's
+generic element write/delete operations:
+
+```text
+write temporary Shapes element
+    → consolidate store metadata
+delete requested Shapes element
+    → inspect backing references across the live SpatialData
+    → consolidate store metadata
+write requested Shapes element
+    → consolidate store metadata
+delete temporary Shapes element
+    → inspect backing references across the live SpatialData
+    → consolidate store metadata
+```
+
+For a small Shapes element in a large backed container, the Shapes
+serialization itself is inexpensive. The generic backing-reference scans and
+repeated whole-store metadata consolidation dominate the synchronous
+**Save shapes** action.
+
+Slice 8h retains the public `write_shapes_element()` contract and SpatialData's
+Shapes serializer, but replaces that generic backed commit with an exact
+same-filesystem directory swap:
+
+```text
+serialize exact staging element
+    ↓
+rename old target directory to backup
+    ↓
+rename staging directory to target
+    ↓
+exact-read and validate target
+    ↓
+remove backup
+    ↓
+consolidate metadata once
+```
+
+The optimization changes only the backed writer's physical commit mechanism.
+Unbacked writes, the exact loader, Shapes Annotation conversion and validation,
+successful-write events, edit-session promotion, and the public return value
+remain unchanged.
+
+#### Local backing-store boundary
+
+The optimized commit applies only to a local directory-backed zarr store for
+which `sdata.path / "shapes"` and the requested element are ordinary local
+filesystem paths. Staging, backup, and target therefore remain on the same
+filesystem, and directory renames do not copy the Shapes payload.
+
+The writer fails loudly before mutation when that boundary cannot be
+substantiated. Remote object stores, cross-filesystem moves, archive stores,
+and emulation of rename semantics for non-local stores remain explicit
+non-goals. The implementation must not silently fall back to a slower or less
+safe collection-wide Harpy path.
+
+The staging and backup names are collision-free Shapes names derived from the
+requested target. They are implementation details and never appear in the live
+`sdata.shapes` mapping or public result.
+
+#### Serialization and consolidation boundary
+
+The incoming `GeoDataFrame` is serialized exactly once under the staging name
+using SpatialData's installed Shapes serializer and format selection. The
+implementation must not copy SpatialData's GeoParquet/WKB/GeoArrow or
+transformation encoding into napari-harpy.
+
+The existing public `SpatialData.write_element()` automatically consolidates
+metadata after every write. The optimized writer therefore isolates the
+narrow SpatialData serialization adapter needed to write the staging element
+without triggering an intermediate consolidation. As with the existing exact
+Shapes reader adapter, this private compatibility boundary remains confined to
+`core/spatialdata_io/shapes.py`.
+
+After the target commit and backup cleanup succeed, the writer invokes the
+installed SpatialData/zarr consolidated-metadata implementation once. Slice 8h
+does not attempt incremental root-metadata patching, disable consolidated
+metadata, or establish a wall-clock performance threshold.
+
+#### Create and overwrite flow
+
+Create and overwrite use the same staged payload:
+
+```text
+target absent
+    → serialize staging directory
+    → rename staging directory to requested target
+    → exact-read and validate requested target
+    → install materialized target in sdata.shapes
+    → consolidate metadata once
+
+target exists and overwrite=True
+    → serialize staging directory
+    → rename requested target directory to backup
+    → rename staging directory to requested target
+    → exact-read and validate requested target
+    → install materialized target in sdata.shapes
+    → remove backup directory
+    → consolidate metadata once
+
+target exists and overwrite=False
+    → reject before staging or mutation
+```
+
+The target and live/disk presence checks from Slice 8g still run before
+serialization. The successful live mapping contains the exact materialized
+requested target, not the pre-serialization input or the temporary staging
+value.
+
+Each individual local rename uses the operating system's same-filesystem rename
+semantics. The complete multi-step sequence is exception-safe at process level,
+but it is not presented as one crash-atomic filesystem transaction.
+
+#### Failure and recovery contract
+
+The previous accepted target remains recoverable until the new requested
+target has been exact-read and validated:
+
+```text
+staging serialization fails
+    → remove partial staging directory when possible
+    → leave target and live mapping unchanged
+
+target-to-backup rename fails
+    → leave target and live mapping unchanged
+    → remove staging directory when possible
+
+staging-to-target rename fails after backup was created
+    → restore backup to requested target
+    → restore previous live mapping
+
+exact read or validation of new target fails
+    → remove rejected target
+    → restore backup for overwrite, or restore absence for create
+    → restore previous live mapping
+
+backup cleanup or final consolidation fails
+    → report the exact retained target/backup paths and failure stage
+    → never silently delete the only complete recoverable copy
+```
+
+An ordinary handled failure publishes no successful Shapes-write event and
+leaves the active Shapes Annotation layer/session dirty. Recovery errors name
+the retained staging or backup directory so the data remains discoverable.
+
+Process termination between renames, concurrent processes writing the same
+Shapes name, automatic orphan recovery, and transaction journals remain
+non-goals.
+
+#### Performance contract
+
+Performance remains structural rather than timing-based:
+
+- serialize only the requested incoming Shapes element;
+- perform no generic `delete_element_from_disk()` call;
+- perform no backing-reference scan across the live SpatialData;
+- do not serialize the requested element a second time after staging;
+- rename only exact staging, target, and backup directories;
+- exact-read only the committed requested element;
+- consolidate store metadata once after the commit;
+- read, write, or materialize no unrelated SpatialData element.
+
+The synchronous UI can therefore depend primarily on one small Shapes
+serialization and one required metadata consolidation rather than the number
+or size of unrelated backed elements.
+
+#### Deliverables
+
+- refactor the backed branch of `write_shapes_element()` to the exact local
+  staging/backup/target directory-swap flow;
+- isolate the SpatialData staging-serialization compatibility adapter in
+  `core/spatialdata_io/shapes.py`;
+- retain exact read-back, Shapes validation, live-mapping installation, and the
+  public API from Slice 8g;
+- consolidate metadata exactly once after a successful commit;
+- focused create and overwrite tests proving the old target remains
+  recoverable until the new target is accepted;
+- failure-injection coverage for staging serialization, both rename
+  transitions, exact read/validation, backup cleanup, and consolidation;
+- structural tests that generic SpatialData deletion, collection-wide reads,
+  unrelated element I/O, and repeated target serialization do not occur; and
+- no timing-based regression test.
+
+#### Exit criteria
+
+- backed create and overwrite use the exact local directory-swap commit;
+- the requested Shapes payload is serialized once;
+- generic SpatialData target/staging deletion is no longer on the successful
+  path;
+- one successful save performs one final consolidated-metadata update;
+- successful create and overwrite leave no staging or backup directory;
+- the returned value is the exact committed element installed in
+  `sdata.shapes[shapes_name]`;
+- handled failures preserve or restore the previous accepted disk/live state;
+- secondary recovery failures identify retained recoverable paths;
+- no unrelated element is inspected for backing-file ownership, read, written,
+  or deleted; and
+- the existing Shapes Annotation save workflow observes no public behavioral
+  change beyond reduced synchronous latency.
+
+### Slice 8i: Explicit Shapes reload from backing store
 
 **Implementation status: Planned.**
 
