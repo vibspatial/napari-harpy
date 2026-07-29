@@ -221,6 +221,16 @@ class ShapesElementWrittenEvent:
 
 
 @dataclass(frozen=True)
+class ShapesElementReloadedEvent:
+    """Describe successful adoption of one persisted Shapes element."""
+
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    source: str = "shapes_annotation_widget"
+
+
+@dataclass(frozen=True)
 class CoordinateSystemChangedEvent:
     """Describe a shared active coordinate-system change for one viewer session."""
 
@@ -354,6 +364,7 @@ class HarpyAppState(QObject):
     table_state_changed = Signal(object)
     table_dirty_state_changed = Signal(object)
     shapes_element_written = Signal(object)
+    shapes_element_reloaded = Signal(object)
     coordinate_system_changed = Signal(object)
 
     def __init__(self, viewer: object | None = None) -> None:
@@ -560,6 +571,10 @@ class HarpyAppState(QObject):
     def emit_shapes_element_written(self, event: ShapesElementWrittenEvent) -> None:
         """Broadcast that a shapes element was written into the shared SpatialData."""
         self.shapes_element_written.emit(event)
+
+    def emit_shapes_element_reloaded(self, event: ShapesElementReloadedEvent) -> None:
+        """Broadcast that a persisted Shapes element replaced its live state."""
+        self.shapes_element_reloaded.emit(event)
 
     def record_table_mutation(self, event: TableStateChangedEvent) -> None:
         """Record an accepted in-memory mutation and publish its table event."""
