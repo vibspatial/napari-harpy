@@ -4,7 +4,7 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8j, except that the standalone Slice
+Implementation is complete through Slice 8k, except that the standalone Slice
 6m was deferred and its Spatial Annotation work moved to Slice 6p.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -10298,6 +10298,8 @@ from the same event. No consumer republishes a feedback reload event.
 
 ### Slice 8k: Lazy Shapes edit-validity and vectorized validation
 
+**Implementation status: Implemented.**
+
 Coordinate-system changes must remain cheap regardless of the number or
 complexity of Shapes geometries in the selected SpatialData. Populating the
 parent Shapes selector therefore uses only element names and coordinate-system
@@ -10317,6 +10319,13 @@ An element that belongs to the coordinate system may consequently remain
 visible even when its geometry is not editable by Shapes Annotation. This is
 intentional. Edit validity is established lazily when the user requests that
 specific element.
+
+A previously accepted existing target may remain selected when changing to
+another coordinate system in which that same element is available. Its
+intrinsic GeoDataFrame has already passed edit-validity validation, so this
+presentation-frame change does not repeat the scan. Replacing the SpatialData
+container resets the Shapes target to **Create shapes** rather than transferring
+an accepted target across container identities.
 
 #### Selected-element validation boundary
 
@@ -10395,7 +10404,7 @@ the repeated coordinate-change work.
 #### Deliverables
 
 - coordinate-system Shapes enumeration without eager geometry validation;
-- removal of duplicate parent/child candidate filtering during context
+- removal of duplicate parent/child edit-validity filtering during context
   publication;
 - lazy pre-commit validation of only the requested existing Shapes target;
 - preservation of the previously accepted session and selector state when that
@@ -10419,6 +10428,98 @@ the repeated coordinate-change work.
 - the vectorized validator accepts and rejects the same GeoDataFrame contracts
   as the previous row-wise validator; and
 - independent core, reload, and query entry points remain fail-loud.
+
+### Slice 8l: Dirty-aware Shapes save action
+
+**Implementation status: Not implemented.**
+
+**Save shapes** must represent pending persistence work rather than merely the
+presence of an editable Shapes session. The button is enabled only when the
+widget-owned annotation layer is both save-ready and different from its clean
+snapshot:
+
+```text
+open an existing Shapes element
+    → valid editable session
+    → clean snapshot matches the layer
+    → Save shapes disabled
+
+edit geometry
+    → layer differs from the clean snapshot
+    → Save shapes enabled
+
+restore the geometry exactly to its clean state
+    → layer matches the clean snapshot again
+    → Save shapes disabled
+
+save successfully
+    → persisted result becomes the new clean snapshot
+    → Save shapes disabled
+```
+
+For a newly created empty annotation layer, **Save shapes** is initially
+disabled and becomes enabled after the first effective geometry mutation. A
+non-empty native Shapes layer adopted as a new annotation remains dirty against
+its deliberate empty baseline and is therefore saveable.
+
+#### Readiness and dirty-state contract
+
+General annotation-layer readiness and dirty state remain separate concepts:
+
+```text
+annotation layer is actionable
+    → editing actions such as Create holes may be available
+
+annotation layer is actionable and dirty
+    → Save shapes is available
+```
+
+`Create holes` must therefore continue to use general action readiness; it must
+not become disabled merely because the current Shapes layer is clean.
+
+The existing exact snapshot comparison remains the single definition of dirty
+state. No second stored dirty flag or approximate “an event occurred” state is
+introduced. Completed napari Shapes data mutations refresh both:
+
+- the parent-published `has_unsaved_shapes_changes` state; and
+- the local **Save shapes** enabled state.
+
+Pre-mutation data events remain ignored. If a later edit restores the exact
+clean geometry and row-aligned features, the comparison must disable
+**Save shapes** again.
+
+The save action itself must not write an unchanged Shapes element when invoked
+programmatically or through a stale UI event. Existing validation and
+user-facing save-error behavior remain unchanged for genuinely dirty sessions.
+
+#### Non-goals
+
+- changing the exact Shapes snapshot or equality contract;
+- disabling editing actions such as **Create holes** for clean sessions;
+- introducing a second dirty-state owner in the parent Annotation widget;
+- changing Shapes serialization, atomic commit, reload, or discard behavior;
+  or
+- adding autosave.
+
+#### Deliverables
+
+- dirty-aware **Save shapes** button readiness;
+- completed geometry-event refresh of Save readiness;
+- a no-op guard against saving an unchanged session; and
+- focused Shapes Annotation tests for clean open, first mutation, exact
+  restoration, successful save, create-new, and Create-holes readiness.
+
+#### Exit criteria
+
+- opening or reloading an unchanged existing Shapes element leaves **Save
+  shapes** disabled;
+- an effective geometry change enables **Save shapes**;
+- restoring or successfully saving the clean state disables it again;
+- a new empty layer cannot be saved until it contains an effective change;
+- **Create holes** remains available whenever the annotation layer is otherwise
+  actionable; and
+- parent dirty-state publication and local Save readiness are derived from the
+  same exact snapshot comparison.
 
 ### Slice 9: Production hardening and release gate
 
