@@ -258,16 +258,71 @@ Sampling density answers:
 
 > How many representative points should be drawn at this LOD?
 
-They must not be inferred from each other. A small physical region can contain
-hundreds of millions of transcripts and require several density LODs even if
-all levels share the same one-tile grid.
+They must not be inferred from each other. Dataset pixels are data-coordinate
+units, not screen pixels. A tile's projected screen size depends on the current
+camera transform and is computed from the viewport's data-units-per-screen-pixel
+value.
 
 Consequently:
 
 - level count must not be derived only from dataset extent;
-- two levels may use the same tile size but different sampling densities;
+- the format supports two levels with the same tile size and different sampling
+  densities, but the initial schedule uses that capability only for the sampled
+  finest bridge;
 - level metadata records both grid geometry and sampling semantics;
 - the planner uses both screen scale and manifest counts.
+
+### Initial construction schedule
+
+The first implementation targets the following schedule, written from finest
+source geometry toward coarser sampled geometry:
+
+| Design label | Tile geometry | Maximum rows per tile |
+|---|---:|---:|
+| Exact | 512 | all source rows |
+| Sampled finest bridge | 512 | 4,096 |
+| L1 | 1,024 | 8,192 |
+| L2 | 2,048 | 16,384 |
+| L3 | 4,096 | 32,768 |
+| Later spatial levels | double the preceding tile edge | initially double the preceding per-tile capacity |
+
+These labels describe the design progression and do not prescribe serialized
+level numbers. Serialized level records remain ordered from coarsest to finest.
+
+The sampled finest bridge is intentional. A dense exact 512-unit tile can
+exceed the runtime render budget while it is still large on screen. The bridge
+provides a bounded representation without prematurely moving to 1,024-unit
+spatial payloads. The initial implementation does not add arbitrary
+`Density A`, `Density B`, or further equal-geometry levels.
+
+For the non-terminal sampled progression:
+
+```text
+tile_size(k) = 512 * 2**k
+tile_capacity(k) = 4,096 * 2**k
+```
+
+where `k = 0` is the sampled finest bridge. Doubling the tile edge combines
+approximately four child tiles, while doubling rather than quadrupling the
+capacity. A fully populated parent therefore retains approximately half the
+representatives in its four children. This targets an approximately twofold
+point-count change between adjacent sampled LODs rather than an automatic
+fourfold change.
+
+Capacity is a hard maximum, not a fill target. Sparse tiles retain all available
+candidates. Every sampled level is built from representatives retained by the
+next finer level.
+
+The doubling rule is not allowed to violate the global coarsest-level contract.
+Construction continues until a complete whole-dataset level satisfies
+`overview_point_budget`. The terminal coarsest level uses an explicitly
+recorded global allocation when blindly doubling its per-tile capacity would
+exceed that budget.
+
+This schedule is the initial implementation and benchmark target, not an
+immutable file-format restriction. Changing it later requires benchmark
+evidence from real viewport traces, screen-space density, gene preservation,
+build cost, and LOD transition quality.
 
 ### Separate budgets
 
@@ -280,12 +335,15 @@ The following settings have distinct meanings:
 : Physical Parquet IO shard size. It does not control visual sampling.
 
 `level_sampling_target`
-: A level-specific sampling density or point target recorded in level
-  metadata.
+: A level-specific maximum per-tile capacity or terminal global allocation
+  recorded in level metadata. The initial non-terminal sampled targets are
+  4,096, 8,192, 16,384, 32,768, and so on.
 
 `render_point_budget`
 : Runtime maximum for visible core tiles plus the configured prefetch policy.
-  It may be larger than the build-time overview budget.
+  It may be larger than the build-time overview budget. The initial runtime
+  range to benchmark is 100,000-200,000 visible transcripts; it is a safety
+  ceiling, not a target that the renderer must fill.
 
 `cpu_cache_byte_budget`
 : Maximum decoded CPU tile-cache memory.
@@ -869,7 +927,8 @@ Required level records, ordered from coarsest to finest:
 - `is_exact`;
 - total stored point count;
 - sampling-policy name and version;
-- sampling target or density;
+- maximum per-tile capacity or terminal global allocation;
+- sampling target or density semantics;
 - level directory.
 
 Required build parameters:
@@ -1025,7 +1084,9 @@ into every visualization level by default.
 The builder considers both:
 
 - spatial extent relative to the requested leaf tile size;
-- source point count and the desired density progression.
+- source point count;
+- the explicit initial capacity progression;
+- the global overview budget.
 
 It must create at least:
 
@@ -1036,9 +1097,20 @@ It must create at least:
 For a small source whose entire exact representation is within the overview
 budget, one exact level is sufficient.
 
-Additional density-only levels may share tile geometry. Additional spatial
-levels may halve tile size without changing density by the same ratio. Both
-properties are explicit in metadata.
+Otherwise, the initial builder creates:
+
+1. the exact 512-unit level;
+2. the sampled 512-unit bridge with capacity 4,096;
+3. 1,024-, 2,048-, and 4,096-unit spatial levels with capacities 8,192,
+   16,384, and 32,768 respectively;
+4. further spatial levels following the same edge-doubling and initial
+   capacity-doubling rule;
+5. a terminal globally allocated level as soon as the complete level can
+   satisfy `overview_point_budget`.
+
+The format continues to support other density-only levels, but they are not
+part of the initial default schedule and require benchmark evidence before
+being added.
 
 ### Stable row identity
 
@@ -1065,13 +1137,19 @@ specification.
 The expected family is:
 
 1. start from candidates retained by the next finer level;
-2. annotate candidates with the current level's tile and micro-grid cell;
+2. annotate candidates with the current level's tile and spatial stratum;
 3. allocate the tile target across occupied spatial strata;
 4. allocate each stratum target across genes with a bounded rarity-aware rule;
 5. rank candidates using a stable hash of level, spatial stratum, gene id,
    stable row identity, and seed;
 6. keep the deterministic winners;
 7. sort output deterministically before writing.
+
+For L1 and later spatial levels, the immediate finer child tiles are the
+required top-level spatial strata. For the same-geometry sampled finest bridge,
+the Phase 1 spike must benchmark and specify a deterministic within-tile
+stratification policy. A fixed micro-grid is a candidate for that bridge, not a
+general requirement imposed on every sampled level.
 
 The gene-allocation function should start with a bounded concave count transform
 such as `sqrt(n)` or `log1p(n)`, plus a clipped global-rarity modifier. Exact
@@ -1355,6 +1433,8 @@ Then complete the cache builder:
   signature;
 - implement stable fallback row identity;
 - write the exact level from the validated source;
+- implement the initial 512-all → 512-at-4,096 → 1,024-at-8,192 →
+  2,048-at-16,384 → 4,096-at-32,768 construction schedule;
 - construct sampled levels from retained finer-level candidates or normalized
   exact tiles, not by repeatedly rescanning the original source;
 - implement gene-aware nested sampled levels;
@@ -1368,6 +1448,8 @@ Exit criteria:
 
 - exact coordinate reconstruction is within documented tolerance;
 - exact level has full membership and identity coverage;
+- generated non-terminal levels have the required geometry and capacity
+  progression;
 - every sampled level is deterministic and nested;
 - coarsest total never exceeds the overview budget;
 - manifest accounting matches physical row groups;
@@ -1561,7 +1643,10 @@ Test:
 - core versus prefetch budgeting;
 - exact-level shortcut;
 - hysteresis;
-- density-only levels with equal tile sizes.
+- the exact-to-sampled 512-unit bridge;
+- the initial 4,096 → 8,192 → 16,384 → 32,768 capacity progression;
+- optional density-only levels with equal tile sizes when supplied by a
+  non-default cache schedule.
 
 ### Scheduler
 
@@ -1622,8 +1707,9 @@ Record:
 
 Initial runtime targets should be treated as hypotheses until measured:
 
-- default visible render target around 100,000 points;
-- configurable stronger-hardware target around 150,000-200,000 points;
+- a hard visible render budget configurable in the 100,000-200,000 range;
+- a separate screen-space density target so coarse views are not filled merely
+  because unused render budget remains;
 - warm pan/zoom median under 100 ms;
 - common cold tile view under 300 ms;
 - no interaction-blocking upload burst.
