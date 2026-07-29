@@ -38,12 +38,12 @@ from napari_harpy.core.shapes_annotation import (
     EditShapesElementRequest,
     create_shapes_element_from_napari_shapes_layer,
     edit_shapes_element_from_napari_shapes_layer,
-    get_editable_shapes_names_for_coordinate_system,
     validate_existing_shapes_source_geodataframe,
 )
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
 )
 from napari_harpy.core.spatialdata_io import (
     load_shapes_element_from_store,
@@ -271,7 +271,7 @@ class ShapesAnnotation(QWidget):
             has_unsaved_shapes_changes=False,
         )
         self._coordinate_systems: list[str] = []
-        self._eligible_existing_shapes_names: list[str] = []
+        self._available_existing_shapes_names: list[str] = []
         self._validated_shapes_name: str | None = None
         self._annotation_session: _ShapesAnnotationSession | None = None
         self._annotation_layer: Shapes | None = None
@@ -422,7 +422,9 @@ class ShapesAnnotation(QWidget):
 
         This method never prompts or changes parent-owned selectors. The parent
         must close an incompatible active session before supplying a different
-        coordinate system or Shapes target.
+        coordinate system or Shapes target. An existing target in a committed
+        parent context has already passed the shared GeoDataFrame edit-validity
+        check; the child validates only the rendered napari layer and binding.
         """
         if context.sdata is not None and context.sdata is not self._app_state.sdata:
             raise ValueError("Annotation context SpatialData must match the shared app state.")
@@ -462,12 +464,18 @@ class ShapesAnnotation(QWidget):
         sdata = context.sdata
         self._coordinate_systems = [] if sdata is None else get_coordinate_system_names_from_sdata(sdata)
         if sdata is None or next_coordinate_system is None:
-            self._eligible_existing_shapes_names = []
+            self._available_existing_shapes_names = []
         else:
-            self._eligible_existing_shapes_names = get_editable_shapes_names_for_coordinate_system(
-                sdata,
-                next_coordinate_system,
-            )
+            # Parent selector refresh and child layer adoption share this cheap
+            # names-only view. The parent validates a requested existing target
+            # before it commits the AnnotationContext supplied here.
+            self._available_existing_shapes_names = [
+                option.shapes_name
+                for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+                    sdata=sdata,
+                    coordinate_system=next_coordinate_system,
+                )
+            ]
 
         self._set_create_name_controls_visible(next_target is not None and next_target.mode == "create_new")
         self._refresh_create_layer_state()
@@ -556,7 +564,7 @@ class ShapesAnnotation(QWidget):
             or binding.shapes_role != "primary"
             or binding.shapes_rendering_mode != "shapes"
             or binding.style_spec is not None
-            or binding.element_name not in self._eligible_existing_shapes_names
+            or binding.element_name not in self._available_existing_shapes_names
         ):
             return None
 
@@ -870,7 +878,10 @@ class ShapesAnnotation(QWidget):
 
         load_result = None
         try:
-            source_geodataframe = validate_existing_shapes_source_geodataframe(sdata.shapes[shapes_name])
+            # AnnotationWidget validated this selected source before committing
+            # the context and releasing any previous edit session. Do not repeat
+            # that potentially expensive GeoDataFrame validation in the child.
+            source_geodataframe = sdata.shapes[shapes_name]
             # `ensure_shapes_loaded(...)` emits `primary_shapes_layer_registered`
             # when it creates/registers a layer. This widget handles that
             # signal by calling `_open_existing_annotation_layer(...)` for
@@ -1296,7 +1307,7 @@ class ShapesAnnotation(QWidget):
             if (
                 shapes_name is None
                 or shapes_name not in sdata.shapes
-                or shapes_name not in self._eligible_existing_shapes_names
+                or shapes_name not in self._available_existing_shapes_names
             ):
                 self._apply_status_card_spec(build_annotation_shapes_unavailable_card_spec())
                 self.create_layer_button.setEnabled(False)
