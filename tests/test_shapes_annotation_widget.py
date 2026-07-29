@@ -4339,7 +4339,7 @@ def test_shapes_annotation_widget_viewer_load_does_not_steal_active_session(
     assert widget._annotation_session.shapes_name == "blobs_polygons"
 
 
-def test_shapes_annotation_widget_omits_multipolygon_source_from_parent_selector(
+def test_shapes_annotation_widget_lists_multipolygon_source_without_eager_validation(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -4348,13 +4348,54 @@ def test_shapes_annotation_widget_omits_multipolygon_source_from_parent_selector
     app_state.set_sdata(sdata_blobs)
     widget = _create_embedded_shapes_annotation(qtbot, viewer)
 
-    assert _combo_index_for_text(widget._test_parent.shapes_combo, "blobs_multipolygons") == -1
+    assert _combo_index_for_text(widget._test_parent.shapes_combo, "blobs_multipolygons") >= 0
     assert list(viewer.layers) == []
     assert widget._annotation_layer is None
     assert widget._annotation_session is None
 
 
-def test_shapes_annotation_widget_rejects_stale_invalid_target_before_releasing_session(
+def test_shapes_annotation_widget_validates_only_the_selected_existing_target(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    parent = widget._test_parent
+    selected_source = sdata_blobs.shapes["blobs_polygons"]
+    validated_sources: list[object] = []
+    real_validate = annotation_widget_module.validate_existing_shapes_source_geodataframe
+
+    def record_validation(source: object) -> gpd.GeoDataFrame:
+        validated_sources.append(source)
+        return real_validate(source)
+
+    monkeypatch.setattr(
+        annotation_widget_module,
+        "validate_existing_shapes_source_geodataframe",
+        record_validation,
+    )
+    monkeypatch.setattr(
+        shapes_annotation_widget_module,
+        "validate_existing_shapes_source_geodataframe",
+        record_validation,
+    )
+
+    parent.shapes_combo.setCurrentIndex(_combo_index_for_text(parent.shapes_combo, "blobs_polygons"))
+
+    assert len(validated_sources) == 1
+    assert validated_sources[0] is selected_source
+    assert widget._annotation_session is not None
+    assert widget._annotation_session.shapes_name == "blobs_polygons"
+
+    parent._refresh_shapes_targets()
+
+    assert len(validated_sources) == 1
+
+
+def test_shapes_annotation_widget_rejects_invalid_target_before_releasing_session(
     qtbot,
     monkeypatch: pytest.MonkeyPatch,
     backed_sdata_blobs: SpatialData,
@@ -4365,21 +4406,15 @@ def test_shapes_annotation_widget_rejects_stale_invalid_target_before_releasing_
     widget = _create_embedded_shapes_annotation(qtbot, viewer)
     parent = widget._test_parent
     valid_shapes_name = "blobs_polygons"
-    parent.shapes_combo.setCurrentIndex(
-        _combo_index_for_text(parent.shapes_combo, valid_shapes_name)
-    )
+    parent.shapes_combo.setCurrentIndex(_combo_index_for_text(parent.shapes_combo, valid_shapes_name))
     layer = widget._annotation_layer
     session = widget._annotation_session
     assert isinstance(layer, Shapes)
     assert session is not None
 
-    # Simulate a selector populated before an externally changed Shapes
-    # element became invalid for editing.
-    invalid_target = shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(
-        "blobs_multipolygons"
-    )
-    parent.shapes_combo.addItem("blobs_multipolygons", invalid_target)
-    parent.shapes_combo.setCurrentIndex(parent.shapes_combo.count() - 1)
+    # Invalid geometry remains visible because selector refresh is names-only.
+    # Validation happens now, before the accepted session can be released.
+    parent.shapes_combo.setCurrentIndex(_combo_index_for_text(parent.shapes_combo, "blobs_multipolygons"))
 
     assert parent.annotation_context.shapes_target == (
         shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing(valid_shapes_name)
