@@ -19,6 +19,19 @@ _RECOVERY_ROOT_NAME = ".harpy_recovery"
 ShapesElementValidator = Callable[[gpd.GeoDataFrame], None]
 
 
+def shapes_element_exists_in_store(sdata: SpatialData, shapes_name: str) -> bool:
+    """Return whether one exact Shapes element exists in a backing store."""
+    normalized_name = normalize_spatialdata_name(shapes_name, "Shapes element name")
+    _require_backed_path(sdata)
+    disk_types = _element_types_on_disk(sdata, normalized_name)
+    _raise_if_name_used_by_non_shapes_element(
+        disk_types,
+        shapes_name=normalized_name,
+        location="backing store",
+    )
+    return "shapes" in disk_types
+
+
 def load_shapes_element_from_store(
     sdata: SpatialData,
     shapes_name: str,
