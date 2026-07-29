@@ -1558,6 +1558,68 @@ class ViewerAdapter(QObject):
             shapes_rendering_mode=built_layer.shapes_rendering_mode,
         )
 
+    def replace_primary_shapes_layer(
+        self,
+        sdata: SpatialData,
+        shapes_name: str,
+        coordinate_system: str,
+    ) -> ShapesLoadResult:
+        """Register a complete replacement before removing the loaded primary layer.
+
+        Construction or registration failure removes only the incomplete
+        replacement and leaves the previously loaded layer and binding intact.
+        """
+        previous_layer = self._get_loaded_shapes_layer_for_coordinate_system(
+            sdata,
+            shapes_name,
+            coordinate_system,
+        )
+        built_layer = _build_shapes_layer(
+            sdata,
+            shapes_name,
+            coordinate_system,
+            name=shapes_name,
+            sync_current_colors=True,
+        )
+        replacement_layer = built_layer.layer
+        _add_layer_to_viewer(self._viewer, replacement_layer)
+        try:
+            self.register_shapes_layer(
+                replacement_layer,
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                shapes_rendering_mode=built_layer.shapes_rendering_mode,
+                source_row_id_by_rendered_row=built_layer.source_row_id_by_rendered_row,
+                source_shapes_index_feature_name=built_layer.source_shapes_index_feature_name,
+                skipped_geometry_count=built_layer.skipped_geometry_count,
+            )
+        except Exception:
+            _remove_layer_after_failed_registration(self._viewer, replacement_layer)
+            raise
+
+        if previous_layer is not None:
+            try:
+                self._remove_layer_from_viewer_and_registry(previous_layer)
+            except Exception:
+                self._remove_layer_from_viewer_and_registry(replacement_layer)
+                raise
+            # Napari adds a uniqueness suffix while the previous same-named
+            # layer is still present (for example, ``shapes [1]``). Restore
+            # the SpatialData element name after the safe replacement removes
+            # that temporary name collision.
+            replacement_layer.name = shapes_name
+
+        return ShapesLoadResult(
+            layer=replacement_layer,
+            created=True,
+            value_kind=None,
+            palette_source=None,
+            coercion_applied=False,
+            skipped_geometry_count=built_layer.skipped_geometry_count,
+            shapes_rendering_mode=built_layer.shapes_rendering_mode,
+        )
+
     def create_empty_primary_shapes_layer(
         self,
         sdata: SpatialData,
