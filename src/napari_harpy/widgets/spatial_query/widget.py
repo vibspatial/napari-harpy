@@ -19,6 +19,7 @@ from qtpy.QtWidgets import (
 
 from napari_harpy._app_state import (
     HarpyAppState,
+    ShapesElementReloadedEvent,
     TableChangeKind,
     TableReloadRequest,
     TableStateChangedEvent,
@@ -411,6 +412,7 @@ class SpatialQuery(QWidget):
         self.run_button.clicked.connect(self._run_spatial_query)
         self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
         self._app_state.table_state_changed.connect(self._on_table_state_changed)
+        self._app_state.shapes_element_reloaded.connect(self._on_shapes_element_reloaded)
         self.destroyed.connect(self._controller.shutdown)
 
         self._set_column_control_visibility()
@@ -626,6 +628,23 @@ class SpatialQuery(QWidget):
         self._inspect_canonical_centers_cache()
         self._layer_styling_error = None
         self._apply_explicit_labels_styling()
+        self._refresh_controls_and_status()
+
+    def _on_shapes_element_reloaded(self, value: object) -> None:
+        """Reject work that captured geometry replaced by an exact Shapes reload."""
+        if not isinstance(value, ShapesElementReloadedEvent):
+            return
+        intent = self._active_run_intent
+        if intent is None:
+            return
+        if (
+            value.sdata is not intent.sdata
+            or value.shapes_name != intent.shapes_name
+            or value.coordinate_system != intent.coordinate_system
+        ):
+            return
+
+        self._invalidate_run()
         self._refresh_controls_and_status()
 
     def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
