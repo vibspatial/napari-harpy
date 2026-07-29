@@ -353,7 +353,7 @@ def test_annotation_widget_shapes_selector_auto_opens_existing_target(
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.text() == "Create layer"
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     status = _status_text(widget)
     assert "Existing Shapes Opened" in status
     assert 'Edit shapes layer "blobs_polygons" in coordinate system "global".' in status
@@ -662,7 +662,7 @@ def test_annotation_widget_clean_target_change_closes_empty_create_layer_without
     assert widget.name_edit.isHidden() is True
     assert widget.create_layer_button.text() == "Create layer"
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert "Existing Shapes Opened" in _status_text(widget)
 
 

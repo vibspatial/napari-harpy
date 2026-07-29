@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -12,7 +11,6 @@ from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -28,6 +26,7 @@ from qtpy.QtWidgets import (
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     HarpyAppState,
+    TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
@@ -97,10 +96,7 @@ from napari_harpy.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
 from napari_harpy.widgets.shared_styles import (
-    PRIMARY_BUTTON_STYLESHEET,
-    SECONDARY_BUTTON_STYLESHEET,
     SMALL_ACTION_BUTTON_STYLESHEET,
-    WARNING_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
     CompactComboBox,
@@ -119,12 +115,6 @@ from napari_harpy.widgets.shared_styles import (
 if TYPE_CHECKING:
     import napari
     from spatialdata import SpatialData
-
-
-class _DirtyReloadDecision(Enum):
-    WRITE = "write"
-    RELOAD_DISCARD = "reload_discard"
-    CANCEL = "cancel"
 
 
 _APPLY_CLASS_SHORTCUT = "A"
@@ -193,12 +183,9 @@ class ObjectClassificationWidget(QWidget):
         self.persistence_controls = TablePersistenceControls(
             self._app_state,
             write_content_description="annotations, predictions, and classifier metadata",
+            reload_source="object_classification",
             parent=self,
         )
-        # Reload cannot be performed by the reusable controls directly:
-        # Object Classification must resolve dirty state and freeze classifier
-        # work before the table is replaced.
-        self.persistence_controls.reload_requested.connect(self._reload_from_zarr)
         self._coordinate_systems: list[str] = []
         self._selected_coordinate_system: str | None = None
         self._label_options: list[SpatialDataLabelsOption] = []
@@ -430,6 +417,20 @@ class ObjectClassificationWidget(QWidget):
         self._app_state.viewer_adapter.primary_labels_layers_changed.connect(self._on_primary_labels_layers_changed)
         self._app_state.table_state_changed.connect(self._on_table_state_changed)
         self.refresh_from_sdata(self._app_state.sdata)
+        # A table reload may be initiated by any widget that exposes the shared
+        # persistence controls, not only by Object Classification. Register the
+        # widget with app state so every accepted reload gives it a pre-reload
+        # opportunity to freeze classifier work before the live table is
+        # replaced. Handling only this widget's Reload button would miss
+        # reloads initiated elsewhere.
+        self._app_state.register_table_reload_participant(self)
+        app_state = self._app_state
+        participant = self
+        self.destroyed.connect(
+            lambda *_args, app_state=app_state, participant=participant: (
+                app_state.unregister_table_reload_participant(participant)
+            )
+        )
 
     @property
     def app_state(self) -> HarpyAppState:
@@ -561,6 +562,12 @@ class ObjectClassificationWidget(QWidget):
         if event.sdata is not self.selected_spatialdata:
             return
 
+        # A successful persistence reload is a table-wide lifecycle event, not
+        # an Object Classification mutation source. Adopt it before the
+        # feature-extraction and Spatial Query source filters below can return.
+        if event.change_kind == "reloaded":
+            self._adopt_reloaded_table_state(event)
+            return
         if event.source == _SPATIAL_QUERY_ANNOTATION_SOURCE:
             self._consume_spatial_query_annotation(event)
             return
@@ -599,6 +606,20 @@ class ObjectClassificationWidget(QWidget):
             self._classifier_controller.invalidate_for_feature_matrix_overwrite(previous_feature_key)
 
         self._update_selection_status()
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Freeze classifier work before a consumed table is reloaded."""
+        if request.sdata is not self.selected_spatialdata or request.table_name != self.selected_table_name:
+            return
+        self._classifier_controller.freeze_for_reload()
+
+    def _adopt_reloaded_table_state(self, event: TableStateChangedEvent) -> None:
+        """Rebind Object Classification from one successfully restored table."""
+        if event.table_name != self.selected_table_name:
+            return
+        self._refresh_feature_matrix_keys()
+        self._bind_current_selection()
+        self._classifier_controller.reset_after_reload()
 
     def _consume_spatial_query_annotation(self, event: TableStateChangedEvent) -> None:
         """Refresh Object Classification after an external user-class annotation."""
@@ -1520,131 +1541,6 @@ class ObjectClassificationWidget(QWidget):
             )
 
         return "Write predictions only for eligible rows from the selected labels element."
-
-    def _write_selected_table_to_zarr(
-        self,
-        *,
-        show_feedback: bool = True,
-        feedback_message: str | None = None,
-    ) -> bool:
-        if not self.persistence_controls.write_table_state(
-            show_feedback=show_feedback,
-            feedback_message=feedback_message,
-        ):
-            return False
-
-        self._update_selection_status()
-        return True
-
-    def _reload_from_zarr(self) -> None:
-        """Coordinate a Reload request emitted by the persistence controls.
-
-        This is the Object Classification-specific host boundary for
-        ``TablePersistenceControls.reload_requested``. No table component has
-        been replaced when this method starts.
-
-        A clean table proceeds immediately. A dirty table first resolves the
-        Write / Discard / Cancel decision. Only an accepted transition calls
-        ``_reload_selected_table_from_zarr()``, which freezes classifier work
-        immediately before asking ``PersistenceController`` to replace the
-        live table components, then rebinds and resets Object Classification
-        from the restored state.
-        """
-        if not self.persistence_controls.controller.has_unsynced_table_changes:
-            self._reload_selected_table_from_zarr()
-            return
-
-        decision = self._prompt_dirty_reload_decision()
-        if decision is _DirtyReloadDecision.CANCEL:
-            return
-
-        if decision is _DirtyReloadDecision.WRITE:
-            if not self._write_selected_table_to_zarr(show_feedback=False):
-                return
-
-            source = self.persistence_controls.selected_table_store_destination()
-            self._reload_selected_table_from_zarr(
-                feedback_message=(
-                    f'Wrote local table state and reloaded "{self.selected_table_name}" table state from "{source}".'
-                ),
-            )
-            return
-
-        if decision is _DirtyReloadDecision.RELOAD_DISCARD:
-            self._reload_selected_table_from_zarr()
-            return
-
-        raise RuntimeError(f"Unhandled dirty reload decision: {decision!r}")
-
-    def _reload_selected_table_from_zarr(self, *, feedback_message: str | None = None) -> bool:
-        self._classifier_controller.freeze_for_reload()
-        try:
-            # For now the persistence layer reports expected reload failures as
-            # `ValueError` (selection/precondition issues, reload validation
-            # failures, and similar user-facing problems). A future cleanup may
-            # replace this broad catch with a dedicated reload error type once
-            # the persistence-layer error boundary is formalized.
-            self.persistence_controls.controller.reload_table_state()
-        except ValueError as error:
-            self.persistence_controls.set_feedback(str(error), error=True)
-            return False
-
-        self._refresh_feature_matrix_keys()
-        self._bind_current_selection()
-        self._classifier_controller.reset_after_reload()
-        source = self.persistence_controls.selected_table_store_destination()
-        message = feedback_message or f'Reloaded "{self.selected_table_name}" table state from "{source}".'
-        self.persistence_controls.set_feedback(message)
-        return True
-
-    def _prompt_dirty_reload_decision(self) -> _DirtyReloadDecision:
-        table_name = self.selected_table_name
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Unsynced Table Changes")
-        dialog.setModal(True)
-        dialog.setMinimumWidth(560)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
-
-        warning_message = (
-            f'Table "{table_name}" has in-memory changes that have not been written to zarr.'
-            if table_name is not None
-            else "The selected table has in-memory changes that have not been written to zarr."
-        )
-        warning_card = QLabel()
-        warning_card.setWordWrap(True)
-        set_status_card(warning_card, title="Unsynced Changes", lines=[warning_message], kind="warning")
-        layout.addWidget(warning_card)
-
-        button_row = QHBoxLayout()
-        button_row.setSpacing(10)
-        button_row.addStretch(1)
-        write_button = QPushButton("Write table state and reload")
-        discard_button = QPushButton("Reload table state and discard local edits")
-        cancel_button = QPushButton("Cancel")
-
-        write_button.setStyleSheet(PRIMARY_BUTTON_STYLESHEET)
-        discard_button.setStyleSheet(WARNING_BUTTON_STYLESHEET)
-        cancel_button.setStyleSheet(SECONDARY_BUTTON_STYLESHEET)
-
-        button_row.addWidget(write_button)
-        button_row.addWidget(discard_button)
-        button_row.addWidget(cancel_button)
-        layout.addLayout(button_row)
-
-        write_button.clicked.connect(lambda: dialog.done(1))
-        discard_button.clicked.connect(lambda: dialog.done(2))
-        cancel_button.clicked.connect(dialog.reject)
-        cancel_button.setDefault(True)
-
-        result = dialog.exec()
-        if result == 1:
-            return _DirtyReloadDecision.WRITE
-        if result == 2:
-            return _DirtyReloadDecision.RELOAD_DISCARD
-        return _DirtyReloadDecision.CANCEL
 
     def _on_selected_instance_changed(self, instance_id: int | None) -> None:
         del instance_id

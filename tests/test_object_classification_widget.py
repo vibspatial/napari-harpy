@@ -24,6 +24,7 @@ import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.object_classification.annotation_controller as annotation_module
 import napari_harpy.widgets.object_classification.controller as classifier_module
 import napari_harpy.widgets.object_classification.widget as widget_module
+import napari_harpy.widgets.persistence.controls as persistence_controls_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
 from napari_harpy.core.class_palette import (
@@ -48,6 +49,7 @@ from napari_harpy.core.object_classification.classifier_export import (
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatialdata import SpatialDataLabelsOption
 from napari_harpy.viewer.labels_colormap import CompactLabelColormap
+from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
 from napari_harpy.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
@@ -58,6 +60,7 @@ from napari_harpy.widgets.object_classification.widget import (
     ObjectClassificationWidget as HarpyWidget,
 )
 from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
+from napari_harpy.widgets.spatial_query.widget import SpatialQuery
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -443,6 +446,18 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert widget.prediction_scope_combo.currentData() == classifier_module.DEFAULT_PREDICTION_SCOPE
 
 
+def test_widget_destruction_unregisters_table_reload_participant(qtbot) -> None:
+    """Ensure Qt destruction cannot leave a stale reload participant."""
+    viewer = DummyViewer(seed_shared_sdata=False)
+    app_state = get_or_create_app_state(viewer)
+    widget = HarpyWidget(viewer)
+
+    assert any(participant is widget for participant in app_state._table_reload_participants)
+
+    widget.deleteLater()
+    qtbot.waitUntil(lambda: not any(participant is widget for participant in app_state._table_reload_participants))
+
+
 def test_widget_initial_action_rows_fit_current_minimum_width(qtbot) -> None:
     viewer = DummyViewer(seed_shared_sdata=False)
     widget = HarpyWidget(viewer)
@@ -494,7 +509,7 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
 
     assert widget.segmentation_combo.count() == 2
 
-    app_state.clear_sdata()
+    app_state.clear_sdata(discard_current=True)
 
     assert widget.selected_coordinate_system is None
     assert widget.selected_segmentation_name is None
@@ -2966,9 +2981,9 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
     monkeypatch.setattr(
-        widget,
+        widget.persistence_controls,
         "_prompt_dirty_reload_decision",
-        lambda: widget_module._DirtyReloadDecision.CANCEL,
+        lambda: persistence_controls_module._DirtyReloadDecision.CANCEL,
     )
 
     widget.persistence_controls.reload_button.click()
@@ -2997,9 +3012,9 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
     monkeypatch.setattr(
-        widget,
+        widget.persistence_controls,
         "_prompt_dirty_reload_decision",
-        lambda: widget_module._DirtyReloadDecision.WRITE,
+        lambda: persistence_controls_module._DirtyReloadDecision.WRITE,
     )
 
     widget.persistence_controls.reload_button.click()
@@ -3035,9 +3050,9 @@ def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_
     widget.class_spinbox.setValue(3)
     widget.apply_class_button.click()
     monkeypatch.setattr(
-        widget,
+        widget.persistence_controls,
         "_prompt_dirty_reload_decision",
-        lambda: widget_module._DirtyReloadDecision.RELOAD_DISCARD,
+        lambda: persistence_controls_module._DirtyReloadDecision.RELOAD_DISCARD,
     )
 
     widget.persistence_controls.reload_button.click()
@@ -3090,6 +3105,51 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     assert feature_matrix_items == ["disk_features", "features_1", "features_2"]
     assert widget.selected_feature_key == "features_1"
     assert "Current class: 7." in widget.selection_status.text()
+
+
+def test_spatial_query_reload_prepares_object_classification_for_shared_table(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    """A Spatial Query reload must freeze Object Classification through shared app state before reloading their table."""
+    layer = make_blobs_labels_layer(backed_sdata_blobs)
+    viewer = DummyViewer(layers=[layer])
+    object_classification = HarpyWidget(viewer)
+    spatial_query = SpatialQuery(viewer)
+    qtbot.addWidget(object_classification)
+    qtbot.addWidget(spatial_query)
+    select_segmentation(object_classification)
+    spatial_query.apply_annotation_context(
+        AnnotationContext(
+            sdata=backed_sdata_blobs,
+            coordinate_system="global",
+            shapes_target=ShapesAnnotationTarget.edit_existing("blobs_circles"),
+            has_unsaved_shapes_changes=False,
+        )
+    )
+    labels_index = spatial_query.labels_combo.findData("blobs_labels")
+    assert labels_index >= 0
+    spatial_query.labels_combo.setCurrentIndex(labels_index)
+    assert object_classification.selected_table_name == spatial_query.selected_table_name == "table"
+
+    freeze_calls: list[str] = []
+    monkeypatch.setattr(
+        object_classification._classifier_controller,
+        "freeze_for_reload",
+        lambda: freeze_calls.append("freeze"),
+    )
+    reload_events: list[TableStateChangedEvent] = []
+    object_classification.app_state.table_state_changed.connect(
+        lambda event: reload_events.append(event) if event.change_kind == "reloaded" else None
+    )
+
+    spatial_query.persistence_controls.reload_button.click()
+
+    assert freeze_calls == ["freeze"]
+    assert len(reload_events) == 1
+    assert reload_events[0].sdata is backed_sdata_blobs
+    assert reload_events[0].table_name == "table"
 
 
 def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, backed_sdata_blobs: SpatialData) -> None:

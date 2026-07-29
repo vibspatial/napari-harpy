@@ -9,6 +9,7 @@ import napari
 from spatialdata import read_zarr
 
 from napari_harpy._app_state import get_or_create_app_state
+from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
 
 if TYPE_CHECKING:
     from napari.types import LayerData
@@ -36,12 +37,16 @@ def _read_spatialdata_store(path: PathOrPaths) -> list[LayerData]:
     if candidate is None:
         raise ValueError("napari-harpy reader expects exactly one SpatialData zarr store path.")
 
-    sdata = read_zarr(candidate)
     viewer = napari.current_viewer()
     if viewer is None:
         raise RuntimeError("napari-harpy reader requires an active napari viewer.")
 
-    get_or_create_app_state(viewer).set_sdata(sdata)
+    app_state = get_or_create_app_state(viewer)
+    if app_state.sdata is not None and not confirm_spatialdata_replacement():
+        return [(None,)]
+
+    sdata = read_zarr(candidate)
+    app_state.set_sdata(sdata, discard_current=True)
     _ensure_harpy_widgets(viewer)
     return [(None,)]
 

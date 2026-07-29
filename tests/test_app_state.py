@@ -15,6 +15,7 @@ from napari_harpy._app_state import (
     HarpyAppState,
     ShapesElementWrittenEvent,
     TableDirtyStateChangedEvent,
+    TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
@@ -127,7 +128,7 @@ def test_harpy_app_state_emits_sdata_changed(qtbot, sdata_blobs) -> None:
     assert state.sdata is sdata_blobs
 
     with qtbot.waitSignal(state.sdata_changed) as blocker:
-        state.clear_sdata()
+        state.clear_sdata(discard_current=True)
 
     assert blocker.args == [None]
     assert state.sdata is None
@@ -153,6 +154,55 @@ def test_harpy_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
     assert state.sdata is sdata
     assert state.coordinate_system == "global"
     assert removed_sdata_calls == []
+
+
+def test_harpy_app_state_replacement_requires_explicit_discard(monkeypatch) -> None:
+    first_sdata = object()
+    second_sdata = object()
+    state = HarpyAppState()
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: [])
+
+    state.set_sdata(first_sdata)
+
+    with pytest.raises(RuntimeError, match="requires explicit discard authorization"):
+        state.set_sdata(second_sdata)
+
+    assert state.sdata is first_sdata
+
+
+def test_harpy_app_state_authorized_replacement_discards_old_dirty_manifests(monkeypatch) -> None:
+    """Accepted replacement removes all obsolete dirty-table tracking for the old SpatialData."""
+    first_sdata = object()
+    second_sdata = object()
+    state = HarpyAppState()
+    monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: [])
+    state.set_sdata(first_sdata)
+    state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=first_sdata,
+            table_name="first_table",
+            paths=frozenset({TableComponentPath("obs", ("annotation",))}),
+            regions=("cells",),
+            change_kind="updated",
+            source="test",
+        )
+    )
+    state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=first_sdata,
+            table_name="second_table",
+            paths=frozenset({TableComponentPath("obsm", ("features",))}),
+            regions=("cells",),
+            change_kind="updated",
+            source="test",
+        )
+    )
+
+    state.set_sdata(second_sdata, discard_current=True)
+
+    assert state.sdata is second_sdata
+    assert state.is_table_dirty(first_sdata, "first_table") is False
+    assert state.is_table_dirty(first_sdata, "second_table") is False
 
 
 def test_harpy_app_state_records_component_tokens_and_emits_one_event(qtbot, sdata_blobs) -> None:
@@ -297,6 +347,44 @@ def test_harpy_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
     assert state.snapshot_table_dirty_state(sdata_blobs, "table").paths == frozenset({obs_path})
 
 
+def test_harpy_app_state_prepares_registered_table_reload_participants_by_identity(
+    sdata_blobs,
+) -> None:
+    state = HarpyAppState()
+    calls: list[tuple[str, TableReloadRequest]] = []
+
+    class Participant:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+            calls.append((self.name, request))
+
+    first = Participant("first")
+    second = Participant("second")
+    request = TableReloadRequest(
+        sdata=sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obs", ("user_class",))}),
+        region_name="blobs_labels",
+        source="test",
+    )
+
+    state.register_table_reload_participant(first)
+    state.register_table_reload_participant(first)
+    state.register_table_reload_participant(second)
+    state.prepare_for_table_reload(request)
+
+    assert calls == [("first", request), ("second", request)]
+    assert state.unregister_table_reload_participant(first) is True
+    assert state.unregister_table_reload_participant(first) is False
+
+    calls.clear()
+    state.prepare_for_table_reload(request)
+
+    assert calls == [("second", request)]
+
+
 def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:
     state = HarpyAppState()
     state.sdata = sdata_blobs
@@ -438,7 +526,7 @@ def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_v
 
     coordinate_events.clear()
     removed_sdata_calls.clear()
-    state.set_sdata(second_sdata)
+    state.set_sdata(second_sdata, discard_current=True)
 
     assert state.sdata is second_sdata
     assert state.coordinate_system == "local"
@@ -474,7 +562,7 @@ def test_harpy_app_state_set_sdata_selects_first_sorted_coordinate_system_when_p
 
     coordinate_events.clear()
     removed_sdata_calls.clear()
-    state.set_sdata(second_sdata)
+    state.set_sdata(second_sdata, discard_current=True)
 
     assert state.sdata is second_sdata
     assert state.coordinate_system == "alpha"
@@ -490,7 +578,7 @@ def test_harpy_app_state_set_sdata_selects_first_sorted_coordinate_system_when_p
 
     coordinate_events.clear()
     removed_sdata_calls.clear()
-    state.clear_sdata()
+    state.clear_sdata(discard_current=True)
 
     assert state.sdata is None
     assert state.coordinate_system is None
@@ -554,7 +642,7 @@ def test_shared_viewer_and_object_widgets_keep_previous_coordinate_system_when_r
     assert object_widget.coordinate_system_combo.currentText() == "local"
 
     with qtbot.waitSignal(app_state.sdata_changed):
-        app_state.set_sdata(second_sdata)
+        app_state.set_sdata(second_sdata, discard_current=True)
 
     assert app_state.sdata is second_sdata
     assert app_state.coordinate_system == "local"
@@ -622,7 +710,7 @@ def test_shared_viewer_and_object_widgets_select_first_coordinate_system_when_pr
     assert object_widget.coordinate_system_combo.currentText() == "local"
 
     with qtbot.waitSignal(app_state.sdata_changed):
-        app_state.set_sdata(second_sdata)
+        app_state.set_sdata(second_sdata, discard_current=True)
 
     assert app_state.sdata is second_sdata
     assert app_state.coordinate_system == "alpha"
@@ -630,7 +718,7 @@ def test_shared_viewer_and_object_widgets_select_first_coordinate_system_when_pr
     assert object_widget.coordinate_system_combo.currentText() == "alpha"
 
     with qtbot.waitSignal(app_state.sdata_changed):
-        app_state.clear_sdata()
+        app_state.clear_sdata(discard_current=True)
 
     assert app_state.sdata is None
     assert app_state.coordinate_system is None
@@ -659,6 +747,28 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
         ("napari-harpy", "Object Classification", True),
         ("napari-harpy", "Annotation", True),
     ]
+
+
+def test_interactive_explicitly_replaces_existing_spatialdata_without_dialog(monkeypatch, sdata_blobs) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    old_sdata = object()
+    monkeypatch.setattr(
+        app_state_module,
+        "get_coordinate_system_names_from_sdata",
+        lambda sdata: [] if sdata is old_sdata else ["global"],
+    )
+    app_state.set_sdata(old_sdata)
+    monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
+
+    interactive = interactive_module.Interactive(
+        sdata_blobs,
+        viewer=viewer,
+        headless=True,
+        widgets=(),
+    )
+
+    assert interactive.app_state.sdata is sdata_blobs
 
 
 def test_interactive_configures_default_and_explicit_triangulation_backends(monkeypatch, sdata_blobs) -> None:

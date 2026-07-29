@@ -9,12 +9,14 @@ import dask.dataframe as dd
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import pytest
 from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QComboBox, QCompleter
 from shapely.geometry import LineString, Polygon
+from spatialdata import SpatialData
 from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity
 
@@ -22,6 +24,7 @@ import napari_harpy._app_state as app_state_module
 import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
 import napari_harpy.widgets.viewer.widget as viewer_widget_module
 from napari_harpy._app_state import (
+    ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
     TableChangeKind,
     TableStateChangedEvent,
@@ -1214,7 +1217,19 @@ def test_viewer_widget_ignores_classification_table_events_for_other_sdata(qtbot
     assert card._color_source_completer_model.stringList() == ["cell_type"]
 
 
-def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(qtbot, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("event_type", "emitter_name"),
+    [
+        (ShapesElementWrittenEvent, "emit_shapes_element_written"),
+        (ShapesElementReloadedEvent, "emit_shapes_element_reloaded"),
+    ],
+)
+def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(
+    qtbot,
+    monkeypatch,
+    event_type,
+    emitter_name,
+) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
@@ -1261,8 +1276,8 @@ def test_viewer_widget_refreshes_only_shapes_section_from_shapes_element_event(q
     monkeypatch.setattr(widget, "_refresh_points_section", fail_if_rebuilt)
     names["shapes"] = ["shape_a", "new_regions"]
 
-    widget.app_state.emit_shapes_element_written(
-        ShapesElementWrittenEvent(
+    getattr(widget.app_state, emitter_name)(
+        event_type(
             sdata=fake_sdata,
             shapes_name="new_regions",
             coordinate_system="global",
@@ -1602,9 +1617,9 @@ def test_viewer_widget_open_spatialdata_loads_selected_store(qtbot, monkeypatch,
         lambda path: recorded_paths.append(path) or sdata_blobs,
     )
 
-    def wrapped_set_sdata(sdata: object) -> None:
+    def wrapped_set_sdata(sdata: object, *, discard_current: bool = False) -> None:
         recorded_sdata.append(sdata)
-        original_set_sdata(sdata)
+        original_set_sdata(sdata, discard_current=discard_current)
 
     monkeypatch.setattr(widget.app_state, "set_sdata", wrapped_set_sdata)
     widget._set_action_feedback("Old error", is_error=True)
@@ -1619,6 +1634,62 @@ def test_viewer_widget_open_spatialdata_loads_selected_store(qtbot, monkeypatch,
     assert widget.coordinate_system_combo.itemText(0) == "global"
     assert widget.global_action_feedback_label.text() == ""
     assert widget.global_action_feedback_label.isHidden()
+
+
+def test_viewer_widget_cancelled_spatialdata_replacement_preserves_current_session(
+    qtbot,
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.app_state.set_sdata(sdata_blobs)
+
+    monkeypatch.setattr(
+        viewer_widget_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: "/tmp/replacement.zarr",
+    )
+    monkeypatch.setattr(viewer_widget_module, "confirm_spatialdata_replacement", lambda _parent: False)
+
+    def fail_if_read(_path: str) -> object:
+        raise AssertionError("Cancel must stop before reading the replacement store.")
+
+    monkeypatch.setattr(
+        viewer_widget_module,
+        "read_zarr",
+        fail_if_read,
+    )
+
+    widget.open_sdata_button.click()
+
+    assert widget.app_state.sdata is sdata_blobs
+
+
+def test_viewer_widget_confirmed_spatialdata_replacement_loads_new_session(
+    qtbot,
+    monkeypatch,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    qtbot.addWidget(widget)
+    widget.app_state.set_sdata(sdata_blobs)
+    replacement_sdata = SpatialData()
+
+    monkeypatch.setattr(
+        viewer_widget_module.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: "/tmp/replacement.zarr",
+    )
+    monkeypatch.setattr(viewer_widget_module, "confirm_spatialdata_replacement", lambda _parent: True)
+    monkeypatch.setattr(viewer_widget_module, "read_zarr", lambda _path: replacement_sdata)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.open_sdata_button.click()
+
+    assert widget.app_state.sdata is replacement_sdata
 
 
 def test_viewer_widget_open_spatialdata_shows_error_when_loading_fails(qtbot, monkeypatch) -> None:

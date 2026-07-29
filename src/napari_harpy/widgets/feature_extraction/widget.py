@@ -156,6 +156,28 @@ _MORPHOLOGY_FEATURES = (
 )
 _DEFAULT_FEATURE_MATRIX_KEY = "features"
 _DEFAULT_NEW_TABLE_NAME = "features_table"
+
+
+def _shutdown_feature_extraction_controller(
+    app_state: HarpyAppState,
+    controller: FeatureExtractionController,
+) -> None:
+    """Detach the destroyed widget without opening a table-reload race.
+
+    Requesting worker cancellation prevents late results from reaching the
+    widget, but an already-running ``hp.tb.add_feature_matrix()`` call may
+    continue writing its table. Keep the controller registered as an app-state
+    table-reload participant until every physical Harpy call has finished:
+
+    widget destroyed while Harpy is writing
+        → detach widget callbacks
+        → retain the controller's matching-table reload guard
+        → unregister the controller after the final worker finishes
+    """
+    controller.shutdown()
+    controller.release_reload_participant_when_safe(lambda: app_state.unregister_table_reload_participant(controller))
+
+
 _CREATE_TABLE_OPTION_TEXT = "Create table..."
 _MAX_VISIBLE_EXTRACTION_CHANNELS = 5
 _FEATURE_GROUPS_TOP_SPACING = 12
@@ -403,7 +425,7 @@ class FeatureExtractionWidget(QWidget):
         self._app_state = get_or_create_app_state(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
             on_state_changed=self._on_controller_state_changed,
-            on_table_state_changed=self._on_controller_table_state_changed,
+            on_table_selection_refresh_required=self._on_controller_table_selection_refresh_required,
             on_feature_matrix_changed=self._on_controller_feature_matrix_changed,
         )
         self._active_feature_extraction_snapshot: _ActiveFeatureExtractionSnapshot | None = None
@@ -662,6 +684,19 @@ class FeatureExtractionWidget(QWidget):
         content_layout.addStretch(1)
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
+        self._app_state.table_state_changed.connect(self._on_table_state_changed)
+        # Feature Extraction writes through Harpy from its worker. Register the
+        # controller—not this QWidget—so exact-table reload protection can
+        # safely outlive Qt teardown until every non-cooperative call finishes.
+        self._app_state.register_table_reload_participant(self._feature_extraction_controller)
+        app_state = self._app_state
+        controller = self._feature_extraction_controller
+        self.destroyed.connect(
+            lambda *_args, app_state=app_state, controller=controller: _shutdown_feature_extraction_controller(
+                app_state,
+                controller,
+            )
+        )
         self._update_intensity_features_hint()
         self.refresh_from_sdata(self._app_state.sdata)
 
@@ -773,6 +808,19 @@ class FeatureExtractionWidget(QWidget):
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
         self.refresh_from_sdata(sdata)
+
+    def _on_table_state_changed(self, value: object) -> None:
+        """Adopt restored feature state after one successful shared reload."""
+        if not isinstance(value, TableStateChangedEvent) or value.change_kind != "reloaded":
+            return
+        if value.sdata is not self.selected_spatialdata or value.table_name != self.selected_table_name:
+            return
+
+        # The shared reload has already replaced the live table components.
+        # Re-read table availability and rebind the existing UI choices so the
+        # output key and overwrite readiness derive from that restored table.
+        self._refresh_table_names(preferred_existing_table_name=value.table_name)
+        self._bind_current_selection()
 
     def _clear_selection_inputs(self) -> None:
         self._reset_staged_triplet_state()
@@ -2481,7 +2529,7 @@ class FeatureExtractionWidget(QWidget):
         self._update_feature_extraction_feedback()
         self._update_calculate_controls()
 
-    def _on_controller_table_state_changed(self, result: FeatureExtractionResult) -> None:
+    def _on_controller_table_selection_refresh_required(self, result: FeatureExtractionResult) -> None:
         self._refresh_table_names(preferred_existing_table_name=result.table_name)
         self._bind_current_selection()
 

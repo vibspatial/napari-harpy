@@ -23,6 +23,7 @@ from spatialdata import read_zarr
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
     HarpyAppState,
+    ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
     TableStateChangedEvent,
     get_or_create_app_state,
@@ -52,6 +53,7 @@ from napari_harpy.widgets.shared_styles import (
     format_feedback_identifier,
     set_status_card,
 )
+from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
 from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest, _ImageCardWidget
 from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
@@ -270,6 +272,7 @@ class ViewerWidget(QWidget):
         # Annotation can create/update shapes elements inside the active sdata;
         # refresh only the Viewer shapes section when that happens.
         self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
+        self._app_state.shapes_element_reloaded.connect(self._on_shapes_element_reloaded)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -358,6 +361,18 @@ class ViewerWidget(QWidget):
         """Refresh the shapes section after same-session annotation writes."""
         if not isinstance(event, ShapesElementWrittenEvent):
             return
+        self._refresh_shapes_section_for_shared_event(event)
+
+    def _on_shapes_element_reloaded(self, event: object) -> None:
+        """Refresh the shapes section after persisted geometry is adopted."""
+        if not isinstance(event, ShapesElementReloadedEvent):
+            return
+        self._refresh_shapes_section_for_shared_event(event)
+
+    def _refresh_shapes_section_for_shared_event(
+        self,
+        event: ShapesElementWrittenEvent | ShapesElementReloadedEvent,
+    ) -> None:
         if event.sdata is not self._app_state.sdata:
             return
         if event.coordinate_system != self._app_state.coordinate_system:
@@ -375,6 +390,9 @@ class ViewerWidget(QWidget):
         if not selected_path:
             return
 
+        if self._app_state.sdata is not None and not confirm_spatialdata_replacement(self):
+            return
+
         try:
             sdata = read_zarr(selected_path)
         except (OSError, ValueError) as error:
@@ -385,7 +403,7 @@ class ViewerWidget(QWidget):
             )
             return
 
-        self._app_state.set_sdata(sdata)
+        self._app_state.set_sdata(sdata, discard_current=True)
         self._clear_action_feedback()
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:

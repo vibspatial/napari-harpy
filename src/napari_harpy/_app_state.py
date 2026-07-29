@@ -83,10 +83,12 @@ class TableStateChangedEvent:
 class TableDirtyStateChangedEvent:
     """Report a table-wide dirty transition derived from the shared manifest.
 
-    This event is a synchronization notification for persistence controls. It
-    does not describe an AnnData mutation and is not a second source of dirty
-    truth; consumers that bind later must read the current state from
-    ``HarpyAppState``.
+    This event keeps every bound ``TablePersistenceControls`` UI synchronized
+    when any workflow makes the selected table dirty or clean. In particular,
+    controls use it to update Write-button readiness and the Reload tooltip
+    warning about unsynced changes. It does not describe an AnnData mutation
+    and is not a second source of dirty truth; consumers that bind later must
+    read the current state from ``HarpyAppState``.
     """
 
     sdata: SpatialData
@@ -98,6 +100,61 @@ class TableDirtyStateChangedEvent:
             raise ValueError("Table dirty-state events require a non-empty table name.")
         if not isinstance(self.is_dirty, bool):
             raise ValueError("Table dirty-state events require a boolean dirty state.")
+
+
+@dataclass(frozen=True)
+class TableReloadRequest:
+    """Identify one accepted table reload before live state is replaced.
+
+    ``region_name`` is optional validation context for the spatial element
+    currently using the table. It does not restrict the reload to that region's
+    rows.
+
+    Parameters
+    ----------
+    sdata
+        Exact SpatialData object whose live table will be restored.
+    table_name
+        Name of the table to restore.
+    paths
+        Fully expanded component paths that the accepted reload will replace.
+    region_name
+        Optional Labels or Shapes element against which the restored table
+        binding must remain valid.
+    source
+        Workflow or reusable control that initiated the reload request.
+    """
+
+    sdata: SpatialData
+    table_name: str
+    paths: frozenset[TableComponentPath]
+    region_name: str | None
+    source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.table_name, str) or not self.table_name:
+            raise ValueError("Table reload requests require a non-empty table name.")
+        paths = frozenset(self.paths)
+        if not paths:
+            raise ValueError("Table reload requests require at least one component path.")
+        object.__setattr__(self, "paths", paths)
+        if self.region_name is not None and (not isinstance(self.region_name, str) or not self.region_name):
+            raise ValueError("Table reload request region names must be non-empty strings.")
+        if not isinstance(self.source, str) or not self.source:
+            raise ValueError("Table reload requests require a non-empty source.")
+
+
+class TableReloadParticipant(Protocol):
+    """Prepare one table-consuming workflow before an accepted reload.
+
+    A class satisfies this structural protocol by implementing
+    ``prepare_for_table_reload()``; inheritance is not required. Participants
+    compare the immutable request with the table they consume and ignore
+    unrelated requests.
+    """
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Invalidate work that must not survive the requested table reload."""
 
 
 class _TableMutationToken:
@@ -156,6 +213,16 @@ class TableDirtySnapshot:
 @dataclass(frozen=True)
 class ShapesElementWrittenEvent:
     """Describe an in-place write to a shared `SpatialData.shapes` element."""
+
+    sdata: SpatialData
+    shapes_name: str
+    coordinate_system: str
+    source: str = "shapes_annotation_widget"
+
+
+@dataclass(frozen=True)
+class ShapesElementReloadedEvent:
+    """Describe successful adoption of one persisted Shapes element."""
 
     sdata: SpatialData
     shapes_name: str
@@ -297,6 +364,7 @@ class HarpyAppState(QObject):
     table_state_changed = Signal(object)
     table_dirty_state_changed = Signal(object)
     shapes_element_written = Signal(object)
+    shapes_element_reloaded = Signal(object)
     coordinate_system_changed = Signal(object)
 
     def __init__(self, viewer: object | None = None) -> None:
@@ -308,14 +376,35 @@ class HarpyAppState(QObject):
         self.viewer_adapter = ViewerAdapter(viewer=viewer, layer_bindings=self.layer_bindings)
         self._dirty_table_tokens: dict[tuple[int, str], dict[TableComponentPath, _TableMutationToken]] = {}
         self._coordinate_system_change_participant: CoordinateSystemChangeParticipant | None = None
+        self._table_reload_participants: list[TableReloadParticipant] = []
 
-    def set_sdata(self, sdata: SpatialData | None) -> None:
-        """Set the loaded SpatialData object and notify listeners."""
+    def set_sdata(
+        self,
+        sdata: SpatialData | None,
+        *,
+        discard_current: bool = False,
+    ) -> None:
+        """Set the shared SpatialData after authorizing destructive replacement.
+
+        An initial assignment and reassigning the exact active object are
+        non-destructive. Replacing or clearing an active object requires
+        ``discard_current=True`` so low-level callers cannot silently bypass
+        the user-facing Proceed / Cancel boundary.
+        """
+        if not isinstance(discard_current, bool):
+            raise TypeError("SpatialData discard authorization must be a boolean.")
+
         old_sdata = self.sdata
         old_coordinate_system = self.coordinate_system
+        replaces_current = old_sdata is not None and old_sdata is not sdata
+        if replaces_current and not discard_current:
+            raise RuntimeError(
+                "Replacing or clearing the active SpatialData requires explicit discard authorization."
+            )
 
-        if old_sdata is not None and old_sdata is not sdata:
+        if replaces_current:
             self.viewer_adapter.remove_layers_for_sdata(old_sdata)
+            self._discard_dirty_state_for_sdata(old_sdata)
 
         self.sdata = sdata
         next_coordinate_system = self._resolve_coordinate_system_for_sdata(sdata, previous=old_coordinate_system)
@@ -324,9 +413,9 @@ class HarpyAppState(QObject):
         # (controllers/widgets that listen via e.g. self._app_state.sdata_changed.connect(self._on_sdata_changed))
         self.sdata_changed.emit(sdata)
 
-    def clear_sdata(self) -> None:
-        """Clear the loaded SpatialData object and notify listeners."""
-        self.set_sdata(None)
+    def clear_sdata(self, *, discard_current: bool = False) -> None:
+        """Clear the loaded SpatialData object after explicit discard authorization."""
+        self.set_sdata(None, discard_current=discard_current)
 
     def set_coordinate_system(
         self,
@@ -427,6 +516,54 @@ class HarpyAppState(QObject):
         self._coordinate_system_change_participant = None
         return True
 
+    def register_table_reload_participant(
+        self,
+        participant: TableReloadParticipant,
+    ) -> None:
+        """Register one workflow for shared table-reload preparation."""
+        if any(current is participant for current in self._table_reload_participants):
+            return
+        self._table_reload_participants.append(participant)
+
+    def unregister_table_reload_participant(
+        self,
+        participant: TableReloadParticipant,
+    ) -> bool:
+        """Unregister ``participant`` by identity without affecting other workflows."""
+        for index, current in enumerate(self._table_reload_participants):
+            if current is participant:
+                del self._table_reload_participants[index]
+                return True
+        return False
+
+    def prepare_for_table_reload(self, request: TableReloadRequest) -> None:
+        """Notify table-consuming workflows before live components are reloaded.
+
+        ``PersistenceController`` calls this shared app-state boundary after a
+        reload request has been accepted and immediately before it replaces
+        the requested in-memory table components from disk. Each registered
+        ``TableReloadParticipant`` receives the same immutable request and
+        decides whether it consumes that SpatialData table. Affected workflows
+        can then invalidate pending or active work that captured the old table
+        state.
+
+        This method does not reload the table or publish the post-reload event.
+        The persistence controller performs those steps after every participant
+        has prepared successfully.
+
+        Participants are visited through a stable snapshot so registration or
+        teardown during a callback cannot skip or duplicate another workflow
+        in the accepted transition.
+
+        Parameters
+        ----------
+        request
+            Accepted reload request identifying the table and components that
+            are about to be restored from disk.
+        """
+        for participant in tuple(self._table_reload_participants):
+            participant.prepare_for_table_reload(request)
+
     def clear_coordinate_system(self, *, source: str | None = None) -> bool:
         """Clear the shared active coordinate system."""
         return self.set_coordinate_system(None, source=source)
@@ -434,6 +571,10 @@ class HarpyAppState(QObject):
     def emit_shapes_element_written(self, event: ShapesElementWrittenEvent) -> None:
         """Broadcast that a shapes element was written into the shared SpatialData."""
         self.shapes_element_written.emit(event)
+
+    def emit_shapes_element_reloaded(self, event: ShapesElementReloadedEvent) -> None:
+        """Broadcast that a persisted Shapes element replaced its live state."""
+        self.shapes_element_reloaded.emit(event)
 
     def record_table_mutation(self, event: TableStateChangedEvent) -> None:
         """Record an accepted in-memory mutation and publish its table event."""
@@ -565,6 +706,20 @@ class HarpyAppState(QObject):
     def _drop_empty_manifest(self, selection_key: tuple[int, str]) -> None:
         if not self._dirty_table_tokens.get(selection_key):
             self._dirty_table_tokens.pop(selection_key, None)
+
+    def _discard_dirty_state_for_sdata(self, sdata: SpatialData) -> None:
+        """Remove obsolete dirty-table tracking after accepted SpatialData replacement.
+
+        Proceed means the old SpatialData session has been deliberately
+        discarded, so its tables can no longer be written through the active
+        persistence controls. Retaining their mutation tokens would leave
+        obsolete tables marked dirty. This removes only session bookkeeping;
+        it does not mutate AnnData, write to disk, or publish table events.
+        """
+        sdata_id = id(sdata)
+        for selection_key in tuple(self._dirty_table_tokens):
+            if selection_key[0] == sdata_id:
+                del self._dirty_table_tokens[selection_key]
 
     @staticmethod
     def _validate_snapshot_identity(

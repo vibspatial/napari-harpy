@@ -13,8 +13,9 @@ from qtpy.QtCore import Qt
 from spatialdata import SpatialData
 from spatialdata.transformations import Identity, set_transformation
 
+import napari_harpy.widgets.persistence.controls as persistence_controls_module
 import napari_harpy.widgets.spatial_query.widget as widget_module
-from napari_harpy._app_state import TableStateChangedEvent
+from napari_harpy._app_state import ShapesElementReloadedEvent, TableReloadRequest, TableStateChangedEvent
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
@@ -146,6 +147,190 @@ def test_spatial_query_shell_starts_inactive_without_parent_context(qtbot) -> No
     assert not hasattr(widget, "cache_status_label")
     assert not hasattr(widget, "readiness_status_label")
     assert "No SpatialData Loaded" in _status_text(widget.status_label)
+
+
+def test_spatial_query_persistence_controls_bind_to_selected_labels_table(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+
+    widget.apply_annotation_context(_context(backed_sdata_blobs))
+    _select_labels(widget)
+
+    request = widget.persistence_controls.controller.capture_table_reload_request(source="test")
+
+    assert request.sdata is backed_sdata_blobs
+    assert request.table_name == "table"
+    assert request.region_name == "blobs_labels"
+    assert widget.persistence_controls.reload_button.isEnabled()
+
+
+def test_spatial_query_destruction_unregisters_table_reload_participant(qtbot) -> None:
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
+    app_state = widget.app_state
+
+    assert any(participant is widget for participant in app_state._table_reload_participants)
+
+    widget.deleteLater()
+    qtbot.waitUntil(lambda: not any(participant is widget for participant in app_state._table_reload_participants))
+
+
+def test_spatial_query_prepares_only_for_selected_table_and_ignores_late_query_result(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    """Preserve a Run for another-table reloads, but reject its late result after the selected table reloads."""
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    assert widget._active_run_intent is not None
+
+    unrelated_request = TableReloadRequest(
+        sdata=sdata_blobs,
+        table_name="other_table",
+        paths=frozenset({TableComponentPath("obs", ("reviewed_annotation",))}),
+        region_name="blobs_labels",
+        source="test",
+    )
+    widget.prepare_for_table_reload(unrelated_request)
+    assert widget._active_run_intent is not None
+
+    matching_request = TableReloadRequest(
+        sdata=sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("uns", ("unrelated_metadata",))}),
+        region_name="another_region",
+        source="test",
+    )
+    widget.prepare_for_table_reload(matching_request)
+    assert widget._active_run_intent is None
+
+    widget._on_query_ready(_query_result(sdata_blobs))
+
+    assert "reviewed_annotation" not in sdata_blobs.tables["table"].obs
+
+
+def test_spatial_query_cancelled_dirty_reload_preserves_accepted_run(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(backed_sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    accepted_intent = widget._active_run_intent
+    assert accepted_intent is not None
+
+    backed_sdata_blobs.tables["table"].uns["reload_test"] = {"dirty": True}
+    widget.app_state.record_table_mutation(
+        TableStateChangedEvent(
+            sdata=backed_sdata_blobs,
+            table_name="table",
+            paths=frozenset({TableComponentPath("uns", ("reload_test",))}),
+            regions=("blobs_labels",),
+            change_kind="created",
+            source="test",
+        )
+    )
+    monkeypatch.setattr(
+        widget.persistence_controls,
+        "_prompt_dirty_reload_decision",
+        lambda: persistence_controls_module._DirtyReloadDecision.CANCEL,
+    )
+
+    widget.persistence_controls.reload_button.click()
+
+    assert widget._active_run_intent is accepted_intent
+    assert backed_sdata_blobs.tables["table"].uns["reload_test"] == {"dirty": True}
+    assert widget.app_state.is_table_dirty(backed_sdata_blobs, "table")
+
+
+def test_spatial_query_shapes_reload_invalidates_only_a_matching_accepted_run(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    """Reject late query results only when the reloaded Shapes source belongs to that Run."""
+    widget = SpatialQuery(_Viewer())
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(sdata_blobs))
+    _select_labels(widget)
+    widget.new_column_edit.setText("reviewed_annotation")
+    widget.annotation_value_edit.setText("tumor")
+    monkeypatch.setattr(widget._controller, "start_spatial_query", lambda *args, **kwargs: True)
+    qtbot.mouseClick(widget.run_button, Qt.MouseButton.LeftButton)
+    accepted_intent = widget._active_run_intent
+    assert accepted_intent is not None
+
+    widget.app_state.emit_shapes_element_reloaded(
+        ShapesElementReloadedEvent(
+            sdata=sdata_blobs,
+            shapes_name="other_shapes",
+            coordinate_system="global",
+        )
+    )
+    assert widget._active_run_intent is accepted_intent
+
+    widget.app_state.emit_shapes_element_reloaded(
+        ShapesElementReloadedEvent(
+            sdata=sdata_blobs,
+            shapes_name="blobs_circles",
+            coordinate_system="global",
+        )
+    )
+    assert widget._active_run_intent is None
+
+    widget._on_query_ready(_query_result(sdata_blobs))
+
+    assert "reviewed_annotation" not in sdata_blobs.tables["table"].obs
+
+
+def test_spatial_query_adopts_reloaded_columns_cache_and_neutral_styling(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    table = backed_sdata_blobs.tables["table"]
+    table.obs["old_annotation"] = pd.Categorical(
+        ["old"] * table.n_obs,
+        categories=["old"],
+    )
+    table.uns["old_annotation_colors"] = ["#ff0000"]
+    viewer = _Viewer()
+    widget = SpatialQuery(viewer)
+    qtbot.addWidget(widget)
+    widget.apply_annotation_context(_context(backed_sdata_blobs))
+    _select_labels(widget)
+    widget.column_mode_combo.setCurrentIndex(widget.column_mode_combo.findData("existing"))
+    widget.existing_column_combo.setCurrentIndex(widget.existing_column_combo.findData("old_annotation"))
+    widget.new_column_edit.setText("draft_annotation")
+
+    assert widget.selected_column_name == "old_annotation"
+    assert np.allclose(viewer.layers[0].colormap.map(1), np.asarray(to_rgba("#ff0000"), dtype=np.float32))
+
+    widget.persistence_controls.controller.reload_table_state()
+
+    assert "old_annotation" not in table.obs
+    assert "old_annotation_colors" not in table.uns
+    assert widget.selected_column_mode == "new"
+    assert widget.new_column_edit.text() == "draft_annotation"
+    assert widget.selected_column_name == "draft_annotation"
+    assert widget.cache_report is not None
+    neutral_rgba = np.asarray(to_rgba(MISSING_CATEGORICAL_COLOR), dtype=np.float32)
+    assert np.allclose(viewer.layers[0].colormap.map(1), neutral_rgba)
 
 
 def test_spatial_query_shell_requires_an_explicit_new_column_name_and_captures_run_inputs(

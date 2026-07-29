@@ -11,7 +11,6 @@ from spatialdata import SpatialData, read_zarr, transform
 from spatialdata.models import ShapesModel, TableModel
 from spatialdata.transformations import Identity, Translation, get_transformation
 
-import napari_harpy.core.shapes_annotation as shapes_annotation_module
 from napari_harpy.core.shapes_annotation import (
     CreateShapesElementRequest,
     EditShapesElementRequest,
@@ -779,50 +778,6 @@ def test_edit_shapes_element_from_napari_shapes_layer_persists_new_rows_for_inte
     assert sorted(child.name for child in (path / "shapes").iterdir()) == ["regions", "zarr.json"]
 
 
-def test_edit_shapes_element_from_napari_shapes_layer_calls_harpy_with_overwrite_and_index_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = gpd.GeoDataFrame(
-        geometry=[_source_polygon()],
-        index=pd.Index(["cell_1"]),
-    )
-    sdata = _make_shapes_sdata(source)
-    layer = Shapes(ndim=2)
-    _add_polygon(layer)
-    layer.features["index"] = ["cell_1"]
-    captured_kwargs: dict[str, object] = {}
-
-    def fake_add_shapes(sdata: SpatialData, **kwargs):
-        captured_kwargs["sdata"] = sdata
-        captured_kwargs.update(kwargs)
-        return sdata
-
-    monkeypatch.setattr(shapes_annotation_module.hp.sh, "add_shapes", fake_add_shapes)
-
-    result = edit_shapes_element_from_napari_shapes_layer(
-        EditShapesElementRequest(
-            sdata=sdata,
-            shapes_name="regions",
-            coordinate_system="global",
-            source_geodataframe=source,
-            source_shapes_index_feature_name="index",
-        ),
-        layer,
-    )
-
-    assert result.row_count == 1
-    assert captured_kwargs["sdata"] is sdata
-    assert captured_kwargs["output_shapes_name"] == "regions"
-    assert captured_kwargs["instance_key"] is None
-    assert captured_kwargs["overwrite"] is True
-    written = captured_kwargs["input"]
-    assert isinstance(written, gpd.GeoDataFrame)
-    assert written.index.name is None
-    transformations = captured_kwargs["transformations"]
-    assert isinstance(transformations, dict)
-    assert isinstance(transformations["global"], Identity)
-
-
 def test_create_shapes_element_from_napari_shapes_layer_writes_shapes_element(sdata_blobs: SpatialData) -> None:
     layer = Shapes(ndim=2)
     _add_polygon(layer)
@@ -1046,39 +1001,3 @@ def test_create_shapes_element_from_napari_shapes_layer_persists_backed_overwrit
     assert shapes.geometry.iloc[0].equals(Polygon([(0, 0), (2, 0), (2, 2), (0, 2)]))
     assert shapes.geometry.iloc[1].equals(Polygon([(0, 3), (2, 3), (2, 5), (0, 5)]))
     assert isinstance(get_transformation(shapes, get_all=True)["global"], Identity)
-
-
-def test_create_shapes_element_from_napari_shapes_layer_calls_harpy_with_request_overwrite(
-    monkeypatch: pytest.MonkeyPatch,
-    sdata_blobs: SpatialData,
-) -> None:
-    layer = Shapes(ndim=2)
-    _add_polygon(layer)
-    captured_kwargs: dict[str, object] = {}
-
-    def fake_add_shapes(sdata: SpatialData, **kwargs):
-        captured_kwargs["sdata"] = sdata
-        captured_kwargs.update(kwargs)
-        return sdata
-
-    monkeypatch.setattr(shapes_annotation_module.hp.sh, "add_shapes", fake_add_shapes)
-
-    result = create_shapes_element_from_napari_shapes_layer(
-        CreateShapesElementRequest(
-            sdata=sdata_blobs,
-            shapes_name="new_regions",
-            coordinate_system="global",
-            overwrite=True,
-        ),
-        layer,
-    )
-
-    assert result.row_count == 1
-    assert captured_kwargs["sdata"] is sdata_blobs
-    assert captured_kwargs["output_shapes_name"] == "new_regions"
-    assert captured_kwargs["instance_key"] == "instance_id"
-    assert captured_kwargs["overwrite"] is True
-    assert isinstance(captured_kwargs["input"], gpd.GeoDataFrame)
-    transformations = captured_kwargs["transformations"]
-    assert isinstance(transformations, dict)
-    assert isinstance(transformations["global"], Identity)

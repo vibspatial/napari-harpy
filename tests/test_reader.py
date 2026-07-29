@@ -71,7 +71,10 @@ def test_reader_loads_spatialdata_into_harpy_app_state(tmp_path, monkeypatch) ->
     fake_viewer = type("FakeViewer", (), {"window": _FakeWindow()})()
 
     class _FakeState:
-        def set_sdata(self, sdata: object) -> None:
+        sdata = None
+
+        def set_sdata(self, sdata: object, *, discard_current: bool = False) -> None:
+            assert discard_current is True
             recorded_sdata.append(sdata)
 
     monkeypatch.setattr(reader_module, "read_zarr", lambda path: fake_sdata)
@@ -95,6 +98,70 @@ def test_reader_loads_spatialdata_into_harpy_app_state(tmp_path, monkeypatch) ->
         ("napari-harpy", "Object Classification", True),
     ]
     assert viewer_dock_raised == ["Viewer"]
+
+
+def test_reader_cancelled_replacement_preserves_current_session(tmp_path, monkeypatch) -> None:
+    store_path = tmp_path / "example.zarr"
+    _write_spatialdata_zarr_json(store_path)
+    current_sdata = object()
+    set_calls: list[object] = []
+
+    class _FakeState:
+        sdata = current_sdata
+
+        def set_sdata(self, sdata: object, *, discard_current: bool = False) -> None:
+            del discard_current
+            set_calls.append(sdata)
+
+    fake_viewer = type("FakeViewer", (), {"window": object()})()
+    monkeypatch.setattr(reader_module.napari, "current_viewer", lambda: fake_viewer)
+    monkeypatch.setattr(reader_module, "get_or_create_app_state", lambda _viewer: _FakeState())
+    monkeypatch.setattr(reader_module, "confirm_spatialdata_replacement", lambda: False)
+
+    def fail_if_read(_path: str) -> object:
+        raise AssertionError("Cancel must stop before reading the replacement store.")
+
+    monkeypatch.setattr(
+        reader_module,
+        "read_zarr",
+        fail_if_read,
+    )
+
+    reader = reader_module.get_reader(str(store_path))
+
+    assert reader is not None
+    assert reader(str(store_path)) == [(None,)]
+    assert set_calls == []
+
+
+def test_reader_confirmed_replacement_authorizes_shared_state_transition(tmp_path, monkeypatch) -> None:
+    store_path = tmp_path / "example.zarr"
+    _write_spatialdata_zarr_json(store_path)
+    current_sdata = object()
+    replacement_sdata = object()
+    set_calls: list[tuple[object, bool]] = []
+
+    class _FakeState:
+        sdata = current_sdata
+
+        def set_sdata(self, sdata: object, *, discard_current: bool = False) -> None:
+            set_calls.append((sdata, discard_current))
+
+    class _FakeWindow:
+        def add_plugin_dock_widget(self, *_args, **_kwargs) -> tuple[object, object]:
+            return object(), object()
+
+    fake_viewer = type("FakeViewer", (), {"window": _FakeWindow()})()
+    monkeypatch.setattr(reader_module.napari, "current_viewer", lambda: fake_viewer)
+    monkeypatch.setattr(reader_module, "get_or_create_app_state", lambda _viewer: _FakeState())
+    monkeypatch.setattr(reader_module, "confirm_spatialdata_replacement", lambda: True)
+    monkeypatch.setattr(reader_module, "read_zarr", lambda _path: replacement_sdata)
+
+    reader = reader_module.get_reader(str(store_path))
+
+    assert reader is not None
+    assert reader(str(store_path)) == [(None,)]
+    assert set_calls == [(replacement_sdata, True)]
 
 
 def test_reader_raises_when_no_current_viewer_exists(tmp_path, monkeypatch) -> None:

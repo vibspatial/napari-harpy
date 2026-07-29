@@ -269,6 +269,37 @@ def build_annotation_reload_shapes_error_card_spec(message: str) -> _ShapesAnnot
     )
 
 
+def build_annotation_reload_shapes_success_card_spec(
+    *,
+    shapes_name: str,
+    coordinate_system: str,
+    row_count: int,
+) -> _ShapesAnnotationStatusCardSpec:
+    visible_shapes_name, shapes_name_shortened = format_feedback_identifier(
+        shapes_name,
+        max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+    )
+    visible_coordinate_system, coordinate_system_shortened = format_feedback_identifier(
+        coordinate_system,
+        max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
+    )
+    tooltip_message = (
+        f'Reloaded "{shapes_name}" with {row_count} shape(s) from disk '
+        f'in coordinate system "{coordinate_system}".'
+        if shapes_name_shortened or coordinate_system_shortened
+        else None
+    )
+    return _ShapesAnnotationStatusCardSpec(
+        title="Shapes Reloaded",
+        lines=(
+            f'Reloaded "{visible_shapes_name}" with {row_count} shape(s) from disk '
+            f'in coordinate system "{visible_coordinate_system}".',
+        ),
+        kind="success",
+        tooltip_message=tooltip_message,
+    )
+
+
 # Create holes
 
 

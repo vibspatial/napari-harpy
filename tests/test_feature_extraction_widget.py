@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from napari.layers import Labels
+from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QCheckBox, QComboBox, QLineEdit, QScrollArea
 from spatialdata import SpatialData
 
@@ -24,6 +25,8 @@ from napari_harpy.widgets.feature_extraction.controller import (
     FeatureExtractionTriplet,
 )
 from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
+from napari_harpy.widgets.persistence.controller import PersistenceController
+from napari_harpy.widgets.persistence.controls import TablePersistenceControls
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -53,6 +56,23 @@ class DummyLayers(list):
 class DummyViewer:
     def __init__(self, layers: list[Labels] | None = None) -> None:
         self.layers = DummyLayers(layers)
+
+
+class _DeferredWorker(QObject):
+    returned = Signal(object)
+    errored = Signal(object)
+    finished = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = False
+        self.quit_called = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def quit(self) -> None:
+        self.quit_called = True
 
 
 def get_coordinate_system_checkbox(widget: FeatureExtractionWidget, coordinate_system: str) -> QCheckBox:
@@ -154,6 +174,75 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.coordinate_system_combo.sizeAdjustPolicy() == (
         QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     )
+
+
+def test_feature_extraction_widget_destruction_retains_reload_guard_until_worker_finishes(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    """A deleted QWidget must not expose a table still targeted by its Harpy worker to Reload."""
+    viewer = make_viewer_with_shared_sdata(sdata_blobs)
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+    controller = widget._feature_extraction_controller
+    worker = _DeferredWorker()
+    monkeypatch.setattr(controller, "_create_feature_extraction_worker", lambda _job: worker)
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+
+    assert controller in app_state._table_reload_participants
+    assert widget.calculate_button.isEnabled()
+
+    widget.calculate_button.click()
+    widget.deleteLater()
+    qtbot.waitUntil(lambda: worker.quit_called)
+
+    assert controller in app_state._table_reload_participants
+    assert controller.has_in_flight_jobs is True
+
+    worker.finished.emit()
+    qtbot.waitUntil(lambda: controller not in app_state._table_reload_participants)
+
+    assert controller.has_in_flight_jobs is False
+
+
+def test_feature_extraction_widget_blocks_matching_shared_reload_with_user_feedback(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(backed_sdata_blobs)
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+    controls = TablePersistenceControls(app_state)
+    qtbot.addWidget(widget)
+    qtbot.addWidget(controls)
+    worker = _DeferredWorker()
+    monkeypatch.setattr(widget._feature_extraction_controller, "_create_feature_extraction_worker", lambda _job: worker)
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    controls.bind(backed_sdata_blobs, "table", "blobs_labels")
+    reload_events: list[TableStateChangedEvent] = []
+    app_state.table_state_changed.connect(
+        lambda event: reload_events.append(event) if event.change_kind == "reloaded" else None
+    )
+
+    widget.calculate_button.click()
+    controls.reload_button.click()
+
+    assert reload_events == []
+    assert "Feature Extraction is still writing it" in unescape(controls.feedback_label.text())
+    assert "Wait for Feature Extraction to finish" in unescape(controls.feedback_label.text())
+
+    worker.finished.emit()
+    controls.reload_button.click()
+
+    assert len(reload_events) == 1
+    assert "Reloaded" in unescape(controls.feedback_label.text())
 
 
 def test_feature_extraction_widget_seeds_from_shared_sdata_on_construction(
@@ -1919,7 +2008,7 @@ def test_feature_extraction_widget_cancelled_overwrite_does_not_launch_calculati
     assert calculate_calls == []
 
 
-def test_feature_extraction_widget_refreshes_table_state_after_controller_success(
+def test_feature_extraction_widget_refreshes_table_selection_after_controller_success(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -1944,7 +2033,7 @@ def test_feature_extraction_widget_refreshes_table_state_after_controller_succes
     widget._refresh_table_names = recording_refresh_table_names  # type: ignore[method-assign]
     widget._bind_current_selection = recording_bind_current_selection  # type: ignore[method-assign]
 
-    widget._on_controller_table_state_changed(
+    widget._on_controller_table_selection_refresh_required(
         FeatureExtractionResult(
             job_id=1,
             labels_names=("blobs_labels",),
@@ -1975,7 +2064,7 @@ def test_feature_extraction_widget_promotes_created_table_to_existing_selection(
     assert widget._feature_extraction_controller.binding_state.create_table is True
 
     sdata_blobs.tables["new_table"] = sdata_blobs.tables["table"].copy()
-    widget._on_controller_table_state_changed(
+    widget._on_controller_table_selection_refresh_required(
         FeatureExtractionResult(
             job_id=1,
             labels_names=("blobs_labels",),
@@ -2023,7 +2112,7 @@ def test_feature_extraction_widget_uses_existing_overwrite_prompt_after_created_
 
     sdata_blobs.tables["new_table"] = sdata_blobs.tables["table"].copy()
     sdata_blobs.tables["new_table"].obsm["features"] = np.zeros((sdata_blobs.tables["new_table"].n_obs, 1))
-    widget._on_controller_table_state_changed(
+    widget._on_controller_table_selection_refresh_required(
         FeatureExtractionResult(
             job_id=1,
             labels_names=("blobs_labels",),
@@ -2117,6 +2206,35 @@ def test_feature_extraction_widget_keeps_backed_harpy_write_clean(
     assert app_state.is_table_dirty(backed_sdata_blobs, "table") is False
 
 
+def test_feature_extraction_widget_adopts_reloaded_feature_matrix_state_without_republishing(
+    qtbot,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    viewer = make_viewer_with_shared_sdata(backed_sdata_blobs)
+    app_state = get_or_create_app_state(viewer)
+    widget = FeatureExtractionWidget(viewer)
+    qtbot.addWidget(widget)
+    check_coordinate_system(widget, "global")
+    select_segmentation(widget, "global", 0)
+    widget.findChild(QCheckBox, "feature_checkbox_area").setChecked(True)
+    widget.output_key_line_edit.setText("features_1")
+    table = backed_sdata_blobs.tables["table"]
+    del table.obsm["features_1"]
+    events: list[TableStateChangedEvent] = []
+    app_state.table_state_changed.connect(events.append)
+    persistence = PersistenceController(app_state)
+    persistence.bind(backed_sdata_blobs, "table", "blobs_labels")
+
+    persistence.reload_table_state()
+
+    assert "features_1" in table.obsm
+    assert widget.selected_table_name == "table"
+    assert widget.selected_feature_key == "features_1"
+    assert widget._feature_extraction_controller.binding_state.table_name == "table"
+    assert widget._feature_extraction_controller.binding_state.feature_key == "features_1"
+    assert [event.change_kind for event in events] == ["reloaded"]
+
+
 def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
     qtbot,
     sdata_blobs: SpatialData,
@@ -2129,7 +2247,7 @@ def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
 
     assert widget.segmentation_combo.count() == 0
 
-    app_state.clear_sdata()
+    app_state.clear_sdata(discard_current=True)
 
     assert widget.selected_segmentation_name is None
     assert widget.selected_spatialdata is None

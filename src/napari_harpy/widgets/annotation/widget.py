@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import QFormLayout, QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget
+from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import (
     CoordinateSystemChangedEvent,
@@ -16,6 +17,7 @@ from napari_harpy._app_state import (
     get_or_create_app_state,
 )
 from napari_harpy._resources import get_logo_path
+from napari_harpy.core.shapes_annotation import validate_existing_shapes_source_geodataframe
 from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
@@ -221,7 +223,8 @@ class AnnotationWidget(QWidget):
             self.coordinate_system_combo.setEnabled(bool(coordinate_systems))
 
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-        self._refresh_shapes_targets()
+        preferred_target = None if sdata is self._annotation_context.sdata else ShapesAnnotationTarget.create_new()
+        self._refresh_shapes_targets(preferred_target=preferred_target)
         self._apply_and_publish_context()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
@@ -230,6 +233,9 @@ class AnnotationWidget(QWidget):
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         del event
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+        # The previously accepted target may remain selected when it is also
+        # available in the new frame. Refreshing the names does not repeat its
+        # intrinsic GeoDataFrame validation.
         self._refresh_shapes_targets()
         self._apply_and_publish_context()
 
@@ -279,6 +285,15 @@ class AnnotationWidget(QWidget):
         accepted_target = self._annotation_context.shapes_target
         if next_target == accepted_target:
             return
+        try:
+            self._validate_requested_existing_shapes_target(next_target)
+        except ValueError as error:
+            # Validate before releasing the current edit session. If the
+            # requested element became unsupported after the selector was
+            # populated, keep the accepted target and its dirty tracking.
+            self._sync_shapes_target_combo_selection(accepted_target)
+            self.shapes_annotation.show_shapes_target_validation_error(str(error))
+            return
         # This QSignalBlocker is the final-only AnnotationContext publication
         # boundary: closing the child can synchronously emit dirty=False while
         # the parent still retains the old selection.
@@ -291,16 +306,44 @@ class AnnotationWidget(QWidget):
         self._refresh_shapes_combo_tooltip()
         self._apply_and_publish_context()
 
+    def _validate_requested_existing_shapes_target(self, target: ShapesAnnotationTarget | None) -> None:
+        """Validate an existing target before releasing the active edit session."""
+        if target is None or target.mode != "edit_existing":
+            return
+
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        shapes_name = target.existing_shapes_name
+        if sdata is None or coordinate_system is None or shapes_name is None:
+            raise ValueError("The requested Shapes target is not available in the current annotation context.")
+        if shapes_name not in sdata.shapes:
+            raise ValueError(f"Shapes element `{shapes_name}` is no longer available.")
+
+        shapes_element = validate_existing_shapes_source_geodataframe(sdata.shapes[shapes_name])
+        if coordinate_system not in get_transformation(shapes_element, get_all=True):
+            raise ValueError(
+                f"Coordinate system `{coordinate_system}` is no longer available for Shapes element `{shapes_name}`."
+            )
+
     def _on_child_shapes_target_change_requested(self, target: object) -> None:
         if not isinstance(target, ShapesAnnotationTarget):
             raise TypeError("Shapes target-change requests must carry a ShapesAnnotationTarget.")
+        accepted_target = self._annotation_context.shapes_target
+        try:
+            self._validate_requested_existing_shapes_target(target)
+        except ValueError as error:
+            # Active-layer adoption is another user-requested target change.
+            # Reject it before releasing the currently accepted edit session.
+            self._sync_shapes_target_combo_selection(accepted_target)
+            self.shapes_annotation.show_shapes_target_validation_error(str(error))
+            return
         # This QSignalBlocker is the final-only AnnotationContext publication
         # boundary: closing the child can synchronously emit dirty=False while
         # the parent still retains the old selection.
         with QSignalBlocker(self.shapes_annotation):
             closed = self.shapes_annotation.try_close_edit_session(reason="shapes_target")
         if not closed:
-            self._sync_shapes_target_combo_selection(self._annotation_context.shapes_target)
+            self._sync_shapes_target_combo_selection(accepted_target)
             return
 
         self._refresh_shapes_targets(preferred_target=target)
@@ -356,9 +399,11 @@ class AnnotationWidget(QWidget):
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
         if sdata is None or coordinate_system is None:
-            eligible_existing_shapes_names = []
+            available_existing_shapes_names = []
         else:
-            eligible_existing_shapes_names = [
+            # Selector refresh is intentionally names-only. Complete geometry
+            # validation runs only when the user requests one existing target.
+            available_existing_shapes_names = [
                 option.shapes_name
                 for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
                     sdata=sdata,
@@ -368,7 +413,7 @@ class AnnotationWidget(QWidget):
 
         with QSignalBlocker(self.shapes_combo):
             self.shapes_combo.clear()
-            for shapes_name in eligible_existing_shapes_names:
+            for shapes_name in available_existing_shapes_names:
                 visible_shapes_name, shortened = format_feedback_identifier(
                     shapes_name,
                     max_length=_STATUS_IDENTIFIER_MAX_LENGTH,

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from spatialdata import SpatialData
 
-from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
+from napari_harpy._app_state import (
+    HarpyAppState,
+    TableReloadRequest,
+    TableStateChangedEvent,
+)
 from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.widgets.persistence.controls import TablePersistenceControls
 
@@ -66,3 +70,87 @@ def test_dirty_event_refreshes_only_controls_bound_to_affected_table(
     _dirty_user_class(app_state, sdata_blobs)
 
     assert refresh_calls == ["affected"]
+
+
+def test_reload_request_prepares_participants_before_execution(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    app_state = HarpyAppState()
+    controls = TablePersistenceControls(
+        app_state,
+        reload_source="object_classification",
+    )
+    qtbot.addWidget(controls)
+    controls.bind(backed_sdata_blobs, "table", "blobs_labels")
+    request = TableReloadRequest(
+        sdata=backed_sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obs", ("user_class",))}),
+        region_name="blobs_labels",
+        source="object_classification",
+    )
+    calls: list[str] = []
+
+    class Participant:
+        def prepare_for_table_reload(self, current_request: TableReloadRequest) -> None:
+            assert current_request is request
+            calls.append("prepare")
+
+    app_state.register_table_reload_participant(Participant())
+    monkeypatch.setattr(
+        controls.controller,
+        "capture_table_reload_request",
+        lambda *, source: request,
+    )
+    monkeypatch.setattr(
+        controls.controller,
+        "_apply_table_reload_request",
+        lambda current_request: calls.append("reload"),
+    )
+
+    controls.reload_button.click()
+
+    assert calls == ["prepare", "reload"]
+
+
+def test_participant_failure_stops_reload_and_reports_feedback(
+    qtbot,
+    monkeypatch,
+    backed_sdata_blobs: SpatialData,
+) -> None:
+    app_state = HarpyAppState()
+    controls = TablePersistenceControls(app_state)
+    qtbot.addWidget(controls)
+    controls.bind(backed_sdata_blobs, "table", "blobs_labels")
+    request = TableReloadRequest(
+        sdata=backed_sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obs", ("user_class",))}),
+        region_name="blobs_labels",
+        source="table_persistence_controls",
+    )
+    reload_calls: list[TableReloadRequest] = []
+
+    class FailingParticipant:
+        def prepare_for_table_reload(self, current_request: TableReloadRequest) -> None:
+            del current_request
+            raise RuntimeError("injected preparation failure")
+
+    app_state.register_table_reload_participant(FailingParticipant())
+    monkeypatch.setattr(
+        controls.controller,
+        "capture_table_reload_request",
+        lambda *, source: request,
+    )
+    monkeypatch.setattr(
+        controls.controller,
+        "_apply_table_reload_request",
+        reload_calls.append,
+    )
+
+    controls.reload_button.click()
+
+    assert reload_calls == []
+    assert "injected preparation failure" in controls.feedback_label.text()

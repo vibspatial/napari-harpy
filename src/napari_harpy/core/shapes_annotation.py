@@ -5,11 +5,11 @@ from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 import geopandas as gpd
-import harpy as hp
 import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 from shapely.geometry import Polygon
+from spatialdata.models import ShapesModel
 from spatialdata.transformations import (
     BaseTransformation,
     Identity,
@@ -24,6 +24,7 @@ from napari_harpy.core.spatialdata import (
     get_table,
     get_table_metadata,
 )
+from napari_harpy.core.spatialdata_io import write_shapes_element
 from napari_harpy.core.validation import (
     normalize_spatialdata_dataframe_column_name,
     normalize_spatialdata_name,
@@ -134,12 +135,14 @@ def create_shapes_element_from_napari_shapes_layer(
         ),
     )
 
-    _ = hp.sh.add_shapes(
-        sdata,
-        input=geodataframe,
-        output_shapes_name=shapes_name,
+    shapes_element = ShapesModel.parse(
+        geodataframe,
         transformations={coordinate_system: Identity()},
-        instance_key=index_name,
+    )
+    write_shapes_element(
+        sdata,
+        shapes_name,
+        shapes_element,
         overwrite=request.overwrite,
     )
 
@@ -197,16 +200,18 @@ def edit_shapes_element_from_napari_shapes_layer(
         ),
     )
 
-    _ = hp.sh.add_shapes(
+    shapes_element = ShapesModel.parse(
+        geodataframe,
+        transformations=transformations,
+    )
+    write_shapes_element(
         sdata,
-        input=geodataframe,
-        output_shapes_name=shapes_name,
+        shapes_name,
+        shapes_element,
         # The viewer adapter gives napari transformed vector coordinates. Saving
         # writes those coordinates as-is in the selected coordinate system, then
         # keeps the original coordinate-system availability through transforms
         # derived before the target element is overwritten.
-        transformations=transformations,
-        instance_key=geodataframe.index.name,
         overwrite=True,
     )
 
@@ -336,11 +341,6 @@ def napari_shapes_layer_to_geodataframe(
     return geodataframe
 
 
-def validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
-    """Return an edit-eligible source GeoDataFrame or raise a user-facing error."""
-    return _validate_existing_shapes_source_geodataframe(source_geodataframe)
-
-
 def _new_shapes_geodataframe_from_features(
     features: pd.DataFrame,
     *,
@@ -430,7 +430,7 @@ def _normalize_shapes_layer_conversion(
             index_prefix=_normalize_string_field(conversion.index_prefix, field_name="`index_prefix`"),
         )
     if isinstance(conversion, ExistingShapesLayerConversion):
-        source_geodataframe = _validate_existing_shapes_source_geodataframe(conversion.source_geodataframe)
+        source_geodataframe = validate_existing_shapes_source_geodataframe(conversion.source_geodataframe)
         return ExistingShapesLayerConversion(
             source_geodataframe=source_geodataframe,
             source_shapes_index_feature_name=_normalize_feature_column_name_field(
@@ -451,7 +451,8 @@ def _normalize_feature_column_name_field(value: object, *, field_name: str) -> s
     return value
 
 
-def _validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
+def validate_existing_shapes_source_geodataframe(source_geodataframe: object) -> gpd.GeoDataFrame:
+    """Return an edit-eligible source GeoDataFrame or raise a user-facing error."""
     if not isinstance(source_geodataframe, gpd.GeoDataFrame):
         raise ValueError("`source_geodataframe` must be a GeoDataFrame.")
 
@@ -467,14 +468,24 @@ def _validate_existing_shapes_source_geodataframe(source_geodataframe: object) -
     if _index_has_missing_values(source_geodataframe.index):
         raise ValueError("`source_geodataframe` index values must not be missing for editing.")
 
-    for row_position, geometry in enumerate(geometry_values):
-        if not isinstance(geometry, Polygon):
-            raise ValueError(
-                "Edit-existing shapes elements must contain Shapely Polygon geometries only. "
-                f"Source row `{row_position}` has unsupported geometry `{type(geometry).__name__}`."
-            )
-        if geometry.is_empty or not geometry.is_valid or geometry.area <= 0:
-            raise ValueError(f"Source polygon row `{row_position}` cannot be edited because it is empty or invalid.")
+    geometry_types = geometry_values.geom_type.to_numpy()
+    unsupported_positions = np.flatnonzero(geometry_types != "Polygon")
+    if unsupported_positions.size:
+        row_position = int(unsupported_positions[0])
+        geometry = geometry_values.iloc[row_position]
+        raise ValueError(
+            "Edit-existing shapes elements must contain Shapely Polygon geometries only. "
+            f"Source row `{row_position}` has unsupported geometry `{type(geometry).__name__}`."
+        )
+
+    invalid_positions = np.flatnonzero(
+        geometry_values.is_empty.to_numpy(dtype=bool)
+        | ~geometry_values.is_valid.to_numpy(dtype=bool)
+        | (geometry_values.area.to_numpy(dtype=float) <= 0)
+    )
+    if invalid_positions.size:
+        row_position = int(invalid_positions[0])
+        raise ValueError(f"Source polygon row `{row_position}` cannot be edited because it is empty or invalid.")
 
     return source_geodataframe
 

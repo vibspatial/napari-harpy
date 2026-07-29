@@ -8,6 +8,8 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
+from napari_harpy._app_state import TableReloadRequest
+from napari_harpy.core.persistence import TableComponentPath
 from napari_harpy.widgets.feature_extraction.controller import (
     FEATURE_EXTRACTION_IDLE_STATUS,
     FeatureExtractionBindingState,
@@ -44,6 +46,9 @@ class _DeferredWorker(QObject):
 
     def emit_errored(self, error: Exception) -> None:
         self.errored.emit(error)
+        self.finished.emit()
+
+    def emit_finished(self) -> None:
         self.finished.emit()
 
 
@@ -604,8 +609,10 @@ def test_feature_extraction_controller_bind_batch_rejects_mixed_channel_selectio
     )
 
 
-def test_feature_extraction_controller_notifies_table_state_change_on_success(sdata_blobs: SpatialData) -> None:
-    table_state_changes: list[FeatureExtractionResult] = []
+def test_feature_extraction_controller_requests_table_selection_refresh_on_success(
+    sdata_blobs: SpatialData,
+) -> None:
+    refresh_requests: list[FeatureExtractionResult] = []
     result = FeatureExtractionResult(
         job_id=1,
         labels_names=("blobs_labels",),
@@ -615,7 +622,7 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
     deferred_worker = _DeferredWorker(result)
 
     controller = FeatureExtractionController(
-        on_table_state_changed=table_state_changes.append,
+        on_table_selection_refresh_required=refresh_requests.append,
     )
     controller.bind(
         sdata_blobs,
@@ -636,7 +643,7 @@ def test_feature_extraction_controller_notifies_table_state_change_on_success(sd
 
     deferred_worker.emit_returned()
 
-    assert table_state_changes == [result]
+    assert refresh_requests == [result]
     assert controller.status_kind == "success"
     assert (
         controller.status_message
@@ -973,11 +980,11 @@ def test_run_feature_extraction_job_submits_create_table_request_to_harpy(
 
 
 def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: SpatialData) -> None:
-    table_state_changes: list[str] = []
+    refresh_requests: list[str] = []
     deferred_worker = _DeferredWorker()
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda result: table_state_changes.append(result.table_name),
+        on_table_selection_refresh_required=lambda result: refresh_requests.append(result.table_name),
     )
     controller.bind(
         sdata_blobs,
@@ -995,13 +1002,13 @@ def test_feature_extraction_controller_propagates_worker_errors(sdata_blobs: Spa
     assert launched is True
     deferred_worker.emit_errored(RuntimeError("boom"))
 
-    assert table_state_changes == []
+    assert refresh_requests == []
     assert controller.status_kind == "error"
     assert controller.status_message == "Feature extraction: calculation failed: boom"
     assert controller.is_running is False
 
 
-def test_feature_extraction_controller_notifies_table_state_before_feature_matrix_change(
+def test_feature_extraction_controller_requests_selection_refresh_before_feature_matrix_change(
     sdata_blobs: SpatialData,
 ) -> None:
     notification_order: list[str] = []
@@ -1015,7 +1022,9 @@ def test_feature_extraction_controller_notifies_table_state_before_feature_matri
     deferred_worker = _DeferredWorker(result)
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda table_result: notification_order.append(f"table:{table_result.table_name}"),
+        on_table_selection_refresh_required=lambda table_result: notification_order.append(
+            f"table:{table_result.table_name}"
+        ),
         on_feature_matrix_changed=lambda changed_result: notification_order.append(
             f"event:{changed_result.table_name}"
         ),
@@ -1038,7 +1047,7 @@ def test_feature_extraction_controller_notifies_table_state_before_feature_matri
 
 
 def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata_blobs: SpatialData) -> None:
-    table_state_changes: list[str] = []
+    refresh_requests: list[str] = []
     deferred_worker = _DeferredWorker(
         FeatureExtractionResult(
             job_id=1,
@@ -1049,7 +1058,7 @@ def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata
     )
 
     controller = FeatureExtractionController(
-        on_table_state_changed=lambda result: table_state_changes.append(result.table_name),
+        on_table_selection_refresh_required=lambda result: refresh_requests.append(result.table_name),
     )
     controller.bind(
         sdata_blobs,
@@ -1080,6 +1089,117 @@ def test_feature_extraction_controller_drops_stale_results_after_rebinding(sdata
 
     deferred_worker.emit_returned()
 
-    assert table_state_changes == []
+    assert refresh_requests == []
     assert controller.status_message == "Feature extraction: ready to calculate."
     assert controller.status_kind == "success"
+
+
+def test_feature_extraction_controller_blocks_matching_reload_until_every_superseded_worker_finishes(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+    )
+    workers: list[_DeferredWorker] = []
+
+    def create_worker(job: FeatureExtractionJob) -> _DeferredWorker:
+        worker = _DeferredWorker(
+            FeatureExtractionResult(
+                job_id=job.job_id,
+                labels_names=job.labels_names,
+                table_name=job.table_name,
+                feature_key=job.feature_key,
+            )
+        )
+        workers.append(worker)
+        return worker
+
+    controller._create_feature_extraction_worker = create_worker  # type: ignore[method-assign]
+    matching_request = TableReloadRequest(
+        sdata=sdata_blobs,
+        table_name="table",
+        paths=frozenset({TableComponentPath("obsm", ("feature_matrix_1",))}),
+        region_name="blobs_labels",
+        source="test",
+    )
+    unrelated_request = TableReloadRequest(
+        sdata=sdata_blobs,
+        table_name="other_table",
+        paths=frozenset({TableComponentPath("obs", ("annotation",))}),
+        region_name=None,
+        source="test",
+    )
+
+    assert controller.calculate() is True
+    controller.prepare_for_table_reload(unrelated_request)
+    with pytest.raises(RuntimeError, match="Feature Extraction is still writing it"):
+        controller.prepare_for_table_reload(matching_request)
+
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ["area"],
+        "feature_matrix_2",
+    )
+    assert workers[0].quit_called is True
+    assert controller.is_running is False
+    assert controller.has_in_flight_jobs is True
+
+    assert controller.calculate() is True
+    assert len(workers) == 2
+
+    workers[0].emit_finished()
+
+    assert controller.is_running is True
+    assert controller.has_in_flight_jobs is True
+    with pytest.raises(RuntimeError, match="Feature Extraction is still writing it"):
+        controller.prepare_for_table_reload(matching_request)
+
+    workers[1].emit_finished()
+
+    assert controller.is_running is False
+    assert controller.has_in_flight_jobs is False
+    controller.prepare_for_table_reload(matching_request)
+
+
+def test_feature_extraction_controller_defers_reload_participant_release_until_workers_finish(
+    sdata_blobs: SpatialData,
+) -> None:
+    controller = FeatureExtractionController()
+    controller.bind(
+        sdata_blobs,
+        "blobs_labels",
+        None,
+        "table",
+        "global",
+        ["area"],
+        "feature_matrix_1",
+    )
+    worker = _DeferredWorker()
+    controller._create_feature_extraction_worker = lambda _job: worker  # type: ignore[method-assign]
+
+    assert controller.calculate() is True
+
+    released: list[str] = []
+    controller.shutdown()
+    controller.release_reload_participant_when_safe(lambda: released.append("released"))
+
+    assert worker.quit_called is True
+    assert controller.is_running is False
+    assert controller.has_in_flight_jobs is True
+    assert released == []
+
+    worker.emit_finished()
+
+    assert controller.has_in_flight_jobs is False
+    assert released == ["released"]
