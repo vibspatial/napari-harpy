@@ -17,12 +17,10 @@ from napari_harpy._app_state import (
     get_or_create_app_state,
 )
 from napari_harpy._resources import get_logo_path
-from napari_harpy.core.shapes_annotation import (
-    get_editable_shapes_names_for_coordinate_system,
-    validate_existing_shapes_source_geodataframe,
-)
+from napari_harpy.core.shapes_annotation import validate_existing_shapes_source_geodataframe
 from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
+    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
 )
 from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
 from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
@@ -225,7 +223,8 @@ class AnnotationWidget(QWidget):
             self.coordinate_system_combo.setEnabled(bool(coordinate_systems))
 
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
-        self._refresh_shapes_targets()
+        preferred_target = None if sdata is self._annotation_context.sdata else ShapesAnnotationTarget.create_new()
+        self._refresh_shapes_targets(preferred_target=preferred_target)
         self._apply_and_publish_context()
 
     def _on_sdata_changed(self, sdata: SpatialData | None) -> None:
@@ -234,6 +233,9 @@ class AnnotationWidget(QWidget):
     def _on_app_state_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
         del event
         self._sync_coordinate_system_combo_selection(self._app_state.coordinate_system)
+        # The previously accepted target may remain selected when it is also
+        # available in the new frame. Refreshing the names does not repeat its
+        # intrinsic GeoDataFrame validation.
         self._refresh_shapes_targets()
         self._apply_and_publish_context()
 
@@ -326,13 +328,22 @@ class AnnotationWidget(QWidget):
     def _on_child_shapes_target_change_requested(self, target: object) -> None:
         if not isinstance(target, ShapesAnnotationTarget):
             raise TypeError("Shapes target-change requests must carry a ShapesAnnotationTarget.")
+        accepted_target = self._annotation_context.shapes_target
+        try:
+            self._validate_requested_existing_shapes_target(target)
+        except ValueError as error:
+            # Active-layer adoption is another user-requested target change.
+            # Reject it before releasing the currently accepted edit session.
+            self._sync_shapes_target_combo_selection(accepted_target)
+            self.shapes_annotation.show_shapes_target_validation_error(str(error))
+            return
         # This QSignalBlocker is the final-only AnnotationContext publication
         # boundary: closing the child can synchronously emit dirty=False while
         # the parent still retains the old selection.
         with QSignalBlocker(self.shapes_annotation):
             closed = self.shapes_annotation.try_close_edit_session(reason="shapes_target")
         if not closed:
-            self._sync_shapes_target_combo_selection(self._annotation_context.shapes_target)
+            self._sync_shapes_target_combo_selection(accepted_target)
             return
 
         self._refresh_shapes_targets(preferred_target=target)
@@ -388,16 +399,21 @@ class AnnotationWidget(QWidget):
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
         if sdata is None or coordinate_system is None:
-            eligible_existing_shapes_names = []
+            available_existing_shapes_names = []
         else:
-            eligible_existing_shapes_names = get_editable_shapes_names_for_coordinate_system(
-                sdata,
-                coordinate_system,
-            )
+            # Selector refresh is intentionally names-only. Complete geometry
+            # validation runs only when the user requests one existing target.
+            available_existing_shapes_names = [
+                option.shapes_name
+                for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
+                    sdata=sdata,
+                    coordinate_system=coordinate_system,
+                )
+            ]
 
         with QSignalBlocker(self.shapes_combo):
             self.shapes_combo.clear()
-            for shapes_name in eligible_existing_shapes_names:
+            for shapes_name in available_existing_shapes_names:
                 visible_shapes_name, shortened = format_feedback_identifier(
                     shapes_name,
                     max_length=_STATUS_IDENTIFIER_MAX_LENGTH,
