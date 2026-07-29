@@ -311,7 +311,14 @@ def _write_staging_shapes_element(
     staging_name: str,
     element: gpd.GeoDataFrame,
 ) -> None:
-    """Serialize one staging Shapes element without consolidating metadata."""
+    """Serialize one staging Shapes element without consolidating store metadata.
+
+    The SpatialData serializer writes the staging element's data and local
+    Zarr metadata. It may also create the local ``shapes/`` group metadata when
+    this is the store's first Shapes element. It does not refresh consolidated
+    metadata at the Zarr root; the caller does that once the staged element has
+    been committed to its requested path.
+    """
     # Keep this private SpatialData compatibility boundary isolated here. The
     # public write_element() would consolidate metadata after this temporary
     # write, while _write_element() retains SpatialData's Shapes serializer.

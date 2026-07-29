@@ -4,7 +4,7 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8g, except that the standalone Slice
+Implementation is complete through Slice 8i, except that the standalone Slice
 6m was deferred and its Spatial Annotation work moved to Slice 6p.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -9134,7 +9134,7 @@ touch no unrelated Shapes payload
 Slice 8g owns exact named Shapes disk I/O and live-`SpatialData`
 synchronization, and migrates the existing **Save shapes** create and overwrite
 paths to it. Slice 8h optimizes the backed writer's exact local commit. The
-following Slice 8i owns the explicit **Reload shapes** UI and
+following Slice 8j owns the explicit **Reload shapes** UI and
 consumes the same exact loader. This slice does not introduce widget controls,
 Shapes reload events, or table persistence semantics.
 
@@ -9159,7 +9159,7 @@ Shapes reload events, or table persistence semantics.
 
 The validation hook allows a workflow to reject a disk value before the live
 `SpatialData` changes without moving workflow-specific edit rules into the I/O
-package. Slice 8i supplies the shared Shapes edit-validity and selected
+package. Slice 8j supplies the shared Shapes edit-validity and selected
 coordinate-system checks through this hook.
 
 For example, a Shapes element may have been changed externally since the
@@ -9441,7 +9441,7 @@ preferred to duplicating those version branches.
 
 ### Slice 8h: Exact local Shapes commit optimization
 
-**Implementation status: Planned.**
+**Implementation status: Implemented.**
 
 The Slice 8g writer already avoids collection-wide Shapes reads, but its backed
 overwrite path still delegates each physical transition to SpatialData's
@@ -9501,9 +9501,11 @@ and emulation of rename semantics for non-local stores remain explicit
 non-goals. The implementation must not silently fall back to a slower or less
 safe collection-wide Harpy path.
 
-The staging and backup names are collision-free Shapes names derived from the
-requested target. They are implementation details and never appear in the live
-`sdata.shapes` mapping or public result.
+The staging and backup names are effectively unique UUID-derived Shapes names
+derived from the requested target. Generating them does not scan the live
+SpatialData or backing store for an implausible UUID collision. They are
+implementation details and never appear in the live `sdata.shapes` mapping or
+public result.
 
 #### Serialization and consolidation boundary
 
@@ -9645,7 +9647,364 @@ or size of unrelated backed elements.
 - the existing Shapes Annotation save workflow observes no public behavioral
   change beyond reduced synchronous latency.
 
-### Slice 8i: Explicit Shapes reload from backing store
+### Slice 8i: Metadata-aware Shapes commit recovery
+
+**Implementation status: Implemented.**
+
+Slice 8h makes each local directory rename atomic and restores the previous
+Shapes directory after handled failures during the swap. A directory rename
+does not, however, update the root consolidated `zarr.json`, and the complete
+multi-step operation is not one atomic Zarr transaction:
+
+```text
+requested Shapes directory → backup
+    ↓
+brief interval where the requested path is absent
+    ↓
+staging directory → requested Shapes directory
+    ↓
+exact read and validation
+    ↓
+backup removal
+    ↓
+root metadata consolidation
+```
+
+An ordinary rollback before consolidation restores the directory expected by
+the unchanged root metadata. The remaining weakness is the finalization
+boundary: Slice 8h removes the previous accepted directory before consolidated
+metadata has accepted the replacement. If consolidation then fails, a newly
+created Shapes element can exist on disk without being discoverable through
+`read_zarr()`, and the previous overwrite value is no longer available for
+rollback.
+
+Slice 8i retains the Slice 8h local-rename optimization but makes successful
+metadata consolidation the commit boundary. The previous accepted Shapes
+directory remains recoverable until that boundary succeeds:
+
+```text
+serialize staging inside the store
+    ↓
+move the previous element into a hidden recovery directory
+outside the logical Zarr node hierarchy
+    ↓
+move staging into the requested path
+    ↓
+exact-read and validate
+    ↓
+install the materialized value in the live sdata.shapes mapping
+    ↓
+consolidate metadata once while the previous value remains recoverable
+    ├── failure
+    │      → remove the rejected new requested element
+    │      → restore the previous element, or restore absence for create
+    │      → restore the previous live mapping
+    │      → restore any collection group created only by this operation
+    │      → reconsolidate the restored state
+    │      → raise the original failure
+    │
+    └── success
+           → the new requested element is committed
+           → remove the hidden recovery copy
+           → return the installed materialized element
+```
+
+This remains exception-safe recovery within the running process. It does not
+claim that the store is readable during every intermediate rename, nor that
+the complete sequence is crash-atomic or safe for concurrent readers.
+
+#### Zarr metadata boundary
+
+The private SpatialData staging serializer writes element-local metadata:
+
+```text
+shapes/<staging_name>/zarr.json
+shapes/<staging_name>/shapes.parquet
+```
+
+When the `shapes` collection already exists, the staging write does not change
+the existing root `zarr.json` or `shapes/zarr.json`. It also does not add the
+staging element to consolidated metadata because
+`SpatialData.write_consolidated_metadata()` is not called at that boundary.
+
+The successful staging rename moves the complete directory:
+
+```text
+shapes/<staging_name>/zarr.json
+    ↓ local directory rename
+shapes/<shapes_name>/zarr.json
+```
+
+There is therefore no separate staging entry in the root metadata to remove.
+The staging-local `zarr.json` becomes the requested element's local
+`zarr.json`; the one final consolidation discovers it at the requested path and
+rewrites the root `zarr.json`.
+
+The first-ever Shapes write has one additional boundary. SpatialData's
+serializer creates `shapes/zarr.json` when the store did not previously have a
+Shapes collection. Record whether `sdata.path / "shapes"` existed before
+staging. If a create operation subsequently fails and rollback restores the
+absence of every Shapes element, also remove the collection group created only
+by that failed operation. A failed first Shapes write must not leave an empty
+`shapes/zarr.json` group behind.
+
+Napari-harpy must not edit consolidated JSON or element-local JSON directly.
+SpatialData remains responsible for Shapes serialization, and its installed
+Zarr implementation remains responsible for rebuilding consolidated metadata.
+
+#### Hidden recovery directory
+
+The previous element is moved out of the logical Zarr hierarchy before the new
+element takes its requested path. Use one napari-harpy-owned recovery root
+inside the local store, for example:
+
+```text
+<sdata.path>/
+    .harpy_recovery/
+        shapes__<shapes_name>__<uuid>/
+            zarr.json
+            shapes.parquet
+    shapes/
+        <shapes_name>/
+    zarr.json
+```
+
+`.harpy_recovery` is a filesystem directory, not a Zarr group: it must
+not contain its own `zarr.json`. Its nested recovery payload is consequently
+outside the root group's logical member hierarchy and must not appear as a
+SpatialData Shapes element or in consolidated metadata.
+
+Keeping the recovery directory inside the store but outside its logical Zarr
+hierarchy ensures that:
+
+- staging, requested, and recovery paths are on the same filesystem;
+- all directory transitions retain local rename semantics;
+- no write permission beside the SpatialData store is required;
+- `read_zarr()` exposes only the requested Shapes name; and
+- a retained recovery copy has one explicit, discoverable path.
+
+The recovery payload name is UUID-derived. Generating it does not scan the
+store for an implausible UUID collision. Remove the operation's recovery
+payload after successful consolidation and remove the empty recovery root when
+possible. A recovery root containing a retained payload must never be removed
+recursively as generic cleanup.
+
+Rename `backup_path` and the associated phase marker to describe this contract
+explicitly, for example:
+
+```python
+previous_element_recovery_path: Path | None
+previous_element_moved_to_recovery: bool
+new_element_moved_to_requested_path: bool
+```
+
+#### Revised create and overwrite flow
+
+Create:
+
+```text
+record whether the shapes collection already exists
+    ↓
+serialize one staging element
+    ↓
+rename staging to the requested path
+    ↓
+exact-read, validate, and install the materialized value
+    ↓
+consolidate metadata once
+    ↓
+return the installed value
+```
+
+Overwrite:
+
+```text
+serialize one staging element
+    ↓
+create the non-Zarr recovery root when necessary
+    ↓
+rename the previous requested directory into recovery
+    ↓
+rename staging to the requested path
+    ↓
+exact-read, validate, and install the materialized value
+    ↓
+consolidate metadata once while the previous value remains in recovery
+    ↓
+remove the recovery payload
+    ↓
+return the installed value
+```
+
+`overwrite=False`, live/disk presence validation, non-Shapes name conflicts,
+and the local-directory-store requirement remain unchanged. The incoming
+Shapes element is still serialized exactly once.
+
+#### Consolidation failure and rollback
+
+Failure before consolidation uses the existing phase-aware rollback, adapted
+to the hidden recovery path:
+
+```text
+staging serialization fails
+    → remove partial staging
+    → remove a newly created empty shapes collection when applicable
+    → leave the requested element and live mapping unchanged
+
+previous-to-recovery rename fails
+    → leave the requested element and live mapping unchanged
+    → remove staging
+
+staging-to-requested rename fails
+    → restore the previous directory from recovery
+    → remove staging
+    → restore the previous live mapping
+
+exact read, Shapes validation, or live installation fails
+    → remove the rejected requested directory
+    → restore the previous directory from recovery for overwrite
+    → restore requested-path absence for create
+    → restore the previous live mapping
+```
+
+Consolidation failure is no longer treated as a committed-but-incomplete
+success. It triggers the same disk/live restoration, followed by one
+best-effort consolidation of the restored state:
+
+```text
+new state exact-read and installed
+    ↓
+write_consolidated_metadata() raises
+    ↓
+restore previous requested directory or absence
+    ↓
+restore previous live mapping
+    ↓
+remove collection group created only by a rolled-back first Shapes create
+    ↓
+write_consolidated_metadata() for the restored state
+    ├── succeeds
+    │      → read_zarr observes the previous accepted state
+    │      → raise the original consolidation failure
+    │
+    └── fails
+           → report both consolidation failures
+           → report every retained requested, staging, and recovery path
+```
+
+Re-consolidation is intentionally limited to the failure path. A successful
+save still performs exactly one consolidated-metadata update.
+
+For the installed local Zarr store, consolidated root metadata is written
+through a temporary file followed by a local replacement. Re-consolidating the
+restored state nevertheless avoids relying on where an exception occurred
+relative to that metadata replacement.
+
+#### Recovery cleanup after commit
+
+Successful consolidation establishes the commit:
+
+```text
+requested element exact-read and installed
+    ↓
+root consolidated metadata describes that requested element
+    ↓
+normal read_zarr succeeds
+```
+
+Only then may the previous recovery payload be removed. If recovery cleanup
+fails after successful consolidation:
+
+- keep the new requested Shapes element and live mapping;
+- do not roll back valid consolidated metadata;
+- retain the old copy under `.harpy_recovery`;
+- raise an explicit finalization error stating that the Shapes write committed
+  and `read_zarr()` remains valid; and
+- include the exact retained recovery path.
+
+The Annotation widget continues to publish its successful Shapes-write event
+only when `write_shapes_element()` returns normally. The rare
+committed-but-recovery-cleanup-failed condition remains visible as a save error
+and leaves the active edit session available for the user to resolve or retry.
+
+#### Readability and safety claims
+
+After every completed successful write:
+
+- `read_zarr()` discovers the requested Shapes name;
+- its exact local payload matches `sdata.shapes[shapes_name]`;
+- consolidated metadata contains no staging or recovery name; and
+- no staging or recovery payload remains.
+
+After every fully handled rollback:
+
+- `read_zarr()` discovers the previously accepted Shapes state;
+- the live mapping is restored to its previous value;
+- a failed create restores requested-element absence; and
+- a failed first Shapes create restores collection-group absence.
+
+The writer must not claim that `read_zarr()` is valid during the interval after
+the previous requested directory has moved to recovery but before staging has
+moved into place. Process termination during that interval, concurrent readers
+or writers, startup recovery of orphaned staging/recovery payloads, filesystem
+journaling, and cross-platform directory-exchange primitives remain explicit
+non-goals.
+
+#### Deliverables
+
+- move overwrite recovery payloads outside the logical Zarr member hierarchy;
+- retain the previous accepted Shapes payload until successful consolidated
+  metadata publication;
+- treat metadata-consolidation failure as a rollback boundary;
+- reconsolidate the restored state on the failure path;
+- track and remove a `shapes` collection group created only by a failed
+  first-ever Shapes write;
+- document and test the distinction between element-local staging metadata and
+  root consolidated metadata;
+- preserve the single successful serialization and single successful
+  consolidation performance contract; and
+- retain the public `write_shapes_element()` signature and successful return
+  value.
+
+#### Focused tests
+
+- staging adds only the staging element's local `zarr.json` and payload when
+  the Shapes collection already exists;
+- staging does not change the existing root `zarr.json` or
+  `shapes/zarr.json`;
+- the first-ever Shapes staging write creates the collection group, and a
+  failed operation removes that group during rollback;
+- a recovery payload beneath `.harpy_recovery` is excluded from
+  consolidated metadata and from `read_zarr().shapes`;
+- successful create and overwrite perform one metadata consolidation and
+  leave no staging or recovery payload;
+- consolidation failure restores the previous overwrite state and leaves it
+  readable through `read_zarr()`;
+- consolidation failure restores create absence and collection-group absence
+  when applicable;
+- a second consolidation failure reports both failures and retained paths;
+- recovery cleanup failure leaves the new requested element readable and
+  reports the hidden recovery path; and
+- no focused test uses a wall-clock performance threshold.
+
+#### Exit criteria
+
+- successful metadata consolidation, not exact read-back alone, is the backed
+  Shapes commit boundary;
+- the previous overwrite value remains recoverable until that boundary;
+- a normal successful save writes the incoming Shapes payload once and
+  consolidates metadata once;
+- staging metadata is moved into the requested element rather than manually
+  patched or duplicated;
+- normal success and fully handled rollback both leave a store readable
+  through `read_zarr()`;
+- failed first-element creation leaves no empty Shapes collection;
+- retained recovery data is outside the logical Zarr hierarchy and explicitly
+  reported;
+- successful operations expose no staging or recovery Shapes names; and
+- crash atomicity and concurrent-reader safety are not claimed.
+
+### Slice 8j: Explicit Shapes reload from backing store
 
 **Implementation status: Planned.**
 
