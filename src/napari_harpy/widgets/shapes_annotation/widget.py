@@ -14,6 +14,7 @@ from qtpy.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -21,9 +22,11 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import (
     HarpyAppState,
+    ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
     get_or_create_app_state,
 )
@@ -35,12 +38,16 @@ from napari_harpy.core.shapes_annotation import (
     EditShapesElementRequest,
     create_shapes_element_from_napari_shapes_layer,
     edit_shapes_element_from_napari_shapes_layer,
+    get_editable_shapes_names_for_coordinate_system,
     validate_existing_shapes_source_geodataframe,
 )
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
-    get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
+)
+from napari_harpy.core.spatialdata_io import (
+    load_shapes_element_from_store,
+    shapes_element_exists_in_store,
 )
 from napari_harpy.core.validation import (
     normalize_spatialdata_name,
@@ -78,6 +85,7 @@ from napari_harpy.widgets.shapes_annotation.status_card import (
     build_annotation_no_spatialdata_card_spec,
     build_annotation_open_shapes_error_card_spec,
     build_annotation_reload_shapes_error_card_spec,
+    build_annotation_reload_shapes_success_card_spec,
     build_annotation_save_error_card_spec,
     build_annotation_save_success_card_spec,
     build_annotation_save_unavailable_card_spec,
@@ -116,7 +124,9 @@ _CREATE_HOLES_TOOLTIP = (
 )
 _CREATE_HOLES_RESTORED_ERROR = "Holes could not be created. The original annotations were restored."
 _SAVE_SHAPES_TOOLTIP = "Save the current annotation layer back to the selected SpatialData shapes element."
+_RELOAD_SHAPES_TOOLTIP = "Reload the selected Shapes element from its backing zarr store."
 _ShapesAnnotationContextChangeReason = Literal["coordinate_system", "shapes_target"]
+_ShapesAnnotationDiscardReason = Literal["coordinate_system", "shapes_target", "reload"]
 _PRE_MUTATION_DATA_ACTIONS = frozenset(
     {
         ActionType.ADDING,
@@ -308,9 +318,10 @@ class ShapesAnnotation(QWidget):
 
         form_layout.addRow(self.new_shapes_name_label, self.name_edit)
 
-        button_row = QHBoxLayout()
-        button_row.setContentsMargins(0, 0, 0, 0)
-        button_row.setSpacing(8)
+        button_grid = QGridLayout()
+        button_grid.setContentsMargins(0, 0, 0, 0)
+        button_grid.setHorizontalSpacing(8)
+        button_grid.setVerticalSpacing(8)
 
         self.create_layer_button = QPushButton("Create layer")
         self.create_layer_button.setObjectName("shapes_annotation_create_layer_button")
@@ -330,12 +341,21 @@ class ShapesAnnotation(QWidget):
         self.save_shapes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
         self.save_shapes_button.setToolTip(format_tooltip(_SAVE_SHAPES_TOOLTIP))
 
-        button_row.addWidget(self.create_layer_button)
-        button_row.addWidget(self.create_holes_button)
-        button_row.addWidget(self.save_shapes_button)
+        self.reload_shapes_button = QPushButton("Reload shapes")
+        self.reload_shapes_button.setObjectName("shapes_annotation_reload_shapes_button")
+        self.reload_shapes_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reload_shapes_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.reload_shapes_button.setToolTip(format_tooltip(_RELOAD_SHAPES_TOOLTIP))
+
+        button_grid.addWidget(self.create_layer_button, 0, 0)
+        button_grid.addWidget(self.create_holes_button, 0, 1)
+        button_grid.addWidget(self.save_shapes_button, 1, 0)
+        button_grid.addWidget(self.reload_shapes_button, 1, 1)
+        button_grid.setColumnStretch(0, 1)
+        button_grid.setColumnStretch(1, 1)
 
         self.content_layout.addLayout(form_layout)
-        self.content_layout.addLayout(button_row)
+        self.content_layout.addLayout(button_grid)
         self.content_layout.addWidget(self.status_label)
 
         self._app_state.viewer_adapter.primary_shapes_layer_registered.connect(self._on_primary_shapes_layer_registered)
@@ -343,6 +363,7 @@ class ShapesAnnotation(QWidget):
         self.create_layer_button.clicked.connect(self._on_create_layer_clicked)
         self.create_holes_button.clicked.connect(self._on_create_holes_clicked)
         self.save_shapes_button.clicked.connect(self._on_save_shapes_clicked)
+        self.reload_shapes_button.clicked.connect(self._on_reload_shapes_clicked)
         viewer_layers = getattr(napari_viewer, "layers", None)
         layer_events = getattr(viewer_layers, "events", None)
         layer_inserted_event = getattr(layer_events, "inserted", None)
@@ -443,13 +464,10 @@ class ShapesAnnotation(QWidget):
         if sdata is None or next_coordinate_system is None:
             self._eligible_existing_shapes_names = []
         else:
-            self._eligible_existing_shapes_names = [
-                option.shapes_name
-                for option in get_spatialdata_shapes_options_for_coordinate_system_from_sdata(
-                    sdata=sdata,
-                    coordinate_system=next_coordinate_system,
-                )
-            ]
+            self._eligible_existing_shapes_names = get_editable_shapes_names_for_coordinate_system(
+                sdata,
+                next_coordinate_system,
+            )
 
         self._set_create_name_controls_visible(next_target is not None and next_target.mode == "create_new")
         self._refresh_create_layer_state()
@@ -464,6 +482,10 @@ class ShapesAnnotation(QWidget):
 
     def _on_shapes_name_changed(self, _text: str) -> None:
         self._refresh_create_layer_state()
+
+    def show_shapes_target_validation_error(self, message: str) -> None:
+        """Show why the parent rejected an existing Shapes target."""
+        self._apply_status_card_spec(build_annotation_open_shapes_error_card_spec(message))
 
     def _on_active_layer_changed(self, event: object) -> None:
         """Observe every active-layer change; later adoption only cares about compatible Shapes layers."""
@@ -875,7 +897,29 @@ class ShapesAnnotation(QWidget):
             self._refresh_save_shapes_state()
             return
 
-        table_linked = bool(get_annotating_table_names(sdata, shapes_name))
+        self._adopt_existing_annotation_layer(
+            sdata=sdata,
+            source_geodataframe=source_geodataframe,
+            layer=layer,
+            binding=binding,
+            shapes_name=shapes_name,
+            coordinate_system=coordinate_system,
+        )
+
+    def _adopt_existing_annotation_layer(
+        self,
+        *,
+        sdata: SpatialData,
+        source_geodataframe: gpd.GeoDataFrame,
+        layer: Shapes,
+        binding: ShapesLayerBinding,
+        shapes_name: str,
+        coordinate_system: str,
+    ) -> None:
+        """Adopt one validated primary Shapes layer as a clean edit session."""
+        self._disconnect_annotation_dirty_events()
+        self._annotation_edit_guard.disconnect()
+        self._annotation_identity_feature_default_guard.disconnect()
         self._annotation_layer = layer
         self._annotation_edit_guard.attach(layer)
         self._annotation_identity_feature_default_guard.attach(
@@ -888,7 +932,7 @@ class ShapesAnnotation(QWidget):
             coordinate_system=coordinate_system,
             source_shapes_index_feature_name=binding.source_shapes_index_feature_name,
             source_geodataframe=source_geodataframe.copy(deep=True),
-            table_linked=table_linked,
+            table_linked=bool(get_annotating_table_names(sdata, shapes_name)),
         )
         self._annotation_clean_snapshot = _capture_annotation_layer_snapshot(layer)
         self._connect_annotation_dirty_events(layer)
@@ -1010,6 +1054,96 @@ class ShapesAnnotation(QWidget):
             build_annotation_save_success_card_spec(
                 result=result,
                 table_linked=self._annotation_session.table_linked if self._annotation_session is not None else False,
+            )
+        )
+
+    def _on_reload_shapes_clicked(self) -> None:
+        """Reload the selected persisted Shapes element into the live edit session."""
+        if not self._refresh_reload_shapes_state():
+            return
+
+        sdata = self._app_state.sdata
+        target = self._annotation_context.shapes_target
+        coordinate_system = self._annotation_context.coordinate_system
+        if (
+            sdata is None
+            or target is None
+            or target.mode != "edit_existing"
+            or target.existing_shapes_name is None
+            or coordinate_system is None
+        ):
+            return
+
+        if self._annotation_layer_has_unsaved_changes():
+            if not self._confirm_discard_annotation_layer(reason="reload"):
+                return
+
+        shapes_name = target.existing_shapes_name
+        previous_live_element = sdata.shapes.get(shapes_name)
+
+        def validate_reload_candidate(candidate: gpd.GeoDataFrame) -> None:
+            validate_existing_shapes_source_geodataframe(candidate)
+            available_coordinate_systems = set(get_transformation(candidate, get_all=True))
+            if coordinate_system not in available_coordinate_systems:
+                available = ", ".join(f"`{name}`" for name in sorted(available_coordinate_systems)) or "none"
+                raise ValueError(
+                    f"Coordinate system `{coordinate_system}` is not available for persisted Shapes element "
+                    f"`{shapes_name}`. Available coordinate systems: {available}."
+                )
+
+        try:
+            reloaded_geodataframe = load_shapes_element_from_store(
+                sdata,
+                shapes_name,
+                validate_before_install=validate_reload_candidate,
+            )
+            # Keep the old editable layer registered until the replacement has
+            # been completely built and registered. These guards prevent the
+            # child from treating that widget-owned swap as a user layer change.
+            with (
+                self._suppress_widget_owned_layer_transition_callbacks(),
+                self._suppress_widget_owned_registration_callbacks(),
+            ):
+                load_result = self._app_state.viewer_adapter.replace_primary_shapes_layer(
+                    sdata,
+                    shapes_name,
+                    coordinate_system,
+                )
+            layer = load_result.layer
+            binding = self._validate_opened_existing_shapes_layer(
+                layer,
+                source_row_count=len(reloaded_geodataframe),
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+            )
+            self._adopt_existing_annotation_layer(
+                sdata=sdata,
+                source_geodataframe=reloaded_geodataframe,
+                layer=layer,
+                binding=binding,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+            )
+        except Exception as error:  # noqa: BLE001
+            if previous_live_element is not None:
+                sdata.shapes[shapes_name] = previous_live_element
+            self._refresh_save_shapes_state()
+            self._apply_status_card_spec(build_annotation_reload_shapes_error_card_spec(str(error)))
+            return
+
+        self._app_state.emit_shapes_element_reloaded(
+            ShapesElementReloadedEvent(
+                sdata=sdata,
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                source=_SOURCE,
+            )
+        )
+        self._apply_status_card_spec(
+            build_annotation_reload_shapes_success_card_spec(
+                shapes_name=shapes_name,
+                coordinate_system=coordinate_system,
+                row_count=len(reloaded_geodataframe),
             )
         )
 
@@ -1209,8 +1343,44 @@ class ShapesAnnotation(QWidget):
         readiness = self._evaluate_annotation_layer_readiness()
         self.save_shapes_button.setEnabled(readiness.actionable)
         self.create_holes_button.setEnabled(readiness.actionable)
+        self._refresh_reload_shapes_state()
         self._publish_dirty_state_if_changed()
         return readiness
+
+    def _refresh_reload_shapes_state(self) -> bool:
+        """Update whether the selected existing Shapes element can be reloaded."""
+        sdata = self._app_state.sdata
+        target = self._annotation_context.shapes_target
+        if target is None or target.mode != "edit_existing" or target.existing_shapes_name is None:
+            self.reload_shapes_button.setEnabled(False)
+            self.reload_shapes_button.setToolTip(
+                format_tooltip("Save a new Shapes element before reloading it from its backing store.")
+            )
+            return False
+        if sdata is None or not sdata.is_backed():
+            self.reload_shapes_button.setEnabled(False)
+            self.reload_shapes_button.setToolTip(
+                format_tooltip("Reload shapes is available only for SpatialData opened from a zarr store.")
+            )
+            return False
+
+        shapes_name = target.existing_shapes_name
+        try:
+            exists_on_disk = shapes_element_exists_in_store(sdata, shapes_name)
+        except ValueError as error:
+            self.reload_shapes_button.setEnabled(False)
+            self.reload_shapes_button.setToolTip(format_tooltip(str(error)))
+            return False
+        if not exists_on_disk:
+            self.reload_shapes_button.setEnabled(False)
+            self.reload_shapes_button.setToolTip(
+                format_tooltip(f'Shapes element "{shapes_name}" is not available in the backing store.')
+            )
+            return False
+
+        self.reload_shapes_button.setEnabled(True)
+        self.reload_shapes_button.setToolTip(format_tooltip(_RELOAD_SHAPES_TOOLTIP))
+        return True
 
     def _publish_dirty_state_if_changed(self) -> None:
         """Notify the parent only when the snapshot-derived dirty state changes."""
@@ -1377,16 +1547,22 @@ class ShapesAnnotation(QWidget):
         readiness = self._refresh_save_shapes_state()
         self._apply_status_card_spec(readiness.status)
 
-    def _confirm_discard_annotation_layer(self, *, reason: _ShapesAnnotationContextChangeReason) -> bool:
+    def _confirm_discard_annotation_layer(self, *, reason: _ShapesAnnotationDiscardReason) -> bool:
         if reason == "coordinate_system":
             message = "Changing coordinate system will discard the current unsaved shape annotations."
+            discard_button_text = "Discard annotations"
         elif reason == "shapes_target":
             message = "Switching shapes target will discard the current unsaved shape annotations."
+            discard_button_text = "Discard annotations"
+        elif reason == "reload":
+            shapes_name = self._annotation_shapes_name or "the selected Shapes element"
+            message = f'Reloading "{shapes_name}" from disk will discard the current unsaved shape annotations.'
+            discard_button_text = "Discard annotations and reload"
         else:
-            raise ValueError(f"Unknown annotation context-change reason: {reason!r}.")
+            raise ValueError(f"Unknown annotation discard reason: {reason!r}.")
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Discard Unsaved Shape Annotations")
+        dialog.setWindowTitle("Discard Unsaved Shapes Annotations")
         dialog.setModal(True)
         dialog.setMinimumWidth(560)
 
@@ -1408,7 +1584,7 @@ class ShapesAnnotation(QWidget):
         button_row.setSpacing(10)
         button_row.addStretch(1)
 
-        discard_button = QPushButton("Discard annotations")
+        discard_button = QPushButton(discard_button_text)
         cancel_button = QPushButton("Cancel")
 
         discard_button.setStyleSheet(WARNING_BUTTON_STYLESHEET)
