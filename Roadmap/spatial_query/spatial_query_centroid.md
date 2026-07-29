@@ -4,7 +4,7 @@
 
 Final product specification and implementation plan.
 
-Implementation is complete through Slice 8k, except that the standalone Slice
+Implementation is complete through Slice 8l, except that the standalone Slice
 6m was deferred and its Spatial Annotation work moved to Slice 6p.
 
 This document supersedes the raster-overlap query algorithm described in
@@ -10431,7 +10431,7 @@ the repeated coordinate-change work.
 
 ### Slice 8l: Dirty-aware Shapes save action
 
-**Implementation status: Not implemented.**
+**Implementation status: Implemented.**
 
 **Save shapes** must represent pending persistence work rather than merely the
 presence of an editable Shapes session. The button is enabled only when the

@@ -1003,6 +1003,11 @@ class ShapesAnnotation(QWidget):
             if readiness.status is not None:
                 self._apply_status_card_spec(readiness.status)
             return
+        # `_refresh_save_shapes_state()` derives this enabled state from the
+        # exact current/clean snapshot comparison. A direct or stale invocation
+        # of this slot must not rewrite an unchanged Shapes element.
+        if not self.save_shapes_button.isEnabled():
+            return
 
         sdata = self._app_state.sdata
         layer = self._annotation_layer
@@ -1352,11 +1357,20 @@ class ShapesAnnotation(QWidget):
     def _refresh_save_shapes_state(self) -> _AnnotationLayerReadiness:
         """Update action button readiness for the widget-owned annotation layer."""
         readiness = self._evaluate_annotation_layer_readiness()
-        self.save_shapes_button.setEnabled(readiness.actionable)
         self.create_holes_button.setEnabled(readiness.actionable)
         self._refresh_reload_shapes_state()
-        self._publish_dirty_state_if_changed()
+        self._refresh_save_and_dirty_state(layer_actionable=readiness.actionable)
         return readiness
+
+    def _refresh_save_and_dirty_state(
+        self,
+        *,
+        layer_actionable: bool,
+    ) -> None:
+        """Refresh Save readiness and parent dirty state from one snapshot comparison."""
+        dirty = self._annotation_layer_has_unsaved_changes()
+        self.save_shapes_button.setEnabled(layer_actionable and dirty)
+        self._publish_dirty_state_if_changed(dirty)
 
     def _refresh_reload_shapes_state(self) -> bool:
         """Update whether the selected existing Shapes element can be reloaded."""
@@ -1393,9 +1407,8 @@ class ShapesAnnotation(QWidget):
         self.reload_shapes_button.setToolTip(format_tooltip(_RELOAD_SHAPES_TOOLTIP))
         return True
 
-    def _publish_dirty_state_if_changed(self) -> None:
+    def _publish_dirty_state_if_changed(self, dirty: bool) -> None:
         """Notify the parent only when the snapshot-derived dirty state changes."""
-        dirty = self._annotation_layer_has_unsaved_changes()
         if dirty == self._last_reported_dirty_state:
             return
         self._last_reported_dirty_state = dirty
@@ -1441,7 +1454,13 @@ class ShapesAnnotation(QWidget):
         if event.action in _PRE_MUTATION_DATA_ACTIONS:
             return
 
-        self._publish_dirty_state_if_changed()
+        # A completed geometry edit changes only dirty-dependent state:
+        # Save-button readiness and the dirty state published to the parent.
+        # Evaluate layer actionability in memory, but do not call
+        # _refresh_save_shapes_state(), because that broader refresh also checks
+        # Reload availability in the backing store.
+        readiness = self._evaluate_annotation_layer_readiness()
+        self._refresh_save_and_dirty_state(layer_actionable=readiness.actionable)
 
     def _evaluate_annotation_layer_readiness(self) -> _AnnotationLayerReadiness:
         """Return whether the widget-owned annotation layer can be edited and saved."""
@@ -1714,7 +1733,7 @@ class ShapesAnnotation(QWidget):
         self._annotation_session = None
         self._annotation_layer = None
         self._annotation_clean_snapshot = None
-        self._publish_dirty_state_if_changed()
+        self._refresh_save_and_dirty_state(layer_actionable=False)
         self._set_create_name_controls_visible(
             self._annotation_context.shapes_target is not None
             and self._annotation_context.shapes_target.mode == "create_new"

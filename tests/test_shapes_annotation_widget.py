@@ -705,7 +705,7 @@ def test_shapes_annotation_widget_active_primary_shapes_layer_selection_opens_an
         == shapes_annotation_widget_module._ShapesAnnotationTarget.edit_existing("blobs_polygons")
     )
     assert widget._test_parent.shapes_combo.currentText() == "blobs_polygons"
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is True
     assert "Existing Shapes Opened" in _status_text(widget)
 
@@ -732,7 +732,7 @@ def test_shapes_annotation_widget_adopts_auto_active_primary_shapes_after_regist
     assert widget._annotation_session is not None
     assert widget._annotation_session.shapes_name == "blobs_polygons"
     assert widget._test_parent.shapes_combo.currentText() == "blobs_polygons"
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is True
 
 
@@ -925,7 +925,7 @@ def test_shapes_annotation_widget_active_primary_shapes_layer_selection_switches
     assert list(viewer.layers) == [first_layer, other_layer]
     assert "_drag_modes" not in vars(first_layer)
     assert "_drag_modes" in vars(other_layer)
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is True
 
 
@@ -1021,7 +1021,7 @@ def test_shapes_annotation_widget_active_primary_shapes_layer_selection_dirty_co
     assert widget._test_parent.shapes_combo.currentText() == "other_polygons"
     assert "_drag_modes" not in vars(first_layer)
     assert "_drag_modes" in vars(other_layer)
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is True
 
 
@@ -3913,7 +3913,11 @@ def test_shapes_annotation_widget_evaluates_dirty_state_only_after_data_mutation
     widget = ShapesAnnotation()
     qtbot.addWidget(widget)
     evaluations: list[None] = []
-    monkeypatch.setattr(widget, "_publish_dirty_state_if_changed", lambda: evaluations.append(None))
+    monkeypatch.setattr(
+        widget,
+        "_refresh_save_and_dirty_state",
+        lambda *, layer_actionable: evaluations.append(None),
+    )
 
     for action in (ActionType.ADDING, ActionType.REMOVING, ActionType.CHANGING):
         widget._on_annotation_layer_content_changed(SimpleNamespace(type="data", action=action))
@@ -3933,6 +3937,66 @@ def test_shapes_annotation_widget_evaluates_dirty_state_only_after_data_mutation
         widget._on_annotation_layer_content_changed(SimpleNamespace(type="data"))
     with pytest.raises(ValueError, match="Unexpected Shapes annotation event type"):
         widget._on_annotation_layer_content_changed(SimpleNamespace(type="features"))
+
+
+def test_shapes_annotation_widget_geometry_event_reuses_one_snapshot_without_reload_refresh(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    """One completed edit updates Save and parent dirty state without disk-facing refresh."""
+    viewer = DummyViewer()
+    widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
+    widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    real_capture = shapes_annotation_widget_module._capture_annotation_layer_snapshot
+    snapshot_count = 0
+
+    def record_snapshot(current_layer: Shapes):
+        nonlocal snapshot_count
+        snapshot_count += 1
+        return real_capture(current_layer)
+
+    def fail_reload_refresh() -> bool:
+        raise AssertionError("Geometry events must not refresh Reload readiness.")
+
+    monkeypatch.setattr(shapes_annotation_widget_module, "_capture_annotation_layer_snapshot", record_snapshot)
+    monkeypatch.setattr(widget, "_refresh_reload_shapes_state", fail_reload_refresh)
+
+    _add_polygon(layer)
+
+    assert snapshot_count == 1
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is True
+
+
+def test_shapes_annotation_widget_exact_geometry_restoration_disables_save(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = DummyViewer()
+    app_state = get_or_create_app_state(viewer)
+    app_state.set_sdata(sdata_blobs)
+    widget = _create_embedded_shapes_annotation(qtbot, viewer)
+    widget._test_parent.shapes_combo.setCurrentIndex(
+        _combo_index_for_text(widget._test_parent.shapes_combo, "blobs_polygons")
+    )
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    original_data = [np.asarray(vertices).copy() for vertices in layer.data]
+    edited_data = [vertices.copy() for vertices in original_data]
+    edited_data[0][0] += np.asarray([1.0, 1.0])
+
+    layer.data = edited_data
+
+    assert widget.save_shapes_button.isEnabled() is True
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is True
+
+    layer.data = original_data
+
+    assert widget.save_shapes_button.isEnabled() is False
+    assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is False
 
 
 def test_shapes_annotation_widget_validates_empty_invalid_and_duplicate_names(
@@ -4003,6 +4067,9 @@ def test_shapes_annotation_widget_status_cards_shorten_long_identifiers(
         fake_create_shapes_element,
     )
     widget.create_layer_button.click()
+    layer = widget._annotation_layer
+    assert isinstance(layer, Shapes)
+    _add_polygon(layer)
     widget.save_shapes_button.click()
 
     status = _status_text(widget)
@@ -4063,7 +4130,7 @@ def test_shapes_annotation_widget_create_layer_adds_registered_active_empty_shap
     assert widget._annotation_session is not None
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert "Annotation Layer Ready" in _status_text(widget)
 
 
@@ -4233,7 +4300,7 @@ def test_shapes_annotation_widget_open_existing_target_loads_edit_session_layer(
     assert widget._annotation_session.table_linked is False
     assert viewer.layers.selection.active is layer
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.reload_shapes_button.isEnabled() is False
     assert "only for SpatialData opened from a zarr store" in widget.reload_shapes_button.toolTip()
     assert "Existing Shapes Opened" in _status_text(widget)
@@ -4287,7 +4354,7 @@ def test_shapes_annotation_widget_adopts_selected_target_loaded_from_viewer(
     assert widget._annotation_session is not None
     assert widget._annotation_session.shapes_name == "blobs_polygons"
     assert widget._annotation_session.coordinate_system == "global"
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert viewer.layers.selection.active is load_result.layer
 
 
@@ -4459,9 +4526,10 @@ def test_shapes_annotation_widget_edit_existing_save_updates_shapes_element_and_
     )
     layer = widget._annotation_layer
     assert isinstance(layer, Shapes)
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
 
     _add_polygon(layer, offset=100)
+    assert widget.save_shapes_button.isEnabled() is True
     layer.features.loc[len(layer.features) - 1, "index"] = None
     widget.save_shapes_button.click()
 
@@ -4604,6 +4672,11 @@ def test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save(
     )
     layer = widget._annotation_layer
     assert isinstance(layer, Shapes)
+    assert widget.save_shapes_button.isEnabled() is False
+    edited_polygon_2_vertices = np.asarray(layer.data[1], dtype=float).copy()
+    edited_polygon_2_vertices[1] += np.asarray([0.0, 1.0])
+    layer.data = [np.asarray(layer.data[0], dtype=float), edited_polygon_2_vertices]
+    edited_polygon_2 = napari_polygon_vertices_to_shapely_polygon(edited_polygon_2_vertices)
     assert widget.save_shapes_button.isEnabled() is True
 
     widget.save_shapes_button.click()
@@ -4613,7 +4686,7 @@ def test_shapes_annotation_widget_edit_existing_preserves_polygon_holes_on_save(
     assert saved.index.tolist() == ["hole_row", "simple_row"]
     assert saved["label"].tolist() == ["polygon_with_hole", "simple_polygon"]
     np.testing.assert_allclose(saved["score"].to_numpy(), np.asarray([1.25, 2.5]))
-    _assert_polygon_hole_geometries_preserved(saved, polygon_1, polygon_2)
+    _assert_polygon_hole_geometries_preserved(saved, polygon_1, edited_polygon_2)
     assert widget._annotation_session is not None
     assert widget._annotation_session.source_geodataframe is not saved
     assert widget._annotation_session.source_geodataframe is not None
@@ -4698,7 +4771,7 @@ def test_shapes_annotation_widget_create_holes_invalid_selection_warns_without_m
     assert "Select one shell polygon" in _status_text(widget)
     _assert_layer_data_unchanged(layer, original_data)
     pd.testing.assert_frame_equal(layer.features, original_features)
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is True
 
 
@@ -4743,7 +4816,7 @@ def test_shapes_annotation_widget_create_holes_render_failure_restores_layer_and
     _assert_shapes_layer_matches_baseline(layer, baseline)
     assert widget._annotation_layer_has_unsaved_changes() is False
     assert widget._test_parent.annotation_context.has_unsaved_shapes_changes is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert widget.create_holes_button.isEnabled() is True
     status = _status_text(widget)
     assert "Could Not Create Holes" in status
@@ -5121,7 +5194,7 @@ def test_shapes_annotation_widget_manual_existing_layer_deletion_resets_selector
     assert widget._annotation_layer is not removed_layer
     assert widget._annotation_session is not None
     assert widget._annotation_session.shapes_name == existing_shapes_name
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
 
 
 def test_shapes_annotation_widget_removal_listener_defensively_unregisters_annotation_layer(
@@ -5168,7 +5241,7 @@ def test_shapes_annotation_widget_ignores_unrelated_layer_removal(
     assert widget._annotation_coordinate_system == "global"
     assert widget.name_edit.isEnabled() is False
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
 
 
 def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
@@ -5233,7 +5306,7 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     assert hasattr(adopted_layer, _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR)
     assert hasattr(adopted_layer, _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR)
     assert widget.create_layer_button.isEnabled() is False
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
 
 
 def test_shapes_annotation_widget_saves_adopted_native_nonempty_shapes_layer(
@@ -5826,7 +5899,7 @@ def test_shapes_annotation_widget_save_calls_core_with_locked_request_and_report
     assert request.index_prefix == "__annotation"
     assert widget._annotation_session is not None
     assert widget._annotation_session.mode == "edit_existing"
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert parent.annotation_context.saved_shapes_name == "new_regions"
     assert parent.annotation_context.has_unsaved_shapes_changes is False
     assert published_contexts == [parent.annotation_context]
@@ -5879,6 +5952,7 @@ def test_shapes_annotation_widget_repeated_save_uses_edit_helper_after_create_su
     )
 
     widget.save_shapes_button.click()
+    _add_polygon(viewer.layers[0], offset=10)
     widget.save_shapes_button.click()
 
     assert create_overwrites == [False]
@@ -5913,6 +5987,7 @@ def test_shapes_annotation_widget_failed_first_save_keeps_later_overwrite_false(
     viewer = DummyViewer()
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
+    _add_polygon(viewer.layers[0])
     overwrites: list[bool] = []
 
     def fake_create_shapes_element(request, napari_layer):
@@ -5948,7 +6023,7 @@ def test_shapes_annotation_widget_failed_first_save_keeps_later_overwrite_false(
     assert widget._annotation_session.mode == "edit_existing"
 
 
-def test_shapes_annotation_widget_empty_layer_save_error_is_feedback(
+def test_shapes_annotation_widget_empty_layer_save_is_disabled_and_does_not_write(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:
@@ -5956,11 +6031,11 @@ def test_shapes_annotation_widget_empty_layer_save_error_is_feedback(
     widget = _create_ready_annotation_widget(qtbot, viewer, sdata_blobs)
     widget.create_layer_button.click()
 
+    assert widget.save_shapes_button.isEnabled() is False
     widget.save_shapes_button.click()
 
     assert "new_regions" not in sdata_blobs.shapes
-    assert widget.save_shapes_button.isEnabled() is True
-    assert "Draw at least one supported shape before saving" in _status_text(widget)
+    assert "Annotation Layer Ready" in _status_text(widget)
 
 
 def test_shapes_annotation_widget_save_writes_real_shapes_element(
@@ -6058,7 +6133,7 @@ def test_shapes_annotation_widget_saved_create_new_layer_can_be_reopened_after_t
     assert widget._annotation_layer is layer
     assert widget._annotation_session is not None
     assert widget._annotation_session.shapes_name == "new_regions"
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
     assert "Could Not Open Shapes" not in _status_text(widget)
 
 
@@ -6082,7 +6157,7 @@ def test_shapes_annotation_widget_keeps_ownership_when_viewer_adds_saved_primary
     assert widget._annotation_shapes_name == "new_regions"
     assert widget._annotation_coordinate_system == "global"
     assert widget._annotation_layer_binding_matches()
-    assert widget.save_shapes_button.isEnabled() is True
+    assert widget.save_shapes_button.isEnabled() is False
 
 
 def test_shapes_annotation_widget_binding_mismatch_disables_save_without_calling_core(
@@ -6106,7 +6181,9 @@ def test_shapes_annotation_widget_binding_mismatch_disables_save_without_calling
         fail_if_called,
     )
 
-    widget.save_shapes_button.click()
+    # The button is already disabled for the clean empty layer. Invoke the slot
+    # directly to verify its fresh readiness guard also catches a stale binding.
+    widget._on_save_shapes_clicked()
 
     assert widget.save_shapes_button.isEnabled() is False
     assert "no longer registered as the widget-owned primary shapes layer" in _status_text(widget)
