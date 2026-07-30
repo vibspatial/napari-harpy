@@ -1772,6 +1772,37 @@ class ViewerAdapter(QObject):
 
         return removed_layers
 
+    def remove_image_overlay_channel(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        channel_index: int,
+    ) -> Image | None:
+        """Remove one loaded overlay channel while preserving sibling layers."""
+        if channel_index < 0:
+            raise ValueError("`channel_index` must be non-negative.")
+
+        layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="overlay",
+            channel_index=channel_index,
+        )
+        if not layers:
+            return None
+        if len(layers) > 1:
+            raise ValueError(
+                f"Found multiple live overlay layers for image `{image_name}`, "
+                f"coordinate system `{coordinate_system}`, and channel index {channel_index}."
+            )
+
+        layer = layers[0]
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
+
     def remove_shapes_layer(
         self, sdata: SpatialData, shapes_name: str, coordinate_system: str
     ) -> Shapes | Points | None:
