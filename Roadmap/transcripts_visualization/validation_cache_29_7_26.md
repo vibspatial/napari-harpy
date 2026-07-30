@@ -36,20 +36,20 @@ The validation block must produce a build-ready object with:
 
 - an explicit local Parquet dataset path;
 - deterministic source-file ordering;
-- compatible physical schemas;
-- selected coordinate, gene, and optional transcript-id columns;
+- a compatible canonical schema for the selected cache columns;
+- selected coordinate and categorical-value columns;
 - exact source row count;
 - deterministic source-fragment row offsets;
 - finite coordinate bounds;
-- a deterministic normalized gene dictionary and exact gene counts;
+- a deterministic normalized value dictionary and exact value counts;
 - a versioned source signature;
-- either a validated source transcript id or a documented fallback identity
-  policy;
-- evidence describing how important facts were established;
-- diagnostics sufficient to benchmark time, rows, batches, and memory.
+- a versioned internal `uint64` point-identity policy;
+- evidence describing how important facts were established.
 
-The cache builder must consume this result directly. It must not rediscover the
-source layout or repeat validation scans.
+The validation API returns the deterministic build input directly. The cache
+builder must not rediscover the source layout or repeat validation scans.
+Performance measurements belong to the V6 benchmark tooling, not to the public
+validation result or persisted cache metadata.
 
 ## Locked decisions
 
@@ -79,6 +79,18 @@ The package must not import Qt, napari, or VisPy. `models.py`, `validation.py`,
 and `signature.py` should also remain independent of SpatialData and Dask.
 SpatialData and Dask awareness is isolated in `source.py`.
 
+### Generic categorical value
+
+The cache treats the third selected source column as a generic categorical
+`value`, not specifically as a gene. Transcript datasets normally select the
+physical source column named `gene`, so the public default is `value="gene"`.
+Callers may select another string-valued categorical column.
+
+Internal models, normalized dictionaries, cache payloads, and sampling code use
+`value`, `value_id`, and `value_table`. Transcript-facing UI may present those
+values as genes when that is the dataset semantics, but the cache core does not
+encode that assumption.
+
 ### Explicit physical Parquet source
 
 The fast path receives or resolves the physical Parquet dataset explicitly.
@@ -99,10 +111,10 @@ Validation has two execution stages:
    footers cannot prove safely.
 
 Do not implement independent full scans for row count, coordinate validation,
-bounds, gene validation, and gene counts.
+bounds, value validation, and value counts.
 
 The footer stage may provide preliminary bounds and null information. The fused
-scan remains authoritative for coordinate finiteness and gene counts in the
+scan remains authoritative for coordinate finiteness and value counts in the
 initial build-ready validation mode.
 
 ### No materialization of the full dataframe
@@ -112,49 +124,62 @@ only compact aggregates:
 
 - scalar row and error counts;
 - coordinate minima and maxima;
-- the gene count dictionary;
-- file and row-group metadata;
-- bounded transcript-id uniqueness state when that feature is enabled.
+- the value count dictionary;
+- file and row-group metadata.
 
 No operation constructs a pandas or Arrow table containing all transcripts.
 
-### Deterministic fragment order and fallback identity
+### Deterministic fragment order and internal point identity
 
-Source files are ordered by their normalized cache-root-relative POSIX paths
-using a documented bytewise ordering. The order is not inherited from a Dask
-graph or filesystem directory iteration.
+Source files are ordered by their normalized Parquet-dataset-root-relative POSIX
+paths using a documented bytewise ordering. For a directory-backed dataset, the
+dataset root is the resolved Parquet directory. For a supported single-file
+dataset, the relative path is the file name. The order is not inherited from a
+Dask graph or filesystem directory iteration.
 
-For a source without a transcript-id column:
+Every source row receives a Harpy-owned `uint64` identity:
 
 ```text
-point_identity = fragment_row_offset + row_position_within_fragment
+point_id = fragment_row_offset + row_position_within_fragment
 ```
 
 `fragment_row_offset` is the cumulative row count of all preceding fragments.
-The builder must read fragments and rows in the same validated order.
+Validation establishes the ordering and offsets without materializing one id per
+row. The builder generates `point_id` batch by batch and propagates it unchanged
+through every cache level. It is never written back to canonical SpatialData.
 
 This identity is reproducible only while file inventory and row order remain
 stable. That limitation is recorded in the validated source and eventual cache
-metadata.
+metadata, and the source signature changes when the validated inventory or
+ordering changes.
 
-### Gene normalization version 1
+The public API does not accept a source `transcript_id` or other caller-supplied
+identity column. Validation performs no source-id uniqueness scan and needs no
+scratch storage for identity validation.
+
+### Value normalization version 1
+
+The method name is:
+
+```text
+harpy-string-trim-unicode-case-sensitive-v1
+```
 
 The initial policy:
 
 - accepts Arrow `string`, `large_string`, or dictionary encoding of those
   value types;
-- rejects null gene values;
-- trims leading and trailing whitespace;
+- rejects null values;
+- trims leading and trailing Unicode whitespace;
 - rejects values that become empty;
 - remains case-sensitive;
-- assigns gene ids by deterministic normalized-label ordering;
+- assigns value ids by deterministic normalized-label ordering;
 - merges raw labels that normalize to the same value;
-- reports the number of raw-label normalization collisions;
 - never calls Python `hash()`.
 
 Dictionary values are normalized once per dictionary, not once per row.
 
-Numeric and binary gene columns are not silently converted to strings in the
+Numeric and binary value columns are not silently converted to strings in the
 first version.
 
 ### Build-ready versus preflight-only results
@@ -164,15 +189,6 @@ A footer preflight result is useful but is not a validated source.
 Only successful completion of every required validation stage may produce
 `ValidatedPointsSource`. Partial results must use distinct types and cannot be
 passed accidentally to the cache builder.
-
-### Exactness over probabilistic acceptance
-
-Validation may use stable hashes for bucketing, signatures, or duplicate
-detection, but it must not declare transcript ids unique based only on a
-probabilistic sketch or hash comparison.
-
-Approximate cardinality may be recorded as a diagnostic. It is not a
-correctness gate.
 
 ## Proposed model boundaries
 
@@ -186,8 +202,7 @@ separation is the intended contract.
 class PointColumnSelection:
     x: str
     y: str
-    gene: str
-    transcript_id: str | None
+    value: str
 ```
 
 It validates non-empty, distinct column names without performing IO.
@@ -245,11 +260,10 @@ Construction rejects non-finite values and inverted ranges.
 class ValidationEvidence(str, Enum):
     PARQUET_METADATA = "parquet_metadata"
     STREAMING_SCAN = "streaming_scan"
-    CALLER_PROVIDED = "caller_provided"
 ```
 
 Evidence is recorded for facts where the distinction affects trust,
-performance, or stale-source reporting.
+correctness, or stale-source detection.
 
 ### `ParquetPointsPreflight`
 
@@ -274,45 +288,34 @@ It is not accepted by the cache builder.
 class ValidatedPointsSource:
     source: ParquetPointsSource
     fragments: tuple[ParquetSourceFragment, ...]
-    source_schema: pa.Schema
+    selected_schema: pa.Schema
     row_count: int
     bounds: PointsBounds
-    gene_table: pa.Table
+    value_table: pa.Table
     source_signature: str
     source_signature_method: str
-    gene_normalization_method: str
-    identity_policy: PointIdentityPolicy
+    value_normalization_method: str
+    point_id_policy: PointIdentityPolicy
 ```
 
-`gene_table` uses the cache contract:
+`selected_schema` is the canonical Arrow schema for only the caller-selected
+cache columns. Its fields retain their physical source names and are ordered by
+semantic role: `x`, `y`, `value`. Unselected source columns are not included.
+
+`value_table` uses the cache contract:
 
 ```text
-gene_id: uint32
-gene: string
-n_transcripts: uint64
+value_id: uint32
+value: string
+n_points: uint64
 ```
 
-Performance timings and transient counters do not participate in equality,
-source identity, or cache identity. They belong in a separate report.
-
-### `PointsSourceValidationReport`
-
-The report may contain:
-
-- footer-preflight elapsed time;
-- content-scan elapsed time;
-- total elapsed time;
-- files, row groups, batches, and rows scanned;
-- requested maximum batch rows;
-- largest observed batch rows and decoded bytes;
-- facts obtained from metadata versus scanning;
-- raw gene labels and normalized genes;
-- gene normalization collision count;
-- temporary spill bytes, when transcript-id uniqueness uses spill storage;
-- warnings that do not invalidate the source.
-
-The report is diagnostic and must not be required to interpret cached point
-rows.
+Performance timings, transient counters, machine information, and validation
+generation timestamps are not fields of `ValidatedPointsSource`, are not
+returned in a public report wrapper, and are not persisted as validation
+metadata. Source-file modification times remain deterministic source-identity
+evidence. V6 benchmark tooling owns any measurements needed to evaluate or
+optimize validation.
 
 ## Error contract
 
@@ -345,8 +348,7 @@ def resolve_spatialdata_points_source(
     *,
     x: str = "x",
     y: str = "y",
-    gene: str = "gene",
-    transcript_id: str | None = None,
+    value: str = "gene",
 ) -> ParquetPointsSource: ...
 
 
@@ -354,25 +356,15 @@ def validate_parquet_points_source(
     source: ParquetPointsSource,
     *,
     max_batch_rows: int = 524_288,
-    scratch_path: Path | None = None,
-) -> PointsSourceValidationResult: ...
+) -> ValidatedPointsSource: ...
 ```
 
-Where:
-
-```python
-@dataclass(frozen=True)
-class PointsSourceValidationResult:
-    source: ValidatedPointsSource
-    report: PointsSourceValidationReport
-```
+The returned `ValidatedPointsSource` is passed directly to cache construction.
+Validation returns no result wrapper or diagnostics report.
 
 An optional convenience function may later resolve and validate in one call.
 The separate functions remain available so source resolution and footer
 preflight can be tested and diagnosed independently.
-
-`scratch_path` is unused for the no-transcript-id Xenium path. It is reserved
-for exact, bounded transcript-id uniqueness validation.
 
 ## Slice overview
 
@@ -383,15 +375,14 @@ Each slice should be independently reviewable, tested, and mergeable.
 | V0 | Package scaffold, immutable models, errors | No |
 | V1 | Explicit SpatialData-to-Parquet source resolution | No |
 | V2 | Deterministic footer inventory and schema preflight | No |
-| V3 | Source signature and fallback identity contract | No |
-| V4 | Fused coordinate/gene content scan | Once |
-| V5 | Public validation orchestration and reporting | No additional scan |
-| V6 | Supplied transcript-id validation | Integrated scan plus bounded spill |
-| V7 | Xenium benchmark, profiling, and hardening | Once per benchmark run |
+| V3 | Source signature and internal point-identity contract | No |
+| V4 | Fused coordinate/value content scan | Once |
+| V5 | Public validation orchestration and build-ready source | No additional scan |
+| V6 | Xenium benchmark, profiling, and hardening | Once per benchmark run |
 
-V0 through V5 deliver the build-ready no-source-transcript-id path needed by
-the Xenium acceptance dataset. V6 completes the optional supplied-id path
-before the public cache builder advertises that capability.
+V0 through V5 deliver the build-ready validation path. The API always uses the
+Harpy-owned internal point identity and does not accept a source identity
+column.
 
 ## Slice V0: scaffold immutable contracts
 
@@ -418,30 +409,27 @@ src/napari_harpy/core/multi_scale_cache_points/errors.py
 
 - `PointColumnSelection`;
 - `ParquetPointsSource`;
-- `ParquetSourceFragment`;
-- `PointsBounds`;
-- evidence and identity-policy enums;
-- preflight, validated-source, report, and result shells;
-- the exception hierarchy;
+- the minimal validation-error base and source-resolution errors required by V1;
 - narrow exports from `__init__.py`.
 
-Do not expose models that are only speculative and unused by the next slice.
+Do not implement or expose fragment, bounds, evidence, identity-policy,
+preflight, or validated-source models in V0. Add each contract in the first
+slice that uses it, once that slice has established its concrete requirements.
 
 ### Tests
 
 - frozen dataclass behavior;
 - non-empty and distinct selected column names;
-- finite and ordered bounds;
-- valid relative fragment paths;
-- non-negative file, row, and offset counts;
-- enum serialization values;
-- exception inheritance;
+- immutable physical-source description without SpatialData or Dask objects;
+- minimal validation-error and source-resolution-error inheritance;
+- narrow package exports;
 - no import of Qt, napari, VisPy, or `_transcript_tiles`.
 
 ### Exit criteria
 
 - imports succeed in the headless test environment;
-- all contracts required by source resolution are stable enough for V1;
+- the two immutable contracts and minimal errors required by source resolution
+  are stable enough for V1;
 - no filesystem or dataframe IO occurs.
 
 ## Slice V1: explicit SpatialData source resolution
@@ -522,15 +510,15 @@ tests/test_multi_scale_cache_points_validation.py
 - validate that the Parquet path exists and is a directory or supported single
   Parquet file;
 - discover physical data files while excluding metadata and unrelated files;
-- normalize cache-root-relative POSIX paths;
+- normalize Parquet-dataset-root-relative POSIX paths, using the file name for a
+  supported single-file dataset;
 - sort fragments deterministically;
 - open each footer with PyArrow;
 - require at least one file, row group, and source row;
 - validate selected columns in every physical schema;
 - validate compatible Arrow logical types across fragments;
 - require numeric `x` and `y`;
-- require supported gene string/dictionary types;
-- validate the optional transcript-id physical type against its initial policy;
+- require supported value string/dictionary types;
 - collect file sizes, modification times, row counts, and row-group counts;
 - calculate cumulative fragment row offsets with `uint64` overflow checks;
 - collect available null counts and coordinate statistics;
@@ -544,12 +532,18 @@ PyArrow ordering.
 
 ### Schema compatibility
 
-Exact equality of unrelated source columns is not required. Compatibility is
-evaluated only for selected columns and any fields needed to establish source
-identity.
+The selected columns are the caller-configured `x`, `y`, and `value` columns.
+Compatibility is evaluated only for those columns.
 
-The first version rejects a selected column whose physical/logical type changes
-between fragments rather than attempting implicit coercion.
+Exact equality of complete fragment schemas is not required. Unselected columns
+may be present, absent, or have different types across fragments without making
+the selected schema incompatible. They are neither read nor retained in
+`selected_schema`.
+
+The first version rejects a selected column whose physical type, logical type,
+or nullability changes between fragments rather than attempting implicit
+coercion. After all fragments pass this check, preflight records the selected
+fields in canonical semantic order as `selected_schema`.
 
 ### Tests
 
@@ -560,7 +554,9 @@ between fragments rather than attempting implicit coercion.
 - deterministic ordering with names such as `part.1`, `part.10`, `part.2`;
 - metadata files excluded from fragments;
 - missing selected column in one fragment;
-- incompatible coordinate or gene types;
+- incompatible coordinate or value types;
+- selected-column nullability mismatch;
+- compatible selected columns when unrelated columns differ between fragments;
 - dictionary-encoded strings;
 - complete, incomplete, and absent statistics;
 - valid and invalid footer-derived bounds;
@@ -575,12 +571,12 @@ between fragments rather than attempting implicit coercion.
 - the Xenium footer preflight is expected to complete in under one second on
   the reference local SSD, recorded as a hypothesis until benchmarked formally.
 
-## Slice V3: source signature and fallback identity
+## Slice V3: source signature and internal point identity
 
 ### Goal
 
-Version the source identity evidence and finalize the no-source-transcript-id
-identity contract without scanning rows.
+Version the source identity evidence and finalize the Harpy-owned `point_id`
+contract without scanning rows.
 
 ### Files
 
@@ -591,70 +587,145 @@ tests/test_multi_scale_cache_points_signature.py
 
 ### Source-signature method
 
-The initial candidate is:
+The initial method is:
 
 ```text
 harpy-parquet-footer-inventory-sha256-v1
 ```
 
-Hash a canonical UTF-8 JSON representation containing at least:
+Build this versioned JSON shape:
 
-- signature method;
-- resolved points-element path;
-- selected column names;
-- selected-column Arrow schema fingerprint;
-- deterministically ordered relative file paths;
-- file sizes and available nanosecond modification times;
-- footer row and row-group counts;
-- relevant row-group compressed sizes and available selected-column
-  statistics;
-- total row count.
+```json
+{
+  "method": "harpy-parquet-footer-inventory-sha256-v1",
+  "element_path": "points/example",
+  "columns": [
+    {"role": "x", "name": "x", "nullable": true, "type": {"kind": "float", "bit_width": 64}},
+    {"role": "y", "name": "y", "nullable": true, "type": {"kind": "float", "bit_width": 64}},
+    {"role": "value", "name": "gene", "nullable": true, "type": {"kind": "string", "offset_width": 32}}
+  ],
+  "fragments": [
+    {
+      "path": "part-00000.parquet",
+      "size_bytes": 123,
+      "modified_time_ns": null,
+      "row_count": 10,
+      "row_groups": [
+        {"row_count": 10, "compressed_size_bytes": 100}
+      ]
+    }
+  ],
+  "row_count": 10
+}
+```
 
-JSON key ordering, separators, number representation, path normalization, and
-missing-value representation are part of the versioned method.
+`element_path` and fragment paths are normalized POSIX paths. `columns` always
+uses the semantic order `x`, `y`, `value`; `fragments` and their `row_groups`
+use validated physical order. `compressed_size_bytes` is the sum of
+`total_compressed_size` over every physical column chunk in that row group.
+
+Normalized type descriptors are limited to the initially supported selected
+types:
+
+```text
+signed integer:
+  {"kind": "integer", "signed": true, "bit_width": 8|16|32|64}
+unsigned integer:
+  {"kind": "integer", "signed": false, "bit_width": 8|16|32|64}
+floating point:
+  {"kind": "float", "bit_width": 16|32|64}
+string:
+  {"kind": "string", "offset_width": 32|64}
+dictionary string:
+  {
+    "kind": "dictionary",
+    "index": <normalized signed/unsigned integer descriptor>,
+    "value": <normalized string descriptor>,
+    "ordered": true|false
+  }
+```
+
+Arrow field metadata is excluded. A selected type outside this descriptor
+contract is rejected before signature construction.
+
+The v1 payload deliberately excludes absolute source paths, Parquet min/max
+statistics, performance measurements, and generation timestamps. In
+particular, it does not serialize raw `str(pa.Schema)` or Arrow object
+representations whose formatting may change independently of this contract.
+
+Serialize the object exactly as:
+
+```python
+canonical_bytes = json.dumps(
+    payload,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+    allow_nan=False,
+).encode("utf-8")
+```
+
+There is no byte-order mark or trailing newline. Arrays retain their specified
+order, JSON numbers in this payload are integers, unavailable values use
+`null`, and the SHA-256 result is lowercase hexadecimal. Golden tests freeze the
+exact canonical bytes as well as the digest.
 
 The SHA-256 digest protects the canonical metadata representation. It is not a
 cryptographic hash of every Parquet data page. Documentation and UI must not
-claim full content-hash guarantees.
+claim full content-hash guarantees. A data-page edit that preserves every v1
+inventory field can remain undetected; this limitation is part of the method
+documentation.
 
-### Fallback identity
+### Internal `point_id`
+
+The initial policy name is:
+
+```text
+harpy-fragment-row-offset-uint64-v1
+```
 
 Implement helpers that:
 
-- map `(fragment index, row position)` to cumulative `uint64` identity;
+- map `(fragment index, row position)` to cumulative `uint64 point_id`;
 - reject out-of-range row positions;
 - validate identity coverage at fragment boundaries;
-- expose the identity-policy name and version;
+- expose the point-id-policy name and version;
 - document that file inventory or row-order changes invalidate reproducibility.
 
 The source signature must change when fragment inventory or ordering changes,
-preventing fallback identities from being mixed across such source versions.
+preventing internal point ids from being mixed across such source versions.
+Validation stores only the policy and fragment offsets. Cache construction
+materializes ids batch by batch and propagates them unchanged through all
+levels.
 
 ### Tests
 
 - repeated preflight produces the same signature;
+- golden canonical JSON bytes and SHA-256 digest;
 - construction order of Python dictionaries does not affect the digest;
 - path separator normalization;
 - file addition, removal, rename, size, footer count, schema, or selected-column
   change affects the digest;
 - modification-time absence is represented deterministically;
+- absolute source-store relocation alone does not enter the canonical payload;
+- Parquet statistics are excluded from the canonical payload;
 - signature limitations are documented;
-- first, last, and cross-fragment fallback identities;
+- first, last, and cross-fragment point ids;
 - identity uniqueness across fragment boundaries;
 - `uint64` overflow rejection.
 
 ### Exit criteria
 
-- signature and fallback identity methods have explicit version strings;
+- signature and point-identity methods have explicit version strings;
 - signature computation reads no point data pages;
 - the same validated inventory produces the same signature across processes.
 
-## Slice V4: one fused coordinate and gene scan
+## Slice V4: one fused coordinate and value scan
 
 ### Goal
 
-Perform all build-ready validation needed for the no-source-transcript-id path
-in one bounded pass over `x`, `y`, and `gene`.
+Perform all build-ready content validation in one bounded pass over `x`, `y`,
+and `value`.
 
 ### Implementation shape
 
@@ -665,11 +736,9 @@ scan maintains compact accumulators for:
 - missing and non-finite `x` values;
 - missing and non-finite `y` values;
 - authoritative `x` and `y` minima and maxima;
-- missing and normalized-empty genes;
-- normalized gene counts;
-- raw and normalized gene cardinalities;
-- gene normalization collisions;
-- batch and decoded-byte diagnostics.
+- missing and normalized-empty values;
+- normalized value counts;
+- normalized value cardinality.
 
 The implementation should process Arrow arrays directly. Converting a bounded
 batch to NumPy is acceptable where it remains faster and memory-bounded.
@@ -681,21 +750,25 @@ Converting complete fragments to pandas is not.
 - convert safely to `float64` for validation and bounds;
 - reject null, NaN, positive infinity, and negative infinity;
 - do not downcast canonical coordinates during validation;
-- compare scan bounds with footer bounds and report disagreement.
+- reconcile scan bounds with footer bounds and reject an invalid disagreement.
 
 Scan-derived bounds are authoritative for the first build-ready mode.
 
-### Gene behavior
+### Value behavior
 
 - handle plain and dictionary-encoded string arrays;
 - validate nulls before normalization;
 - normalize dictionary values once per encountered dictionary;
 - aggregate counts by normalized label;
 - sort normalized labels deterministically;
-- assign contiguous `uint32` gene ids;
-- reject more genes than `uint32` can represent;
-- build the required Arrow `gene_table`;
-- require gene counts to sum to the exact row count.
+- assign contiguous `uint32` value ids;
+- reject more values than `uint32` can represent;
+- build the required Arrow `value_table`;
+- require value counts to sum to the exact row count.
+
+Normalization-equivalent raw labels are merged by definition. Validation tests
+that behavior, but it does not count, return, or persist normalization
+collisions.
 
 ### Execution policy
 
@@ -705,151 +778,88 @@ demonstrates a benefit and memory remains predictable.
 
 The default `max_batch_rows` is a build parameter and must be validated as a
 positive integer. The largest observed batch must never exceed it.
+Counters needed to enforce scan invariants remain internal and transient.
 
 ### Tests
 
 - all supported numeric coordinate types;
 - coordinate null, NaN, and infinities;
 - negative and very large finite coordinates;
-- plain-string, large-string, and dictionary genes;
+- plain-string, large-string, and dictionary values;
 - different dictionaries and dictionary orders across row groups;
 - whitespace trimming and case sensitivity;
-- null and normalized-empty genes;
-- normalized-label collisions;
-- gene-count and row-count reconciliation;
+- null and normalized-empty values;
+- merging normalization-equivalent raw labels without collision telemetry;
+- value-count and row-count reconciliation;
 - empty batches and fragmented chunk boundaries;
 - exact batch-size bound;
 - scan-derived bounds versus footer statistics;
-- evidence and report counters;
+- deterministic evidence for metadata- and scan-derived facts;
 - confirmation that only selected columns are read;
 - confirmation that there is only one content pass.
 
 ### Exit criteria
 
-- a valid no-id source produces exact row count, bounds, and gene table;
-- every independent invalid-value count is reported after the same scan;
-- memory use scales with batch size and gene cardinality, not transcript count;
+- a valid source produces exact row count, bounds, and value table;
+- every independent invalid-value count is included in the same validation
+  error where practical;
+- memory use scales with batch size and value cardinality, not point count;
 - no Dask compute occurs.
 
-## Slice V5: validation orchestration and build-ready result
+## Slice V5: validation orchestration and build-ready source
 
 ### Goal
 
-Connect resolution, preflight, signature, fallback identity, and fused scanning
-into the stable API consumed by cache construction.
+Connect resolution, preflight, signature, internal point identity, and fused
+scanning into the stable validation API that provides the input to cache
+construction.
 
 ### Implement
 
 - `validate_parquet_points_source(...)`;
-- `PointsSourceValidationResult`;
 - consistent error translation and context;
-- validation-stage timings and counters;
 - reconciliation between footer and scan row counts;
 - reconciliation between footer and scan bounds;
-- final immutable `ValidatedPointsSource`;
-- optional non-Qt progress callbacks at stage boundaries;
-- safe cancellation points between batches if cancellation is included.
+- final immutable `ValidatedPointsSource` returned directly.
 
-The validated source contains deterministic facts only. Timing, machine, and
-progress information stays in the report.
+The validated source contains deterministic build facts only. Validation does
+not return or persist timings, machine information, transient counters, or a
+generation timestamp. V6 measures performance outside the public API.
+
+The first implementation is synchronous and exposes no progress callback or
+cancellation-token protocol. Batch boundaries leave room to add orchestration
+hooks later without changing `ValidatedPointsSource`, source identity, or cache
+format semantics.
 
 ### Failure behavior
 
 - resolution or preflight errors start no content scan;
 - content errors return no build-ready source;
-- cancellation returns no build-ready source;
 - validation creates no files beside the canonical dataset;
 - errors do not mutate the SpatialData object or dataframe.
 
 ### Tests
 
-- complete valid no-id workflow;
+- complete valid workflow using internal point ids;
 - every stage called exactly once;
 - footer/scan row-count disagreement;
 - footer/scan bound disagreement policy;
 - deterministic validated source across runs;
-- diagnostic timings excluded from identity and equality;
 - error code and path/column context;
-- progress ordering, if exposed;
-- cancellation cleanup, if exposed;
 - headless import and operation;
 - no cache files created.
 
 ### Exit criteria
 
 - V0 through V5 validate the Xenium acceptance source;
-- the result contains everything needed to start exact-level construction;
-- rerunning validation produces the same fragments, offsets, genes, bounds,
-  identity policy, and source signature;
+- the returned `ValidatedPointsSource` contains everything needed to start
+  exact-level construction;
+- rerunning validation produces the same fragments, offsets, values, bounds,
+  point-id policy, and source signature;
 - the cache builder does not need the original SpatialData object or Dask graph
-  after receiving the result.
+  after receiving the validated source.
 
-## Slice V6: supplied transcript-id validation
-
-### Goal
-
-Support a caller-selected transcript-id column without sacrificing exactness or
-bounded memory.
-
-This slice is not required for the initial Xenium dataset, which has no supplied
-globally unique transcript id. It is required before the public builder claims
-general `transcript_id=` support.
-
-### Type and encoding policy
-
-Initially support:
-
-- signed and unsigned Arrow integers;
-- Arrow string and large-string;
-- dictionary encoding of supported strings.
-
-Define a versioned canonical byte encoding for hashing and later sampling.
-Reject nulls and unsupported mixed physical types.
-
-### Exact uniqueness
-
-An in-memory Python set of all ids is not acceptable for unbounded sources.
-Dask `nunique()` and a global Dask shuffle are not part of the Parquet fast
-path.
-
-The first exact bounded approach should use deterministic hash buckets with
-temporary spill storage:
-
-1. canonicalize ids batch by batch;
-2. compute a named stable wide hash;
-3. assign each id to a deterministic bucket;
-4. write bounded bucket chunks under an explicit scratch directory;
-5. process one bucket at a time;
-6. compare canonical values, not hashes alone, to detect duplicates;
-7. clean scratch data after success, failure, or cancellation.
-
-Bucket count and memory targets are configuration and benchmark decisions, not
-cache-format semantics.
-
-If an alternative exact bounded algorithm is selected, document it before
-implementation.
-
-### Tests
-
-- integer and string ids;
-- dictionary strings;
-- null and unsupported ids;
-- duplicates within one batch, across batches, files, and buckets;
-- deliberately forced hash collisions;
-- canonical encoding stability;
-- scratch cleanup after success and failure;
-- bounded per-bucket memory;
-- no false duplicate or false unique result.
-
-### Exit criteria
-
-- supplied ids are proven non-null and unique exactly;
-- no correctness decision relies only on hash uniqueness;
-- peak memory is independent of total id count within the configured bucket
-  envelope;
-- scratch lifecycle is safe and documented.
-
-## Slice V7: Xenium benchmark and hardening
+## Slice V6: Xenium benchmark and hardening
 
 ### Acceptance source
 
@@ -863,10 +873,9 @@ Expected investigated values:
 - 136,578,750 rows;
 - 65 Parquet files;
 - 168 row groups;
-- 5,122 normalized genes;
+- 5,122 normalized values from the physical `gene` column;
 - `x` bounds approximately `[38.3088, 54047.2059]`;
 - `y` bounds approximately `[22.7206, 37581.4706]`;
-- no supplied globally unique transcript-id column.
 
 The dataset path is not hardcoded into normal tests. A benchmark script or
 opt-in test receives it through an explicit command-line argument or environment
@@ -886,20 +895,24 @@ It reports machine-readable JSON plus a concise console summary containing:
 - machine and storage context when available;
 - cold/warm run label;
 - source path and signature method;
-- file, row-group, row, batch, and gene counts;
+- file, row-group, row, batch, and value counts;
 - footer, scan, and total times;
 - largest batch rows and decoded bytes;
 - peak resident memory when measured reliably;
-- validation result summary.
+- validated-source summary.
 
-The benchmark is read-only.
+The benchmark is read-only. These measurements belong to the benchmark output;
+they are not returned by `validate_parquet_points_source(...)` and are not
+stored in `ValidatedPointsSource` or cache metadata. Benchmark-only
+instrumentation or profiling hooks may be added without widening the public
+validation API.
 
 ### Initial performance hypotheses
 
 On the investigated local SSD and current development machine:
 
 - footer preflight should complete in under 1 second;
-- full no-id validation should complete in under 30 seconds on warm storage;
+- full validation should complete in under 30 seconds on warm storage;
 - a cold validation target of under 60 seconds is reasonable;
 - incremental validation memory should remain below 512 MiB;
 - no stage should materialize a complete fragment or dataframe.
@@ -913,8 +926,8 @@ Profile separately:
 
 - file discovery and footer opening;
 - coordinate decoding and finiteness checks;
-- dictionary versus plain-string gene decoding;
-- gene aggregation;
+- dictionary versus plain-string value decoding;
+- value aggregation;
 - Arrow-to-NumPy conversion;
 - signature serialization;
 - Python allocation and peak memory.
@@ -940,9 +953,8 @@ Build deterministic temporary Parquet datasets that vary:
 - row-group count and size;
 - statistics presence;
 - coordinate dtypes and invalid values;
-- plain and dictionary gene encodings;
-- schema mismatch;
-- optional transcript ids.
+- plain and dictionary value encodings;
+- schema mismatch.
 
 Use PyArrow directly so fixture physical properties are explicit.
 
@@ -992,7 +1004,7 @@ Approve:
 - deterministic fragment ordering;
 - footer schema compatibility;
 - source-signature method and limitations;
-- fallback identity method.
+- internal point-identity method.
 
 Changing these later may invalidate built caches.
 
@@ -1000,24 +1012,12 @@ Changing these later may invalidate built caches.
 
 Approve:
 
-- build-ready validation result;
-- gene normalization and gene-table contract;
+- build-ready validated source;
+- value normalization and value-table contract;
 - evidence and error semantics;
-- measured Xenium no-id performance.
+- measured Xenium performance.
 
 Only after Gate C should exact-level cache construction begin.
-
-### Gate D: after V6
-
-Approve:
-
-- supplied transcript-id types;
-- canonical id encoding;
-- exact bounded uniqueness algorithm;
-- scratch-space behavior.
-
-Only after Gate D should the public cache builder advertise supplied
-transcript-id support.
 
 ## Phase 0 definition of done
 
@@ -1027,15 +1027,15 @@ The validation block is complete when:
 - a backed local SpatialData points element resolves without Dask graph
   inspection;
 - footer preflight is deterministic and does not decode data pages;
-- build-ready validation uses one bounded content pass for the no-id path;
+- build-ready validation uses one bounded content pass;
 - coordinates are finite and bounds are exact;
-- genes are valid, normalized, deterministic, and exactly counted;
-- source signature and fallback identity methods are versioned;
-- optional supplied ids are either exactly validated or explicitly unsupported
-  by the exposed API;
+- values are valid, normalized, deterministic, and exactly counted;
+- source signature and internal point-identity methods are versioned;
+- the public API accepts no caller-supplied identity column;
 - the Xenium acceptance dataset matches expected facts;
-- time and memory behavior are measured and documented;
-- the result contains every source fact required by cache construction;
+- time and memory behavior are measured and documented by V6 benchmark tooling;
+- `ValidatedPointsSource` contains every source fact required by cache
+  construction;
 - no validation operation writes to or mutates the canonical SpatialData store;
 - all focused tests pass.
 
