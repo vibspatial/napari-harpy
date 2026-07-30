@@ -205,8 +205,7 @@ The Histogram's existing direct subscriptions are the reference pattern.
 
 ## Slice 1: Adapter lifecycle and focused removal foundation
 
-Status: course correction accepted on 2026-07-30; implementation must be
-reconciled before Slice 2.
+Status: completed and reconciled on 2026-07-30.
 
 ### Goal
 
@@ -253,12 +252,12 @@ property events.
   cleanup.
 
 The initially implemented adapter presentation signal, callback registry, and
-associated tests must be removed as part of reconciling this slice. The focused
-channel-removal work remains valid.
+associated tests have been removed. The focused channel-removal operation and
+its lifecycle coverage remain in place.
 
-### New focused removal operation
+### Focused removal operation
 
-Add the following public adapter method:
+The adapter exposes:
 
 ```python
 def remove_image_overlay_channel(
@@ -319,7 +318,7 @@ but the two paths must not double-emit.
 
 ### Focused tests
 
-Add focused tests covering:
+Focused tests cover:
 
 #### Focused channel removal
 
@@ -344,13 +343,13 @@ Add focused tests covering:
 
 ### Slice 1 completion criteria
 
-Slice 1 is complete when:
+Slice 1 is complete:
 
-- the adapter presentation signal and property subscriptions have been removed;
+- the adapter presentation signal and property subscriptions are removed;
 - one overlay channel can be removed safely by full identity;
 - existing overlay lifecycle and histogram behavior remain unchanged;
 - focused adapter tests pass;
-- no viewer UI files have changed.
+- no viewer UI files changed.
 
 ## Slice 2: Searchable composer and live layer membership
 
