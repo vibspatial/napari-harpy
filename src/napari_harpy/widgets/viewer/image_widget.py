@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QSize, QStringListModel, Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -14,20 +14,26 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from napari_harpy.viewer.adapter import ImageLayerBinding
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
+from napari_harpy.widgets.overlay_color_button import OverlayColorButton
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
+    WIDGET_BORDER_COLOR,
+    WIDGET_PANEL_MUTED_COLOR,
+    WIDGET_TEXT_COLOR,
     WIDGET_TEXT_MUTED_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
     CompleterPopupLineEdit,
     build_input_control_stylesheet,
+    create_visibility_eye_icon,
     format_tooltip,
 )
 from napari_harpy.widgets.viewer.disclosure import _ElidedLabel
@@ -36,6 +42,16 @@ from napari_harpy.widgets.viewer.styles import CARD_TITLE_STYLESHEET, DETAIL_PAN
 _CHANNEL_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SUBSECTION_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 11px; font-weight: 600;"
+_CHANNEL_VISIBILITY_BUTTON_STYLESHEET = (
+    "QToolButton {"
+    "background: transparent; "
+    "border: 1px solid transparent; "
+    "border-radius: 5px; "
+    "padding: 2px;}"
+    f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; "
+    f"border-color: {WIDGET_BORDER_COLOR}; }}"
+    f"QToolButton:focus {{ border-color: {WIDGET_TEXT_COLOR}; }}"
+)
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 
 
@@ -47,10 +63,31 @@ class ImageLoadRequest:
     channel_colors: list[str]
 
 
+@dataclass(frozen=True)
+class _OverlayColormapPresentation:
+    name: str
+    colors: tuple[str, ...]
+    solid_color: str | None
+
+
 class _OverlayChannelRow(QWidget):
-    """Selected-only row for one live overlay channel binding."""
+    """Present one loaded channel and bridge intent with live napari state.
+
+    The row never mutates its bound napari layer. A user eye or color action
+    emits a channel-local request, which ``_ImageCardWidget`` enriches with the
+    image name and relays to ``ViewerWidget``. ``ViewerWidget`` resolves the
+    current live binding and assigns the requested napari layer property.
+
+    In the opposite direction, this row listens directly to
+    ``layer.events.visible`` and ``layer.events.colormap``. Those callbacks read
+    the accepted napari property and render the corresponding control. Napari
+    is therefore authoritative; presentation updates use ``QSignalBlocker``
+    where needed so reflecting napari state cannot emit another user request.
+    """
 
     remove_requested = Signal(int)
+    visibility_change_requested = Signal(int, bool)
+    color_change_requested = Signal(int, str)
 
     def __init__(self, binding: ImageLayerBinding, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,15 +100,24 @@ class _OverlayChannelRow(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        self.channel_label = _ElidedLabel(channel_name, self)
-        self.channel_label.setObjectName(
-            f"viewer_widget_selected_channel_label_{binding.element_name}_{channel_index}"
+        self.visibility_button = QToolButton(self)
+        self.visibility_button.setObjectName(
+            f"viewer_widget_channel_visibility_button_{binding.element_name}_{channel_index}"
         )
+        self.visibility_button.setCheckable(True)
+        self.visibility_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.visibility_button.setFixedSize(28, 22)
+        self.visibility_button.setIconSize(QSize(16, 16))
+        self.visibility_button.setStyleSheet(_CHANNEL_VISIBILITY_BUTTON_STYLESHEET)
+
+        self.channel_label = _ElidedLabel(channel_name, self)
+        self.channel_label.setObjectName(f"viewer_widget_selected_channel_label_{binding.element_name}_{channel_index}")
+
+        self.color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0], self)
+        self.color_button.setObjectName(f"viewer_widget_channel_color_button_{binding.element_name}_{channel_index}")
 
         self.remove_button = QPushButton("×")
-        self.remove_button.setObjectName(
-            f"viewer_widget_remove_channel_button_{binding.element_name}_{channel_index}"
-        )
+        self.remove_button.setObjectName(f"viewer_widget_remove_channel_button_{binding.element_name}_{channel_index}")
         self.remove_button.setAccessibleName(f"Remove channel {channel_name} from viewer")
         self.remove_button.setToolTip(format_tooltip(f"Remove channel {channel_name} from viewer"))
         self.remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -82,8 +128,15 @@ class _OverlayChannelRow(QWidget):
             )
         )
 
+        self.visibility_button.toggled.connect(self._on_visibility_toggled)
+        self.color_button.color_selected.connect(self._on_color_selected)
+
+        layout.addWidget(self.visibility_button)
         layout.addWidget(self.channel_label, 1)
+        layout.addWidget(self.color_button)
         layout.addWidget(self.remove_button)
+        self._connect_presentation_events()
+        self.refresh_presentation()
 
     @property
     def channel_index(self) -> int:
@@ -94,20 +147,89 @@ class _OverlayChannelRow(QWidget):
         return _binding_channel_name(self.binding)
 
     def set_binding(self, binding: ImageLayerBinding) -> None:
-        """Refresh the live binding without recreating the row."""
+        """Rebind this stable channel row and refresh from the live layer."""
         if _binding_channel_index(binding) != self.channel_index:
             raise ValueError("Cannot rebind an overlay row to a different channel index.")
+
+        if binding.layer is self.binding.layer:
+            self.binding = binding
+            self._refresh_binding_labels()
+            self.refresh_presentation()
+            return
+
+        self._disconnect_presentation_events()
         self.binding = binding
-        channel_name = _binding_channel_name(binding)
+        self._refresh_binding_labels()
+        self._connect_presentation_events()
+        self.refresh_presentation()
+
+    def refresh_presentation(self) -> None:
+        """Render visibility and colormap from the authoritative live layer."""
+        self._apply_visibility(self.binding.layer.visible)
+        self._sync_colormap_from_layer()
+
+    def _sync_colormap_from_layer(self) -> None:
+        layer = self.binding.layer
+        presentation = _colormap_presentation_from_layer(layer)
+        if presentation is None:
+            return
+        if presentation.solid_color is not None:
+            self.color_button.set_color(presentation.solid_color)
+            return
+        self.color_button.set_colormap_preview(
+            presentation.name,
+            presentation.colors,
+        )
+
+    def _refresh_binding_labels(self) -> None:
+        channel_name = _binding_channel_name(self.binding)
         self.channel_label.setText(channel_name)
         self.remove_button.setAccessibleName(f"Remove channel {channel_name} from viewer")
         self.remove_button.setToolTip(format_tooltip(f"Remove channel {channel_name} from viewer"))
 
     def dispose(self) -> None:
-        """Release row-owned resources before removal.
+        """Disconnect this row from its current napari presentation events."""
+        self._disconnect_presentation_events()
 
-        Slice 3a extends this boundary with napari property-event cleanup.
-        """
+    def _connect_presentation_events(self) -> None:
+        layer = self.binding.layer
+        layer.events.visible.connect(self._on_layer_visible_changed)
+        layer.events.colormap.connect(self._on_layer_colormap_changed)
+
+    def _disconnect_presentation_events(self) -> None:
+        layer = self.binding.layer
+        try:
+            layer.events.visible.disconnect(self._on_layer_visible_changed)
+        except (TypeError, RuntimeError, ValueError):
+            pass
+        try:
+            layer.events.colormap.disconnect(self._on_layer_colormap_changed)
+        except (TypeError, RuntimeError, ValueError):
+            pass
+
+    def _on_layer_visible_changed(self, _event: object) -> None:
+        layer = self.binding.layer
+        self._apply_visibility(layer.visible)
+
+    def _on_layer_colormap_changed(self, _event: object) -> None:
+        self._sync_colormap_from_layer()
+
+    def _on_visibility_toggled(self, visible: bool) -> None:
+        self.visibility_change_requested.emit(self.channel_index, visible)
+
+    def _on_color_selected(self, color: str) -> None:
+        self.color_change_requested.emit(self.channel_index, color)
+
+    def _apply_visibility(self, visible: bool) -> None:
+        # Reflect napari state without turning this programmatic eye update
+        # into another Harpy visibility-change request.
+        with QSignalBlocker(self.visibility_button):
+            self.visibility_button.setChecked(visible)
+        self.visibility_button.setIcon(create_visibility_eye_icon(visible=visible))
+        action = "Hide" if visible else "Show"
+        message = f"{action} channel {self.channel_name}"
+        self.visibility_button.setAccessibleName(message)
+        self.visibility_button.setToolTip(format_tooltip(message))
 
 
 class _ImageCardWidget(QFrame):
@@ -124,10 +246,16 @@ class _ImageCardWidget(QFrame):
       requested initial color;
     - ``overlay_channel_remove_requested`` carries image name and channel
       index;
-    - ``overlay_channels_remove_all_requested`` carries image name.
+    - ``overlay_channels_remove_all_requested`` carries image name;
+    - ``overlay_channel_visibility_requested`` carries image name, channel
+      index, and requested visibility;
+    - ``overlay_channel_color_requested`` carries image name, channel index,
+      and requested solid color.
 
-    ``ViewerWidget`` validates the active context and performs each adapter
-    mutation. Completed membership changes return through
+    ``ViewerWidget`` validates the active context and performs each mutation.
+    Visibility and color requests then return through the live layer's native
+    property event directly to the selected row. Completed membership changes
+    instead return through
     ``ViewerAdapter.image_overlay_layers_changed``; the Viewer re-queries live
     bindings and calls ``set_loaded_overlay_bindings`` to reconcile this card.
     """
@@ -136,6 +264,8 @@ class _ImageCardWidget(QFrame):
     overlay_channel_add_requested = Signal(str, int, str)
     overlay_channel_remove_requested = Signal(str, int)
     overlay_channels_remove_all_requested = Signal(str)
+    overlay_channel_visibility_requested = Signal(str, int, bool)
+    overlay_channel_color_requested = Signal(str, int, str)
 
     def __init__(
         self,
@@ -234,9 +364,7 @@ class _ImageCardWidget(QFrame):
         self.selected_count_label.setStyleSheet(_SUBSECTION_LABEL_STYLESHEET)
 
         self.remove_all_channels_button = QPushButton("Remove all")
-        self.remove_all_channels_button.setObjectName(
-            f"viewer_widget_remove_all_channels_button_{image_name}"
-        )
+        self.remove_all_channels_button.setObjectName(f"viewer_widget_remove_all_channels_button_{image_name}")
         self.remove_all_channels_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.remove_all_channels_button.setToolTip(format_tooltip("Remove all overlay channels for this image"))
         self.remove_all_channels_button.setVisible(False)
@@ -247,9 +375,7 @@ class _ImageCardWidget(QFrame):
         channel_layout.addLayout(selected_summary_layout)
 
         self.no_selected_channels_label = QLabel("No channels in viewer")
-        self.no_selected_channels_label.setObjectName(
-            f"viewer_widget_no_selected_channels_label_{image_name}"
-        )
+        self.no_selected_channels_label.setObjectName(f"viewer_widget_no_selected_channels_label_{image_name}")
         self.no_selected_channels_label.setStyleSheet(EMPTY_STATE_STYLESHEET)
         channel_layout.addWidget(self.no_selected_channels_label)
 
@@ -297,10 +423,7 @@ class _ImageCardWidget(QFrame):
     @property
     def selected_overlay_rows(self) -> list[_OverlayChannelRow]:
         """Return selected rows in their rendered napari order."""
-        return [
-            self._selected_rows_by_channel_index[channel_index]
-            for channel_index in self._selected_channel_order
-        ]
+        return [self._selected_rows_by_channel_index[channel_index] for channel_index in self._selected_channel_order]
 
     @property
     def loaded_overlay_channel_indices(self) -> tuple[int, ...]:
@@ -348,6 +471,8 @@ class _ImageCardWidget(QFrame):
             if row is None:
                 row = _OverlayChannelRow(binding, self.channel_list_widget)
                 row.remove_requested.connect(self._emit_overlay_channel_remove_requested)
+                row.visibility_change_requested.connect(self._emit_overlay_channel_visibility_requested)
+                row.color_change_requested.connect(self._emit_overlay_channel_color_requested)
                 self._selected_rows_by_channel_index[channel_index] = row
             else:
                 row.set_binding(binding)
@@ -361,6 +486,22 @@ class _ImageCardWidget(QFrame):
         self._refresh_search_model()
         self._refresh_membership_presentation()
 
+    def refresh_overlay_channel_presentation(
+        self,
+        channel_index: int,
+        binding: ImageLayerBinding,
+    ) -> None:
+        """Refresh one row only when it still represents the resolved layer."""
+        row = self._selected_rows_by_channel_index.get(channel_index)
+        if row is None or row.binding.layer is not binding.layer:
+            return
+        row.refresh_presentation()
+
+    def dispose(self) -> None:
+        """Disconnect all selected rows from their live napari layers."""
+        for row in self._selected_rows_by_channel_index.values():
+            row.dispose()
+
     def set_overlay_membership_error(self, message: str | None) -> None:
         """Set or clear a card-scoped binding invariant error."""
         self._membership_error = message
@@ -371,9 +512,7 @@ class _ImageCardWidget(QFrame):
         if not succeeded:
             return
 
-        self.channel_search_input.clear_after_accepted_completion(
-            self.channel_names[channel_index]
-        )
+        self.channel_search_input.clear_after_accepted_completion(self.channel_names[channel_index])
 
     def finish_overlay_channel_remove(self, channel_index: int, *, succeeded: bool) -> None:
         """Clear stale input after one channel was successfully removed."""
@@ -493,6 +632,28 @@ class _ImageCardWidget(QFrame):
     def _emit_overlay_channel_remove_requested(self, channel_index: int) -> None:
         self.overlay_channel_remove_requested.emit(self.image_name, channel_index)
 
+    def _emit_overlay_channel_visibility_requested(
+        self,
+        channel_index: int,
+        visible: bool,
+    ) -> None:
+        self.overlay_channel_visibility_requested.emit(
+            self.image_name,
+            channel_index,
+            visible,
+        )
+
+    def _emit_overlay_channel_color_requested(
+        self,
+        channel_index: int,
+        color: str,
+    ) -> None:
+        self.overlay_channel_color_requested.emit(
+            self.image_name,
+            channel_index,
+            color,
+        )
+
     def _emit_remove_all_requested(self, _checked: bool = False) -> None:
         if not self._selected_channel_order:
             return
@@ -568,13 +729,80 @@ def _binding_channel_name(binding: ImageLayerBinding) -> str:
 
 
 def _solid_color_from_layer(layer: object) -> str | None:
+    presentation = _colormap_presentation_from_layer(layer)
+    return presentation.solid_color if presentation is not None else None
+
+
+def _colormap_presentation_from_layer(
+    layer: object,
+) -> _OverlayColormapPresentation | None:
     colormap = getattr(layer, "colormap", None)
     name = getattr(colormap, "name", None)
+    display_name = name if isinstance(name, str) and name else "Custom colormap"
+    colors = _colormap_colors_as_hex(getattr(colormap, "colors", None))
+    if len(colors) == 1:
+        return _OverlayColormapPresentation(
+            name=display_name,
+            colors=colors,
+            solid_color=colors[0],
+        )
+    if len(colors) == 2 and colors[0] == "#000000":
+        return _OverlayColormapPresentation(
+            name=display_name,
+            colors=colors,
+            solid_color=colors[1],
+        )
+    if len(colors) >= 2:
+        return _OverlayColormapPresentation(
+            name=display_name,
+            colors=colors,
+            solid_color=None,
+        )
+
     if isinstance(name, str):
-        return _normalized_color_or_none(name)
+        solid_color = _normalized_color_or_none(name)
+        if solid_color is not None:
+            return _OverlayColormapPresentation(
+                name=name,
+                colors=(solid_color,),
+                solid_color=solid_color,
+            )
     if isinstance(colormap, str):
-        return _normalized_color_or_none(colormap)
+        solid_color = _normalized_color_or_none(colormap)
+        if solid_color is not None:
+            return _OverlayColormapPresentation(
+                name=colormap,
+                colors=(solid_color,),
+                solid_color=solid_color,
+            )
     return None
+
+
+def _colormap_colors_as_hex(colors: object) -> tuple[str, ...]:
+    try:
+        rows = tuple(colors)  # type: ignore[arg-type]
+    except TypeError:
+        return ()
+
+    converted = tuple(color for row in rows if (color := _color_row_to_hex(row)) is not None)
+    return converted if len(converted) == len(rows) else ()
+
+
+def _color_row_to_hex(row: object) -> str | None:
+    if isinstance(row, str):
+        return _normalized_color_or_none(row)
+
+    try:
+        components = tuple(float(component) for component in row)  # type: ignore[union-attr]
+    except (TypeError, ValueError):
+        return None
+    if len(components) < 3:
+        return None
+
+    rgb = components[:3]
+    if any(component < 0.0 or component > 1.0 for component in rgb):
+        return None
+    return "#" + "".join(f"{round(component * 255):02X}" for component in rgb)
 
 
 def _normalized_color_or_none(color: str) -> str | None:

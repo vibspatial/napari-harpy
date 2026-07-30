@@ -56,7 +56,12 @@ from napari_harpy.widgets.shared_styles import (
 )
 from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
-from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest, _ImageCardWidget
+from napari_harpy.widgets.viewer.image_widget import (
+    ImageLoadRequest,
+    _ImageCardWidget,
+    _normalized_color_or_none,
+    _solid_color_from_layer,
+)
 from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
@@ -274,9 +279,7 @@ class ViewerWidget(QWidget):
         # refresh only the Viewer shapes section when that happens.
         self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
         self._app_state.shapes_element_reloaded.connect(self._on_shapes_element_reloaded)
-        self._app_state.viewer_adapter.image_overlay_layers_changed.connect(
-            self._on_image_overlay_layers_changed
-        )
+        self._app_state.viewer_adapter.image_overlay_layers_changed.connect(self._on_image_overlay_layers_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -533,6 +536,7 @@ class ViewerWidget(QWidget):
         )
 
     def _rebuild_image_cards(self, sdata: SpatialData, image_names: list[str]) -> None:
+        self._dispose_image_cards()
         _clear_layout(self.images_section_layout)
         self._image_cards = []
         self._image_rows = []
@@ -556,9 +560,9 @@ class ViewerWidget(QWidget):
             # resulting live membership back into each card.
             card.overlay_channel_add_requested.connect(self._add_image_overlay_channel)
             card.overlay_channel_remove_requested.connect(self._remove_image_overlay_channel)
-            card.overlay_channels_remove_all_requested.connect(
-                self._remove_all_image_overlay_channels
-            )
+            card.overlay_channels_remove_all_requested.connect(self._remove_all_image_overlay_channels)
+            card.overlay_channel_visibility_requested.connect(self._change_image_overlay_channel_visibility)
+            card.overlay_channel_color_requested.connect(self._change_image_overlay_channel_color)
             row = _DisclosureElementWidget(
                 title=image_name,
                 object_name=f"viewer_widget_image_row_{image_name}",
@@ -1058,9 +1062,7 @@ class ViewerWidget(QWidget):
             channel_index = binding.channel_index
             channel_name = binding.channel_name
             if not isinstance(channel_index, int) or channel_index < 0:
-                raise ValueError(
-                    f"Overlay binding for image `{image_name}` has no valid channel index."
-                )
+                raise ValueError(f"Overlay binding for image `{image_name}` has no valid channel index.")
             if channel_index >= len(channel_names):
                 raise ValueError(
                     f"Overlay binding for image `{image_name}` references channel index "
@@ -1087,6 +1089,125 @@ class ViewerWidget(QWidget):
             (card for card in self._image_cards if card.image_name == image_name),
             None,
         )
+
+    def _resolve_live_overlay_binding(
+        self,
+        image_name: str,
+        channel_index: int,
+    ) -> ImageLayerBinding | None:
+        """Resolve one channel against the Viewer's current live context."""
+        card = self._find_image_card(image_name)
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if card is None or sdata is None or not coordinate_system:
+            return None
+
+        bindings = self._get_live_overlay_bindings(
+            sdata,
+            image_name,
+            coordinate_system,
+            channel_names=card.channel_names,
+        )
+        return next(
+            (binding for binding in bindings if binding.channel_index == channel_index),
+            None,
+        )
+
+    def _change_image_overlay_channel_visibility(
+        self,
+        image_name: str,
+        channel_index: int,
+        visible: bool,
+    ) -> None:
+        """Apply row intent; the napari ``visible`` event renders the result."""
+        card = self._find_image_card(image_name)
+        if card is None:
+            return
+
+        try:
+            binding = self._resolve_live_overlay_binding(
+                image_name,
+                channel_index,
+            )
+        except ValueError as error:
+            self._set_action_feedback(
+                title="Image Overlay Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+
+        if binding is None:
+            self._refresh_image_card_overlay_membership(card)
+            return
+
+        layer = binding.layer
+        try:
+            if bool(layer.visible) == visible:
+                card.refresh_overlay_channel_presentation(channel_index, binding)
+                return
+            layer.visible = visible
+        except (TypeError, RuntimeError, ValueError) as error:
+            card.refresh_overlay_channel_presentation(channel_index, binding)
+            self._set_action_feedback(
+                title="Image Overlay Error",
+                lines=[f"Could not update channel visibility: {error}"],
+                kind="error",
+            )
+            return
+
+    def _change_image_overlay_channel_color(
+        self,
+        image_name: str,
+        channel_index: int,
+        color: str,
+    ) -> None:
+        """Apply row intent; the napari ``colormap`` event renders the result."""
+        card = self._find_image_card(image_name)
+        if card is None:
+            return
+
+        try:
+            binding = self._resolve_live_overlay_binding(
+                image_name,
+                channel_index,
+            )
+        except ValueError as error:
+            self._set_action_feedback(
+                title="Image Overlay Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+
+        if binding is None:
+            self._refresh_image_card_overlay_membership(card)
+            return
+
+        normalized_color = _normalized_color_or_none(color)
+        if normalized_color is None:
+            card.refresh_overlay_channel_presentation(channel_index, binding)
+            self._set_action_feedback(
+                title="Image Overlay Error",
+                lines=[f'Could not update channel color: "{color}" is not a valid color.'],
+                kind="error",
+            )
+            return
+
+        layer = binding.layer
+        try:
+            if _solid_color_from_layer(layer) == normalized_color:
+                card.refresh_overlay_channel_presentation(channel_index, binding)
+                return
+            layer.colormap = normalized_color
+        except (TypeError, RuntimeError, ValueError) as error:
+            card.refresh_overlay_channel_presentation(channel_index, binding)
+            self._set_action_feedback(
+                title="Image Overlay Error",
+                lines=[f"Could not update channel color: {error}"],
+                kind="error",
+            )
+            return
 
     def _add_image_overlay_channel(
         self,
@@ -1116,11 +1237,7 @@ class ViewerWidget(QWidget):
                 channel_names=card.channel_names,
             )
             existing_binding = next(
-                (
-                    binding
-                    for binding in live_bindings
-                    if binding.channel_index == channel_index
-                ),
+                (binding for binding in live_bindings if binding.channel_index == channel_index),
                 None,
             )
             if existing_binding is not None:
@@ -1155,8 +1272,7 @@ class ViewerWidget(QWidget):
                     mode="overlay",
                     channels=list(result.channels),
                     channel_colors=[
-                        getattr(getattr(layer, "colormap", None), "name", channel_color)
-                        for layer in result.layers
+                        getattr(getattr(layer, "colormap", None), "name", channel_color) for layer in result.layers
                     ],
                 ),
                 result,
@@ -1280,6 +1396,7 @@ class ViewerWidget(QWidget):
         self.points_widget.setVisible(bool(points_names))
 
     def _clear_cards(self) -> None:
+        self._dispose_image_cards()
         _clear_layout(self.images_section_layout)
         _clear_layout(self.labels_section_layout)
         _clear_layout(self.shapes_section_layout)
@@ -1298,6 +1415,11 @@ class ViewerWidget(QWidget):
         self._last_points_load_request = None
         self._last_points_load_result = None
         self._points_controller.bind_source(None, None, None, None)
+
+    def _dispose_image_cards(self) -> None:
+        """Disconnect all image-card rows before their widgets are replaced."""
+        for card in tuple(self._image_cards):
+            card.dispose()
 
     def _set_action_feedback(
         self,
