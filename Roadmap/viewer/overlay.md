@@ -226,7 +226,8 @@ Keep the design small and reuse existing infrastructure:
 - Keep live visibility and colormap mutations in the owning Viewer or Histogram
   widget; use `ViewerAdapter` for binding/lifecycle, load, and removal
   operations.
-- Image-card controls emit user intent and render synchronized state.
+- Viewer image-card and Histogram contextual controls emit user intent and
+  render synchronized state.
 
 Do not introduce a new overlay controller, custom `QAbstractItemModel`, delegate
 framework, or application-wide state abstraction. Revisit model/view
@@ -824,9 +825,9 @@ interactive color controls in every completer result.
 
 Histogram intentionally retains a different, staged interaction: its card
 holds a pending color beside the explicit `Load overlay` action. Do not change
-that workflow in Slice 3a. Slice 3b aligns shared presentation architecture, and
-Slice 3c replaces the loaded state with a contextual live overlay row while
-preserving explicit creation.
+that workflow in Slice 3a. Slice 3b replaces only the uniquely loaded state with
+the shared contextual live row while preserving explicit creation. Slice 3c
+then replaces the Histogram channel dropdown with persistent search.
 
 ### Direct layer-event subscriptions
 
@@ -917,8 +918,8 @@ color_selected = Signal(str)
 - Keep `set_color(...)` silent. It is the rendering API used for
   napari-originated updates and must not emit user intent.
 - Slice 3a leaves existing consumers such as Histogram unchanged. Slice 3b
-  extracts the shared row/presentation contract without adding Histogram live
-  editing. Slice 3c connects Histogram row intent after that contract exists.
+  extracts the shared row/presentation contract and adopts it in both Viewer
+  and Histogram. Slice 3c changes only Histogram target selection.
 
 Add row-local intent signals:
 
@@ -1155,7 +1156,7 @@ events, a general subscription framework, or a full colormap picker.
 - One layer colormap change can update both open peer widgets without an
   adapter presentation signal.
 
-## Slice 3b: Shared overlay presentation foundation and Histogram alignment
+## Slice 3b: Shared overlay row and Histogram live-overlay alignment
 
 Status: specified on 2026-07-30.
 
@@ -1168,13 +1169,12 @@ APIs.
 
 ### Goal
 
-Extract the now-demonstrated common overlay presentation behavior into one
-focused shared component, and align Histogram overlay matching and colormap
-reflection with that component.
+Extract the Viewer's overlay row and colormap interpretation into one focused
+shared component, adopt that component in both Viewer and Histogram, and make a
+uniquely loaded Histogram overlay live for visibility, color, and removal.
 
-This is an architectural slice. It must preserve the current Histogram channel
-selector, explicit `Load overlay` action, and lack of Histogram-to-napari color
-editing. Slice 3c owns the visible Histogram workflow change.
+Keep the current Histogram channel dropdown and explicit `Load overlay` action
+in this slice. Slice 3c changes channel selection only.
 
 ### Target files
 
@@ -1182,23 +1182,22 @@ editing. Slice 3c owns the visible Histogram workflow change.
   `src/napari_harpy/widgets/`;
 - `src/napari_harpy/widgets/overlay_color_button.py`;
 - `src/napari_harpy/widgets/viewer/image_widget.py`;
+- `src/napari_harpy/widgets/viewer/widget.py`;
 - `src/napari_harpy/widgets/histogram/widget.py`;
 - focused shared-component, Viewer, and Histogram tests.
 
-Do not add a controller, adapter presentation signal, generic event bus, or
-generic layer-subscription framework.
+Do not add a central overlay controller, adapter presentation signal, generic
+event bus, or generic layer-subscription framework.
 
 ### Shared fixed-binding row
 
-Move the Viewer's selected-channel row into a shared widget component. The
-component represents exactly one live `ImageLayerBinding` for its entire
-lifetime and renders:
+Move the Viewer's selected-channel row into a shared widget component:
 
 ```text
 [eye]  channel_name  [colormap]  [×]
 ```
 
-Keep these intent signals:
+It retains these intent signals:
 
 ```python
 remove_requested = Signal(int)
@@ -1206,454 +1205,409 @@ visibility_change_requested = Signal(int, bool)
 color_change_requested = Signal(int, str)
 ```
 
-The shared row:
+One row represents exactly one valid overlay `ImageLayerBinding` for its entire
+lifetime. It:
 
-- receives a valid overlay `ImageLayerBinding` during construction;
-- derives channel index and name from that binding;
-- connects its bound methods directly to `layer.events.visible` and
+- derives channel index and name from its construction-time binding;
+- connects bound methods directly to `layer.events.visible` and
   `layer.events.colormap`;
-- reads the accepted live property in each callback;
+- reads accepted presentation from the live layer in those callbacks;
 - uses `QSignalBlocker` while reflecting napari visibility into the eye;
-- keeps `OverlayColorButton.set_color(...)` and
-  `set_colormap_preview(...)` silent;
-- emits user intent but never assigns a napari property or invokes the adapter;
-- disconnects both native callbacks in an idempotent `dispose()` method;
-- is disposed and reconstructed when its binding changes.
+- renders solid and gradient colormaps silently;
+- translates its internal color button's `color_selected` signal into
+  `color_change_requested`;
+- emits user intent but never assigns a layer property or invokes the adapter;
+- disconnects both native callbacks in an idempotent `dispose()`;
+- is disposed and reconstructed rather than rebound to another binding.
 
-The owning Viewer or Histogram widget remains responsible for re-resolving the
-current target and performing mutations.
+The owning Viewer or Histogram widget resolves identity and performs mutations.
 
 ### Shared colormap presentation
 
 Move the existing Viewer-only colormap interpretation into the same focused
-shared overlay presentation boundary. Provide one pure conversion from a live
-layer colormap to:
+shared boundary. Provide one pure conversion from a live layer colormap to:
 
 - display name;
 - normalized preview colors;
-- normalized solid color when the colormap represents one solid tint.
+- normalized solid color when it represents one solid tint.
 
-The conversion must preserve the Slice 3a rules:
+Preserve the Slice 3a rules:
 
-- one color stop is a solid color;
+- one color stop is solid;
 - black followed by one color is napari's solid-tint representation;
-- two or more meaningful stops are a non-solid gradient;
+- two or more meaningful stops are a gradient;
 - malformed or unsupported data produces no invented color.
 
-Viewer and Histogram must use this same conversion. Do not keep parallel
-`_single_swatch_color_from_*` and `_colormap_presentation_from_layer`
-implementations after migration.
+Viewer, Histogram, and the shared row use this conversion. Remove parallel
+Viewer and Histogram swatch-conversion implementations.
 
 `OverlayColorButton.current_color` remains the last valid solid picker seed.
 Rendering a gradient must not overwrite it.
 
-### Viewer migration
+### Signal and event ownership
 
-Replace the private row implementation in `viewer/image_widget.py` with the
-shared fixed-binding row without changing behavior:
+The shared row makes presentation ownership identical in Viewer and Histogram,
+while each owning widget retains its own target-resolution handlers:
+
+| Signal or event | Listener | Responsibility |
+| --- | --- | --- |
+| `ViewerAdapter.image_overlay_layers_changed` | `ViewerWidget` and `HistogramWidget` | Re-query membership and construct, retain, or dispose rows |
+| `layer.events.visible` | Every shared row bound to that layer | Read `layer.visible` and render that row's eye |
+| `layer.events.colormap` | Every shared row bound to that layer | Read `layer.colormap` and render that row's swatch |
+| live-row `OverlayColorButton.color_selected` | The shared row containing that button | Translate accepted picker intent into `row.color_change_requested` |
+| pending `OverlayColorButton.color_selected` | Histogram card-local pending state | Retain the preferred load color only; do not mutate napari |
+| `row.visibility_change_requested` | The Viewer or Histogram owner of that row | Re-resolve identity and assign `layer.visible` |
+| `row.color_change_requested` | The Viewer or Histogram owner of that row | Re-resolve identity and assign `layer.colormap` |
+| `row.remove_requested` | The Viewer or Histogram owner of that row | Re-resolve identity and call the adapter removal operation |
+| `layer.events.contrast_limits` | Histogram contrast-sync code only | Synchronize the Histogram plot; this is not a shared-row concern |
+
+The shared row does not listen to `image_overlay_layers_changed`. That signal
+means the binding set may have changed; only owning widgets have enough context
+to resolve membership.
+
+Viewer and Histogram never listen to presentation signals from each other.
+`ViewerAdapter` never mirrors `visible` or `colormap` changes.
+
+### Viewer adoption
+
+Replace the private Viewer row with the shared row without changing Viewer
+behavior:
 
 - selected rows remain keyed by channel index;
-- unchanged binding objects retain their row;
-- a replacement binding reconstructs only the affected row;
-- card-level signals continue to add image identity;
-- ViewerWidget continues to re-resolve and assign live properties;
+- unchanged exact bindings retain their row;
+- replacement bindings reconstruct only the affected row;
+- `_ImageCardWidget` continues to add image identity to row intent;
+- `ViewerWidget` continues to re-resolve and assign live properties;
 - native napari events remain the only successful presentation-return path.
 
-No Viewer layout, search, loading, removal, feedback, or event-flow behavior may
-change in this slice.
+Viewer intent still follows:
 
-### Histogram matching contract
+```text
+shared row emits (channel_index, requested value)
+  -> _ImageCardWidget adds image_name
+  -> ViewerWidget re-resolves the exact live binding
+  -> ViewerWidget assigns the layer property
+  -> napari emits the native property event
+  -> every shared row bound to that layer renders independently
+```
 
-Replace the current resolver's ambiguous `None` result with three explicit
-outcomes for the card's accepted target:
+No Viewer search, layout, membership, loading, removal, or feedback behavior
+changes in this slice.
+
+### Histogram overlay matching
+
+The current Histogram channel dropdown remains the target selector. Replace the
+existing resolver's ambiguous `None` result with explicit outcomes:
 
 1. no matching live overlay;
 2. exactly one matching live overlay binding;
 3. multiple matching live overlay bindings.
 
-The match identity remains:
+Match by current:
 
-- current SpatialData object;
-- current coordinate system;
-- current image name;
+- SpatialData object;
+- coordinate system;
+- image name;
 - `image_display_mode == "overlay"`;
-- current channel name.
+- channel name.
 
-Invalid card targets and ambiguous matches must retain a concise reason suitable
-for later status feedback. Do not let Histogram guess among duplicate bindings.
+Invalid targets and ambiguous matches retain a concise reason for card-local
+feedback. Never guess among duplicate bindings.
 
-### Histogram colormap reflection
+### Histogram contextual Viewer area
 
-Keep the existing Histogram card subscription lifecycle during this
-architecture-only slice:
+For the current dropdown target, render one state:
 
-- lifecycle invalidation re-resolves the current target;
-- a unique live binding owns one direct `layer.events.colormap` subscription;
-- changing target, losing uniqueness, removing the layer, or removing the card
-  disconnects the old callback;
-- repeated lifecycle refreshes do not duplicate the callback;
-- native napari events render through the shared solid/gradient presentation
-  conversion;
-- programmatic rendering emits no `color_selected` intent.
+| Target and overlay state | Histogram Viewer area in Slice 3b |
+| --- | --- |
+| Invalid target | Disabled controls |
+| No matching overlay | Existing `Load overlay` plus pending solid-color button |
+| Exactly one live overlay | Shared `[eye] channel [colormap] [×]` row |
+| Multiple live overlays | Warning state with no mutation controls |
 
-When a unique live layer has a non-solid colormap, the current Histogram color
-button may now render the same gradient preview as Viewer. This is presentation
-alignment, not live Histogram editing.
+Do not show pending-load controls and a live row simultaneously.
 
-### Event ownership after Slice 3b
+Each Histogram card owns at most one shared row:
+
+- construct it only for one unique matching binding;
+- retain it while the exact binding remains current;
+- dispose and reconstruct it when the dropdown target or binding changes;
+- dispose it when the match disappears, becomes ambiguous, or the card is
+  removed;
+- disconnect before `deleteLater()`;
+- never reuse it for another binding.
+
+Remove the separate Histogram colormap-subscription state after the shared row
+owns colormap reflection. Histogram contrast-limit subscription state remains
+separate and unchanged.
+
+### Histogram row-intent connections
+
+When Histogram constructs a shared row, connect its three intent signals exactly
+once. Add the stable Histogram card id at that ownership boundary.
+
+For example:
 
 ```text
-napari layer colormap changes
-  -> napari emits layer.events.colormap
-  -> Viewer shared row renders independently
-  -> Histogram card renders independently
+row.visibility_change_requested(channel_index, visible)
+  -> Histogram handler receives card_id
+  -> Histogram re-resolves the card's dropdown target
+  -> Histogram requires the exact current row binding
+  -> Histogram assigns layer.visible
+  -> napari emits layer.events.visible
+  -> Histogram and Viewer shared rows update independently
 ```
 
-`ViewerAdapter.image_overlay_layers_changed` remains membership invalidation
-only. Neither peer widget emits presentation events for the other.
+Color follows the same flow through `layer.colormap`. A solid Histogram choice
+may replace a live gradient. A napari gradient is rendered through the shared
+preview without overwriting the row's solid picker seed.
+
+For eye or color intent:
+
+1. Re-resolve the current card target and unique live binding.
+2. Require exact binding identity with the card's current row.
+3. Compare the requested property with the live property.
+4. Assign only when different.
+5. Let napari emit its native property event.
+6. Let all peer rows render independently.
+
+For a no-op, silently refresh the row from its live binding. For a rejected
+assignment, restore authoritative presentation and report concise card feedback.
+Do not optimistically render after successful assignment and never manually emit
+napari property events.
+
+### Pending load and explicit removal
+
+When no overlay exists, the existing pending color button remains local staged
+state. Choosing a color does not create a layer. `Load overlay` continues to:
+
+- pass the pending button's `current_color` to
+  `ensure_image_overlay_channel_loaded(...)`;
+- preserve sibling overlays;
+- avoid Histogram calculation;
+- activate the returned layer;
+- let `image_overlay_layers_changed` create the shared live row.
+
+The live row's `×` explicitly removes only its current overlay:
+
+1. Re-resolve the current target and exact live binding.
+2. Cache the row's last valid solid picker seed.
+3. Call `ViewerAdapter.remove_image_overlay_channel(...)`.
+4. Let lifecycle invalidation dispose the row.
+5. Show pending-load controls for the still-selected dropdown target.
+
+Removing the row never removes the Histogram card or clears its channel target.
+If napari removes the layer, the same lifecycle path returns the card to pending
+load. Never remove a sibling overlay.
+
+### Shared native-event fan-out
+
+If Viewer and one or more Histogram cards show the same binding:
+
+```text
+one owner assigns layer.colormap
+  -> napari emits one layer.events.colormap event
+      -> Viewer shared row renders
+      -> Histogram card A shared row renders
+      -> Histogram card B shared row renders
+```
+
+Multiple callbacks are expected peer-observer behavior. No callback may emit a
+new user-intent signal during programmatic rendering.
+
+### Failure and stale-state behavior
+
+- Missing or stale rows reconcile and return without mutation.
+- Ambiguous matches show a warning and expose no live mutation controls.
+- Failed visibility or color assignment restores live presentation.
+- Failed load or removal uses the existing Histogram status area.
+- Rename `overlay_load_message` to a neutral Viewer-action name if it now
+  carries load, visibility, color, ambiguity, and removal feedback.
+- Do not show success messages for every eye or color change; the row and canvas
+  already confirm success.
+
+### Implementation sequence
+
+1. Extract the shared row and colormap presentation conversion.
+2. Migrate Viewer with no behavioral change.
+3. Add explicit Histogram match outcomes and contextual Viewer-area states.
+4. Replace Histogram's standalone colormap subscription with the shared row.
+5. Connect validated Histogram visibility, color, and removal handlers.
+6. Add focused shared, Viewer, Histogram, and regression tests.
 
 ### Acceptance criteria
 
-- Viewer behavior remains unchanged after adopting the shared row.
-- One row owns one immutable binding for its lifetime.
-- Viewer and Histogram use the same solid/gradient interpretation.
-- Histogram distinguishes missing, unique, and ambiguous overlay matches.
-- Histogram still requires the explicit `Load overlay` action.
-- Histogram color selection still does not mutate napari in this slice.
-- Direct native subscriptions are disconnected when their owner or target
-  disappears.
-- No adapter presentation signal, central overlay controller, or duplicated
-  colormap-conversion implementation is introduced.
+- Viewer and Histogram use the same fixed-binding row for a unique live overlay.
+- The signal ownership table above is reflected directly in connections.
+- Viewer behavior remains unchanged after migration.
+- Histogram retains its current dropdown and explicit `Load overlay`.
+- Missing overlays keep pending color without implicit creation.
+- Unique Histogram overlays expose live eye, colormap, and remove controls.
+- Eye and colormap changes synchronize bidirectionally through native napari
+  events.
+- `×` removes only the uniquely matched overlay.
+- Napari-side removal returns Histogram to pending-load state.
+- Multiple Histogram cards and Viewer may observe the same layer independently.
+- Histogram contrast-limit synchronization remains separate.
+- Missing, stale, and ambiguous targets produce no unintended mutation.
+- No adapter presentation signal, widget-to-widget event, or duplicated
+  colormap conversion remains.
 
 ### Focused tests
 
-- Shared row solid and gradient rendering.
-- Shared row visibility reflection under signal blocking.
-- Shared row user-intent signals remain mutation-free.
-- Shared row disconnection and fixed-binding disposal.
-- Existing Viewer bidirectional visibility and colormap tests.
-- Viewer replacement-binding reconstruction keeps sibling rows unchanged.
-- Histogram missing, unique, and ambiguous match outcomes.
-- Histogram solid and non-solid napari-to-Harpy reflection.
-- Histogram target change, layer removal, and card removal disconnect callbacks.
-- Repeated overlay lifecycle invalidation creates no duplicate callbacks.
-- Existing explicit Histogram overlay-load behavior remains unchanged.
+- Shared row solid, gradient, visibility, intent, and disposal behavior.
+- Viewer migration preserves current bidirectional behavior.
+- Viewer replacement binding reconstructs only the affected row.
+- Histogram missing, unique, and ambiguous contextual states.
+- Existing unique overlay hydrates into one shared Histogram row.
+- Histogram visibility and solid/gradient colormap synchronization in both
+  directions.
+- Same-value intent produces no property assignment.
+- Rejected assignment restores authoritative presentation.
+- `×` and napari-side removal both return to pending controls.
+- Target, binding, layer, and card changes disconnect row callbacks.
+- Repeated lifecycle invalidation does not duplicate callbacks.
+- Two Histogram cards and Viewer observe one native property event independently.
+- Existing Histogram calculation, contrast-sync, and explicit-load tests remain
+  green.
 
-## Slice 3c: Searchable Histogram target and contextual live overlay row
+## Slice 3c: Searchable Histogram target selection
 
 Status: specified on 2026-07-30.
 
 ### Dependency
 
-Slice 3b is complete. Viewer and Histogram can reuse the same fixed-binding
-overlay row and colormap presentation contract.
+Slice 3b is complete. The current Histogram dropdown already drives pending,
+unique-live-row, and ambiguous Viewer-area states through the shared row.
 
 ### Goal
 
-Replace the Histogram channel dropdown with a scalable persistent searchable
-selector, while keeping Histogram target selection separate from napari overlay
-membership.
-
-For the accepted Histogram target:
-
-- show explicit pending-load controls when no matching overlay exists;
-- show one live `eye / channel / colormap / remove` row when a unique matching
-  overlay exists;
-- never create or delete a napari layer merely because the Histogram target
-  changed.
+Replace only the Histogram channel dropdown with a scalable persistent
+searchable selector. Preserve all Slice 3b overlay behavior and keep analysis
+target selection separate from overlay membership.
 
 ### Target files
 
 - `src/napari_harpy/widgets/histogram/widget.py`;
 - `src/napari_harpy/widgets/shared_styles.py` only if the existing completer
   contract needs a focused correction;
-- the shared overlay-row component only if Histogram integration exposes a
-  small reusable defect;
 - `tests/test_histogram_widget.py`;
 - `tests/test_shared_styles.py` only for a shared completer correction.
 
-No adapter API change is expected. Reuse
-`ensure_image_overlay_channel_loaded(...)` for explicit creation and
-`remove_image_overlay_channel(...)` for explicit removal.
+No adapter, shared-row, Histogram calculation, or napari property-event contract
+change is expected.
 
 ### Channel selection is not overlay membership
 
-The Histogram channel selector chooses the channel to analyse. It does not
-implicitly request a Viewer mutation.
-
-The following operations must remain distinct:
-
 ```text
 Accept Histogram channel
-  -> change this card's Histogram target
-  -> rebuild only this card's contextual Viewer presentation
-  -> do not add or remove a napari layer
-
-Click Load in viewer
-  -> explicitly create the current target's overlay when missing
-
-Click row ×
-  -> explicitly remove the current target's live overlay
+  -> change this card's analysis target
+  -> dispose only this card's previous contextual row
+  -> reconcile Slice 3b state for the new target
+  -> do not add or remove any napari layer
 ```
 
-Changing from DAPI to CD3 disposes the DAPI row shown inside that Histogram card,
-but it does not remove the DAPI napari layer. Other Viewer rows and Histogram
-cards may still use it.
+Changing from DAPI to CD3 removes the DAPI row from that Histogram card only.
+The DAPI napari layer remains loaded for Viewer or other Histogram cards.
 
-### Persistent searchable channel selector
+### Persistent searchable selector
 
 Replace the `CompactComboBox` channel control with
 `CompleterPopupLineEdit(QLineEdit)` configured with:
 
 - `QStringListModel`;
 - popup completion;
-- case-insensitive matching;
-- substring filtering;
+- case-insensitive substring filtering;
 - at most ten visible results;
-- the existing shared completer popup styling;
+- existing shared popup styling;
 - popup-on-entry behavior.
 
 Maintain accepted channel selection separately from transient edit text. Typing
-filters candidates but must not change the Histogram target until the user:
+filters candidates but does not change the target until the user:
 
 - activates a completion; or
-- presses Enter with one exact or uniquely case-insensitive channel match.
+- presses Enter with an exact or uniquely case-insensitive match.
 
-On accepted selection:
+On acceptance:
 
-- store the channel name as the card's selected target;
-- keep the accepted channel name visible in the line edit;
+- store the selected channel name as explicit card state;
+- keep that name visible in the line edit;
 - do **not** call `clear_after_accepted_completion(...)`;
-- refresh controller binding, settings/status, pending color default, and the
-  contextual Viewer area once.
+- dispose the old contextual row before switching target;
+- refresh controller binding, settings, status, cyclic pending-color default,
+  and Slice 3b Viewer-area reconciliation exactly once.
 
-If free text is not a valid unique channel, do not replace the accepted target.
-Show concise validation feedback or restore the accepted text when editing
-finishes. When image or SpatialData changes invalidate the accepted channel,
-clear the accepted target and rebuild the completer model.
+Invalid free text does not replace the accepted target. Show concise validation
+feedback or restore accepted text when editing finishes. If image or SpatialData
+changes invalidate the accepted channel, clear accepted state and rebuild the
+completion model.
 
-### Contextual Viewer-area states
+### Reusing Slice 3b states
 
-Render exactly one of these states for the card's accepted target:
+After each accepted target change, render the existing Slice 3b result:
 
-| Target and overlay state | Viewer area |
+| New target state | Viewer area |
 | --- | --- |
-| No valid accepted target | Disabled or empty Viewer controls |
-| Valid target, no matching overlay | `Load in viewer` plus pending solid-color button |
-| Valid target, exactly one live overlay | Shared `[eye] channel [colormap] [×]` row |
-| Valid target, multiple matching overlays | Warning state; no live row and no mutation action |
+| No matching overlay | Explicit load plus pending solid color |
+| Exactly one live overlay | Shared `[eye] channel [colormap] [×]` row |
+| Multiple live overlays | Warning with no mutation controls |
 
-Do not show the pending-load color button and the live row simultaneously.
-
-Use `Load in viewer` as the action label because it describes the destination
-and distinguishes loading from Histogram calculation.
-
-### Pending-load behavior
-
-When no matching overlay exists:
-
-- enable the pending color button only for a valid accepted target and available
-  napari viewer;
-- changing the pending color changes local card preference only;
-- do not emit a layer mutation request;
-- clicking `Load in viewer` passes `current_color` to
-  `ensure_image_overlay_channel_loaded(...)`;
-- preserve loaded sibling overlays through the existing adapter behavior;
-- do not calculate or recalculate the Histogram;
-- activate the returned napari layer;
-- let `image_overlay_layers_changed` drive transition to the live-row state.
-
-Keep the existing cyclic per-channel default color behavior. When a live row is
-explicitly removed, retain its last valid solid picker seed as the immediate
-pending color. A non-solid gradient must not overwrite that seed.
-
-### Live-row lifecycle
-
-Each Histogram card owns at most one contextual shared overlay row:
-
-- construct it only after reconciliation finds exactly one live matching
-  binding;
-- retain it while the exact binding object remains current;
-- dispose and reconstruct it when the target or binding changes;
-- dispose it when the match disappears, becomes ambiguous, or the card is
-  removed;
-- never reuse a row for another binding;
-- never rely on `deleteLater()` without first disconnecting native callbacks.
-
-Two Histogram cards may independently show rows for the same layer. Multiple
-native callbacks are expected peer-observer behavior.
-
-### Live visibility and colormap intent
-
-Connect the shared row's intent signals once when constructing the row. Add the
-stable Histogram card id at that ownership boundary.
-
-For eye or color intent:
-
-1. Resolve the card's currently accepted target again.
-2. Resolve exactly one current live matching binding.
-3. Require that the contextual row still owns that exact binding.
-4. Compare the requested property with the accepted live property.
-5. Assign `layer.visible` or `layer.colormap` only when it differs.
-6. Let napari emit its native property event.
-7. Let the shared row, Viewer, and any peer Histogram cards render independently
-   from that event.
-
-For a no-op request, silently read the current live property back into the row.
-For a rejected assignment, restore both live properties from the row's binding
-as needed and report concise card-local feedback.
-
-Do not optimistically call the row's presentation method after a successful
-assignment. Do not manually emit napari property events.
-
-### Explicit removal
-
-The live row's `×` action means removal of the current target's napari overlay,
-not removal of the Histogram card or Histogram target.
-
-On remove intent:
-
-1. Re-resolve the accepted target and unique live binding.
-2. Require exact binding identity with the current row.
-3. Cache the row's last valid solid picker seed.
-4. Call `ViewerAdapter.remove_image_overlay_channel(...)` using current
-   SpatialData, image, coordinate system, and channel index.
-5. Let adapter lifecycle invalidation remove the live row.
-6. Render pending-load controls for the still-selected Histogram target.
-
-If the layer was already removed, reconcile membership and show the pending-load
-state without treating the condition as destructive failure. Never remove a
-sibling overlay.
-
-### Target-change behavior
-
-When a different channel is accepted:
-
-1. Dispose the current contextual row and disconnect its native callbacks.
-2. Keep the old channel's napari layer untouched.
-3. Bind the Histogram controller to the new channel target.
-4. Resolve the new target's overlay state.
-5. Show its existing unique live row, pending-load controls, or ambiguity
-   warning.
+The final explicit-load label becomes `Load in viewer` to distinguish it from
+Histogram calculation. Accepting a completion never invokes that button's
+operation.
 
 Changing coordinate system, image, SpatialData, or removing the Histogram card
-follows the same cleanup ordering.
+uses the same ordering: dispose the old row, update accepted target state, then
+reconcile.
 
-### Ambiguous and stale state
+### Event-flow preservation
 
-If multiple live bindings match the accepted target:
+Slice 3c changes only how the accepted channel is chosen. Once accepted:
 
-- show a concise warning;
-- render no live row because no unique authoritative layer exists;
-- disable `Load in viewer`, eye, color mutation, and remove actions;
-- do not guess or mutate either layer.
+- membership still comes from `image_overlay_layers_changed`;
+- native visibility and colormap events still go directly to the shared row;
+- row intent still goes to Histogram's validated handlers;
+- contrast-limit events still go to Histogram contrast-sync code;
+- explicit load and remove still use `ViewerAdapter`.
 
-If a target, row, or binding becomes stale between user intent and handling,
-perform lifecycle reconciliation and return without mutation.
-
-### Event flows
-
-Explicit creation:
-
-```text
-Accept channel
-  -> no matching overlay
-  -> show Load in viewer + pending color
-  -> user clicks Load in viewer
-  -> adapter creates/registers overlay
-  -> image_overlay_layers_changed
-  -> Histogram constructs one live row
-```
-
-Live color editing:
-
-```text
-Histogram row color_selected
-  -> Histogram re-resolves exact live binding
-  -> Histogram assigns layer.colormap
-  -> napari emits layer.events.colormap
-  -> Histogram row and Viewer row render independently
-```
-
-Target change:
-
-```text
-Accept another channel
-  -> dispose only this card's old contextual row
-  -> keep the old napari overlay
-  -> reconcile and render the new target state
-```
-
-### Feedback behavior
-
-Use the existing Histogram status area for Viewer-action feedback. Rename the
-card-local `overlay_load_message` field to a neutral Viewer-action name if it
-will now report load, visibility, color, ambiguity, and removal outcomes.
-
-- Do not show success feedback for every eye or color change; the live canvas
-  and row already confirm success.
-- Show concise feedback for load/removal failure, ambiguous binding, invalid
-  target, and rejected property assignment.
-- Clear stale Viewer-action feedback when the accepted target changes.
+Do not add a second set of selector-specific property signals.
 
 ### Implementation sequence
 
-1. Replace channel-combo state with persistent accepted selection plus the
-   completer model and validation.
-2. Add the four-state contextual Viewer area while preserving explicit loading.
-3. Add fixed-binding shared-row lifecycle reconciliation.
-4. Connect validated visibility, color, and removal intent handlers.
-5. Add focused selector, lifecycle, mutation, and regression tests.
-
-Do not combine this slice with Histogram calculation changes, automatic overlay
-creation, automatic old-layer removal, a general card rewrite, or a second
-colormap picker.
+1. Add explicit accepted-channel state to `_HistogramCard`.
+2. Replace combo population with completer-model refresh.
+3. Implement exact/unique completion acceptance and persistent text.
+4. Route accepted target changes through existing cleanup and reconciliation.
+5. Rename the explicit action to `Load in viewer`.
+6. Add focused selector and target-switch regression tests.
 
 ### Acceptance criteria
 
 - Channel discovery scales through a searchable popup.
-- Accepted channel text remains visible as persistent selection.
+- Accepted channel text remains visible.
 - Typing alone does not change the Histogram target.
+- Invalid free text preserves the previous accepted target.
+- `clear_after_accepted_completion(...)` is never used.
 - Accepting a channel never creates or removes a napari layer.
-- Missing overlays use explicit `Load in viewer` with a pending color.
-- Unique live overlays use one shared eye/channel/colormap/remove row.
-- Changing target replaces only the card's contextual row and preserves the old
-  napari overlay.
-- Eye and colormap changes synchronize bidirectionally with napari.
-- `×` explicitly removes only the current target's overlay.
-- Napari-side removal returns the card to pending-load state.
-- Viewer and multiple Histogram cards may observe the same native property
-  event without widget-to-widget signals.
-- Missing, stale, and ambiguous targets produce no unintended layer mutation.
-- Histogram calculation and explicit overlay loading remain independent.
+- The previous target's contextual row is disposed without removing its layer.
+- The new target immediately shows its correct Slice 3b state.
+- Explicit loading remains independent from Histogram calculation.
+- Slice 3b visibility, colormap, removal, and callback ownership are unchanged.
 
 ### Focused tests
 
-- Popup opens on entry and filters channel names case-insensitively.
-- Accepted completion remains visible and does not invoke deferred clearing.
-- Invalid free text preserves the previous accepted target.
-- Accepting another channel updates the Histogram target without loading or
-  removing layers.
-- Missing target shows pending color and `Load in viewer`.
-- Pending color is passed to explicit load without calculating a Histogram.
-- Lifecycle registration replaces pending controls with one live row.
-- Existing unique overlay hydrates directly into a live row.
-- Unchanged exact binding retains the row; replacement binding reconstructs only
-  that card's row.
-- Target, image, coordinate-system, SpatialData, and card changes dispose old
-  callbacks.
-- Harpy-to-napari and napari-to-Harpy visibility changes.
-- Harpy-to-napari and napari-to-Harpy solid and non-solid colormap changes.
-- Same-value visibility and color intent causes no assignment.
-- Rejected assignment restores authoritative presentation and reports feedback.
-- `×` removes only the current target overlay and reveals pending controls.
-- Napari-side removal reveals pending controls without clearing Histogram
-  selection.
-- Ambiguous bindings show warning state and mutate nothing.
-- Two Histogram cards can observe and control the same unique overlay without
-  duplicate per-card callbacks.
-- Existing Histogram calculation, contrast-sync, and explicit-load tests remain
-  green.
+- Popup-on-entry and case-insensitive substring filtering.
+- Accepted completion remains visible without deferred clearing.
+- Enter accepts exact and uniquely case-insensitive names.
+- Invalid and ambiguous free text preserves the previous target.
+- Selecting another channel changes controller target but creates/removes no
+  layer.
+- Switching from one live target to another disposes only the old card row.
+- Switching to an unloaded target shows pending controls.
+- Switching to an already loaded target constructs the matching shared row.
+- Image, SpatialData, and coordinate-system changes invalidate selection safely.
+- Pending color is passed to `Load in viewer` without calculating a Histogram.
+- All Slice 3b synchronization and removal tests remain green.
 
 ## Slice 4: Display-mode lifecycle and removal of staged apply
 
