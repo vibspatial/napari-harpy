@@ -366,7 +366,7 @@ Slice 1 is complete:
 
 ## Slice 2: Searchable composer and live layer membership
 
-Status: specified and ready to implement.
+Status: implemented on 2026-07-30.
 
 ### Goal
 
@@ -677,6 +677,8 @@ old checkbox list.
 
 - A failed add leaves the input and selected rows unchanged.
 - A failed remove leaves the live row present.
+- A successful remove clears the input when it still identifies the removed
+  channel; a failed remove preserves that input.
 - A missing remove target is an idempotent reconciliation case, not an error.
 - Ambiguous live channel identity produces feedback and no guessed mutation.
 - Invalid search input causes no adapter call.
@@ -736,6 +738,21 @@ old checkbox list.
   path still works.
 - Feature Extraction channel selection remains independent from Viewer overlay
   membership.
+
+### Implementation result
+
+Slice 2 is complete:
+
+- overlay mode now uses a searchable completer and creates persistent rows only
+  for live selected channels;
+- channel activation loads immediately through the focused adapter operation;
+- focused remove and remove-all actions are lifecycle-driven and preserve
+  unrelated layers;
+- cards hydrate and reconcile from live `ImageLayerBinding` state, including
+  napari-side removal;
+- the aggregate image action is hidden in overlay mode and remains a temporary
+  stack-only action;
+- focused Viewer and Feature Extraction regression tests pass.
 
 ## Slice 3a: Viewer bidirectional visibility and colormap controls
 
