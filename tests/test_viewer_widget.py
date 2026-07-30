@@ -41,7 +41,7 @@ from napari_harpy.widgets.shared_styles import (
     CompactComboBox,
 )
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedLabel, _ElidedToolButton
-from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget, _OverlayChannelRow
+from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
 from napari_harpy.widgets.viewer.widget import ViewerWidget
@@ -406,11 +406,12 @@ def test_overlay_color_button_programmatic_gradient_is_silent_and_keeps_picker_s
     assert selected_colors == []
 
 
-def test_overlay_channel_row_rebinds_and_disconnects_direct_layer_events(
+def test_image_card_reconstructs_overlay_row_for_replacement_binding(
     qtbot,
 ) -> None:
     first_layer = Image(np.zeros((8, 8)), colormap="#00FFFF")
     second_layer = Image(np.zeros((8, 8)), colormap="#FF00FF")
+    stable_layer = Image(np.zeros((8, 8)), colormap="#FFFF00")
     first_binding = ImageLayerBinding(
         layer=first_layer,
         element_name="image",
@@ -429,36 +430,60 @@ def test_overlay_channel_row_rebinds_and_disconnects_direct_layer_events(
         channel_index=0,
         channel_name="DAPI",
     )
-    row = _OverlayChannelRow(first_binding)
+    stable_binding = ImageLayerBinding(
+        layer=stable_layer,
+        element_name="image",
+        coordinate_system="global",
+        sdata_id=1,
+        image_display_mode="overlay",
+        channel_index=1,
+        channel_name="CD3",
+    )
+    card = _ImageCardWidget(
+        image_name="image",
+        channel_names=["DAPI", "CD3"],
+    )
 
-    qtbot.addWidget(row)
+    qtbot.addWidget(card)
+    card.set_loaded_overlay_bindings([first_binding, stable_binding])
+    first_row, stable_row = card.selected_overlay_rows
 
-    assert row.visibility_button.isChecked()
-    assert row.color_button.current_color == "#00FFFF"
+    assert first_row.visibility_button.isChecked()
+    assert first_row.color_button.current_color == "#00FFFF"
 
-    row.set_binding(second_binding)
+    card.set_loaded_overlay_bindings([first_binding, stable_binding])
 
-    assert row.visibility_button.isChecked()
-    assert row.color_button.current_color == "#FF00FF"
+    current_rows = card.selected_overlay_rows
+    assert current_rows[0] is first_row
+    assert current_rows[1] is stable_row
+
+    card.set_loaded_overlay_bindings([second_binding, stable_binding])
+    second_row, current_stable_row = card.selected_overlay_rows
+
+    assert second_row is not first_row
+    assert second_row.binding is second_binding
+    assert current_stable_row is stable_row
+    assert second_row.visibility_button.isChecked()
+    assert second_row.color_button.current_color == "#FF00FF"
 
     first_layer.visible = False
     first_layer.colormap = "#123456"
 
-    assert row.visibility_button.isChecked()
-    assert row.color_button.current_color == "#FF00FF"
+    assert second_row.visibility_button.isChecked()
+    assert second_row.color_button.current_color == "#FF00FF"
 
     second_layer.visible = False
     second_layer.colormap = "viridis"
 
-    assert not row.visibility_button.isChecked()
-    assert row.color_button.gradient_name == "viridis"
+    assert not second_row.visibility_button.isChecked()
+    assert second_row.color_button.gradient_name == "viridis"
 
-    row.dispose()
+    card.dispose()
     second_layer.visible = True
     second_layer.colormap = "#ABCDEF"
 
-    assert not row.visibility_button.isChecked()
-    assert row.color_button.gradient_name == "viridis"
+    assert not second_row.visibility_button.isChecked()
+    assert second_row.color_button.gradient_name == "viridis"
 
 
 def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_blobs) -> None:

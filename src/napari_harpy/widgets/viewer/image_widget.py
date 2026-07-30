@@ -73,6 +73,10 @@ class _OverlayColormapPresentation:
 class _OverlayChannelRow(QWidget):
     """Present one loaded channel and bridge intent with live napari state.
 
+    A row keeps its construction-time binding for its entire lifetime. If
+    membership reconciliation discovers a replacement binding for the channel,
+    ``_ImageCardWidget`` disposes this row and constructs another one.
+
     The row never mutates its bound napari layer. A user eye or color action
     emits a channel-local request, which ``_ImageCardWidget`` enriches with the
     image name and relays to ``ViewerWidget``. ``ViewerWidget`` resolves the
@@ -146,23 +150,6 @@ class _OverlayChannelRow(QWidget):
     def channel_name(self) -> str:
         return _binding_channel_name(self.binding)
 
-    def set_binding(self, binding: ImageLayerBinding) -> None:
-        """Rebind this stable channel row and refresh from the live layer."""
-        if _binding_channel_index(binding) != self.channel_index:
-            raise ValueError("Cannot rebind an overlay row to a different channel index.")
-
-        if binding.layer is self.binding.layer:
-            self.binding = binding
-            self._refresh_binding_labels()
-            self.refresh_presentation()
-            return
-
-        self._disconnect_presentation_events()
-        self.binding = binding
-        self._refresh_binding_labels()
-        self._connect_presentation_events()
-        self.refresh_presentation()
-
     def refresh_presentation(self) -> None:
         """Render visibility and colormap from the authoritative live layer."""
         self._apply_visibility(self.binding.layer.visible)
@@ -180,12 +167,6 @@ class _OverlayChannelRow(QWidget):
             presentation.name,
             presentation.colors,
         )
-
-    def _refresh_binding_labels(self) -> None:
-        channel_name = _binding_channel_name(self.binding)
-        self.channel_label.setText(channel_name)
-        self.remove_button.setAccessibleName(f"Remove channel {channel_name} from viewer")
-        self.remove_button.setToolTip(format_tooltip(f"Remove channel {channel_name} from viewer"))
 
     def dispose(self) -> None:
         """Disconnect this row from its current napari presentation events."""
@@ -454,13 +435,16 @@ class _ImageCardWidget(QFrame):
 
         self.set_overlay_membership_error(None)
         next_channel_indices = [_binding_channel_index(binding) for binding in ordered_bindings]
-        next_channel_index_set = set(next_channel_indices)
+        next_bindings_by_channel_index = {_binding_channel_index(binding): binding for binding in ordered_bindings}
 
         for channel_index in tuple(self._selected_channel_order):
-            if channel_index in next_channel_index_set:
+            row = self._selected_rows_by_channel_index[channel_index]
+            next_binding = next_bindings_by_channel_index.get(channel_index)
+            if next_binding is row.binding:
                 continue
-            row = self._selected_rows_by_channel_index.pop(channel_index)
-            self._remember_row_solid_color(row)
+            self._selected_rows_by_channel_index.pop(channel_index)
+            if next_binding is None:
+                self._remember_row_solid_color(row)
             row.dispose()
             self.channel_list_layout.removeWidget(row)
             row.deleteLater()
@@ -475,7 +459,7 @@ class _ImageCardWidget(QFrame):
                 row.color_change_requested.connect(self._emit_overlay_channel_color_requested)
                 self._selected_rows_by_channel_index[channel_index] = row
             else:
-                row.set_binding(binding)
+                row.refresh_presentation()
 
         for row in self._selected_rows_by_channel_index.values():
             self.channel_list_layout.removeWidget(row)
@@ -491,9 +475,9 @@ class _ImageCardWidget(QFrame):
         channel_index: int,
         binding: ImageLayerBinding,
     ) -> None:
-        """Refresh one row only when it still represents the resolved layer."""
+        """Refresh one row only when it owns the resolved live binding."""
         row = self._selected_rows_by_channel_index.get(channel_index)
-        if row is None or row.binding.layer is not binding.layer:
+        if row is None or row.binding is not binding:
             return
         row.refresh_presentation()
 
