@@ -9,6 +9,7 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import QComboBox, QLabel, QWidget
 from spatialdata import SpatialData
 
+import napari_harpy.core.histogram as histogram_module
 import napari_harpy.widgets.histogram.widget as histogram_widget_module
 from napari_harpy._app_state import get_or_create_app_state
 from napari_harpy.core.histogram import HistogramResult
@@ -355,6 +356,80 @@ def test_histogram_widget_passes_selected_multiscale_scale_to_controller_job(
     assert captured_jobs[0].target.image_name == "blobs_multiscale_image"
     assert captured_jobs[0].settings.scale == "scale1"
     assert deferred_workers[0].started is True
+
+
+def test_histogram_widget_selects_automatic_multiscale_default_and_passes_it_to_controller(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    captured_jobs: list[HistogramJob] = []
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    monkeypatch.setattr(histogram_module, "HISTOGRAM_AUTO_SCALE_MAX_SPATIAL_SAMPLES", 256 * 256)
+
+    card_id, card = add_valid_histogram_card(widget)
+    set_combo_data(card.image_combo, "blobs_multiscale_image")
+
+    assert card.scale_combo.currentData() == "scale1"
+
+    def capture_worker(job: HistogramJob) -> _DeferredWorker:
+        captured_jobs.append(job)
+        return _DeferredWorker(make_job_result(job))
+
+    widget._histogram_controller._create_histogram_worker = capture_worker  # type: ignore[method-assign]
+    qtbot.mouseClick(card.calculate_button, Qt.MouseButton.LeftButton)
+
+    assert captured_jobs[0].card_id == card_id
+    assert captured_jobs[0].settings.scale == "scale1"
+
+
+def test_histogram_widget_preserves_manual_scale_until_image_change_or_reset(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    monkeypatch.setattr(histogram_module, "HISTOGRAM_AUTO_SCALE_MAX_SPATIAL_SAMPLES", 256 * 256)
+
+    card_id, card = add_valid_histogram_card(widget)
+    set_combo_data(card.image_combo, "blobs_multiscale_image")
+    assert card.scale_combo.currentData() == "scale1"
+
+    set_combo_data(card.scale_combo, "scale2")
+    widget._refresh_card_scale_options(card)
+    assert card.scale_combo.currentData() == "scale2"
+
+    qtbot.mouseClick(card.reset_settings_button, Qt.MouseButton.LeftButton)
+    assert card.scale_combo.currentData() == "scale1"
+
+    set_combo_data(card.scale_combo, "scale2")
+    set_combo_data(card.image_combo, "blobs_image")
+    assert card.scale_combo.currentData() == "scale0"
+
+    set_combo_data(card.image_combo, "blobs_multiscale_image")
+    assert card.scale_combo.currentData() == "scale1"
+    assert widget._histogram_controller.result_for_card(card_id) is None
+
+
+def test_histogram_widget_reports_automatic_scale_resolution_error(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+
+    def reject_image(_image_element, *, image_name: str) -> str:
+        raise ValueError(f"Image `{image_name}` has an invalid multiscale pyramid.")
+
+    monkeypatch.setattr(histogram_widget_module, "resolve_default_histogram_scale", reject_image)
+    card_id = widget.add_histogram_card()
+    card = widget._cards[card_id]
+    set_combo_data(card.image_combo, "blobs_multiscale_image")
+
+    assert card.scale_combo.currentIndex() == -1
+    assert not card.scale_combo.isEnabled()
+    assert not card.calculate_button.isEnabled()
+    assert "invalid multiscale pyramid" in card.status_label.text()
 
 
 def test_histogram_widget_shows_percentile_values_in_status_card(qtbot, sdata_blobs: SpatialData) -> None:

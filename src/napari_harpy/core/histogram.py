@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -12,6 +13,8 @@ from xarray import DataArray, DataTree
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
+
+HISTOGRAM_AUTO_SCALE_MAX_SPATIAL_SAMPLES = 4096 * 4096
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,35 @@ class HistogramResult:
     data_range: tuple[float, float]
     percentile_values: Mapping[float, float]
     resolved_scale: str | None
+
+
+def resolve_default_histogram_scale(
+    image_element: DataArray | DataTree,
+    *,
+    image_name: str,
+) -> str:
+    """Return the concrete metadata-only default scale for one image histogram."""
+    if isinstance(image_element, DataArray):
+        _spatial_sample_count(image_element)
+        return "scale0"
+
+    scale_sample_counts = [
+        (
+            scale,
+            _spatial_sample_count(
+                _resolve_multiscale_array(image_element, scale, image_name),
+            ),
+        )
+        for scale in image_element
+    ]
+    eligible_scales = [
+        (scale, sample_count)
+        for scale, sample_count in scale_sample_counts
+        if sample_count <= HISTOGRAM_AUTO_SCALE_MAX_SPATIAL_SAMPLES
+    ]
+    if eligible_scales:
+        return max(eligible_scales, key=lambda item: item[1])[0]
+    return min(scale_sample_counts, key=lambda item: item[1])[0]
 
 
 def calculate_histogram(
@@ -124,7 +156,7 @@ def calculate_histogram(
         data_range=data_range,
         percentile_values=percentile_values,
         resolved_scale=resolved_scale,
-)
+    )
 
 
 def _resolve_array(
@@ -134,7 +166,9 @@ def _resolve_array(
 ) -> tuple[DataArray, str]:
     if isinstance(image_element, DataArray):
         if requested_scale not in {None, "scale0"}:
-            raise ValueError(f"Scale `{requested_scale}` is not available for single-scale image element `{image_name}`.")
+            raise ValueError(
+                f"Scale `{requested_scale}` is not available for single-scale image element `{image_name}`."
+            )
         return image_element, "scale0"
 
     resolved_scale = requested_scale or "scale0"
@@ -144,11 +178,20 @@ def _resolve_array(
             f"Scale `{resolved_scale}` is not available for image element `{image_name}`. Available scales: {available}."
         )
 
-    scale_values = list(image_element[resolved_scale].values())
-    if len(scale_values) != 1 or not isinstance(scale_values[0], DataArray):
-        raise ValueError(f"Scale `{resolved_scale}` in image element `{image_name}` is not a supported image scale.")
+    return _resolve_multiscale_array(image_element, resolved_scale, image_name), resolved_scale
 
-    return scale_values[0], resolved_scale
+
+def _resolve_multiscale_array(image_element: DataTree, scale: str, image_name: str) -> DataArray:
+    scale_values = list(image_element[scale].values())
+    if len(scale_values) != 1 or not isinstance(scale_values[0], DataArray):
+        raise ValueError(f"Scale `{scale}` in image element `{image_name}` is not a supported image scale.")
+
+    return scale_values[0]
+
+
+def _spatial_sample_count(array: DataArray) -> int:
+    spatial_dims = tuple(dim for dim in ("z", "y", "x") if dim in array.dims)
+    return math.prod(array.sizes[dim] for dim in spatial_dims)
 
 
 def _select_channel_values(array: DataArray, channel_name: str, image_name: str) -> da.Array:

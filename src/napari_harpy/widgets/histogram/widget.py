@@ -29,7 +29,12 @@ from xarray import DataArray, DataTree
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
 from napari_harpy._resources import get_logo_path
-from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
+from napari_harpy.core.histogram import (
+    HistogramResult,
+    HistogramSettings,
+    HistogramTarget,
+    resolve_default_histogram_scale,
+)
 from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
@@ -184,6 +189,7 @@ class HistogramWidget(QWidget):
         self._histogram_controller = HistogramController(on_state_changed=self._on_controller_state_changed)
         self._cards: dict[str, _HistogramCard] = {}
         self._card_channel_errors: dict[str, str] = {}
+        self._card_scale_errors: dict[str, str] = {}
         self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
@@ -284,6 +290,7 @@ class HistogramWidget(QWidget):
         """Remove a card-local histogram request UI without touching SpatialData."""
         histogram_card = self._cards.pop(card_id, None)
         self._card_channel_errors.pop(card_id, None)
+        self._card_scale_errors.pop(card_id, None)
         self._histogram_controller.remove_card(card_id)
         if histogram_card is None:
             return
@@ -604,7 +611,7 @@ class HistogramWidget(QWidget):
 
     def _on_sdata_changed(self, _sdata: SpatialData | None) -> None:
         for histogram_card in self._cards.values():
-            self._refresh_card_selectors(histogram_card)
+            self._refresh_card_selectors(histogram_card, select_default_scale=True)
             self._update_card_state(histogram_card.card_id)
 
     def _on_coordinate_system_changed(self, event: CoordinateSystemChangedEvent) -> None:
@@ -630,7 +637,7 @@ class HistogramWidget(QWidget):
         histogram_card = self._get_card(card_id)
         histogram_card.overlay_load_message = None
         self._refresh_card_channel_options(histogram_card)
-        self._refresh_card_scale_options(histogram_card)
+        self._refresh_card_scale_options(histogram_card, select_default=True)
         self._update_card_state(card_id)
 
     def _on_card_channel_changed(self, card_id: str) -> None:
@@ -649,6 +656,7 @@ class HistogramWidget(QWidget):
         histogram_card: _HistogramCard,
         *,
         preferred_coordinate_system: str | None = None,
+        select_default_scale: bool = False,
     ) -> None:
         coordinate_systems = (
             []
@@ -665,7 +673,7 @@ class HistogramWidget(QWidget):
         self._set_combo_items(histogram_card.coordinate_system_combo, coordinate_systems, selected_coordinate_system)
         self._refresh_card_image_options(histogram_card)
         self._refresh_card_channel_options(histogram_card)
-        self._refresh_card_scale_options(histogram_card)
+        self._refresh_card_scale_options(histogram_card, select_default=select_default_scale)
 
     def _refresh_card_image_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
@@ -706,11 +714,18 @@ class HistogramWidget(QWidget):
         self._card_channel_errors[histogram_card.card_id] = channel_error or ""
         self._refresh_overlay_color_default(histogram_card)
 
-    def _refresh_card_scale_options(self, histogram_card: _HistogramCard) -> None:
+    def _refresh_card_scale_options(
+        self,
+        histogram_card: _HistogramCard,
+        *,
+        select_default: bool = False,
+    ) -> None:
         sdata = self.selected_spatialdata
         image_name = self._current_text_data(histogram_card.image_combo)
         current_scale = self._current_text_data(histogram_card.scale_combo)
         scales = [_DEFAULT_SCALE]
+        default_scale: str | None = _DEFAULT_SCALE
+        scale_error: str | None = None
 
         if sdata is not None and image_name is not None:
             image_element = sdata.images[image_name]
@@ -718,12 +733,18 @@ class HistogramWidget(QWidget):
                 scales = [_DEFAULT_SCALE]
             elif isinstance(image_element, DataTree):
                 scales = [str(scale) for scale in image_element.keys()]
+            try:
+                default_scale = resolve_default_histogram_scale(image_element, image_name=image_name)
+            except ValueError as error:
+                default_scale = None
+                scale_error = str(error)
 
-        selected_scale = (
-            current_scale if current_scale in scales else (_DEFAULT_SCALE if _DEFAULT_SCALE in scales else None)
-        )
+        selected_scale = current_scale if not select_default and current_scale in scales else default_scale
         self._set_combo_items(histogram_card.scale_combo, scales, selected_scale)
-        histogram_card.scale_combo.setEnabled(sdata is not None and image_name is not None and bool(scales))
+        self._card_scale_errors[histogram_card.card_id] = scale_error or ""
+        histogram_card.scale_combo.setEnabled(
+            sdata is not None and image_name is not None and bool(scales) and scale_error is None
+        )
         self._refresh_settings_summary(histogram_card)
 
     def _refresh_overlay_color_default(self, histogram_card: _HistogramCard) -> None:
@@ -788,16 +809,8 @@ class HistogramWidget(QWidget):
         for checkbox, checked in checkbox_defaults.items():
             with QSignalBlocker(checkbox):
                 checkbox.setChecked(checked)
-        if histogram_card.scale_combo.count():
-            selected_scale = (
-                _DEFAULT_SCALE if self._find_combo_data(histogram_card.scale_combo, _DEFAULT_SCALE) >= 0 else None
-            )
-            with QSignalBlocker(histogram_card.scale_combo):
-                histogram_card.scale_combo.setCurrentIndex(
-                    self._find_combo_data(histogram_card.scale_combo, selected_scale)
-                )
+        self._refresh_card_scale_options(histogram_card, select_default=True)
 
-        self._refresh_settings_summary(histogram_card)
         self._update_card_state(card_id)
 
     @staticmethod
@@ -1239,6 +1252,10 @@ class HistogramWidget(QWidget):
         image_name = self._current_text_data(histogram_card.image_combo)
         if image_name is None:
             return None, "Choose an image."
+
+        scale_error = self._card_scale_errors.get(histogram_card.card_id)
+        if scale_error:
+            return None, scale_error
 
         channel_error = self._card_channel_errors.get(histogram_card.card_id)
         if channel_error:
