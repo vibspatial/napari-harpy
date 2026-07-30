@@ -4,9 +4,33 @@ import dask
 import dask.array as da
 import numpy as np
 import pytest
+from dask.callbacks import Callback
 from spatialdata import SpatialData
+from xarray import DataArray, Dataset, DataTree
 
-from napari_harpy.core.histogram import HistogramSettings, HistogramTarget, calculate_histogram
+import napari_harpy.core.histogram as histogram_module
+from napari_harpy.core.histogram import (
+    HistogramSettings,
+    HistogramTarget,
+    calculate_histogram,
+    resolve_default_histogram_scale,
+)
+
+
+def _multiscale_image(*, shapes: dict[str, tuple[int, ...]], dims: tuple[str, ...]) -> DataTree:
+    return DataTree.from_dict(
+        {
+            f"/{scale}": Dataset(
+                {
+                    "image": DataArray(
+                        da.zeros(shape, chunks=tuple(max(1, size // 2) for size in shape)),
+                        dims=dims,
+                    )
+                }
+            )
+            for scale, shape in shapes.items()
+        }
+    )
 
 
 def test_calculate_histogram_from_sdata_blobs_matches_dask_histogram(sdata_blobs: SpatialData) -> None:
@@ -58,6 +82,52 @@ def test_calculate_histogram_uses_requested_multiscale_scale(sdata_blobs: Spatia
 
     assert result.resolved_scale == "scale1"
     assert int(result.counts.sum()) == array.sizes["y"] * array.sizes["x"]
+
+
+def test_default_histogram_scale_selects_highest_resolution_level_within_budget_without_computing() -> None:
+    image = _multiscale_image(
+        shapes={
+            "source": (3, 8192, 8192),
+            "overview": (3, 2048, 2048),
+            "detail": (3, 4096, 4096),
+        },
+        dims=("c", "y", "x"),
+    )
+
+    def fail_on_compute(_graph) -> None:
+        raise AssertionError("Default Histogram scale selection must not execute Dask tasks.")
+
+    with Callback(start=fail_on_compute):
+        scale = resolve_default_histogram_scale(image, image_name="image")
+
+    assert scale == "detail"
+
+
+def test_default_histogram_scale_uses_coarsest_level_when_all_scales_exceed_budget(monkeypatch) -> None:
+    image = _multiscale_image(
+        shapes={
+            "scale0": (3, 64, 64),
+            "scale1": (3, 32, 32),
+            "scale2": (3, 16, 16),
+        },
+        dims=("c", "y", "x"),
+    )
+    monkeypatch.setattr(histogram_module, "HISTOGRAM_AUTO_SCALE_MAX_SPATIAL_SAMPLES", 100)
+
+    assert resolve_default_histogram_scale(image, image_name="image") == "scale2"
+
+
+def test_default_histogram_scale_counts_z_but_not_channels(monkeypatch) -> None:
+    image = _multiscale_image(
+        shapes={
+            "scale0": (1, 2, 20, 20),
+            "scale1": (100, 1, 20, 20),
+        },
+        dims=("c", "z", "y", "x"),
+    )
+    monkeypatch.setattr(histogram_module, "HISTOGRAM_AUTO_SCALE_MAX_SPATIAL_SAMPLES", 500)
+
+    assert resolve_default_histogram_scale(image, image_name="image") == "scale1"
 
 
 def test_histogram_dataclasses_validate_basic_inputs() -> None:
