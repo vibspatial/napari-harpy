@@ -130,11 +130,26 @@ while the card remains alive.
 
 ### Synchronization rule
 
-When napari emits a relevant event, re-query the binding registry and live
-layers. Do not trust a cached event payload as the full state.
+Use two deliberately separate event paths:
 
-When updating Qt controls in response to napari, block their signals so the
-reflection does not trigger the same mutation again.
+1. **Layer lifecycle:** `ViewerAdapter.image_overlay_layers_changed` tells
+   consumers that matching overlay bindings may have appeared or disappeared.
+   Histogram and Viewer widgets independently re-query the registry.
+2. **Layer presentation:** napari's live layer is the event source. A widget
+   that presents `visible`, `colormap`, or another property subscribes directly
+   to that layer's corresponding event.
+
+The Histogram and Viewer widgets are peer consumers. Neither widget emits
+presentation events for the other, and the adapter does not mirror napari
+property events through a second signal.
+
+Multiple callbacks listening to one napari layer event are expected observer
+behavior. For example, a colormap change can update both a Histogram card and a
+Viewer channel row from the same `layer.events.colormap` emission.
+
+Each consumer owns and disconnects its callbacks when its row/card target
+changes or disappears. When updating Qt controls in response to napari, block
+their signals so reflection does not trigger the same mutation again.
 
 ## Scope
 
@@ -161,6 +176,8 @@ Out of scope:
 - Synchronizing external image layers that do not have a Harpy
   `ImageLayerBinding`.
 - A general rewrite of viewer-layer state management.
+- A central adapter event hub that mirrors arbitrary napari layer properties.
+- Widget-to-widget presentation events.
 
 ## Implementation constraints
 
@@ -168,8 +185,10 @@ Keep the design small and reuse existing infrastructure:
 
 - Use the existing `LayerBindingRegistry` and `ImageLayerBinding`.
 - Use `ViewerAdapter.get_loaded_image_layers(...)` to re-query live state.
-- Extend the adapter with focused image-layer property events and one-channel
-  removal.
+- Keep `image_overlay_layers_changed` focused on overlay-layer lifecycle.
+- Extend the adapter only with focused one-channel removal.
+- Subscribe directly to napari layer property events from the widget row/card
+  that presents those properties.
 - Use the existing `CompleterPopupLineEdit`.
 - Use `QStringListModel` and `QCompleter` for channel search.
 - Reuse and modestly extend `OverlayColorButton`.
@@ -180,15 +199,23 @@ Do not introduce a new overlay controller, custom `QAbstractItemModel`, delegate
 framework, or application-wide state abstraction. Revisit model/view
 virtualization only if profiling demonstrates a real channel-count problem.
 
-## Slice 1: Adapter synchronization foundation
+Do not extract a generic layer-event subscription framework before the Viewer
+row implementation demonstrates meaningful duplication with the Histogram.
+The Histogram's existing direct subscriptions are the reference pattern.
+
+## Slice 1: Adapter lifecycle and focused removal foundation
+
+Status: course correction accepted on 2026-07-30; implementation must be
+reconciled before Slice 2.
 
 ### Goal
 
-Expose one reliable event path for Harpy-managed image-layer lifecycle,
-visibility, and colormap changes.
+Keep image-layer identity and lifecycle in `ViewerAdapter`, and add a focused
+operation for removing one overlay channel.
 
 This is an adapter-only slice. It must not redesign the image card or add eye
-and colormap controls yet.
+and colormap controls. It must not make the adapter a mirror for napari layer
+property events.
 
 ### Target files
 
@@ -212,70 +239,22 @@ and colormap controls yet.
   Harpy-initiated removal path and retains its fallback for viewer-like objects
   that do not emit a removal event.
 
-### New adapter signal
+### Event boundary
 
-Add:
+- `image_overlay_layers_changed` remains the structural notification for
+  histogram-usable overlay bindings appearing or disappearing.
+- The adapter does not subscribe to `layer.events.visible`,
+  `layer.events.colormap`, or other presentation properties on behalf of
+  widgets.
+- The adapter does not define or emit `image_layer_presentation_changed`.
+- Histogram and Viewer consumers subscribe directly to the relevant napari
+  layer properties after resolving a binding.
+- `unregister_layer(...)` remains responsible only for binding-registry
+  cleanup.
 
-```python
-image_layer_presentation_changed = Signal()
-```
-
-Signal contract:
-
-- The signal is emitted when `visible` or `colormap` changes on a live,
-  registered `Image` layer.
-- It applies to both stack and overlay `ImageLayerBinding` instances. Consumers
-  decide which modes they care about after re-querying.
-- It carries no payload.
-- Consumers must re-query live layers and their bindings after receiving it.
-- It is not emitted for layer insertion, removal, or reordering; lifecycle
-  remains covered by the existing lifecycle signals.
-- It is not emitted for unregistered image layers or non-image layers.
-- A single property assignment should produce at most one adapter signal.
-- Harpy-originated and napari-originated property assignments follow the same
-  path; the adapter does not need to identify the source.
-
-The no-payload design avoids exposing a removed or otherwise stale layer in a
-queued callback and matches the existing re-query pattern.
-
-### Property-event connection lifecycle
-
-When `register_image_layer(...)` completes registration:
-
-1. Connect one callback to `layer.events.visible`.
-2. Connect one callback to `layer.events.colormap`.
-3. Record enough callback information to disconnect both callbacks later.
-4. Continue the existing registered-binding handling and lifecycle emission.
-
-Connection requirements:
-
-- Registration is idempotent with respect to property callbacks. Re-registering
-  the same layer must not add duplicate callbacks.
-- If a layer is re-registered, disconnect any previous image-property callbacks
-  before connecting the current pair.
-- A property callback emits only while:
-  - the layer still has an `ImageLayerBinding`; and
-  - the layer is still present in the viewer.
-- Callback bookkeeping is private to `ViewerAdapter`.
-- Callback bookkeeping must be removed when the layer is unregistered.
-- It must not retain a removed layer after cleanup.
-
-`unregister_layer(...)` becomes the central cleanup boundary:
-
-1. Resolve the current binding.
-2. If it is an image binding, disconnect and forget its property callbacks.
-3. Remove the binding from `LayerBindingRegistry`.
-4. Return the removed binding as it does today.
-
-Disconnection must be safe if an emitter or viewer-like test double does not
-support `disconnect`, or if the callback was already disconnected. This cleanup
-must not turn a valid layer removal into an exception.
-
-Both removal routes must pass through this boundary:
-
-- napari-side removal handled by `_on_viewer_layer_removed(...)`;
-- Harpy-side removal handled by
-  `_remove_layer_from_viewer_and_registry(...)`, including its fallback path.
+The initially implemented adapter presentation signal, callback registry, and
+associated tests must be removed as part of reconciling this slice. The focused
+channel-removal work remains valid.
 
 ### New focused removal operation
 
@@ -320,60 +299,27 @@ but the two paths must not double-emit.
 
 ### Failure and logging behavior
 
-- A property event without a current image binding is ignored.
-- A property event for a bound layer no longer present in the viewer is
-  ignored.
-- Failure to disconnect an already absent callback is cleanup noise and must
-  not fail the user operation.
 - Existing warnings for malformed napari layer-list event payloads remain
   unchanged.
 - Removing a missing overlay channel is not exceptional and does not produce a
   warning.
-- No signal should be emitted merely because a property callback was connected
-  or disconnected.
+- Invalid or duplicate focused-removal matches fail before any layer is
+  removed.
 
 ### Acceptance criteria
 
-- Registered stack and overlay image layers receive exactly one visibility and
-  one colormap callback.
-- Visibility and colormap changes on a live registered image emit exactly one
-  `image_layer_presentation_changed` signal.
-- Re-registering a layer does not duplicate later property-change emissions.
-- Layer removal unregisters its binding and disconnects its property callbacks.
-- Mutating a removed layer object does not emit adapter presentation changes.
-- External unregistered layers and non-image bindings are ignored.
 - Focused channel removal matches the full image/channel identity and preserves
   all non-matching layers.
 - Missing-channel removal returns `None` without changing state.
 - Existing `image_overlay_layers_changed` consumers retain their lifecycle
   behavior.
+- The adapter has no presentation-property subscriptions or mirrored
+  presentation signal.
 - No viewer-widget or image-card behavior changes in this slice.
 
 ### Focused tests
 
 Add focused tests covering:
-
-#### Presentation signal
-
-- Registered overlay `visible` change emits once.
-- Registered overlay `colormap` change emits once.
-- Registered stack presentation changes follow the same signal contract.
-- Unregistered image property changes emit nothing.
-- Registered non-image layer changes emit nothing.
-- Registering or unregistering without a property change emits no presentation
-  signal.
-- Re-registering the same image layer does not duplicate emissions.
-
-#### Callback cleanup
-
-- Napari-side removal disconnects both callbacks.
-- Harpy-side removal disconnects both callbacks.
-- The no-removal-event fallback also disconnects both callbacks.
-- Mutating the retained Python layer object after removal emits nothing.
-- Repeated cleanup is safe.
-
-The test event emitter should support both `connect` and `disconnect` so these
-tests verify the real lifecycle rather than only signal counts.
 
 #### Focused channel removal
 
@@ -393,16 +339,14 @@ tests verify the real lifecycle rather than only signal counts.
 - Existing image registration tests.
 - Existing layer-list insertion/removal tests.
 - Existing `image_overlay_layers_changed` tests.
-- Focused histogram tests only if adapter signal changes affect their existing
-  lifecycle expectations.
+- Existing focused Histogram lifecycle tests continue to pass without a
+  presentation signal.
 
 ### Slice 1 completion criteria
 
 Slice 1 is complete when:
 
-- the new presentation signal contract is implemented and tested;
-- every registered image layer has an idempotent, cleaned-up property-event
-  subscription;
+- the adapter presentation signal and property subscriptions have been removed;
 - one overlay channel can be removed safely by full identity;
 - existing overlay lifecycle and histogram behavior remain unchanged;
 - focused adapter tests pass;
@@ -446,8 +390,14 @@ composer. Make channel membership bidirectional and live.
 - Show the selected row only after the layer is successfully loaded and bound.
 - Render selected rows from a fresh adapter query.
 - Remove a channel using the focused one-channel adapter removal operation.
-- Handle napari-side layer deletion through the existing overlay lifecycle
-  signal and refresh the affected card.
+- Connect `ViewerWidget` once to the existing
+  `image_overlay_layers_changed` lifecycle signal.
+- On that signal, re-query the active SpatialData image and coordinate system,
+  then reconcile selected-row membership against the live bindings.
+- Dispose obsolete rows before destroying them. Property-event callbacks are
+  added in Slice 3 and must be disconnected as part of row disposal.
+- Do not use presentation-property events to infer membership. A hidden layer
+  remains loaded; only binding/layer insertion and removal change membership.
 - Implement `Remove all` using the adapter, scoped to the active SpatialData
   image and coordinate system.
 - Keep the visible selected rows in live napari layer order unless a later
@@ -475,6 +425,8 @@ composer. Make channel membership bidirectional and live.
 - Remove all affects only the matching image and coordinate system.
 - A failed load does not create a misleading selected row.
 - Many available channels do not create many persistent row widgets.
+- One lifecycle notification performs one membership reconciliation; it does
+  not create duplicate signal connections.
 
 ### Focused tests
 
@@ -489,6 +441,7 @@ composer. Make channel membership bidirectional and live.
 - Search results refresh after add and removal.
 - Default color selection and cached color reuse.
 - Many available channels do not produce persistent rows.
+- Repeated lifecycle refreshes do not duplicate the Viewer callback.
 
 ## Slice 3: Bidirectional visibility and colormap controls
 
@@ -504,6 +457,37 @@ napari controls.
 - `src/napari_harpy/widgets/overlay_color_button.py`
 - `tests/test_viewer_widget.py`
 - focused color-button tests if a separate test module is clearer
+
+### Direct layer-event subscriptions
+
+Each selected channel row owns its presentation subscriptions for its current
+live napari `Image`:
+
+- connect directly to `layer.events.visible`;
+- connect directly to `layer.events.colormap`;
+- update only the row bound to that layer when either event fires;
+- verify that the callback still belongs to the row's current layer before
+  applying state.
+
+The Viewer must not receive these events through the Histogram or through an
+adapter presentation signal. The Histogram keeps its own direct subscriptions.
+A single napari colormap event therefore fans out naturally to both peer
+widgets when both are open.
+
+Connection ownership must be explicit and idempotent:
+
+- connect each event at most once for a row/layer pair;
+- disconnect both callbacks before a row is removed or rebound;
+- disconnect before rebuilding card content or changing SpatialData, image, or
+  coordinate-system context;
+- disconnect during widget teardown where applicable;
+- tolerate an already-disconnected or already-destroyed event source using the
+  same narrow exception handling pattern as the Histogram.
+
+Start with small Viewer-owned connection and disconnection methods. Do not
+extract a shared Histogram/Viewer subscription abstraction in this slice.
+Consider that only later if the completed implementations contain meaningful,
+stable duplication.
 
 ### Visibility behavior
 
@@ -536,8 +520,10 @@ Do not build a second full colormap picker in Harpy.
 
 - Block Qt signals while applying napari-originated state.
 - Avoid writing a layer property when the requested value is already current.
-- Refresh state from the adapter after a mutation rather than assuming the
-  setter succeeded.
+- After a Harpy-originated mutation, read the accepted property back from the
+  live layer rather than assuming the setter succeeded.
+- Keep lifecycle reconciliation separate from property reflection: visibility
+  and colormap events update their row, not the complete card membership.
 
 ### Acceptance criteria
 
@@ -548,6 +534,10 @@ Do not build a second full colormap picker in Harpy.
   solid color.
 - Repeated synchronization does not recurse or duplicate mutations.
 - Changes to one layer do not disturb sibling rows.
+- Viewer and Histogram can observe the same layer property independently
+  without forwarding events through one another or the adapter.
+- Removing or rebuilding a row leaves no callback targeting the stale row.
+- The adapter remains free of visibility and colormap subscriptions.
 
 ### Focused tests
 
@@ -558,7 +548,11 @@ Do not build a second full colormap picker in Harpy.
 - Harpy-to-napari and napari-to-Harpy solid-color changes.
 - Non-solid colormap preview, tooltip, and accessible name.
 - Signal blocking/re-entrancy protection.
-- Property-event callback cleanup after removal.
+- Direct callback connection is idempotent for a row/layer pair.
+- Property-event callback cleanup after removal, rebinding, and card refresh.
+- A stale callback cannot update a row after its target layer changes.
+- One layer colormap change can update both open peer widgets without an
+  adapter presentation signal.
 
 ## Slice 4: Display-mode lifecycle and removal of staged apply
 
@@ -713,8 +707,11 @@ This roadmap is complete when:
 - selected rows correspond exactly to live Harpy overlay layers;
 - add, remove, and remove-all operations update napari immediately;
 - eyes and colormaps synchronize in both directions;
+- presentation synchronization comes directly from live napari layer events;
 - external napari layer deletion updates the composer;
 - membership, visibility, and removal remain distinct;
+- the adapter remains responsible for binding/lifecycle operations rather than
+  mirroring napari presentation properties;
 - the overlay `Add / Update in viewer` action is gone;
 - initial stack loading remains explicit and clearly labelled;
 - focused automated tests and manual verification pass.
