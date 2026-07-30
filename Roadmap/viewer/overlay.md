@@ -187,52 +187,226 @@ virtualization only if profiling demonstrates a real channel-count problem.
 Expose one reliable event path for Harpy-managed image-layer lifecycle,
 visibility, and colormap changes.
 
-This slice should not redesign the UI yet.
+This is an adapter-only slice. It must not redesign the image card or add eye
+and colormap controls yet.
 
 ### Target files
 
 - `src/napari_harpy/viewer/adapter.py`
 - `tests/test_viewer_adapter.py`
 
-### Implementation
+### Existing contracts to preserve
 
-- Keep using the existing binding registry for image and channel identity.
-- Continue observing napari layer insertion and removal.
-- Add a dedicated adapter signal for image-layer presentation changes. A
-  no-payload signal is sufficient because consumers must re-query live state.
-- When an image layer is registered, connect:
-  - `layer.events.visible`;
-  - `layer.events.colormap`.
-- Emit the presentation-change signal after either property changes.
-- Disconnect the property callbacks when the layer is unregistered or removed.
-- Ensure callback bookkeeping cannot retain removed layers.
-- Keep `image_overlay_layers_changed` lifecycle behavior compatible with the
-  histogram widget.
-- Add a focused adapter operation to remove one overlay channel by:
-  - SpatialData identity;
-  - image name;
+- `LayerBindingRegistry` remains the source of Harpy image and channel
+  identity.
+- `ImageLayerBinding` remains the binding type for stack and overlay image
+  layers.
+- `image_overlay_layers_changed` continues to mean that the set/order of
+  histogram-usable overlay bindings changed.
+- Consumers of `image_overlay_layers_changed` continue to re-query bindings.
+- `get_loaded_image_layers(...)` remains the public read path for live image
+  layers belonging to one SpatialData image.
+- Layer-list insertion and removal continue to be observed through napari's
+  layer-list events.
+- `_remove_layer_from_viewer_and_registry(...)` remains the central
+  Harpy-initiated removal path and retains its fallback for viewer-like objects
+  that do not emit a removal event.
+
+### New adapter signal
+
+Add:
+
+```python
+image_layer_presentation_changed = Signal()
+```
+
+Signal contract:
+
+- The signal is emitted when `visible` or `colormap` changes on a live,
+  registered `Image` layer.
+- It applies to both stack and overlay `ImageLayerBinding` instances. Consumers
+  decide which modes they care about after re-querying.
+- It carries no payload.
+- Consumers must re-query live layers and their bindings after receiving it.
+- It is not emitted for layer insertion, removal, or reordering; lifecycle
+  remains covered by the existing lifecycle signals.
+- It is not emitted for unregistered image layers or non-image layers.
+- A single property assignment should produce at most one adapter signal.
+- Harpy-originated and napari-originated property assignments follow the same
+  path; the adapter does not need to identify the source.
+
+The no-payload design avoids exposing a removed or otherwise stale layer in a
+queued callback and matches the existing re-query pattern.
+
+### Property-event connection lifecycle
+
+When `register_image_layer(...)` completes registration:
+
+1. Connect one callback to `layer.events.visible`.
+2. Connect one callback to `layer.events.colormap`.
+3. Record enough callback information to disconnect both callbacks later.
+4. Continue the existing registered-binding handling and lifecycle emission.
+
+Connection requirements:
+
+- Registration is idempotent with respect to property callbacks. Re-registering
+  the same layer must not add duplicate callbacks.
+- If a layer is re-registered, disconnect any previous image-property callbacks
+  before connecting the current pair.
+- A property callback emits only while:
+  - the layer still has an `ImageLayerBinding`; and
+  - the layer is still present in the viewer.
+- Callback bookkeeping is private to `ViewerAdapter`.
+- Callback bookkeeping must be removed when the layer is unregistered.
+- It must not retain a removed layer after cleanup.
+
+`unregister_layer(...)` becomes the central cleanup boundary:
+
+1. Resolve the current binding.
+2. If it is an image binding, disconnect and forget its property callbacks.
+3. Remove the binding from `LayerBindingRegistry`.
+4. Return the removed binding as it does today.
+
+Disconnection must be safe if an emitter or viewer-like test double does not
+support `disconnect`, or if the callback was already disconnected. This cleanup
+must not turn a valid layer removal into an exception.
+
+Both removal routes must pass through this boundary:
+
+- napari-side removal handled by `_on_viewer_layer_removed(...)`;
+- Harpy-side removal handled by
+  `_remove_layer_from_viewer_and_registry(...)`, including its fallback path.
+
+### New focused removal operation
+
+Add the following public adapter method:
+
+```python
+def remove_image_overlay_channel(
+    self,
+    sdata: SpatialData,
+    image_name: str,
+    coordinate_system: str,
+    *,
+    channel_index: int,
+) -> Image | None:
+    ...
+```
+
+Method contract:
+
+- Match by all four identity components:
+  - SpatialData object identity;
+  - image element name;
   - coordinate system;
-  - channel index.
-- Return a clear result when no matching live layer exists.
+  - overlay channel index.
+- Match only `ImageLayerBinding` instances whose
+  `image_display_mode == "overlay"`.
+- Never remove a stack layer.
+- Never remove a sibling overlay channel.
+- Use `_remove_layer_from_viewer_and_registry(...)` for the actual removal.
+- Return the removed `Image`.
+- Return `None` when no matching live layer exists.
+- Treat an absent layer as a normal idempotent no-op; do not log it as an error.
+- Reject a negative `channel_index` with `ValueError`.
+- The binding registry is expected to contain at most one live match for this
+  identity. If that invariant is violated, raise `ValueError` rather than
+  silently choosing or deleting multiple layers.
+
+On a normal napari viewer, successful removal should cause exactly one
+`image_overlay_layers_changed` emission through the existing layer-list removal
+handler. The fallback path may emit it when the viewer does not emit removal,
+but the two paths must not double-emit.
+
+### Failure and logging behavior
+
+- A property event without a current image binding is ignored.
+- A property event for a bound layer no longer present in the viewer is
+  ignored.
+- Failure to disconnect an already absent callback is cleanup noise and must
+  not fail the user operation.
+- Existing warnings for malformed napari layer-list event payloads remain
+  unchanged.
+- Removing a missing overlay channel is not exceptional and does not produce a
+  warning.
+- No signal should be emitted merely because a property callback was connected
+  or disconnected.
 
 ### Acceptance criteria
 
-- A registered overlay layer can be resolved back to its image and channel.
-- Visibility and colormap changes emit the new adapter signal.
-- Layer removal unregisters the binding and disconnects property callbacks.
-- External unregistered layers are ignored.
-- Removing one overlay channel does not remove sibling channels.
-- Existing histogram overlay lifecycle behavior does not regress.
+- Registered stack and overlay image layers receive exactly one visibility and
+  one colormap callback.
+- Visibility and colormap changes on a live registered image emit exactly one
+  `image_layer_presentation_changed` signal.
+- Re-registering a layer does not duplicate later property-change emissions.
+- Layer removal unregisters its binding and disconnects its property callbacks.
+- Mutating a removed layer object does not emit adapter presentation changes.
+- External unregistered layers and non-image bindings are ignored.
+- Focused channel removal matches the full image/channel identity and preserves
+  all non-matching layers.
+- Missing-channel removal returns `None` without changing state.
+- Existing `image_overlay_layers_changed` consumers retain their lifecycle
+  behavior.
+- No viewer-widget or image-card behavior changes in this slice.
 
 ### Focused tests
 
-- Signal after `layer.visible` changes.
-- Signal after `layer.colormap` changes.
-- No property signal for unregistered layers.
-- Callback cleanup after napari-side and Harpy-side removal.
-- One-channel removal with sibling preservation.
-- Removal of a missing channel is a safe no-op.
-- Existing insertion/removal and overlay lifecycle tests.
+Add focused tests covering:
+
+#### Presentation signal
+
+- Registered overlay `visible` change emits once.
+- Registered overlay `colormap` change emits once.
+- Registered stack presentation changes follow the same signal contract.
+- Unregistered image property changes emit nothing.
+- Registered non-image layer changes emit nothing.
+- Registering or unregistering without a property change emits no presentation
+  signal.
+- Re-registering the same image layer does not duplicate emissions.
+
+#### Callback cleanup
+
+- Napari-side removal disconnects both callbacks.
+- Harpy-side removal disconnects both callbacks.
+- The no-removal-event fallback also disconnects both callbacks.
+- Mutating the retained Python layer object after removal emits nothing.
+- Repeated cleanup is safe.
+
+The test event emitter should support both `connect` and `disconnect` so these
+tests verify the real lifecycle rather than only signal counts.
+
+#### Focused channel removal
+
+- Removes the requested overlay channel.
+- Preserves sibling overlay channels.
+- Preserves a stack layer with the same image identity.
+- Preserves layers for another image, coordinate system, or SpatialData object.
+- Returns the removed layer.
+- Returns `None` for a missing channel.
+- Rejects a negative channel index.
+- Rejects duplicate live matches for the same overlay identity.
+- Emits the existing overlay lifecycle signal exactly once on normal removal.
+- Keeps registry state correct for both normal and fallback viewer behavior.
+
+#### Regression coverage
+
+- Existing image registration tests.
+- Existing layer-list insertion/removal tests.
+- Existing `image_overlay_layers_changed` tests.
+- Focused histogram tests only if adapter signal changes affect their existing
+  lifecycle expectations.
+
+### Slice 1 completion criteria
+
+Slice 1 is complete when:
+
+- the new presentation signal contract is implemented and tested;
+- every registered image layer has an idempotent, cleaned-up property-event
+  subscription;
+- one overlay channel can be removed safely by full identity;
+- existing overlay lifecycle and histogram behavior remain unchanged;
+- focused adapter tests pass;
+- no viewer UI files have changed.
 
 ## Slice 2: Searchable composer and live layer membership
 
