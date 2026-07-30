@@ -5,7 +5,7 @@ from html import escape
 from typing import Literal, cast
 
 from qtpy.QtCore import QPointF, QSize, Qt, QTimer
-from qtpy.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
+from qtpy.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
@@ -44,6 +44,7 @@ WIDGET_WARNING_BORDER_COLOR = "#c99845"
 WIDGET_WARNING_HOVER_COLOR = "#4f402c"
 TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
 DISCLOSURE_CHEVRON_SIZE = 14
+VISIBILITY_EYE_ICON_SIZE = 16
 FORM_LABEL_STYLESHEET = (
     f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px; background: transparent;"
 )
@@ -178,6 +179,41 @@ def create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_C
     else:
         painter.drawLine(QPointF(5.0, 3.5), QPointF(8.5, 7.0))
         painter.drawLine(QPointF(8.5, 7.0), QPointF(5.0, 10.5))
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+def create_visibility_eye_icon(*, visible: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
+    """Return a compact open-eye or crossed-eye icon."""
+    pixmap = QPixmap(VISIBILITY_EYE_ICON_SIZE, VISIBILITY_EYE_ICON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    eye = QPainterPath()
+    eye.moveTo(1.5, 8.0)
+    eye.cubicTo(4.0, 3.4, 7.0, 2.8, 8.0, 2.8)
+    eye.cubicTo(9.0, 2.8, 12.0, 3.4, 14.5, 8.0)
+    eye.cubicTo(12.0, 12.6, 9.0, 13.2, 8.0, 13.2)
+    eye.cubicTo(7.0, 13.2, 4.0, 12.6, 1.5, 8.0)
+    painter.drawPath(eye)
+    painter.drawEllipse(QPointF(8.0, 8.0), 2.1, 2.1)
+
+    if not visible:
+        outline_pen = QPen(QColor(WIDGET_SURFACE_COLOR))
+        outline_pen.setWidthF(3.8)
+        outline_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(outline_pen)
+        painter.drawLine(QPointF(2.2, 2.2), QPointF(13.8, 13.8))
+        painter.setPen(pen)
+        painter.drawLine(QPointF(2.2, 2.2), QPointF(13.8, 13.8))
 
     painter.end()
     return QIcon(pixmap)
