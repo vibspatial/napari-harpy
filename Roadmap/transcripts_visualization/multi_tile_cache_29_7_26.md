@@ -2,7 +2,7 @@
 
 Status: authoritative investigation and implementation roadmap
 
-Last updated: 2026-07-28
+Last updated: 2026-07-30
 
 ## Authority and relationship to older documents
 
@@ -43,6 +43,12 @@ layer and a tiled rendering backend whose GPU buffers survive viewport changes.
 The normal napari Points path remains available for small selections, fallback,
 debugging, and correctness comparison.
 
+The cache core uses `value` for the selected categorical point attribute.
+Transcript datasets normally select the physical source column named `gene`, so
+the public default is `value="gene"`. Internal schemas and algorithms use
+`value`, `value_id`, and `value_table`; transcript-facing UI may still present
+those values as genes when that matches the dataset semantics.
+
 The durable investment is:
 
 1. the cache contract;
@@ -66,7 +72,7 @@ The completed system must:
   budget;
 - read only the Parquet row groups needed for the viewport;
 - retain overlapping CPU and GPU tiles across pan and zoom;
-- preserve stable gene colors and cheap gene visibility changes;
+- preserve stable value colors and cheap value visibility changes;
 - keep the GUI responsive while disk reads and decoding happen in background
   workers;
 - reject stale asynchronous results and prevent mixed-source or mixed-LOD
@@ -82,12 +88,12 @@ The first production version does not need:
 - a complete public napari extension API for custom layer renderers;
 - 3D transcript rendering;
 - remote/object-store cache construction;
-- exact gene-selective Parquet reads;
+- exact value-selective Parquet reads;
 - per-transcript GPU picking;
 - Morton ordering as a required part of the format;
 - a second on-disk warm-cache format.
 
-Exact gene-selective IO, richer picking, remote stores, and alternative
+Exact value-selective IO, richer picking, remote stores, and alternative
 rendering backends are later extensions. The initial format must not make them
 impossible.
 
@@ -113,13 +119,17 @@ for:
 `tests/test_transcript_tiles.py` covers these primitives. At the time this
 roadmap was written, its focused test module passed 103 tests.
 
+These names describe the legacy implementation only. The new package
+generalizes the categorical column to `value` and does not retain its
+caller-supplied transcript-id path.
+
 ### Not implemented
 
 The repository does not yet contain:
 
 - a public end-to-end cache builder;
 - sampled coarse-level construction;
-- an internal stable row id when no transcript id is supplied;
+- a Harpy-owned stable internal `uint64 point_id`;
 - final `metadata.json` and `manifest.parquet` writers;
 - a completed-cache marker and complete reader validation;
 - source-staleness inspection;
@@ -204,7 +214,7 @@ Private napari registration details remain isolated at that boundary.
 - The finest level has full source membership.
 - Coarse rows are actual source transcript representatives, not centroids with
   invented identities.
-- Every representative retains a source or cache-stable point identity.
+- Every representative retains the Harpy-owned internal `point_id`.
 - No coarse level is replaced with a raster.
 
 ### Self-contained, nested levels
@@ -224,11 +234,11 @@ Harpy will not use Neuroglancer-style residual/disjoint levels in the first
 format. Residual levels require cumulative multi-level reads or mixed-level
 rendering, which conflicts with the initial one-active-LOD contract.
 
-### Gene-aware coarse sampling
+### Value-aware coarse sampling
 
-The first shippable sampled pyramid must be spatially and gene aware. A
+The first shippable sampled pyramid must be spatially and value aware. A
 spatial-only version is not an acceptable final milestone because it can erase
-rare genes from overviews and would knowingly require later replacement.
+rare values from overviews and would knowingly require later replacement.
 
 The exact sampling algorithm is settled by the Phase 1 construction spike, but it
 must guarantee:
@@ -237,15 +247,15 @@ must guarantee:
 - actual source rows as representatives;
 - stable pseudo-random priority based on a named, versioned hash algorithm;
 - spatial stratification within a tile;
-- gene-aware allocation within spatial strata;
+- value-aware allocation within spatial strata;
 - monotonically increasing membership from coarse to fine;
 - no level or tile budget overrun;
 - no dependence on Python's randomized `hash()`;
 - deterministic tie-breaking;
-- documented behavior when no source transcript-id column is available.
+- deterministic use of the Harpy-owned internal `point_id`.
 
-Gene-aware sampling does not imply gene-selective disk reads. The first runtime
-may still load an unfiltered visible tile and apply gene visibility in the GPU
+Value-aware sampling does not imply value-selective disk reads. The first runtime
+may still load an unfiltered visible tile and apply value visibility in the GPU
 palette.
 
 ### Tile geometry and sampling density are different concepts
@@ -321,7 +331,7 @@ exceed that budget.
 
 This schedule is the initial implementation and benchmark target, not an
 immutable file-format restriction. Changing it later requires benchmark
-evidence from real viewport traces, screen-space density, gene preservation,
+evidence from real viewport traces, screen-space density, value preservation,
 build cost, and LOD transition quality.
 
 ### Separate budgets
@@ -375,7 +385,7 @@ whole-dataset render budget.
 - A normal napari Points layer is not the production camera-driven hot path.
 - The renderer retains independently addressable GPU tile payloads.
 - Camera movement reuses resident buffers.
-- Palette, gene visibility, opacity, and point-size updates do not reupload
+- Palette, value visibility, opacity, and point-size updates do not reupload
   coordinate buffers.
 - Disk and Parquet work never touches VisPy objects.
 - GPU creation, upload, and deletion occur on the GUI/OpenGL thread.
@@ -484,7 +494,7 @@ persistent user state             viewport + LOD policy
                                       └── VisPy backend
                                           GPU LRU + upload queue
                                           compact point visual
-                                          gene palette
+                                          value palette
 ```
 
 ### `TranscriptLayerModel`
@@ -495,8 +505,8 @@ layer list.
 It owns:
 
 - an immutable transcript dataset reference;
-- selected gene ids;
-- gene palette and visibility state;
+- selected value ids;
+- value palette and visibility state;
 - point size;
 - render and prefetch settings;
 - user-visible status;
@@ -547,7 +557,7 @@ The store is independent of Qt, napari, and VisPy.
 It owns:
 
 - parsed and validated cache metadata;
-- the gene dictionary;
+- the value dictionary;
 - the tile/row-group manifest index;
 - PyArrow row-group reads;
 - decoding of tile-local coordinates and features;
@@ -690,7 +700,7 @@ The first production backend owns:
 - a per-frame upload byte/time budget;
 - tile visibility;
 - a compact point shader;
-- gene palette and gene-visibility lookup;
+- value palette and value-visibility lookup;
 - point-size and opacity uniforms;
 - context loss and cleanup.
 
@@ -699,14 +709,14 @@ The intended GPU vertex payload is approximately:
 ```text
 x_rel: float32
 y_rel: float32
-gene_id: uint16, uint32, or exactly represented float32
+value_id: uint16, uint32, or exactly represented float32
 ```
 
 Disk and CPU dtypes do not have to equal GPU attribute dtypes. In particular,
-the cache may store `gene_id` as `uint32` while a compatibility-oriented VisPy
+the cache may store `value_id` as `uint32` while a compatibility-oriented VisPy
 prototype uses `float32` in the vertex buffer.
 
-Transcript ids remain CPU-side unless a measured picking design requires them
+Internal point ids remain CPU-side unless a measured picking design requires them
 on the GPU.
 
 Whether the backend uses one scene node per tile, several VBOs in one visual,
@@ -717,9 +727,9 @@ the architecture contract.
 
 ### First implementation slice
 
-Source resolution and validation are implemented before cache writing. The
-result is not merely successful return versus exception; it is an immutable
-build input containing all source facts needed by later stages.
+Source resolution and validation are implemented before cache writing.
+Validation returns an immutable build input containing all deterministic source
+facts needed by later stages.
 
 A representative model is:
 
@@ -730,17 +740,20 @@ class ValidatedPointsSource:
     parquet_files: tuple[ParquetSourceFile, ...]
     x_column: str
     y_column: str
-    gene_column: str
-    transcript_id_column: str | None
+    value_column: str
     row_count: int
     partition_row_offsets: tuple[int, ...]
     bounds: PointsBounds
-    source_schema: pa.Schema
-    gene_table: pa.Table
+    selected_schema: pa.Schema
+    value_table: pa.Table
     source_signature: str
     source_signature_method: str
-    fallback_identity_policy: str
+    point_id_policy: str
 ```
+
+`selected_schema` contains only the caller-selected `x`, `y`, and `value` fields
+in canonical semantic order. Unselected source columns are not part of the
+build contract and need not match across fragments.
 
 The precise names may change during implementation, but the separation between
 an unresolved source and a validated immutable build input is required.
@@ -759,15 +772,28 @@ def resolve_spatialdata_points_source(
     *,
     x: str = "x",
     y: str = "y",
-    gene: str = "gene",
-    transcript_id: str | None = None,
+    value: str = "gene",
 ) -> ParquetPointsSource: ...
 
 
 def validate_parquet_points_source(
     source: ParquetPointsSource,
+    *,
+    max_batch_rows: int = 524_288,
 ) -> ValidatedPointsSource: ...
 ```
+
+The cache builder accepts the returned `ValidatedPointsSource` directly.
+Validation does not return or persist a diagnostics report, performance
+timings, transient counters, machine information, or a generation timestamp.
+Performance measurements belong to dedicated benchmark tooling.
+The first validation implementation is synchronous and exposes no progress or
+cancellation protocol. Those orchestration concerns may be added later without
+changing the validated-source or cache-format contracts.
+
+The API does not accept a source transcript-id column. Validation establishes
+deterministic fragment offsets, and cache construction generates a Harpy-owned
+`uint64 point_id` from each fragment offset and row position.
 
 The resolver uses SpatialData to locate the element and its `points.parquet`
 dataset. A lower-level caller may supply both a Dask dataframe and explicit
@@ -797,21 +823,21 @@ rows.
 Only checks that cannot be established safely from metadata perform data reads:
 
 - missing, NaN, or infinite coordinates;
-- missing or normalized-empty genes;
-- gene normalization collisions and exact counts;
-- transcript-id nulls and uniqueness when an id is supplied;
+- missing or normalized-empty values;
+- normalized value counts;
 - bounds when usable Parquet statistics are absent.
 
-Reads use bounded PyArrow batches. Dictionary-encoded genes are handled by
+Reads use bounded PyArrow batches. Dictionary-encoded values are handled by
 normalizing dictionary values once and aggregating their integer indices rather
-than converting every transcript value through Python strings.
+than converting every point value through Python strings. Raw labels that
+normalize to the same value are merged; no collision count is returned or
+persisted.
 
 Every derived fact records its evidence method where useful:
 
 ```text
 PARQUET_METADATA
 STREAMING_SCAN
-CALLER_PROVIDED
 ```
 
 The validator must fail clearly when required correctness cannot be established.
@@ -831,16 +857,15 @@ At the time of investigation it contains:
 
 - 136,578,750 rows;
 - 65 Parquet files and 168 row groups;
-- 5,122 normalized genes;
+- 5,122 normalized values from the physical `gene` column;
 - `x`, `y`, and `gene` source columns;
 - `x` bounds approximately `[38.3088, 54047.2059]`;
 - `y` bounds approximately `[22.7206, 37581.4706]`;
-- no globally unique source transcript-id column.
 
-The validation slice must report those counts and the measured coordinate
-bounds without materializing the complete dataframe, produce deterministic
-fragment offsets and a repeatable source signature, and remain within a
-documented bounded-memory envelope.
+The validated source must contain those counts and measured coordinate bounds
+without materializing the complete dataframe, produce deterministic fragment
+offsets and a repeatable source signature, and remain within a documented
+bounded-memory envelope.
 
 ## Persistent cache contract
 
@@ -855,7 +880,7 @@ The logical cache layout is:
     transcripts_vis/
       metadata.json
       manifest.parquet
-      genes.parquet
+      values.parquet
       levels/
         level_0/
           part-00000.parquet
@@ -909,7 +934,7 @@ Required source identity:
 - resolved element path;
 - source row count;
 - source schema summary;
-- coordinate, gene, and transcript-id column names;
+- coordinate and value column names;
 - source-signature method and value.
 
 Required geometry:
@@ -938,7 +963,8 @@ Required build parameters:
 - `max_rows_per_row_group`;
 - stable hash algorithm and seed;
 - sampler name/version and parameters;
-- fallback row-identity policy.
+- value-normalization method;
+- internal point-identity policy.
 
 `metadata.json` is the source of truth for cache semantics. The manifest is the
 source of truth for physical tile/row-group locations and actual stored counts.
@@ -954,10 +980,17 @@ Two identities solve different problems.
 `source_signature`
 : Evidence that the cache still corresponds to the canonical points source.
 
-The source-signature method must be explicit and versioned. A local first
-version may combine resolved source location, Parquet file inventory, schema,
-file sizes/footer row counts, and source row count. If the method is not a
-cryptographic content hash, the UI and API must not claim stronger guarantees
+The first source-signature method is
+`harpy-parquet-footer-inventory-sha256-v1`. It hashes the exact canonical UTF-8
+JSON representation specified by the validation roadmap. The payload contains
+the SpatialData-relative element path, selected `x`, `y`, and `value` names and
+normalized type descriptors, ordered dataset-relative fragments, file sizes,
+available nanosecond modification times, footer and row-group row counts,
+row-group compressed sizes, and total row count.
+
+It excludes the absolute host path, Parquet min/max statistics, performance
+measurements, and generation timestamps. It is not a cryptographic hash of
+every Parquet data page, so the UI and API must not claim stronger guarantees
 than it provides.
 
 The reader reports at least:
@@ -996,18 +1029,19 @@ makes the global overview budget straightforward. The format must still support
 more than one coarsest tile if a later builder deliberately chooses that
 layout; the global coarsest budget remains mandatory.
 
-### `genes.parquet`
+### `values.parquet`
 
 Required columns:
 
 ```text
-gene_id: uint32
-gene: string
-n_transcripts: uint64
+value_id: uint32
+value: string
+n_points: uint64
 ```
 
-Gene labels are normalized according to one documented policy, assigned stable
-ids in deterministic order, and never inferred from GPU palette order.
+Values are normalized according to one documented policy, assigned stable
+ids in deterministic order, and never inferred from GPU palette order. The
+initial policy is `harpy-string-trim-unicode-case-sensitive-v1`.
 
 ### `manifest.parquet`
 
@@ -1050,18 +1084,14 @@ tile_x
 tile_y
 x_rel: float32
 y_rel: float32
-gene_id: uint32
-point_identity
+value_id: uint32
+point_id: uint64
 ```
 
-`point_identity` is:
-
-- the validated source transcript id when supplied; or
-- a cache-internal `uint64` row id created before sampling and propagated
-  through every level.
-
-The source transcript id may be integral or string typed. The stable hashing
-contract must define its canonical byte encoding.
+`point_id` is the Harpy-owned identity generated from deterministic fragment
+offsets and row positions before sampling and propagated unchanged through
+every level. It is never written back to canonical SpatialData. The renderer
+does not upload it to the GPU unless a measured picking design requires that.
 
 Tile-local coordinates reconstruct native coordinates:
 
@@ -1112,23 +1142,21 @@ The format continues to support other density-only levels, but they are not
 part of the initial default schedule and require benchmark evidence before
 being added.
 
-### Stable row identity
+### Stable internal point identity
 
-Sampling begins by assigning every source row a stable identity.
+Sampling begins by assigning every source row a Harpy-owned `uint64 point_id`:
 
-When a validated transcript-id column is supplied:
+```text
+point_id = fragment_row_offset + row_position_within_fragment
+```
 
-- values must be non-null and unique;
-- canonical byte encoding is documented;
-- repartitioning the source must not change sampled membership.
+The policy name is `harpy-fragment-row-offset-uint64-v1`.
 
-Without such a column:
-
-- assign a unique `uint64` build row id from deterministic partition offsets
-  and row positions;
-- guarantee reproducibility only while input row order and partitioning remain
-  stable;
-- record this weaker policy in metadata.
+Validation establishes deterministic dataset-relative fragment ordering and
+row offsets. The builder generates ids batch by batch without materializing a
+full-source identity array. Reproducibility is guaranteed only while the
+validated file inventory and row order remain stable; the versioned source
+signature and point-identity policy record that scope.
 
 ### Sampling contract
 
@@ -1139,9 +1167,9 @@ The expected family is:
 1. start from candidates retained by the next finer level;
 2. annotate candidates with the current level's tile and spatial stratum;
 3. allocate the tile target across occupied spatial strata;
-4. allocate each stratum target across genes with a bounded rarity-aware rule;
-5. rank candidates using a stable hash of level, spatial stratum, gene id,
-   stable row identity, and seed;
+4. allocate each stratum target across values with a bounded rarity-aware rule;
+5. rank candidates using a stable hash of level, spatial stratum, value id,
+   `point_id`, and seed;
 6. keep the deterministic winners;
 7. sort output deterministically before writing.
 
@@ -1151,7 +1179,7 @@ the Phase 1 spike must benchmark and specify a deterministic within-tile
 stratification policy. A fixed micro-grid is a candidate for that bridge, not a
 general requirement imposed on every sampled level.
 
-The gene-allocation function should start with a bounded concave count transform
+The value-allocation function should start with a bounded concave count transform
 such as `sqrt(n)` or `log1p(n)`, plus a clipped global-rarity modifier. Exact
 weights and minimum-allocation behavior must be benchmarked on skewed synthetic
 and real transcript datasets.
@@ -1159,20 +1187,20 @@ and real transcript datasets.
 The sampler must define behavior when:
 
 - occupied spatial strata exceed the available target;
-- genes in one stratum exceed the available target;
+- values in one stratum exceed the available target;
 - all points share one coordinate;
-- one gene dominates a tile;
-- many singleton genes occur in one tile;
+- one value dominates a tile;
+- many singleton values occur in one tile;
 - a hash collision occurs;
 - a tile is split across Dask partitions.
 
 ### Why not finish the old spatial-only sampler first
 
 The cache is an offline derived artifact whose quality determines every coarse
-view. Shipping a knowingly gene-blind sampler would create misleading
-biological overviews and consume implementation effort that the gene-aware
-sampler would replace. The writer should move directly from exact-level
-primitives to the specified gene-aware sampled levels.
+view. Shipping a knowingly value-blind sampler would erase rare categories and
+consume implementation effort that the value-aware sampler would replace. The
+writer should move directly from exact-level primitives to the specified
+value-aware sampled levels.
 
 ## Physical Parquet layout: benchmark before freezing
 
@@ -1316,31 +1344,31 @@ GPU uploads are queued and limited per frame by bytes and/or elapsed time.
 Large bursts must not freeze camera interaction. Upload completion notifies the
 scheduler so pending snapshots can activate.
 
-## Gene palette and filtering
+## Value palette and filtering
 
-The GPU receives a dense gene id per resident point and a small lookup resource:
+The GPU receives a dense value id per resident point and a small lookup resource:
 
 ```text
-gene_id -> RGBA + enabled
+value_id -> RGBA + enabled
 ```
 
 Changing:
 
-- gene color;
-- gene visibility;
+- value color;
+- value visibility;
 - global opacity;
 - point size;
-- selected-gene highlighting
+- selected-value highlighting
 
 must not reupload point coordinates.
 
-Hidden resident genes still consume vertex processing. This is acceptable in
+Hidden resident values still consume vertex processing. This is acceptable in
 the first tiled mode because the LOD budget bounds total resident vertices.
 
-The first production version may read all genes in a visible tile and filter in
-the renderer. Exact gene-selective IO requires a later physical layout/index
-extension; a metadata-only gene index is insufficient if row groups still mix
-all genes.
+The first production version may read all values in a visible tile and filter
+in the renderer. Exact value-selective IO requires a later physical layout/index
+extension; a metadata-only value index is insufficient if row groups still mix
+all values.
 
 ## Picking
 
@@ -1349,8 +1377,8 @@ Initial picking is CPU-side and separate from rendering:
 1. convert the cursor from world to cache data coordinates;
 2. identify the active tile;
 3. search an optional small spatial index over its CPU payload;
-4. ignore disabled genes;
-5. return point identity, gene, coordinates, and LOD status.
+4. ignore disabled values;
+5. return `point_id`, value, coordinates, and LOD status.
 
 At a sampled level, the result is a real representative transcript and must be
 reported as sampled. At the exact level, it is an exact visible source row.
@@ -1397,10 +1425,11 @@ Deliverables:
 - implement deterministic Parquet file inventory and fragment offsets;
 - validate schema and available footer statistics;
 - implement bounded PyArrow scans for checks that require row data;
-- build the normalized gene table efficiently;
+- build the normalized value table efficiently;
 - implement and version the source-signature method;
-- document the fallback row-identity policy;
-- instrument stage time, decoded bytes, and peak memory;
+- implement and version the internal point-identity policy;
+- measure stage time, decoded bytes, and peak memory in dedicated benchmark
+  tooling without widening the public validation result;
 - add tiny, adversarial, and real-data validation tests.
 
 Exit criteria:
@@ -1411,8 +1440,12 @@ Exit criteria:
 - missing or incompatible Parquet sources fail before cache writing;
 - metadata-only facts avoid full scans;
 - all streaming reads have bounded batch sizes;
-- fallback ids can be derived deterministically from validated fragment offsets;
-- the Xenium acceptance dataset reports 136,578,750 rows and 5,122 genes;
+- internal point ids can be derived deterministically from validated fragment
+  offsets;
+- the public validation API accepts no caller-supplied identity column;
+- the initial validation API exposes no progress or cancellation protocol;
+- the Xenium acceptance dataset reports 136,578,750 rows and 5,122 normalized
+  values;
 - repeated validation produces the same ordered inventory and source signature.
 
 ### Phase 1: persistent cache construction
@@ -1429,15 +1462,16 @@ Begin with an internal exact-level performance spike:
 Then complete the cache builder:
 
 - define the new dataclasses and cache schema in the new package;
+- accept the returned `ValidatedPointsSource` as the cache-construction input;
 - generate a fresh cache-generation id and consume the validated source
   signature;
-- implement stable fallback row identity;
+- generate and propagate stable internal `point_id` values;
 - write the exact level from the validated source;
 - implement the initial 512-all → 512-at-4,096 → 1,024-at-8,192 →
   2,048-at-16,384 → 4,096-at-32,768 construction schedule;
 - construct sampled levels from retained finer-level candidates or normalized
   exact tiles, not by repeatedly rescanning the original source;
-- implement gene-aware nested sampled levels;
+- implement value-aware nested sampled levels;
 - enforce the global coarsest-level budget;
 - write metadata and manifest;
 - validate the complete staged cache;
@@ -1515,7 +1549,7 @@ Implement:
 
 - transcript tile visual;
 - compact vertex payload;
-- gene palette/visibility lookup;
+- value palette/visibility lookup;
 - per-context GPU LRU;
 - GUI-thread upload queue;
 - per-frame upload metering;
@@ -1571,14 +1605,14 @@ Migration cleanup occurs only after those criteria pass:
 - verify the direct fallback remains intact;
 - remove `src/napari_harpy/_transcript_tiles.py` in a dedicated cleanup change.
 
-### Phase 5: gene-selective IO and advanced interaction
+### Phase 5: value-selective IO and advanced interaction
 
 Only after measured need:
 
-- add per-tile gene counts for subset-aware planning;
-- change physical row-group layout or add gene-aware shards;
-- read only selected-gene row groups;
-- choose exact LOD for small gene selections even in broad spatial views;
+- add per-tile value counts for subset-aware planning;
+- change physical row-group layout or add value-aware shards;
+- read only selected-value row groups;
+- choose exact LOD for small value selections even in broad spatial views;
 - add efficient picking and metadata lookup;
 - add remote-store publication and reads.
 
@@ -1596,10 +1630,10 @@ Test:
 - missing required columns and unsupported physical types;
 - metadata-derived and scan-derived row counts and bounds;
 - missing, NaN, and infinite coordinates;
-- missing, empty, whitespace-padded, and colliding normalized genes;
-- dictionary-encoded and plain-string genes;
-- transcript-id nulls and duplicates;
-- deterministic fragment offsets and fallback identities;
+- missing, empty, and whitespace-padded normalized values;
+- normalization-equivalent raw values merge without collision telemetry;
+- dictionary-encoded and plain-string values;
+- deterministic fragment offsets and internal point ids;
 - repeatable source signatures and inventory-change detection;
 - bounded batch reads;
 - no dependency on Dask graph inspection;
@@ -1611,15 +1645,14 @@ Test:
 
 - invalid and empty sources;
 - missing/non-finite coordinates;
-- missing/empty genes;
-- invalid and duplicate transcript ids;
-- stable fallback ids;
+- missing/empty values;
+- stable internal point ids;
 - tile-boundary coordinates;
-- deterministic gene ids;
+- deterministic value ids;
 - exact membership;
 - coordinate reconstruction;
 - deterministic nested sampling;
-- rare-gene and spatial-stratum preservation;
+- rare-value and spatial-stratum preservation;
 - global and per-level budgets;
 - dense-tile sharding;
 - cross-partition tile co-location semantics;
@@ -1685,7 +1718,7 @@ Use at least:
 2. a dense compact fixture where extent alone would incorrectly produce one
    LOD;
 3. a spatially skewed fixture with hotspots and empty regions;
-4. a gene-skewed fixture with dominant and rare genes;
+4. a value-skewed fixture with dominant and rare values;
 5. a medium real Xenium or equivalent transcript dataset;
 6. a large real or synthetic dataset exercising many tiles and row groups.
 
@@ -1702,7 +1735,7 @@ Record:
 - active/resident point counts;
 - same-level pan latency;
 - cold and warm LOD transition latency;
-- palette/gene-visibility update latency;
+- palette/value-visibility update latency;
 - resource cleanup.
 
 Initial runtime targets should be treated as hypotheses until measured:
@@ -1724,7 +1757,7 @@ These invariants are suitable as tests and review gates:
 - camera movement never replaces one monolithic Points layer in tiled mode;
 - camera movement never rebuilds an already resident tile VBO;
 - a tile uploads at most once between GPU insertion and eviction;
-- palette and gene visibility changes never reupload coordinates;
+- palette and value visibility changes never reupload coordinates;
 - no render snapshot mixes cache generations;
 - no active snapshot mixes LOD levels;
 - sampled rows always identify real source transcripts;
@@ -1775,7 +1808,7 @@ The next work should be:
 2. define unresolved and validated Parquet source models;
 3. implement explicit SpatialData-to-Parquet resolution;
 4. implement footer-first validation and bounded PyArrow content scans;
-5. implement the versioned source signature and fallback identity policy;
+5. implement the versioned source signature and internal point-identity policy;
 6. validate and benchmark the Xenium acceptance dataset;
 7. review the validation contract before beginning the exact-level writer;
 8. then run the exact tile-size/layout benchmark and sampler work in Phase 1.
