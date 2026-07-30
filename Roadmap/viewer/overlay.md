@@ -366,10 +366,15 @@ Slice 1 is complete:
 
 ## Slice 2: Searchable composer and live layer membership
 
+Status: specified and ready to implement.
+
 ### Goal
 
 Replace the all-channel checkbox list with a searchable, selected-only
 composer. Make channel membership bidirectional and live.
+
+This slice changes overlay membership only. Visibility and live colormap
+editing are added in Slice 3a.
 
 ### Target files
 
@@ -378,6 +383,136 @@ composer. Make channel membership bidirectional and live.
 - `tests/test_viewer_widget.py`
 - `tests/test_feature_extraction_widget.py` where tests currently inspect
   viewer overlay checkboxes
+
+No adapter change is expected. Slice 2 uses the focused add and removal
+operations completed in Slice 1.
+
+### Ownership boundary
+
+`ViewerWidget` owns:
+
+- querying the adapter and binding registry;
+- filtering live bindings to the active SpatialData image and coordinate
+  system;
+- adding and removing napari layers;
+- handling mutation failures through the existing Viewer feedback area;
+- responding once to overlay lifecycle notifications.
+
+`_ImageCardWidget` owns:
+
+- available channel discovery for its image;
+- the searchable completer model;
+- selected-row creation, reuse, ordering, and disposal;
+- selected count, empty state, and remove-all controls;
+- a card-lifetime cache of last-used solid colors keyed by channel index;
+- emitting user intent without mutating napari.
+
+Do not introduce an overlay controller or custom item model. Keep the existing
+`ViewerWidget` plus image-card division.
+
+### Card intent signals
+
+Replace the aggregate overlay checkbox request with focused image-card intent
+signals:
+
+```python
+overlay_channel_add_requested = Signal(str, int, str)
+overlay_channel_remove_requested = Signal(str, int)
+overlay_channels_remove_all_requested = Signal(str)
+```
+
+Signal values are:
+
+- image name;
+- channel index where applicable;
+- requested initial solid color for addition.
+
+Use channel index as the mutation identity. Channel name remains display
+metadata and search input, not the removal key.
+
+`ViewerWidget` connects each signal once when it creates the card. The card
+does not call `ViewerAdapter` directly.
+
+Expose one narrow card completion method for the synchronous add request:
+
+```python
+def finish_overlay_channel_add(
+    self,
+    channel_index: int,
+    *,
+    succeeded: bool,
+) -> None:
+    ...
+```
+
+On success, clear the input only if it still resolves to that channel. On
+failure, preserve the input. This keeps mutation ownership in `ViewerWidget`
+without making the card guess whether the adapter call succeeded.
+
+### Live binding resolution
+
+Add one private `ViewerWidget` helper that returns ordered live overlay
+bindings for one current image.
+
+Resolution contract:
+
+1. Call `ViewerAdapter.get_loaded_image_layers(sdata, image_name)` so candidate
+   layers retain current napari layer order.
+2. Resolve each candidate through `LayerBindingRegistry.get_binding(...)`.
+3. Retain only `ImageLayerBinding` instances matching:
+   - the active SpatialData object identity;
+   - the card's image name;
+   - the active coordinate system;
+   - `image_display_mode == "overlay"`;
+   - a non-negative channel index;
+   - a non-empty channel name.
+4. Return bindings in candidate layer order.
+
+Do not use the registry's insertion order as a substitute for napari layer
+order. Do not add another public adapter query for this slice.
+
+Duplicate live bindings for one channel index violate the adapter invariant.
+Do not silently choose one. Put that card into a non-mutating membership-error
+state, disable its composer actions, and surface concise feedback. A later
+lifecycle reconciliation may recover after the external duplicate is removed.
+
+Layer reordering itself remains outside this roadmap's synchronization scope.
+The composer adopts current napari order whenever a membership reconciliation
+occurs; it does not add a new reorder listener.
+
+### Card membership rendering
+
+Add an image-card rendering entry point:
+
+```python
+def set_loaded_overlay_bindings(
+    self,
+    bindings: Sequence[ImageLayerBinding],
+) -> None:
+    ...
+```
+
+Rendering requirements:
+
+- Treat the supplied bindings as the complete selected membership state.
+- Key selected rows by channel index.
+- Reuse a row when the same channel remains loaded.
+- Create rows only for newly loaded channels.
+- Before removing an obsolete row, retain its current solid layer color in the
+  card cache and run its disposal hook.
+- Reorder retained and new rows to match the supplied binding order.
+- Never create persistent row widgets for unselected channels.
+- Derive the count and empty state from the rendered live rows.
+
+Slice 2 selected rows contain only:
+
+- the channel name;
+- a remove action;
+- the stable channel index and current binding as internal state.
+
+Eye and editable colormap controls are deliberately deferred to Slice 3a. The
+row disposal hook introduced here is the cleanup boundary Slice 3a will extend
+with property-event disconnection.
 
 ### Search behavior
 
@@ -389,34 +524,121 @@ composer. Make channel membership bidirectional and live.
   - case-insensitive matching;
   - `Qt.MatchContains`.
 - Preserve original dataset order in available search results.
-- Open the popup on focus/click with an empty prefix.
-- Add a channel through completer activation or Return on an exact valid name.
-- Reject unknown text without changing napari or composer state.
-- Exclude channels that already have a live overlay layer.
+- Enable the existing popup-on-entry behavior and open the popup on focus or
+  click, including when the input is empty.
+- Populate the `QStringListModel` only with channels that are not represented
+  by a current selected row.
+- Rebuild the model after every membership reconciliation.
+- Add a channel through completer activation or Return.
+- Completer activation uses the exact selected model item.
+- Return first accepts an exact channel name. It may accept a case-insensitive
+  match only when that match is unique; case-insensitive ambiguity is rejected.
+- Trim surrounding whitespace before Return-key resolution.
+- Reject empty, unknown, ambiguous, and already loaded input without changing
+  napari or membership.
 - Clear the input only after a successful add.
+- Preserve the input after failure so the user can correct or retry it.
 
-### Membership behavior
+### Add behavior
 
-- Add a channel with the existing focused
-  `ensure_image_overlay_channel_loaded(...)` adapter operation.
-- Show the selected row only after the layer is successfully loaded and bound.
-- Render selected rows from a fresh adapter query.
-- Remove a channel using the focused one-channel adapter removal operation.
-- Connect `ViewerWidget` once to the existing
-  `image_overlay_layers_changed` lifecycle signal.
-- On that signal, re-query the active SpatialData image and coordinate system,
-  then reconcile selected-row membership against the live bindings.
-- Dispose obsolete rows before destroying them. Property-event callbacks are
-  added in Slice 3a and must be disconnected as part of row disposal.
-- Do not use presentation-property events to infer membership. A hidden layer
-  remains loaded; only binding/layer insertion and removal change membership.
-- Implement `Remove all` using the adapter, scoped to the active SpatialData
-  image and coordinate system.
-- Keep the visible selected rows in live napari layer order unless a later
-  usability test establishes a strong reason to maintain a separate order.
-- Show `No channels in viewer` when no overlay layers exist.
-- Show a live count such as `3 channels`.
+On `overlay_channel_add_requested`:
+
+1. Revalidate the active SpatialData object, coordinate system, image name, and
+   channel index.
+2. Re-query membership and return without mutation if the channel became
+   loaded before the request was handled.
+3. Call:
+
+   ```python
+   ensure_image_overlay_channel_loaded(
+       sdata,
+       image_name,
+       coordinate_system,
+       channel=channel_index,
+       channel_color=requested_color,
+   )
+   ```
+
+4. Do not add a row optimistically.
+5. Let registration emit `image_overlay_layers_changed`.
+6. Let lifecycle reconciliation create the row from the registered binding.
+7. Clear the search input only after the adapter call succeeds.
+8. On failure, leave membership and input unchanged and show Viewer feedback.
+
+The first overlay addition may replace a loaded stack through the adapter's
+existing stack-to-overlay behavior.
+
+### Remove behavior
+
+On `overlay_channel_remove_requested`:
+
+1. Revalidate the active context and requested channel identity.
+2. Cache the row's current solid color before mutation.
+3. Call `remove_image_overlay_channel(...)`.
+4. Do not remove the row optimistically.
+5. Let napari removal and the adapter lifecycle signal drive reconciliation.
+6. If the adapter returns `None`, explicitly reconcile once because no
+   lifecycle signal is expected for an already absent layer.
+7. On failure, keep the row and show Viewer feedback.
+
+A napari-side deletion follows the same reconciliation path and must remove the
+matching row without a Harpy request.
+
+### Remove-all behavior
+
+`Remove all` means all overlay channels for the card's active SpatialData
+image and coordinate system. It must not remove a stack layer or layers for
+another context.
+
+Implementation contract:
+
+1. Take a fresh ordered snapshot of matching live overlay bindings.
+2. Cache each row's current solid color.
+3. Call `remove_image_overlay_channel(...)` for each unique channel index in
+   the snapshot.
+4. Do not call `remove_image_layers(...)`, because that broader operation also
+   removes stack layers.
+5. Allow lifecycle reconciliation to update membership after each removal.
+6. If a partial failure occurs, keep the remaining live rows and report concise
+   feedback; never pretend the complete removal succeeded.
+
+Do not add a bulk adapter method solely to reduce the number of lifecycle
+notifications in this slice.
+
+### Lifecycle connection and hydration
+
+Connect `ViewerWidget` once during construction:
+
+```python
+self._app_state.viewer_adapter.image_overlay_layers_changed.connect(
+    self._on_image_overlay_layers_changed
+)
+```
+
+The handler:
+
+- returns safely when SpatialData or coordinate system is absent;
+- re-queries each current image card in the active context;
+- calls `set_loaded_overlay_bindings(...)` on each card;
+- does not rebuild the complete Viewer or recreate unrelated cards;
+- does not connect another lifecycle callback.
+
+When SpatialData or coordinate system changes, the existing card rebuild path
+continues to run. Hydrate every newly created image card immediately from its
+current live overlay bindings.
+
+Property events do not determine membership. In particular,
+`layer.visible = False` leaves the row loaded and selected.
+
+### Composer presentation
+
+- Show `No channels in viewer` when no overlay bindings are rendered.
+- Show a live count such as `1 channel` or `3 channels`.
+- Show `Remove all` only when at least one selected row exists.
 - Limit the selected-row viewport to five rows before scrolling.
+- Keep search available when the selected list is empty.
+- Disable search when overlay is unavailable because channel discovery failed,
+  including duplicate dataset channel names.
 
 ### Default color behavior
 
@@ -426,6 +648,42 @@ composer. Make channel membership bidirectional and live.
   channel index, so a small overlay starts with distinct colors.
 - Cycle through the palette only after every default color is in use.
 - Prefer the card's cached last-used solid color when re-adding a channel.
+- Keep the cache keyed by channel index and scoped to the card lifetime.
+- When an obsolete row is reconciled away, read its layer's current solid color
+  before disposal so napari-side deletion also preserves a useful re-add
+  preference.
+- Do not overwrite a cached solid preference with a non-solid colormap.
+- The cache is a preference only; selected-row membership and applied color
+  continue to come from the live layer and binding.
+
+### Transitional aggregate-action behavior
+
+Slice 2 removes the aggregate overlay checkbox request path. The existing image
+`Add / Update in viewer` action:
+
+- remains temporarily available for stack mode only;
+- is hidden or otherwise unavailable while overlay mode is active;
+- never applies the complete overlay membership;
+- retains only the stack request behavior needed until Slice 4.
+
+Do not complete the radio-button and contextual `Load stack` redesign here.
+Slice 4 owns that final mode cleanup and label change.
+
+Existing `ImageLoadRequest` code may remain only where the temporary stack path
+still needs it. Remove overlay-only request-building helpers that depend on the
+old checkbox list.
+
+### Failure behavior
+
+- A failed add leaves the input and selected rows unchanged.
+- A failed remove leaves the live row present.
+- A missing remove target is an idempotent reconciliation case, not an error.
+- Ambiguous live channel identity produces feedback and no guessed mutation.
+- Invalid search input causes no adapter call.
+- A duplicate live-binding invariant violation disables mutations for the
+  affected card until a later valid reconciliation.
+- Mutation feedback uses the existing Viewer feedback area; do not add modal
+  dialogs for normal add/remove failures.
 
 ### Acceptance criteria
 
@@ -439,21 +697,45 @@ composer. Make channel membership bidirectional and live.
 - Many available channels do not create many persistent row widgets.
 - One lifecycle notification performs one membership reconciliation; it does
   not create duplicate signal connections.
+- Existing live overlays hydrate into the correct cards on initial render and
+  coordinate-system change.
+- Stack layers and hidden overlay layers are never mistaken for selected
+  membership changes.
+- Overlay mode no longer exposes an aggregate Apply or Update action.
 
 ### Focused tests
 
-- Empty composer state and live count.
+- Empty composer state, singular/plural live count, and conditional remove-all.
 - Popup configuration and substring filtering.
-- Add by completer activation and exact Return.
-- Unknown and duplicate input handling.
-- Add success and load failure.
+- Popup-on-entry with an empty prefix.
+- Add by completer activation, exact Return, and unique case-insensitive Return.
+- Unknown, empty, case-insensitively ambiguous, and already loaded input.
+- Add success, duplicate-race no-op, and load failure.
+- Successful add clears input; failure preserves it.
+- No optimistic row appears before a live binding exists.
 - Napari-side removal updates the composer.
 - Harpy-side remove preserves sibling layers.
-- Remove all scoping.
+- Missing focused removal explicitly reconciles without error.
+- Remove all preserves stack layers and other images, coordinate systems, and
+  SpatialData objects.
+- Partial remove-all failure leaves truthful remaining rows.
 - Search results refresh after add and removal.
 - Default color selection and cached color reuse.
+- Napari-side deletion caches the last live solid color for re-add.
+- Non-solid colormap does not replace the cached solid preference.
 - Many available channels do not produce persistent rows.
 - Repeated lifecycle refreshes do not duplicate the Viewer callback.
+- Lifecycle refresh updates image cards without rebuilding unrelated Viewer
+  sections.
+- Initial and coordinate-system-change hydration from existing overlay
+  bindings.
+- Hidden layer remains a selected row.
+- Duplicate live channel bindings disable affected-card mutations without
+  choosing or removing one.
+- Aggregate image action is unavailable in overlay mode and the temporary stack
+  path still works.
+- Feature Extraction channel selection remains independent from Viewer overlay
+  membership.
 
 ## Slice 3a: Viewer bidirectional visibility and colormap controls
 
@@ -774,11 +1056,14 @@ If stack visibility/removal controls are later desired, they should follow the
 same existence/eye/remove semantics, but that extension is not required for the
 overlay roadmap.
 
-### Remove staged overlay apply
+### Finish removal of staged apply
 
-- Remove `Add / Update in viewer` from overlay mode.
-- Remove overlay request-building code that exists only to apply the complete
-  checkbox list.
+- Delete the transitional generic `Add / Update in viewer` action retained for
+  stack mode by Slice 2 and replace it with the contextual `Load stack` action.
+- Confirm that no aggregate overlay request-building or checkbox-list code
+  remains after Slice 2.
+- Remove obsolete `ImageLoadRequest` fields or helpers once the stack path no
+  longer needs the aggregate request shape.
 - Keep adapter validation as a defensive boundary.
 - Do not remove existing layers in response to an invalid empty request.
 
