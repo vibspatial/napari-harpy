@@ -4,7 +4,7 @@ import re
 from html import escape
 from typing import Literal, cast
 
-from qtpy.QtCore import QPointF, QSize, Qt
+from qtpy.QtCore import QPointF, QSize, Qt, QTimer
 from qtpy.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
 from qtpy.QtWidgets import (
     QComboBox,
@@ -291,9 +291,29 @@ class CompleterPopupLineEdit(QLineEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._show_completion_popup_on_entry = False
+        self._accepted_completion_text_to_clear: str | None = None
+        self._completion_clear_timer = QTimer(self)
+        self._completion_clear_timer.setSingleShot(True)
+        self._completion_clear_timer.timeout.connect(self._clear_reinserted_completion)
 
     def set_completion_popup_on_entry_enabled(self, enabled: bool) -> None:
         self._show_completion_popup_on_entry = enabled
+
+    def clear_after_accepted_completion(self, expected_text: str) -> None:
+        """Clear search text that produced an accepted completion.
+
+        This is opt-in because some consumers use the completed text as a
+        persistent selection. Only text contained in the accepted completion
+        is cleared immediately. A guarded deferred clear also handles Qt
+        writing the activated completion again after consumer callbacks return.
+        """
+        normalized_expected_text = expected_text.strip().casefold()
+        normalized_current_text = self.text().strip().casefold()
+        if normalized_current_text and normalized_current_text in normalized_expected_text:
+            self.clear()
+
+        self._accepted_completion_text_to_clear = expected_text
+        self._completion_clear_timer.start(0)
 
     def focusInEvent(self, event) -> None:
         super().focusInEvent(event)
@@ -317,6 +337,24 @@ class CompleterPopupLineEdit(QLineEdit):
 
         completer.setCompletionPrefix(self.text())
         completer.complete()
+
+    def _clear_reinserted_completion(self) -> None:
+        """Clear the completion Qt may rewrite after activation callbacks.
+
+        On Qt's Cocoa path, popup activation writes the selected item before
+        emitting ``QCompleter.activated`` and may write it again after connected
+        callbacks return. A consumer clearing synchronously during its callback
+        is therefore overwritten. The single-shot timer invokes this method on
+        the next event-loop turn. Only the accepted completion is cleared, so
+        newer, unrelated input is preserved.
+        """
+        expected_text = self._accepted_completion_text_to_clear
+        self._accepted_completion_text_to_clear = None
+        self._completion_clear_timer.stop()
+        if expected_text is None:
+            return
+        if self.text().strip().casefold() == expected_text.strip().casefold():
+            self.clear()
 
 
 def apply_widget_surface(widget: QWidget) -> None:
