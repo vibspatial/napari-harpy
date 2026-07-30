@@ -769,6 +769,40 @@ napari controls.
 - `tests/test_viewer_widget.py`
 - focused color-button tests if a separate test module is clearer
 
+### Composer and initial-color boundary
+
+Retain the immediate-add interaction completed in Slice 2. Activating a
+channel through the search completer or Return loads it immediately; Slice 3a
+must not introduce a pending channel, a second Add action, or a staged
+pre-load editor.
+
+- Available search results have no eye or colormap controls.
+- Before requesting the layer, the card chooses the cached last-used solid
+  color or the first unused entry from `DEFAULT_OVERLAY_COLORS`.
+- The requested initial color is passed into layer creation, so the channel
+  appears in napari already using that color. There is no intermediate
+  uncolored layer.
+- Eye and colormap controls exist only on selected rows backed by live overlay
+  bindings.
+- Create the selected row only after adapter lifecycle reconciliation confirms
+  the live binding.
+- Initialize the row's colormap preview from the accepted live
+  `layer.colormap`, not from an assumed request value.
+- A failed load leaves no selected row or presentation controls.
+- Removing and re-adding a channel prefers the card's cached last-used solid
+  color, as established in Slice 2.
+
+The selected-row colormap control is a live layer-property editor, not a
+pre-load parameter editor. Pre-load color customization in the Viewer is out
+of scope for Slice 3a. If it later becomes a product requirement, design one
+explicit pending-candidate row with a swatch and Add action; do not place
+interactive color controls in every completer result.
+
+Histogram intentionally retains a different, staged interaction: its card
+holds a pending color beside the explicit `Load overlay` action. Do not change
+that workflow in Slice 3a; Slice 3b defines how the Histogram color control
+behaves once a matching overlay is already live.
+
 ### Direct layer-event subscriptions
 
 Each selected channel row owns its presentation subscriptions for its current
@@ -887,6 +921,11 @@ Do not build a second full colormap picker in Harpy.
 
 ### Acceptance criteria
 
+- Search activation still loads a channel immediately using its computed
+  initial color, without a staged Add action.
+- Available search results expose no pre-load eye or colormap controls.
+- Presentation controls appear only after a live overlay binding exists.
+- A newly reconciled row renders the accepted live layer colormap.
 - Harpy and napari eyes always represent the same visibility state.
 - Hidden channels remain members of the overlay.
 - Solid-color changes round-trip in both directions.
@@ -904,6 +943,10 @@ Do not build a second full colormap picker in Harpy.
 
 ### Focused tests
 
+- Immediate search activation still creates the overlay with its computed
+  default or cached initial color.
+- No selected row or presentation control appears before a live binding exists.
+- The first rendered swatch is read from the accepted live layer colormap.
 - Initial eye state from the layer.
 - Harpy-to-napari and napari-to-Harpy visibility changes.
 - Hidden layer remains selected.
