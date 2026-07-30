@@ -756,6 +756,8 @@ Slice 2 is complete:
 
 ## Slice 3a: Viewer bidirectional visibility and colormap controls
 
+Status: implemented on 2026-07-30.
+
 ### Goal
 
 Add per-channel eye and colormap controls that remain synchronized with native
@@ -811,19 +813,19 @@ live napari `Image`:
 
 - connect directly to `layer.events.visible`;
 - connect directly to `layer.events.colormap`;
-- update only the row bound to that layer when either event fires;
-- verify that the callback still belongs to the row's current layer before
-  applying state.
+- connect the row's bound presentation methods without intermediate capturing
+  lambdas;
+- read presentation state from `row.binding.layer` when either event fires.
 
 The Viewer must not receive these events through the Histogram or through an
 adapter presentation signal. The Histogram keeps its own direct subscriptions.
 A single napari colormap event therefore fans out naturally to both peer
 widgets when both are open.
 
-Connection ownership must be explicit and idempotent:
+Connection ownership must be explicit:
 
-- connect each event at most once for a row/layer pair;
-- disconnect both callbacks before a row is removed or rebound;
+- let construction connect the two bound methods exactly once;
+- disconnect both callbacks before a row is removed or replaced;
 - disconnect before rebuilding card content or changing SpatialData, image, or
   coordinate-system context;
 - disconnect during widget teardown where applicable;
@@ -831,20 +833,25 @@ Connection ownership must be explicit and idempotent:
   same narrow exception handling pattern as the Histogram.
 
 Implement the connection, refresh, and disconnection methods on
-`_OverlayChannelRow`. The row already owns its current binding and has
-`set_binding(...)` and `dispose()` lifecycle boundaries:
+`_OverlayChannelRow`. One row owns its construction-time binding for its entire
+lifetime:
 
 - construction connects the row to the initial layer and renders both
   properties from that layer;
-- `set_binding(...)` only refreshes when the layer object is unchanged;
-- when the layer object changes, `set_binding(...)` disconnects the old layer
-  before storing, connecting, and rendering the replacement;
 - `dispose()` disconnects both layer-event callbacks and is idempotent.
 
-The event callbacks must capture the layer object they were connected to and
-return without updating controls when that object is no longer
-`row.binding.layer`. Keep the callback references required for reliable
-disconnection as row state.
+Use `row.binding.layer` as the single layer reference for both connection and
+disconnection. Napari's event system supports disconnecting the same bound
+method through a fresh attribute lookup, so the row does not need
+`_subscribed_layer`, capturing lambdas, or stored callback references.
+
+`_ImageCardWidget` compares each existing row's binding with the latest binding
+returned by membership reconciliation. If it is the same binding object, retain
+the row and refresh its presentation. If the binding changed while the channel
+index remained present, dispose and delete only that channel row, then construct
+a replacement row from the new binding. Other channel rows remain untouched.
+This keeps row ownership fixed and avoids a QWidget changing which napari layer
+it represents.
 
 Add `_ImageCardWidget.dispose()` to dispose all selected rows. `ViewerWidget`
 must call it for every existing image card before clearing or rebuilding the
@@ -900,6 +907,14 @@ color_change_requested = Signal(int, str)
 The channel index is captured when the row is created and remains stable for
 that row. The row must never mutate its bound layer directly.
 
+The eye's user-toggle handler emits intent only. Do not call the row's
+visibility rendering method from that handler: Qt has already changed the
+checked state, and the successful napari `visible` event owns the
+authoritative icon, tooltip, and accessibility refresh. The shared color
+button continues to show an accepted picker choice locally before emitting
+`color_selected`, because Histogram also uses that control for staged state;
+the subsequent napari event confirms or replaces that preview in the Viewer.
+
 `_ImageCardWidget` translates the row-local signals into public card signals
 that add the image identity:
 
@@ -950,17 +965,17 @@ def refresh_overlay_channel_presentation(
     ...
 ```
 
-Refresh only when the selected row still exists and its layer is
-`binding.layer`. A missing row or a row already rebound to another layer is a
-safe no-op; normal lifecycle reconciliation owns those cases.
+Refresh only when the selected row still exists and owns that exact binding
+object. A missing row or a row awaiting reconstruction for a replacement
+binding is a safe no-op; normal lifecycle reconciliation owns those cases.
 
 When assignment raises a supported property-validation error, render the
 current live property back into the affected row and show concise feedback
-through the Viewer's existing action-feedback area. After successful
-assignment, perform the same targeted read-back so correctness does not depend
-on assumptions about whether a particular napari setter emits synchronously.
-This targeted refresh is idempotent with the normal napari event callback and
-must not trigger another layer write.
+through the Viewer's existing action-feedback area. Also perform a targeted
+read-back when the requested value is already the live value, because no
+setter—and therefore no new napari event—is needed. After a successful
+assignment, do not perform an additional read-back: napari's native property
+event is the single normal presentation path.
 
 Do not add generic adapter methods or signals for these presentation
 mutations. The adapter remains responsible for binding identity, lifecycle,
@@ -1027,8 +1042,9 @@ control assumes a solid tint. Handle this honestly:
 - Accepting a solid color switches the button to its solid preview, emits
   `color_selected` once, and requests replacement of the non-solid napari
   colormap.
-- The subsequent targeted read-back or napari event remains authoritative and
-  may restore a different accepted presentation.
+- The subsequent napari event remains authoritative and may replace the local
+  preview. A rejected assignment explicitly restores the current live
+  presentation.
 
 Do not build a second full colormap picker in Harpy.
 
@@ -1037,8 +1053,9 @@ Do not build a second full colormap picker in Harpy.
 - Keep programmatic `OverlayColorButton.set_color(...)` silent.
 - Block the eye control's Qt signals while applying napari-originated state.
 - Avoid writing a layer property when the requested value is already current.
-- After a Harpy-originated mutation, read the accepted property back from the
-  live layer rather than assuming the setter succeeded.
+- Let the native napari event read and render the accepted property after a
+  successful Harpy-originated mutation; explicitly read back only for a no-op
+  or rejected assignment.
 - Keep lifecycle reconciliation separate from property reflection: visibility
   and colormap events update their row, not the complete card membership.
 - Never manually emit a napari layer property event.
@@ -1050,7 +1067,8 @@ Keep the implementation in four focused parts:
 1. Extend `OverlayColorButton` with its user-only signal and silent
    solid/gradient rendering APIs, and add the two-state eye icon helper.
 2. Add the controls, row-local intent signals, direct property subscriptions,
-   targeted rendering, rebinding, and disposal to `_OverlayChannelRow`.
+   targeted rendering, fixed-binding ownership, and disposal to
+   `_OverlayChannelRow`.
 3. Forward row intent through `_ImageCardWidget`, add explicit card disposal,
    and implement the two validated `ViewerWidget` mutation handlers.
 4. Add focused component, synchronization, stale-callback, teardown, and
@@ -1101,10 +1119,13 @@ events, a general subscription framework, or a full colormap picker.
 - Non-solid colormap preview, tooltip, and accessible name.
 - Solid tint detection for napari's two-stop black-to-color representation.
 - Signal blocking/re-entrancy protection.
-- Direct callback connection is idempotent for a row/layer pair.
-- Property-event callback cleanup after removal, rebinding, and card refresh.
+- The row lifecycle does not duplicate direct bound-method connections for a
+  row/layer pair.
+- Property-event callback cleanup after removal, row replacement, and card
+  refresh.
 - Card disposal before Viewer image-card rebuild and teardown.
-- A stale callback cannot update a row after its target layer changes.
+- Replacing a binding reconstructs only that channel row, and events from the
+  old layer do not update the replacement.
 - A stale user intent cannot mutate a removed or replaced layer.
 - Assignment failure restores the live property presentation and reports
   concise Viewer feedback.
