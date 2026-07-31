@@ -1261,11 +1261,10 @@ def test_feature_extraction_widget_channel_selection_is_independent_from_viewer_
 
     image_card = next(card for card in viewer_widget.image_cards if card.image_name == "blobs_image")
     image_card.overlay_toggle.setChecked(True)
-    image_card.channel_checkboxes[0].setChecked(True)
-    image_card.channel_checkboxes[1].setChecked(False)
-    image_card.channel_checkboxes[2].setChecked(False)
+    image_card.channel_search_input.setText("0")
+    image_card.channel_search_input.returnPressed.emit()
 
-    assert image_card.get_selected_overlay_channels() == [0]
+    assert image_card.loaded_overlay_channel_indices == (0,)
     assert feature_widget.selected_extraction_channel_indices == (1, 2)
 
 

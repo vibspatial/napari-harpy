@@ -26,10 +26,10 @@ from napari_harpy.widgets.shared_styles import (
     COMPLETER_POPUP_STYLESHEET,
     CompactComboBox,
     CompleterPopupLineEdit,
+    _ElidedLabel,
     build_input_control_stylesheet,
     create_form_label,
 )
-from napari_harpy.widgets.viewer.disclosure import _ElidedLabel
 from napari_harpy.widgets.viewer.styles import (
     CARD_TITLE_STYLESHEET,
     DETAIL_PANEL_STYLESHEET,
@@ -306,9 +306,7 @@ class _ShapesCardWidget(QFrame):
 
         table_name = self.selected_table_name
         if table_name is not None:
-            source_kinds.update(
-                source.source_kind for source in self._table_color_sources_by_table.get(table_name, ())
-            )
+            source_kinds.update(source.source_kind for source in self._table_color_sources_by_table.get(table_name, ()))
 
         return tuple(source_kind for _, source_kind in _SHAPE_SOURCE_KIND_ITEMS if source_kind in source_kinds)
 

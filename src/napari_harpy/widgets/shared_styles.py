@@ -4,8 +4,8 @@ import re
 from html import escape
 from typing import Literal, cast
 
-from qtpy.QtCore import QPointF, QSize, Qt
-from qtpy.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
+from qtpy.QtCore import QPointF, QSize, Qt, QTimer
+from qtpy.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
@@ -44,6 +44,7 @@ WIDGET_WARNING_BORDER_COLOR = "#c99845"
 WIDGET_WARNING_HOVER_COLOR = "#4f402c"
 TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
 DISCLOSURE_CHEVRON_SIZE = 14
+VISIBILITY_EYE_ICON_SIZE = 16
 FORM_LABEL_STYLESHEET = (
     f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px; background: transparent;"
 )
@@ -183,6 +184,41 @@ def create_disclosure_chevron_icon(*, expanded: bool, color: str = WIDGET_TEXT_C
     return QIcon(pixmap)
 
 
+def create_visibility_eye_icon(*, visible: bool, color: str = WIDGET_TEXT_COLOR) -> QIcon:
+    """Return a compact open-eye or crossed-eye icon."""
+    pixmap = QPixmap(VISIBILITY_EYE_ICON_SIZE, VISIBILITY_EYE_ICON_SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(color))
+    pen.setWidthF(1.6)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+
+    eye = QPainterPath()
+    eye.moveTo(1.5, 8.0)
+    eye.cubicTo(4.0, 3.4, 7.0, 2.8, 8.0, 2.8)
+    eye.cubicTo(9.0, 2.8, 12.0, 3.4, 14.5, 8.0)
+    eye.cubicTo(12.0, 12.6, 9.0, 13.2, 8.0, 13.2)
+    eye.cubicTo(7.0, 13.2, 4.0, 12.6, 1.5, 8.0)
+    painter.drawPath(eye)
+    painter.drawEllipse(QPointF(8.0, 8.0), 2.1, 2.1)
+
+    if not visible:
+        outline_pen = QPen(QColor(WIDGET_SURFACE_COLOR))
+        outline_pen.setWidthF(3.8)
+        outline_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(outline_pen)
+        painter.drawLine(QPointF(2.2, 2.2), QPointF(13.8, 13.8))
+        painter.setPen(pen)
+        painter.drawLine(QPointF(2.2, 2.2), QPointF(13.8, 13.8))
+
+    painter.end()
+    return QIcon(pixmap)
+
+
 def build_input_control_stylesheet(control_selector: str) -> str:
     selectors = [selector.strip() for selector in control_selector.split(",")]
     disabled_selector = ", ".join(f"{selector}:disabled" for selector in selectors)
@@ -291,9 +327,29 @@ class CompleterPopupLineEdit(QLineEdit):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._show_completion_popup_on_entry = False
+        self._accepted_completion_text_to_clear: str | None = None
+        self._completion_clear_timer = QTimer(self)
+        self._completion_clear_timer.setSingleShot(True)
+        self._completion_clear_timer.timeout.connect(self._clear_reinserted_completion)
 
     def set_completion_popup_on_entry_enabled(self, enabled: bool) -> None:
         self._show_completion_popup_on_entry = enabled
+
+    def clear_after_accepted_completion(self, expected_text: str) -> None:
+        """Clear search text that produced an accepted completion.
+
+        This is opt-in because some consumers use the completed text as a
+        persistent selection. Only text contained in the accepted completion
+        is cleared immediately. A guarded deferred clear also handles Qt
+        writing the activated completion again after consumer callbacks return.
+        """
+        normalized_expected_text = expected_text.strip().casefold()
+        normalized_current_text = self.text().strip().casefold()
+        if normalized_current_text and normalized_current_text in normalized_expected_text:
+            self.clear()
+
+        self._accepted_completion_text_to_clear = expected_text
+        self._completion_clear_timer.start(0)
 
     def focusInEvent(self, event) -> None:
         super().focusInEvent(event)
@@ -317,6 +373,24 @@ class CompleterPopupLineEdit(QLineEdit):
 
         completer.setCompletionPrefix(self.text())
         completer.complete()
+
+    def _clear_reinserted_completion(self) -> None:
+        """Clear the completion Qt may rewrite after activation callbacks.
+
+        On Qt's Cocoa path, popup activation writes the selected item before
+        emitting ``QCompleter.activated`` and may write it again after connected
+        callbacks return. A consumer clearing synchronously during its callback
+        is therefore overwritten. The single-shot timer invokes this method on
+        the next event-loop turn. Only the accepted completion is cleared, so
+        newer, unrelated input is preserved.
+        """
+        expected_text = self._accepted_completion_text_to_clear
+        self._accepted_completion_text_to_clear = None
+        self._completion_clear_timer.stop()
+        if expected_text is None:
+            return
+        if self.text().strip().casefold() == expected_text.strip().casefold():
+            self.clear()
 
 
 def apply_widget_surface(widget: QWidget) -> None:
@@ -349,6 +423,33 @@ def format_tooltip(message: str) -> str:
         escape(message).replace("_", "_&#8203;").replace("/", "/&#8203;").replace("-", "-&#8203;").replace("\n", "<br>")
     )
     return f"<qt><div style='color: {TOOLTIP_TEXT_COLOR}; max-width: 360px;'>{escaped_message}</div></qt>"
+
+
+class _ElidedLabel(QLabel):
+    """Single-line label that shows a tooltip only when the text is elided."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setMinimumHeight(36)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._update_elided_text()
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self._update_elided_text()
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def _update_elided_text(self) -> None:
+        available_width = max(0, self.contentsRect().width())
+        elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
+        super().setText(elided_text)
+        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
 def format_feedback_text(message: str) -> str:

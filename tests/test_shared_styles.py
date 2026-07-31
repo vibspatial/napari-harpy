@@ -3,6 +3,7 @@ from qtpy.QtWidgets import QSizePolicy
 
 from napari_harpy.widgets.shared_styles import (
     CompactComboBox,
+    CompleterPopupLineEdit,
     build_input_control_stylesheet,
     format_feedback_identifier,
     format_tooltip,
@@ -57,6 +58,34 @@ def test_compact_combo_box_uses_placeholder_text_when_current_index_is_unbound(q
     assert combo.currentText() == ""
     assert combo._elided_current_text().startswith("Choose segmentation")
     assert combo.toolTip() == ""
+
+
+def test_completer_line_edit_clears_text_reinserted_after_accepted_completion(qtbot) -> None:
+    line_edit = CompleterPopupLineEdit()
+    qtbot.addWidget(line_edit)
+    line_edit.setText("AP")
+
+    line_edit.clear_after_accepted_completion("DAPI")
+
+    assert line_edit.text() == ""
+
+    # Match Cocoa Qt's final write after activated callbacks return.
+    line_edit.setText("DAPI")
+    line_edit._completion_clear_timer.timeout.emit()
+
+    assert line_edit.text() == ""
+
+
+def test_completer_line_edit_preserves_unrelated_text_after_accepted_completion(qtbot) -> None:
+    line_edit = CompleterPopupLineEdit()
+    qtbot.addWidget(line_edit)
+    line_edit.setText("AP")
+
+    line_edit.clear_after_accepted_completion("DAPI")
+    line_edit.setText("CD3")
+    line_edit._completion_clear_timer.timeout.emit()
+
+    assert line_edit.text() == "CD3"
 
 
 def test_format_tooltip_preserves_line_breaks_and_adds_soft_wrap_points() -> None:

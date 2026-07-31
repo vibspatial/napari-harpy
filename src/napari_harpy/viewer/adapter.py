@@ -707,6 +707,19 @@ class ViewerAdapter(QObject):
     restyle the primary layer using its selected Color-by mode even when
     Spatial Query styled that layer earlier. Viewer styled overlays are
     separate layers with their own bindings and are unaffected.
+
+    Overlay image membership lifecycle
+    ----------------------------------
+    ``image_overlay_layers_changed`` is an invalidation signal for the set of
+    live, usable overlay image bindings. It is emitted after such a binding is
+    added to or removed from the viewer. Consumers such as Viewer and Histogram
+    re-query the binding registry and current viewer layers rather than relying
+    on an event payload that may already be stale after removal.
+
+    The signal represents membership only. It is not emitted for presentation
+    changes such as visibility, colormap, or contrast limits; consumers that
+    synchronize those properties subscribe directly to the corresponding
+    napari layer events.
     """
 
     # Emitted when the set/order of live primary Labels layers changes.
@@ -716,9 +729,9 @@ class ViewerAdapter(QObject):
     # Emitted after a primary shapes layer has a Harpy binding while loaded in
     # the viewer. Consumers can rely on the binding registry being ready.
     primary_shapes_layer_registered = Signal(object)
-    # Emitted when histogram-usable overlay image bindings are added or
-    # removed. Consumers should re-query `layer_bindings`; the signal carries
-    # no payload to avoid stale binding data on removal.
+    # Emitted when the set of live, usable overlay image bindings changes.
+    # Viewer and Histogram consumers should re-query `layer_bindings`; the
+    # signal carries no payload to avoid stale binding data on removal.
     image_overlay_layers_changed = Signal()
     active_layer_changed = Signal(object)
 
@@ -1771,6 +1784,37 @@ class ViewerAdapter(QObject):
                 removed_layers.append(layer)
 
         return removed_layers
+
+    def remove_image_overlay_channel(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+        *,
+        channel_index: int,
+    ) -> Image | None:
+        """Remove one loaded overlay channel while preserving sibling layers."""
+        if channel_index < 0:
+            raise ValueError("`channel_index` must be non-negative.")
+
+        layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="overlay",
+            channel_index=channel_index,
+        )
+        if not layers:
+            return None
+        if len(layers) > 1:
+            raise ValueError(
+                f"Found multiple live overlay layers for image `{image_name}`, "
+                f"coordinate system `{coordinate_system}`, and channel index {channel_index}."
+            )
+
+        layer = layers[0]
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
 
     def remove_shapes_layer(
         self, sdata: SpatialData, shapes_name: str, coordinate_system: str

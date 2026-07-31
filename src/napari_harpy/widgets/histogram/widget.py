@@ -4,12 +4,14 @@ import math
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from functools import partial
+from typing import TYPE_CHECKING, Literal
 
-from qtpy.QtCore import QSignalBlocker, QSize, Qt
-from qtpy.QtGui import QColor, QPixmap
+from qtpy.QtCore import QSignalBlocker, QSize, QStringListModel, Qt
+from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
+    QCompleter,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -52,11 +54,19 @@ from napari_harpy.widgets.histogram.status_card import (
     build_histogram_ready_card_spec,
     build_histogram_running_card_spec,
 )
+from napari_harpy.widgets.overlay_channel_row import (
+    _binding_channel_index,
+    _binding_channel_name,
+    _normalized_color_or_none,
+    _OverlayChannelRow,
+    _solid_color_from_layer,
+)
 from napari_harpy.widgets.overlay_color_button import OverlayColorButton
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CALCULATE_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
+    COMPLETER_POPUP_STYLESHEET,
     DISCLOSURE_CHEVRON_SIZE,
     SECONDARY_BUTTON_STYLESHEET,
     WIDGET_ACCENT_BORDER_COLOR,
@@ -70,7 +80,9 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_SURFACE_COLOR,
     WIDGET_TEXT_COLOR,
     WIDGET_TEXT_MUTED_COLOR,
+    WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
+    CompleterPopupLineEdit,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
@@ -137,19 +149,69 @@ class _HistogramContrastSyncState:
     updating_plot: bool = False
 
 
-@dataclass
-class _HistogramColormapSyncState:
-    layer: object
-    colormap_callback: Callable[[object], None]
+@dataclass(frozen=True)
+class _HistogramOverlayMatch:
+    """Describe how one Histogram target matches live overlay bindings.
+
+    ``invalid`` means the card does not define a valid overlay target.
+    ``missing`` means the target is valid but no corresponding layer is loaded.
+    ``unique`` means exactly one live binding exists and is available in
+    ``binding``. ``ambiguous`` means multiple live bindings match the target, so
+    Histogram cannot safely select one.
+    """
+
+    state: Literal["invalid", "missing", "unique", "ambiguous"]
+    binding: ImageLayerBinding | None = None
+    message: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.state not in ("invalid", "missing", "unique", "ambiguous"):
+            raise ValueError(
+                f"`state` must be one of: 'invalid', 'missing', 'unique', or 'ambiguous'; got {self.state!r}."
+            )
 
 
 @dataclass
 class _HistogramCard:
+    """Own one Histogram target's UI and optional fixed-binding overlay row.
+
+    The card's Viewer section is reconciled from
+    ``_HistogramOverlayMatch.state``:
+
+    - ``missing`` shows ``pending_overlay_controls``, containing the initial
+      color picker and `Load in viewer` button;
+    - ``unique`` replaces the pending controls with ``overlay_row``, which
+      presents visibility, channel name, colormap, and removal controls;
+    - ``ambiguous`` replaces the editing controls with
+      ``overlay_state_label``;
+    - ``invalid`` shows the pending controls in a disabled state.
+
+    ``viewer_controls`` and ``viewer_controls_layout`` provide the stable
+    container into which the live overlay row is inserted. ``overlay_row``
+    exists only while the current target resolves to exactly one live binding.
+    The row owns visibility/colormap presentation callbacks;
+    ``HistogramWidget`` owns membership reconciliation and validated layer
+    mutations.
+
+    ``channel_search_input`` may contain transient search text.
+    ``accepted_channel_name`` is the persistent selection used for Histogram
+    and overlay target resolution; typing alone never changes that target.
+
+    Contrast synchronization remains separate because it belongs to the
+    calculated Histogram plot rather than the overlay row.
+    """
+
     card_id: str
     container: QFrame
     coordinate_system_combo: CompactComboBox
     image_combo: CompactComboBox
-    channel_combo: CompactComboBox
+    channel_search_input: CompleterPopupLineEdit
+    channel_completer_model: QStringListModel
+    accepted_channel_name: str | None
+    viewer_controls: QWidget
+    viewer_controls_layout: QVBoxLayout
+    pending_overlay_controls: QWidget
+    overlay_state_label: QLabel
     overlay_color_button: OverlayColorButton
     load_overlay_button: QPushButton
     calculate_button: QPushButton
@@ -170,14 +232,28 @@ class _HistogramCard:
     percentile_min_edit: QLineEdit
     percentile_max_edit: QLineEdit
     reset_settings_button: QPushButton
-    overlay_load_message: str | None = None
+    viewer_action_message: str | None = None
+    overlay_row: _OverlayChannelRow | None = None
     contrast_sync_state: _HistogramContrastSyncState | None = None
     contrast_sync_message: str | None = None
-    colormap_sync_state: _HistogramColormapSyncState | None = None
+
+    @property
+    def channel_names(self) -> tuple[str, ...]:
+        """Return the channels currently exposed by the completer model."""
+        return tuple(self.channel_completer_model.stringList())
 
 
 class HistogramWidget(QWidget):
-    """Qt shell for explicit per-card image histogram requests."""
+    """Qt shell for explicit per-card image histogram and overlay requests.
+
+    Adapter ``image_overlay_layers_changed`` events trigger card membership
+    reconciliation. Each live ``_OverlayChannelRow`` listens directly to its
+    bound layer's visibility and colormap events. User intent signals are handled
+    by ``HistogramWidget``, which validates the current live binding before
+    changing its visibility or colormap, or requesting its removal through
+    ``ViewerAdapter``. Histogram cards never exchange presentation events with
+    Viewer cards.
+    """
 
     def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
         super().__init__()
@@ -296,7 +372,7 @@ class HistogramWidget(QWidget):
             return
 
         self._clear_card_contrast_sync(histogram_card)
-        self._disconnect_card_colormap_sync(histogram_card)
+        self._dispose_card_overlay_row(histogram_card)
         self.cards_layout.removeWidget(histogram_card.container)
         histogram_card.container.deleteLater()
         self._update_empty_state()
@@ -363,16 +439,40 @@ class HistogramWidget(QWidget):
         image_combo.currentIndexChanged.connect(
             lambda _index, current_card_id=card_id: self._on_card_image_changed(current_card_id)
         )
-        channel_combo = self._create_combo(f"histogram_channel_combo_{card_id}", placeholder="Choose channel")
-        channel_combo.currentIndexChanged.connect(
-            lambda _index, current_card_id=card_id: self._on_card_channel_changed(current_card_id)
+        channel_search_input = CompleterPopupLineEdit()
+        channel_search_input.setObjectName(f"histogram_channel_search_input_{card_id}")
+        channel_search_input.setPlaceholderText("Search or select channel")
+        channel_search_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
+        channel_search_input.setMinimumWidth(0)
+        channel_search_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        channel_search_input.set_completion_popup_on_entry_enabled(True)
+
+        channel_completer_model = QStringListModel(channel_search_input)
+        channel_completer = QCompleter(channel_completer_model, channel_search_input)
+        channel_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        channel_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        channel_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        channel_completer.setMaxVisibleItems(10)
+        channel_completer.popup().setStyleSheet(COMPLETER_POPUP_STYLESHEET)
+        channel_search_input.setCompleter(channel_completer)
+        channel_completer.activated[str].connect(
+            lambda text, current_card_id=card_id: self._accept_card_channel_text(current_card_id, text)
+        )
+        channel_search_input.returnPressed.connect(
+            lambda current_card_id=card_id, current_input=channel_search_input: self._accept_card_channel_text(
+                current_card_id,
+                current_input.text(),
+            )
+        )
+        channel_search_input.editingFinished.connect(
+            lambda current_card_id=card_id: self._restore_card_channel_text_by_id(current_card_id)
         )
 
         overlay_color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0])
         overlay_color_button.setObjectName(f"histogram_overlay_color_button_{card_id}")
         overlay_color_button.setEnabled(False)
 
-        load_overlay_button = QPushButton("Load overlay")
+        load_overlay_button = QPushButton("Load in viewer")
         load_overlay_button.setObjectName(f"histogram_load_overlay_button_{card_id}")
         load_overlay_button.setCursor(Qt.CursorShape.PointingHandCursor)
         load_overlay_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
@@ -387,15 +487,36 @@ class HistogramWidget(QWidget):
         viewer_controls.setObjectName(f"histogram_viewer_controls_{card_id}")
         viewer_controls.setStyleSheet(_CARD_SUBCONTAINER_STYLESHEET)
         viewer_controls.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        viewer_controls_layout = QHBoxLayout(viewer_controls)
+        viewer_controls_layout = QVBoxLayout(viewer_controls)
         viewer_controls_layout.setContentsMargins(0, 0, 0, 0)
         viewer_controls_layout.setSpacing(8)
-        viewer_controls_layout.addWidget(load_overlay_button, 1)
-        viewer_controls_layout.addWidget(overlay_color_button)
+
+        pending_overlay_controls = QWidget(viewer_controls)
+        pending_overlay_controls.setObjectName(f"histogram_pending_overlay_controls_{card_id}")
+        pending_overlay_controls_layout = QHBoxLayout(pending_overlay_controls)
+        pending_overlay_controls_layout.setContentsMargins(0, 0, 0, 0)
+        pending_overlay_controls_layout.setSpacing(8)
+        pending_overlay_controls_layout.addWidget(load_overlay_button, 1)
+        pending_overlay_controls_layout.addWidget(overlay_color_button)
+
+        overlay_state_label = QLabel(viewer_controls)
+        overlay_state_label.setObjectName(f"histogram_overlay_state_label_{card_id}")
+        overlay_state_label.setWordWrap(True)
+        overlay_state_label.setStyleSheet(
+            f"color: {WIDGET_WARNING_TEXT_COLOR}; "
+            f"background-color: {WIDGET_PANEL_SUBTLE_COLOR}; "
+            f"border: 1px solid {WIDGET_BORDER_COLOR}; "
+            "border-radius: 6px; "
+            "padding: 6px;"
+        )
+        overlay_state_label.setVisible(False)
+
+        viewer_controls_layout.addWidget(pending_overlay_controls)
+        viewer_controls_layout.addWidget(overlay_state_label)
 
         form.addRow(create_form_label("Coordinate system"), coordinate_system_combo)
         form.addRow(create_form_label("Image"), image_combo)
-        form.addRow(create_form_label("Channel"), channel_combo)
+        form.addRow(create_form_label("Channel"), channel_search_input)
         form.addRow(create_form_label("Viewer"), viewer_controls)
 
         settings_toggle = QToolButton()
@@ -552,7 +673,13 @@ class HistogramWidget(QWidget):
             container=container,
             coordinate_system_combo=coordinate_system_combo,
             image_combo=image_combo,
-            channel_combo=channel_combo,
+            channel_search_input=channel_search_input,
+            channel_completer_model=channel_completer_model,
+            accepted_channel_name=None,
+            viewer_controls=viewer_controls,
+            viewer_controls_layout=viewer_controls_layout,
+            pending_overlay_controls=pending_overlay_controls,
+            overlay_state_label=overlay_state_label,
             overlay_color_button=overlay_color_button,
             load_overlay_button=load_overlay_button,
             calculate_button=calculate_button,
@@ -611,6 +738,7 @@ class HistogramWidget(QWidget):
 
     def _on_sdata_changed(self, _sdata: SpatialData | None) -> None:
         for histogram_card in self._cards.values():
+            self._dispose_card_overlay_row(histogram_card)
             self._refresh_card_selectors(histogram_card, select_default_scale=True)
             self._update_card_state(histogram_card.card_id)
 
@@ -627,7 +755,8 @@ class HistogramWidget(QWidget):
 
     def _on_card_coordinate_system_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
-        histogram_card.overlay_load_message = None
+        self._dispose_card_overlay_row(histogram_card)
+        histogram_card.viewer_action_message = None
         self._refresh_card_image_options(histogram_card)
         self._refresh_card_channel_options(histogram_card)
         self._refresh_card_scale_options(histogram_card)
@@ -635,16 +764,61 @@ class HistogramWidget(QWidget):
 
     def _on_card_image_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
-        histogram_card.overlay_load_message = None
+        self._dispose_card_overlay_row(histogram_card)
+        histogram_card.viewer_action_message = None
         self._refresh_card_channel_options(histogram_card)
         self._refresh_card_scale_options(histogram_card, select_default=True)
         self._update_card_state(card_id)
 
-    def _on_card_channel_changed(self, card_id: str) -> None:
-        histogram_card = self._get_card(card_id)
-        histogram_card.overlay_load_message = None
+    def _accept_card_channel_text(self, card_id: str, text: str) -> None:
+        histogram_card = self._cards.get(card_id)
+        if histogram_card is None or not histogram_card.channel_search_input.isEnabled():
+            return
+
+        channel_name = self._resolve_card_channel_text(histogram_card, text)
+        if channel_name is None:
+            self._restore_card_channel_text(histogram_card)
+            return
+        if channel_name == histogram_card.accepted_channel_name:
+            histogram_card.channel_search_input.setText(channel_name)
+            return
+
+        # A row belongs to the previously accepted target. Disconnect it before
+        # changing target identity; reconciliation may construct a replacement.
+        self._dispose_card_overlay_row(histogram_card)
+        histogram_card.accepted_channel_name = channel_name
+        histogram_card.channel_search_input.setText(channel_name)
+        histogram_card.viewer_action_message = None
         self._refresh_overlay_color_default(histogram_card)
         self._on_card_target_or_settings_changed(card_id)
+
+    @staticmethod
+    def _resolve_card_channel_text(histogram_card: _HistogramCard, text: str) -> str | None:
+        normalized_text = text.strip()
+        if not normalized_text:
+            return None
+
+        for channel_name in histogram_card.channel_names:
+            if channel_name == normalized_text:
+                return channel_name
+
+        matches = [
+            channel_name
+            for channel_name in histogram_card.channel_names
+            if channel_name.casefold() == normalized_text.casefold()
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _restore_card_channel_text_by_id(self, card_id: str) -> None:
+        histogram_card = self._cards.get(card_id)
+        if histogram_card is not None:
+            self._restore_card_channel_text(histogram_card)
+
+    @staticmethod
+    def _restore_card_channel_text(histogram_card: _HistogramCard) -> None:
+        accepted_text = histogram_card.accepted_channel_name or ""
+        if histogram_card.channel_search_input.text() != accepted_text:
+            histogram_card.channel_search_input.setText(accepted_text)
 
     def _on_card_target_or_settings_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
@@ -696,7 +870,6 @@ class HistogramWidget(QWidget):
     def _refresh_card_channel_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
         image_name = self._current_text_data(histogram_card.image_combo)
-        current_channel_name = self._current_text_data(histogram_card.channel_combo)
         channel_names: list[str] = []
         channel_error: str | None = None
 
@@ -709,8 +882,16 @@ class HistogramWidget(QWidget):
                 if not channel_names:
                     channel_error = f"Image `{image_name}` does not expose channel names."
 
-        selected_channel_name = current_channel_name if current_channel_name in channel_names else None
-        self._set_combo_items(histogram_card.channel_combo, channel_names, selected_channel_name)
+        if (
+            histogram_card.accepted_channel_name is not None
+            and histogram_card.accepted_channel_name not in channel_names
+        ):
+            self._dispose_card_overlay_row(histogram_card)
+            histogram_card.accepted_channel_name = None
+
+        histogram_card.channel_completer_model.setStringList(channel_names)
+        histogram_card.channel_search_input.setEnabled(bool(channel_names) and channel_error is None)
+        self._restore_card_channel_text(histogram_card)
         self._card_channel_errors[histogram_card.card_id] = channel_error or ""
         self._refresh_overlay_color_default(histogram_card)
 
@@ -748,11 +929,12 @@ class HistogramWidget(QWidget):
         self._refresh_settings_summary(histogram_card)
 
     def _refresh_overlay_color_default(self, histogram_card: _HistogramCard) -> None:
-        channel_index = histogram_card.channel_combo.currentIndex()
-        if channel_index < 0:
+        channel_name = histogram_card.accepted_channel_name
+        if channel_name is None:
             histogram_card.overlay_color_button.set_color(DEFAULT_OVERLAY_COLORS[0])
             return
 
+        channel_index = histogram_card.channel_names.index(channel_name)
         histogram_card.overlay_color_button.set_color(
             DEFAULT_OVERLAY_COLORS[channel_index % len(DEFAULT_OVERLAY_COLORS)]
         )
@@ -910,7 +1092,7 @@ class HistogramWidget(QWidget):
             return
 
         self._update_card_plot(histogram_card)
-        self._refresh_card_colormap_sync(histogram_card)
+        self._refresh_card_overlay_state(histogram_card)
         self._update_card_status(card_id)
 
     def _update_card_status(self, card_id: str) -> None:
@@ -919,12 +1101,6 @@ class HistogramWidget(QWidget):
         except ValueError:
             return
 
-        target, _message = self._resolve_card_target(histogram_card)
-        can_load_overlay = (
-            self._app_state.viewer is not None and self.selected_spatialdata is not None and target is not None
-        )
-        histogram_card.overlay_color_button.setEnabled(can_load_overlay)
-        histogram_card.load_overlay_button.setEnabled(can_load_overlay)
         histogram_card.calculate_button.setEnabled(self._histogram_controller.can_calculate(card_id))
         self._refresh_sync_percentiles_button(histogram_card)
         message = self._histogram_controller.status_message(card_id)
@@ -940,8 +1116,8 @@ class HistogramWidget(QWidget):
         else:
             spec = build_histogram_ready_card_spec(message)
         extra_lines: list[str] = []
-        if histogram_card.overlay_load_message:
-            extra_lines.append(histogram_card.overlay_load_message)
+        if histogram_card.viewer_action_message:
+            extra_lines.append(histogram_card.viewer_action_message)
         result = self._histogram_controller.result_for_card(card_id)
         percentile_status_line = None if result is None else _format_percentile_status_line(result.percentile_values)
         if kind == "success" and percentile_status_line:
@@ -980,41 +1156,20 @@ class HistogramWidget(QWidget):
 
     def _on_image_overlay_layers_changed(self) -> None:
         for histogram_card in self._cards.values():
-            self._refresh_card_colormap_sync(histogram_card)
+            self._refresh_card_overlay_state(histogram_card)
             result = self._histogram_controller.result_for_card(histogram_card.card_id)
-            if result is None:
-                continue
-
-            self._refresh_card_contrast_sync(histogram_card, result)
+            if result is not None:
+                self._refresh_card_contrast_sync(histogram_card, result)
             self._update_card_status(histogram_card.card_id)
 
-    def _refresh_card_colormap_sync(self, histogram_card: _HistogramCard) -> None:
-        binding = self._resolve_colormap_sync_binding(histogram_card)
-        if binding is None:
-            self._disconnect_card_colormap_sync(histogram_card)
-            return
-
-        state = histogram_card.colormap_sync_state
-        if state is not None and state.layer is binding.layer:
-            self._apply_layer_colormap_to_card(histogram_card)
-            return
-
-        self._disconnect_card_colormap_sync(histogram_card)
-        callback = lambda _event, current_card_id=histogram_card.card_id: self._on_layer_colormap_changed(
-            current_card_id
-        )
-        binding.layer.events.colormap.connect(callback)
-        histogram_card.colormap_sync_state = _HistogramColormapSyncState(
-            layer=binding.layer,
-            colormap_callback=callback,
-        )
-        self._apply_layer_colormap_to_card(histogram_card)
-
-    def _resolve_colormap_sync_binding(self, histogram_card: _HistogramCard) -> ImageLayerBinding | None:
+    def _resolve_card_overlay_match(self, histogram_card: _HistogramCard) -> _HistogramOverlayMatch:
         sdata = self.selected_spatialdata
-        target, _message = self._resolve_card_target(histogram_card)
+        target, validation_message = self._resolve_card_target(histogram_card)
         if sdata is None or target is None:
-            return None
+            return _HistogramOverlayMatch(
+                state="invalid",
+                message=validation_message or "Choose a valid image channel.",
+            )
 
         matches = self._app_state.viewer_adapter.layer_bindings.find_bindings(
             sdata=sdata,
@@ -1025,36 +1180,239 @@ class HistogramWidget(QWidget):
             channel_name=target.channel_name,
         )
         image_bindings = [binding for binding in matches if isinstance(binding, ImageLayerBinding)]
-        if len(image_bindings) != 1:
-            return None
+        if not image_bindings:
+            return _HistogramOverlayMatch(state="missing")
+        if len(image_bindings) > 1:
+            return _HistogramOverlayMatch(
+                state="ambiguous",
+                message=(
+                    f"Multiple matching overlay layers exist for channel "
+                    f'"{target.channel_name}". Remove the duplicate layers in napari.'
+                ),
+            )
 
-        return image_bindings[0]
+        binding = image_bindings[0]
+        try:
+            _binding_channel_index(binding)
+            _binding_channel_name(binding)
+        except ValueError as error:
+            return _HistogramOverlayMatch(state="invalid", message=str(error))
+        return _HistogramOverlayMatch(state="unique", binding=binding)
 
-    def _on_layer_colormap_changed(self, card_id: str) -> None:
+    def _refresh_card_overlay_state(self, histogram_card: _HistogramCard) -> None:
+        """Reconcile the complete Viewer section from current overlay membership."""
+        match = self._resolve_card_overlay_match(histogram_card)
+        can_load_overlay = (
+            self._app_state.viewer is not None and self.selected_spatialdata is not None and match.state == "missing"
+        )
+        histogram_card.overlay_color_button.setEnabled(can_load_overlay)
+        histogram_card.load_overlay_button.setEnabled(can_load_overlay)
+
+        binding = match.binding
+        if match.state == "unique" and binding is not None:
+            current_row = histogram_card.overlay_row
+            if current_row is not None and current_row.binding is binding:
+                current_row.refresh_presentation()
+            else:
+                self._dispose_card_overlay_row(histogram_card)
+                row = _OverlayChannelRow(
+                    binding,
+                    histogram_card.viewer_controls,
+                )
+                row.remove_requested.connect(partial(self._remove_card_overlay_channel, histogram_card.card_id))
+                row.visibility_change_requested.connect(
+                    partial(self._change_card_overlay_visibility, histogram_card.card_id)
+                )
+                row.color_change_requested.connect(partial(self._change_card_overlay_color, histogram_card.card_id))
+                histogram_card.overlay_row = row
+                histogram_card.viewer_controls_layout.addWidget(row)
+
+            histogram_card.pending_overlay_controls.setVisible(False)
+            histogram_card.overlay_state_label.setVisible(False)
+            return
+
+        cache_color = match.state in {"missing", "ambiguous"} and self._card_row_matches_current_target(histogram_card)
+        self._dispose_card_overlay_row(histogram_card, cache_color=cache_color)
+        if match.state == "ambiguous":
+            histogram_card.pending_overlay_controls.setVisible(False)
+            histogram_card.overlay_state_label.setText(match.message or "Multiple matching overlay layers.")
+            histogram_card.overlay_state_label.setVisible(True)
+            return
+
+        # Both "missing" and "invalid" use the pending presentation. Its
+        # controls are enabled only for "missing".
+        histogram_card.overlay_state_label.setVisible(False)
+        histogram_card.pending_overlay_controls.setVisible(True)
+
+    def _dispose_card_overlay_row(
+        self,
+        histogram_card: _HistogramCard,
+        *,
+        cache_color: bool = False,
+    ) -> None:
+        row = histogram_card.overlay_row
+        if row is None:
+            return
+
+        histogram_card.overlay_row = None
+        if cache_color:
+            histogram_card.overlay_color_button.set_color(row.color_button.current_color)
+        row.dispose()
+        histogram_card.viewer_controls_layout.removeWidget(row)
+        row.deleteLater()
+
+    def _card_row_matches_current_target(self, histogram_card: _HistogramCard) -> bool:
+        row = histogram_card.overlay_row
+        sdata = self.selected_spatialdata
+        target, _message = self._resolve_card_target(histogram_card)
+        if row is None or sdata is None or target is None:
+            return False
+
+        binding = row.binding
+        return (
+            binding.sdata_id == id(sdata)
+            and binding.element_name == target.image_name
+            and binding.coordinate_system == target.coordinate_system
+            and binding.image_display_mode == "overlay"
+            and binding.channel_name == target.channel_name
+        )
+
+    def _resolve_exact_card_overlay_binding(
+        self,
+        histogram_card: _HistogramCard,
+        channel_index: int,
+    ) -> ImageLayerBinding | None:
+        match = self._resolve_card_overlay_match(histogram_card)
+        row = histogram_card.overlay_row
+        binding = match.binding
+        if (
+            match.state == "unique"
+            and binding is not None
+            and row is not None
+            and row.binding is binding
+            and row.channel_index == channel_index
+        ):
+            return binding
+
+        self._refresh_card_overlay_state(histogram_card)
+        return None
+
+    def _change_card_overlay_visibility(
+        self,
+        card_id: str,
+        channel_index: int,
+        visible: bool,
+    ) -> None:
+        """Apply row intent; the napari ``visible`` event renders the result."""
         histogram_card = self._cards.get(card_id)
         if histogram_card is None:
             return
 
-        self._apply_layer_colormap_to_card(histogram_card)
-
-    def _apply_layer_colormap_to_card(self, histogram_card: _HistogramCard) -> None:
-        state = histogram_card.colormap_sync_state
-        if state is None:
+        binding = self._resolve_exact_card_overlay_binding(histogram_card, channel_index)
+        if binding is None:
+            self._update_card_status(card_id)
             return
 
-        color = _single_swatch_color_from_image_layer(state.layer)
-        if color is not None:
-            histogram_card.overlay_color_button.set_color(color)
+        layer = binding.layer
+        try:
+            if layer.visible == visible:
+                if histogram_card.overlay_row is not None:
+                    histogram_card.overlay_row.refresh_presentation()
+                histogram_card.viewer_action_message = None
+                self._update_card_status(card_id)
+                return
+            layer.visible = visible
+        except (TypeError, RuntimeError, ValueError) as error:
+            if histogram_card.overlay_row is not None:
+                histogram_card.overlay_row.refresh_presentation()
+            histogram_card.viewer_action_message = f"Overlay visibility could not be updated: {error}"
+            self._update_card_status(card_id)
+            return
 
-    def _disconnect_card_colormap_sync(self, histogram_card: _HistogramCard) -> None:
-        state = histogram_card.colormap_sync_state
-        histogram_card.colormap_sync_state = None
+        histogram_card.viewer_action_message = None
+        self._update_card_status(card_id)
 
-        if state is not None:
-            try:
-                state.layer.events.colormap.disconnect(state.colormap_callback)
-            except (TypeError, RuntimeError, ValueError):
-                pass
+    def _change_card_overlay_color(
+        self,
+        card_id: str,
+        channel_index: int,
+        color: str,
+    ) -> None:
+        """Apply row intent; the napari ``colormap`` event renders the result."""
+        histogram_card = self._cards.get(card_id)
+        if histogram_card is None:
+            return
+
+        binding = self._resolve_exact_card_overlay_binding(histogram_card, channel_index)
+        if binding is None:
+            self._update_card_status(card_id)
+            return
+
+        normalized_color = _normalized_color_or_none(color)
+        if normalized_color is None:
+            if histogram_card.overlay_row is not None:
+                histogram_card.overlay_row.refresh_presentation()
+            histogram_card.viewer_action_message = f'Overlay color could not be updated: "{color}" is invalid.'
+            self._update_card_status(card_id)
+            return
+
+        layer = binding.layer
+        try:
+            if _solid_color_from_layer(layer) == normalized_color:
+                if histogram_card.overlay_row is not None:
+                    histogram_card.overlay_row.refresh_presentation()
+                histogram_card.viewer_action_message = None
+                self._update_card_status(card_id)
+                return
+            layer.colormap = normalized_color
+        except (TypeError, RuntimeError, ValueError) as error:
+            if histogram_card.overlay_row is not None:
+                histogram_card.overlay_row.refresh_presentation()
+            histogram_card.viewer_action_message = f"Overlay color could not be updated: {error}"
+            self._update_card_status(card_id)
+            return
+
+        histogram_card.viewer_action_message = None
+        self._update_card_status(card_id)
+
+    def _remove_card_overlay_channel(
+        self,
+        card_id: str,
+        channel_index: int,
+    ) -> None:
+        histogram_card = self._cards.get(card_id)
+        sdata = self.selected_spatialdata
+        if histogram_card is None or sdata is None:
+            return
+
+        binding = self._resolve_exact_card_overlay_binding(histogram_card, channel_index)
+        row = histogram_card.overlay_row
+        if binding is None or row is None:
+            self._update_card_status(card_id)
+            return
+
+        histogram_card.overlay_color_button.set_color(row.color_button.current_color)
+        try:
+            removed_layer = self._app_state.viewer_adapter.remove_image_overlay_channel(
+                sdata,
+                binding.element_name,
+                binding.coordinate_system,
+                channel_index=channel_index,
+            )
+        except (TypeError, RuntimeError, ValueError) as error:
+            row.refresh_presentation()
+            histogram_card.viewer_action_message = f"Overlay could not be removed: {error}"
+            self._update_card_status(card_id)
+            return
+
+        if removed_layer is None:
+            # The adapter treats an already-absent target as a successful no-op.
+            histogram_card.viewer_action_message = "Overlay is no longer loaded in the viewer."
+        else:
+            # A returned layer is the napari layer removed by this request.
+            histogram_card.viewer_action_message = "Overlay removed from viewer."
+        self._refresh_card_overlay_state(histogram_card)
+        self._update_card_status(card_id)
 
     def _refresh_card_contrast_sync(self, histogram_card: _HistogramCard, result: HistogramResult) -> None:
         """Bind the card to the resolved napari layer for contrast-limit sync.
@@ -1261,7 +1619,7 @@ class HistogramWidget(QWidget):
         if channel_error:
             return None, channel_error
 
-        channel_name = self._current_text_data(histogram_card.channel_combo)
+        channel_name = histogram_card.accepted_channel_name
         if channel_name is None:
             return None, "Choose a channel."
 
@@ -1276,7 +1634,7 @@ class HistogramWidget(QWidget):
         histogram_card = self._get_card(card_id)
         target, validation_error = self._resolve_card_target(histogram_card)
         if target is None or self.selected_spatialdata is None:
-            histogram_card.overlay_load_message = (
+            histogram_card.viewer_action_message = (
                 validation_error or "Choose an image and channel before loading an overlay."
             )
             self._update_card_status(card_id)
@@ -1291,14 +1649,14 @@ class HistogramWidget(QWidget):
                 channel_color=histogram_card.overlay_color_button.current_color,
             )
         except Exception as error:  # noqa: BLE001 - surface adapter validation/load errors in the card status.
-            histogram_card.overlay_load_message = f"Overlay could not be loaded: {error}"
+            histogram_card.viewer_action_message = f"Overlay could not be loaded: {error}"
             self._update_card_status(card_id)
             return
 
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         action = "loaded" if result.created else "updated"
-        histogram_card.overlay_load_message = f"Overlay {action} in viewer."
-        self._refresh_card_colormap_sync(histogram_card)
+        histogram_card.viewer_action_message = f"Overlay {action} in viewer."
+        self._refresh_card_overlay_state(histogram_card)
 
         calculated_result = self._histogram_controller.result_for_card(card_id)
         if calculated_result is not None:
@@ -1414,80 +1772,3 @@ def _format_compact_number(value: float) -> str:
     if not math.isfinite(value):
         return str(value)
     return f"{value:.4g}"
-
-
-def _single_swatch_color_from_image_layer(layer: object) -> str | None:
-    colormap = getattr(layer, "colormap", None)
-    color_from_colors = _single_swatch_color_from_colormap_colors(getattr(colormap, "colors", None))
-    if color_from_colors is not None:
-        return color_from_colors
-
-    name = getattr(colormap, "name", None)
-    if isinstance(name, str):
-        return _qcolor_hex_or_none(name)
-
-    if isinstance(colormap, str):
-        return _qcolor_hex_or_none(colormap)
-
-    return None
-
-
-def _single_swatch_color_from_colormap_colors(colors: object) -> str | None:
-    try:
-        rows = tuple(colors)  # type: ignore[arg-type]
-    except TypeError:
-        return None
-
-    if not rows:
-        return None
-
-    if len(rows) == 1:
-        return _color_row_to_hex(rows[0])
-
-    if len(rows) == 2 and _is_black_color_row(rows[0]):
-        return _color_row_to_hex(rows[1])
-
-    return None
-
-
-def _is_black_color_row(row: object) -> bool:
-    rgb = _color_row_rgb_components(row)
-    return rgb is not None and all(abs(component) <= 1e-6 for component in rgb)
-
-
-def _color_row_to_hex(row: object) -> str | None:
-    rgb = _color_row_rgb_components(row)
-    if rgb is None:
-        return None
-
-    return "#" + "".join(f"{round(component * 255):02X}" for component in rgb)
-
-
-def _color_row_rgb_components(row: object) -> tuple[float, float, float] | None:
-    try:
-        values = tuple(row)  # type: ignore[arg-type]
-    except TypeError:
-        return None
-
-    if len(values) < 3:
-        return None
-
-    rgb: list[float] = []
-    for component in values[:3]:
-        try:
-            value = float(component)
-        except (TypeError, ValueError):
-            return None
-        if not math.isfinite(value) or value < 0.0 or value > 1.0:
-            return None
-        rgb.append(value)
-
-    return rgb[0], rgb[1], rgb[2]
-
-
-def _qcolor_hex_or_none(color: str) -> str | None:
-    qcolor = QColor(color)
-    if not qcolor.isValid():
-        return None
-
-    return qcolor.name(QColor.NameFormat.HexRgb).upper()
