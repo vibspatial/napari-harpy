@@ -1715,7 +1715,19 @@ loaded anything in that mode.
 
 ## Slice 4a: Unified image-membership lifecycle
 
-Status: specified on 2026-07-31.
+Status: implemented on 2026-07-31.
+
+Implemented outcome:
+
+- `ViewerAdapter.image_layers_changed` now invalidates usable Stack and Overlay
+  membership after registration, insertion, removal, and reordering.
+- Viewer cards receive one validated, atomic Stack/Overlay membership snapshot.
+- Initial hydration and later membership appearances select the corresponding
+  editor mode; membership disappearance preserves the current editor mode.
+- Duplicate Stack and mixed Stack/Overlay membership are surfaced without
+  replacing the last safely reconciled card state or mutating napari.
+- Histogram continues to reconcile Overlay membership only and now excludes
+  registered bindings whose layers are not currently loaded in napari.
 
 ### Goal
 
@@ -1914,6 +1926,18 @@ color_change_requested = Signal(str)
 ### Stack row
 
 - `_ImageCardWidget` owns zero or one live stack row.
+- Once the live stack row exists, remove the temporary
+  `_loaded_stack_binding` field introduced by Slice 4a. Do not retain the same
+  binding separately on both the card and the row.
+- Determine previously reconciled stack membership from whether
+  `self._stack_row` exists. Obtain the current reconciled stack binding from
+  `self._stack_row.binding`.
+- If a `loaded_stack_binding` accessor remains useful to callers or tests,
+  implement it as a property derived from `self._stack_row`, not as stored
+  state.
+- Validate the complete incoming image-membership snapshot before disposing or
+  replacing the existing stack row, so an invalid snapshot retains the last
+  safely reconciled row and binding.
 - The ordinary stack label is `Stack`; its tooltip/accessibility text includes
   the owning image name.
 - The row reads its initial eye and colormap presentation from the live napari
