@@ -1646,78 +1646,339 @@ Do not add a second set of selector-specific property signals.
 - Pending color is passed to `Load in viewer` without calculating a Histogram.
 - All Slice 3b synchronization and removal tests remain green.
 
-## Slice 4: Display-mode lifecycle and removal of staged apply
+## Slice 4: Unified image-layer lifecycle and live Stack presentation
+
+Status: revised and specified on 2026-07-31.
 
 ### Goal
 
-Complete the live mental model and remove `Add / Update in viewer` without
-automatically loading every image card.
+Complete the live image-layer mental model without redesigning the overlay
+composer that is already implemented:
+
+```text
+not loaded -> explicit load/add control
+loaded     -> live [eye] [name] [colormap] [remove] row
+```
+
+Overlay already follows this model: accepting a channel adds it immediately,
+and loaded channels have live visibility, colormap, and removal controls. Slice
+4 brings Stack mode into the same model, with one intentional difference:
+Stack retains an explicit `Load in viewer` action before its layer exists.
+
+Creating or refreshing an image card must never load an image automatically.
+
+### Current baseline
+
+The following behavior is already implemented and should be preserved:
+
+- overlay mode has no staged Add/Apply/Update action;
+- accepting an unloaded overlay channel loads that channel immediately;
+- overlay visibility, colormap, removal, and membership are live;
+- accepting the first overlay channel replaces a matching loaded stack through
+  existing adapter semantics;
+- loading a stack through the current action replaces matching overlay layers;
+- deleting the last overlay keeps the selected Overlay editor mode and its
+  empty composer.
+
+### Final UX contract
+
+| Situation | Selected editor | Presentation/action |
+| --- | --- | --- |
+| New card; nothing loaded | Stack | `Load in viewer` |
+| Stack layer loaded | Stack | `[eye] Stack [colormap] [×]` |
+| RGB(A) stack loaded | Stack | `[eye] RGB stack [×]` |
+| User selects Overlay while a stack exists | Overlay | Empty/searchable overlay composer; keep the stack until the first channel is accepted |
+| Overlay layers loaded | Overlay | One live row per loaded channel |
+| Last overlay removed | Overlay | Empty overlay composer; do not switch or load Stack |
+| User selects Stack while overlays exist | Stack | `Load in viewer`; keep overlays until the action is invoked |
+| Stack removed in napari | Stack | Remove the row and restore `Load in viewer` |
+
+Mode selection is editor intent. Live bindings are layer truth. They may differ
+temporarily while the user has selected a replacement mode but has not yet
+loaded anything in that mode.
+
+## Slice 4a: Unified image-membership lifecycle
+
+Status: specified on 2026-07-31.
+
+### Goal
+
+Give Viewer cards one authoritative reconciliation path for both stack and
+overlay image bindings, including napari-side registration, removal, and
+reordering.
+
+### Target files
+
+- `src/napari_harpy/viewer/adapter.py`
+- `src/napari_harpy/widgets/viewer/widget.py`
+- `src/napari_harpy/widgets/histogram/widget.py`
+- `tests/test_viewer_adapter.py`
+- `tests/test_viewer_widget.py`
+- `tests/test_histogram_widget.py`
+
+### Membership signal contract
+
+- Rename the overlay-only invalidation signal
+  `image_overlay_layers_changed` to the generalized
+  `image_layers_changed`.
+- This intentionally supersedes the earlier overlay-specific signal naming now
+  that Stack also has reconciled live membership.
+- Keep one payload-free image-membership invalidation signal rather than adding
+  parallel stack and overlay signals.
+- Emit it after a live, usable Harpy image binding is added, removed, or
+  reordered.
+- A usable stack binding has SpatialData identity, coordinate-system identity,
+  and `image_display_mode == "stack"`.
+- A usable overlay binding additionally has a valid channel index and channel
+  name.
+- Viewer and Histogram re-query live bindings after invalidation; they do not
+  retain an event payload that could become stale.
+- Histogram continues to select only overlay bindings. A stack-only
+  invalidation may cause a harmless reconciliation no-op.
+- Visibility, colormap, and contrast remain native napari property events.
+  Do not add image-presentation signals to the adapter.
+
+### Viewer reconciliation
+
+- Replace overlay-only card refresh with complete image-membership
+  reconciliation for the active SpatialData object, image name, and coordinate
+  system.
+- Query current viewer order once and partition matching bindings into:
+  - zero or one stack binding;
+  - ordered overlay bindings.
+- Preserve the existing validation of overlay channel identity and duplicate
+  bindings.
+- Treat multiple matching stack bindings as an invariant error; do not silently
+  select one or remove layers.
+- Pass the resolved stack binding and overlay bindings to the owning image card.
+- Reconciliation updates presentation only. It must not load, remove, or
+  convert layers.
+
+### Mode transition rule
+
+- Initial card hydration selects Overlay when live overlay bindings exist,
+  otherwise Stack.
+- A newly appearing stack binding selects Stack.
+- A newly appearing first overlay binding selects Overlay.
+- Membership disappearance never selects another mode:
+  - removing the last overlay preserves Overlay;
+  - removing the stack preserves Stack.
+- Reordering without a membership addition preserves the selected editor mode.
+
+### Acceptance criteria
+
+- Existing stack and overlay bindings hydrate the correct card mode.
+- Napari-side stack removal is observed without direct Viewer layer-list
+  subscriptions.
+- Overlay ordering and membership continue to reconcile through the same
+  adapter-owned lifecycle.
+- No consumer receives both a stack-specific and overlay-specific membership
+  signal.
+- Native property synchronization remains unchanged.
+
+### Focused tests
+
+- Generalized invalidation on usable stack and overlay registration/removal.
+- No invalidation for unrelated or unusable bindings.
+- Image-layer reordering invalidates current image membership.
+- Viewer partitions stack and overlay bindings correctly.
+- Duplicate stack binding reports an invariant error without mutation.
+- Initial Stack and Overlay hydration.
+- First membership appearance selects its corresponding mode.
+- Last-membership removal preserves the current mode.
+- Existing Histogram overlay reconciliation remains green after the signal
+  migration.
+
+## Slice 4b: Shared live image-layer row and Stack controls
+
+Status: specified on 2026-07-31.
+
+### Goal
+
+Represent a loaded stack with the same live visibility, colormap, and removal
+interaction used by overlay rows, without inventing fake channel metadata.
+
+### Target files
+
+- `src/napari_harpy/widgets/overlay_channel_row.py`, renamed or replaced by a
+  clearly named shared image-layer row module
+- `src/napari_harpy/widgets/viewer/image_widget.py`
+- `src/napari_harpy/widgets/viewer/widget.py`
+- `src/napari_harpy/widgets/histogram/widget.py`
+- `src/napari_harpy/viewer/adapter.py`
+- focused shared-row, Viewer, Histogram, and adapter tests
+
+### Generalize the shared row
+
+- Replace `_OverlayChannelRow` with a presentation-focused
+  `_ImageLayerRow`.
+- The row keeps one construction-time `ImageLayerBinding` for its lifetime.
+  Owners dispose and reconstruct it when that binding changes.
+- Its constructor accepts the semantic display label and accessible text rather
+  than deriving both from overlay-only channel metadata.
+- The row owns:
+  - eye presentation;
+  - solid or gradient colormap presentation;
+  - removal presentation;
+  - direct subscriptions to `layer.events.visible` and
+    `layer.events.colormap`;
+  - feedback-loop-safe programmatic eye updates.
+- The row never mutates napari or calls `ViewerAdapter`.
+- Use identity-free row intent signals:
+
+```python
+remove_requested = Signal()
+visibility_change_requested = Signal(bool)
+color_change_requested = Signal(str)
+```
+
+- Overlay owners bind the expected channel/card identity when connecting these
+  signals, then retain their existing live-binding validation before mutation.
+- Do not move Viewer and Histogram mutation handlers into the shared row or
+  merge their owner-specific validation and feedback paths.
+
+### Stack row
+
+- `_ImageCardWidget` owns zero or one live stack row.
+- The ordinary stack label is `Stack`; its tooltip/accessibility text includes
+  the owning image name.
+- The row reads its initial eye and colormap presentation from the live napari
+  layer.
+- Viewer handles focused stack intent:
+  - resolve the exact current stack binding;
+  - skip equal visibility or colormap assignments;
+  - assign `layer.visible` or `layer.colormap`;
+  - let native napari events refresh the row;
+  - explicitly refresh presentation after no-op or rejected assignment.
+- Add a focused `ViewerAdapter.remove_image_stack_layer(...)` operation.
+  The row's remove action must not use `remove_image_layers(...)`, because that
+  broader operation can also remove overlays.
+- Successful or napari-originated removal flows through
+  `image_layers_changed`, disposes the row, and restores the pending stack
+  action when Stack is selected.
+
+### RGB(A) stack behavior
+
+- A true RGB(A) stack remains one live napari layer and still receives eye and
+  removal controls.
+- Label it `RGB stack`.
+- Do not offer a colormap picker for `layer.rgb == True`; embedded RGB(A)
+  colors make that control misleading.
+- Ordinary grayscale and multiplex stacks show the current napari solid or
+  gradient colormap and support live editing.
+
+### Acceptance criteria
+
+- Stack and overlay rows share one presentation implementation.
+- No fake channel index or channel name is stored on a stack binding.
+- Stack eye and colormap changes synchronize bidirectionally with napari.
+- Stack removal removes only the stack binding.
+- Napari-side visibility, colormap, and removal changes update the Stack
+  presentation.
+- Existing Viewer and Histogram overlay-row behavior remains unchanged.
+- RGB(A) stack presentation does not expose a non-functional colormap control.
+
+### Focused tests
+
+- Generic row renders an explicit semantic label.
+- Generic row subscribes/disconnects visibility and colormap events.
+- Overlay owners bind channel identity around identity-free row intent.
+- Loaded stack creates one live row and hides the pending action.
+- Stack visibility and colormap synchronize in both directions.
+- Equal assignments and failures restore authoritative napari presentation.
+- Stack removal preserves unrelated image layers.
+- Napari-side stack removal disposes the row.
+- RGB(A) row has eye/removal controls and no editable colormap.
+- Viewer and Histogram stale-row and callback-lifecycle tests remain green.
+
+## Slice 4c: Display-mode controls and removal of the transitional request
+
+Status: specified on 2026-07-31.
+
+### Goal
+
+Finish the public Stack/Overlay workflow after membership and live Stack
+presentation are available.
 
 ### Target files
 
 - `src/napari_harpy/widgets/viewer/image_widget.py`
 - `src/napari_harpy/widgets/viewer/widget.py`
+- `src/napari_harpy/widgets/viewer/status_card.py`
 - `tests/test_viewer_widget.py`
+- `tests/test_viewer_status_card.py`
 
-### Mode behavior
+### Mode controls
 
-- Replace the two mutually managed checkboxes with `QRadioButton` controls in a
-  `QButtonGroup`, or an existing simple segmented style if one is already
-  available.
+- Replace the mutually managed Stack/Overlay checkboxes with
+  `QRadioButton` controls in an exclusive `QButtonGroup`.
 - Exactly one editor mode is selected.
-- Do not load an image merely because its card was created with `Stack` as the
-  default editor mode.
-- In overlay mode, adding the first channel performs the existing stack-to-
-  overlay replacement.
-- When live overlay layers exist, the card opens in overlay mode.
-- When a live stack layer exists, the card opens in stack mode.
-- If all overlay layers are deleted, keep the empty overlay composer visible;
-  do not silently load or switch to stack.
+- Default to Stack only when membership hydration does not select Overlay.
+- Selecting a mode changes presentation only:
+  - selecting Overlay shows the overlay composer;
+  - selecting Stack shows either its live row or pending action.
+- Selecting Overlay does not remove a stack.
+- Selecting Stack does not remove overlays.
+- The first accepted overlay channel and explicit Stack load remain the only
+  mode-replacement mutations.
 
-### Initial stack loading
+### Pending and live Stack presentation
 
-Stack mode still needs one explicit initial load action. Replace the ambiguous
-generic action with a contextual `Load stack` action shown only when:
+- Rename the image-card action to `Load in viewer`.
+- Show it only when:
+  - Stack is the selected editor mode; and
+  - no matching live stack binding exists.
+- On successful load, adapter membership reconciliation replaces the action
+  with `[eye] Stack [colormap] [×]` or `[eye] RGB stack [×]`.
+- After stack removal, restore `Load in viewer` only when Stack is selected.
+- There is no Stack Update action. Existing layers are edited through their
+  live row or through napari.
 
-- stack mode is selected; and
-- no matching stack layer is currently loaded.
+### Remove the transitional request shape
 
-After the stack layer exists, its state is live and there is no Update action.
-If stack visibility/removal controls are later desired, they should follow the
-same existence/eye/remove semantics, but that extension is not required for the
-overlay roadmap.
+- Rename the card signal from `add_update_requested` to
+  `stack_load_requested`.
+- Carry only the image name:
 
-### Finish removal of staged apply
+```python
+stack_load_requested = Signal(str)
+```
 
-- Delete the transitional generic `Add / Update in viewer` action retained for
-  stack mode by Slice 2 and replace it with the contextual `Load stack` action.
-- Confirm that no aggregate overlay request-building or checkbox-list code
-  remains after Slice 2.
-- Remove obsolete `ImageLoadRequest` fields or helpers once the stack path no
-  longer needs the aggregate request shape.
-- Keep adapter validation as a defensive boundary.
-- Do not remove existing layers in response to an invalid empty request.
+- Rename the Viewer handler to `_load_image_stack(...)`.
+- Delete the image-card `ImageLoadRequest`; its `mode`, `channels`, and
+  `channel_colors` fields no longer represent a UI operation.
+- Change `build_image_loaded_card_spec(...)` to accept `image_name` and
+  `ImageLoadResult` directly.
+- Overlay success feedback also passes the image name directly rather than
+  constructing a synthetic aggregate request.
+- Keep `ViewerAdapter.ensure_image_loaded(...)` as the validated internal
+  stack/overlay loading boundary. Its internal aggregate overlay support is not
+  a staged UI request and does not need to be removed in this slice.
 
 ### Acceptance criteria
 
-- Display modes have proper mutually exclusive semantics.
-- Creating or refreshing image cards does not load images automatically.
-- Overlay additions, removals, visibility, and color are all live.
-- There is no overlay Apply or Update action.
-- The only initial-load action that remains is clearly labelled `Load stack`
-  and appears only when needed.
-- Card mode is hydrated correctly from existing registered layers.
+- No image card exposes `Add / Update in viewer`.
+- Overlay mode has no load/apply/update button.
+- Stack mode exposes `Load in viewer` only while the stack is absent.
+- Loading a Stack replaces overlays only after the explicit action.
+- Adding the first overlay replaces the Stack only after channel acceptance.
+- Mode switching alone never mutates napari layers.
+- Creating or rebuilding cards never loads images automatically.
+- Stack and Overlay controls have native mutually exclusive semantics.
 
 ### Focused tests
 
-- Default mode without automatic loading.
-- Mode hydration from existing stack and overlay bindings.
-- Mutually exclusive mode controls.
+- Default Stack mode without automatic loading.
+- Mutually exclusive radio controls.
+- Existing stack and overlay mode hydration.
+- Stack-loaded row versus stack-pending action visibility.
+- Mode switching without adapter calls or layer mutations.
 - First overlay add replaces a loaded stack.
-- Stack load replaces loaded overlays using existing adapter semantics.
-- Empty overlay remains empty after all layers are deleted.
-- Overlay mode has no Add/Update action.
-- Contextual `Load stack` visibility and behavior.
+- Explicit Stack load replaces loaded overlays.
+- Empty Overlay remains selected after all overlay layers are deleted.
+- Stack remains selected and shows `Load in viewer` after stack deletion.
+- No `Add / Update in viewer` image-card API or label remains.
+- Stack and overlay success feedback no longer needs `ImageLoadRequest`.
 
 ## Slice 5: Professional UI polish and regression coverage
 
@@ -1730,8 +1991,8 @@ the rest of the Viewer and Histogram widgets.
 
 - `src/napari_harpy/widgets/viewer/image_widget.py`
 - `src/napari_harpy/widgets/histogram/widget.py`
-- the shared overlay-row and widget styles only when a small reusable correction
-  is genuinely useful
+- the shared image-layer-row and widget styles only when a small reusable
+  correction is genuinely useful
 - focused Viewer and Histogram tests
 
 ### Implementation
