@@ -230,6 +230,23 @@ Parquet dataset or its row values are valid.
 Do not store mutable SpatialData or Dask objects in this immutable physical
 source description.
 
+### `ParquetSourceRowGroup`
+
+```python
+@dataclass(frozen=True)
+class ParquetSourceRowGroup:
+    row_count: int
+    compressed_size_bytes: int
+```
+
+This is compact footer-derived signature material, not point data. Row groups
+are retained in validated physical order. `compressed_size_bytes` is the sum of
+`total_compressed_size` over every physical column chunk in the row group.
+
+The model is not exported as a top-level public API entry point. It is carried
+by source fragments so V3 can construct the source signature from V2's
+validated footer result without reopening Parquet files.
+
 ### `ParquetSourceFragment`
 
 ```python
@@ -239,12 +256,25 @@ class ParquetSourceFragment:
     size_bytes: int
     modified_time_ns: int | None
     row_count: int
-    row_group_count: int
     row_offset: int
+    row_groups: tuple[ParquetSourceRowGroup, ...]
+
+    @property
+    def row_group_count(self) -> int:
+        return len(self.row_groups)
 ```
 
-Additional schema and footer fingerprints may be added if they are required by
-the versioned source-signature method.
+Do not store a separate mutable or independently supplied row-group count.
+Construction enforces:
+
+- at least one row-group record;
+- non-negative row counts and compressed sizes;
+- `sum(row_group.row_count) == fragment.row_count`;
+- tuple order equal to physical Parquet row-group order.
+
+The row-group records are needed by the source signature. They do not determine
+`point_id`, which depends on fragment ordering, fragment offsets, and row
+positions.
 
 ### `PointsBounds`
 
@@ -513,7 +543,8 @@ tests/test_multi_scale_cache_points_validation.py
 - validate compatible Arrow logical types across fragments;
 - require numeric `x` and `y`;
 - require supported value string/dictionary types;
-- collect file sizes, modification times, row counts, and row-group counts;
+- collect file sizes, modification times, row counts, and ordered row-group
+  records containing row counts and compressed sizes;
 - calculate cumulative fragment row offsets with `uint64` overflow checks;
 - collect available null counts and coordinate statistics;
 - calculate preliminary bounds only when all required statistics are present
@@ -554,6 +585,9 @@ fields in canonical semantic order as `selected_schema`.
 - dictionary-encoded strings;
 - complete, incomplete, and absent statistics;
 - valid and invalid footer-derived bounds;
+- ordered row-group records and derived row-group counts;
+- row-group compressed-size aggregation across physical column chunks;
+- fragment/row-group row-count reconciliation;
 - deterministic offsets;
 - offset overflow;
 - no row-group data-page reads.
@@ -617,6 +651,8 @@ Build this versioned JSON shape:
 uses the semantic order `x`, `y`, `value`; `fragments` and their `row_groups`
 use validated physical order. `compressed_size_bytes` is the sum of
 `total_compressed_size` over every physical column chunk in that row group.
+V3 consumes the immutable row-group records produced by V2 and does not reopen
+Parquet footers to reconstruct this payload.
 
 Normalized type descriptors are limited to the initially supported selected
 types:
