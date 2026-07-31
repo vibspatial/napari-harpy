@@ -1684,7 +1684,7 @@ The following behavior is already implemented and should be preserved:
 
 | Situation | Selected editor | Presentation/action |
 | --- | --- | --- |
-| New card; nothing loaded | Stack | `Load in viewer` |
+| New card; nothing loaded | Overlay | Empty/searchable overlay composer |
 | Stack layer loaded | Stack | `[eye] Stack [colormap] [×]` |
 | RGB(A) stack loaded | Stack | `[eye] RGB stack [×]` |
 | User selects Overlay while a stack exists | Overlay | Empty/searchable overlay composer; keep the stack until the first channel is accepted |
@@ -2119,6 +2119,8 @@ the rest of the Viewer and Histogram widgets.
 
 - Keep spacing, control heights, borders, hover states, and typography
   consistent with existing viewer cards.
+- Grow the loaded-channel viewport with its contents through ten rows; start
+  vertical scrolling when an eleventh channel is loaded.
 - Elide long channel names and expose the full name in a tooltip.
 - Give search, eye, colormap, remove, remove-all, mode, and count controls
   appropriate accessible names.
@@ -2157,7 +2159,8 @@ the rest of the Viewer and Histogram widgets.
 - Accessible names on interactive controls.
 - Eye and remove controls remain semantically distinct.
 - Warning threshold at 8/9 channels.
-- Five-row viewport height and scrolling.
+- Content-driven viewport growth through ten rows and scrolling from the
+  eleventh row onward.
 - Mutation failure feedback.
 - Existing no-channel-axis and duplicate-channel error states.
 - Histogram pending versus live Viewer-area presentation.
