@@ -1492,12 +1492,30 @@ new user-intent signal during programmatic rendering.
 
 ## Slice 3c: Searchable Histogram target selection
 
-Status: specified on 2026-07-30.
+Status: implemented on 2026-07-31.
+
+Implementation result:
+
+- Histogram channel selection now uses the shared persistent
+  `CompleterPopupLineEdit` with case-insensitive substring completion and
+  popup-on-entry behavior.
+- Each card keeps accepted channel state separate from transient search text;
+  only completion activation or an exact/unique case-insensitive Enter match
+  changes the target.
+- Accepted text remains visible, invalid or ambiguous text restores the
+  previous selection, and channel-model invalidation clears it safely.
+- Target changes dispose only the old contextual row before existing Slice 3b
+  reconciliation. They do not add or remove napari layers.
+- The explicit overlay action is now labelled `Load in viewer`; Histogram
+  calculation and overlay membership remain independent.
+- Focused selector, invalidation, target-switch, live-row, and explicit-load
+  tests cover the completed behavior.
 
 ### Dependency
 
-Slice 3b is complete. The current Histogram dropdown already drives pending,
-unique-live-row, and ambiguous Viewer-area states through the shared row.
+Slice 3b is complete. Before this slice, the Histogram dropdown already drove
+pending, unique-live-row, and ambiguous Viewer-area states through the shared
+row.
 
 ### Goal
 
