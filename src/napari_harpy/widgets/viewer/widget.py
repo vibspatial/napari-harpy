@@ -42,6 +42,10 @@ from napari_harpy.core.spatialdata import (
 )
 from napari_harpy.viewer.adapter import ImageLayerBinding
 from napari_harpy.viewer.points_styling import PointsLoadResult
+from napari_harpy.widgets.overlay_channel_row import (
+    _normalized_color_or_none,
+    _solid_color_from_layer,
+)
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
@@ -59,8 +63,6 @@ from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _D
 from napari_harpy.widgets.viewer.image_widget import (
     ImageLoadRequest,
     _ImageCardWidget,
-    _normalized_color_or_none,
-    _solid_color_from_layer,
 )
 from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
@@ -1143,7 +1145,7 @@ class ViewerWidget(QWidget):
 
         layer = binding.layer
         try:
-            if bool(layer.visible) == visible:
+            if layer.visible == visible:
                 card.refresh_overlay_channel_presentation(channel_index, binding)
                 return
             layer.visible = visible

@@ -49,14 +49,28 @@ class _OverlayChannelRow(QWidget):
     A row keeps its construction-time binding for its entire lifetime. Its owner
     must dispose this row and construct another one when the binding changes.
 
-    The row never mutates its bound napari layer. User eye, color, and removal
-    actions emit channel-local requests for the owning widget to validate.
+    User actions never mutate the layer directly. The row emits visibility,
+    color, or removal intent to its owning Viewer or Histogram widget. The owner
+    validates the current live binding before assigning ``layer.visible`` or
+    ``layer.colormap``, or requesting removal through ``ViewerAdapter``.
 
-    In the opposite direction, this row listens directly to
-    ``layer.events.visible`` and ``layer.events.colormap``. Those callbacks read
-    the accepted napari property and render the corresponding control. Napari is
-    therefore authoritative; presentation updates use ``QSignalBlocker`` where
-    needed so reflecting napari state cannot emit another user request.
+    A successful property assignment causes napari to emit
+    ``layer.events.visible`` or ``layer.events.colormap``. Every row bound to
+    that layer receives the native event, reads the accepted layer property, and
+    refreshes its presentation. Owners do not manually emit napari events or
+    render a requested value as though napari had already accepted it.
+
+    Explicit presentation refreshes are used for no-op or rejected assignments,
+    where no native property-change event may be emitted. Presentation updates
+    use ``QSignalBlocker`` where needed so reflecting napari state cannot emit
+    another user request.
+
+    ``ViewerWidget`` and ``HistogramWidget`` intentionally retain separate
+    intent handlers. Although their visibility and colormap assignments are
+    parallel, target resolution, stale-binding recovery, and user feedback are
+    owner-specific. Shared code is limited to row presentation and pure
+    layer-property helpers; layer mutation must not move into this row or a
+    shared mutation handler.
     """
 
     remove_requested = Signal(int)

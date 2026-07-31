@@ -39,8 +39,9 @@ from napari_harpy.widgets.shared_styles import (
     STATUS_CARD_PALETTE,
     WIDGET_MIN_WIDTH,
     CompactComboBox,
+    _ElidedLabel,
 )
-from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedLabel, _ElidedToolButton
+from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest

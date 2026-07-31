@@ -1263,6 +1263,11 @@ Rendering a gradient must not overwrite it.
 The shared row makes presentation ownership identical in Viewer and Histogram,
 while each owning widget retains its own target-resolution handlers:
 
+Viewer and Histogram mutation handlers deliberately remain owner-local. Do not
+consolidate them solely because their final property assignments are similar.
+Their target resolution, stale-binding reconciliation, and feedback contracts
+are different; only presentation and pure layer-property helpers are shared.
+
 | Signal or event | Listener | Responsibility |
 | --- | --- | --- |
 | `ViewerAdapter.image_overlay_layers_changed` | `ViewerWidget` and `HistogramWidget` | Re-query membership and construct, retain, or dispose rows |
