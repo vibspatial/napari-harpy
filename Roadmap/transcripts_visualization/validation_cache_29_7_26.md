@@ -43,8 +43,7 @@ The validation block must produce a build-ready object with:
 - finite coordinate bounds;
 - a deterministic normalized value dictionary and exact value counts;
 - a versioned source signature;
-- a versioned internal `uint64` point-identity policy;
-- evidence describing how important facts were established.
+- a versioned internal `uint64` point-identity policy.
 
 The validation API returns the deterministic build input directly. The cache
 builder must not rediscover the source layout or repeat validation scans.
@@ -116,6 +115,12 @@ bounds, value validation, and value counts.
 The footer stage may provide preliminary bounds and null information. The fused
 scan remains authoritative for coordinate finiteness and value counts in the
 initial build-ready validation mode.
+
+The authoritative source for each build fact is fixed:
+
+- row count and fragment offsets come from Parquet metadata;
+- coordinate bounds and normalized value counts come from the streaming scan;
+- stale-source detection uses the versioned source signature.
 
 ### No materialization of the full dataframe
 
@@ -254,17 +259,6 @@ class PointsBounds:
 
 Construction rejects non-finite values and inverted ranges.
 
-### Evidence
-
-```python
-class ValidationEvidence(str, Enum):
-    PARQUET_METADATA = "parquet_metadata"
-    STREAMING_SCAN = "streaming_scan"
-```
-
-Evidence is recorded for facts where the distinction affects trust,
-correctness, or stale-source detection.
-
 ### `ParquetPointsPreflight`
 
 This internal result contains:
@@ -313,9 +307,9 @@ n_points: uint64
 Performance timings, transient counters, machine information, and validation
 generation timestamps are not fields of `ValidatedPointsSource`, are not
 returned in a public report wrapper, and are not persisted as validation
-metadata. Source-file modification times remain deterministic source-identity
-evidence. V6 benchmark tooling owns any measurements needed to evaluate or
-optimize validation.
+metadata. Source-file modification times remain deterministic inputs to the
+source signature. V6 benchmark tooling owns any measurements needed to evaluate
+or optimize validation.
 
 ## Error contract
 
@@ -412,9 +406,9 @@ src/napari_harpy/core/multi_scale_cache_points/errors.py
 - the minimal validation-error base and source-resolution errors required by V1;
 - narrow exports from `__init__.py`.
 
-Do not implement or expose fragment, bounds, evidence, identity-policy,
-preflight, or validated-source models in V0. Add each contract in the first
-slice that uses it, once that slice has established its concrete requirements.
+Do not implement or expose fragment, bounds, identity-policy, preflight, or
+validated-source models in V0. Add each contract in the first slice that uses
+it, once that slice has established its concrete requirements.
 
 ### Tests
 
@@ -575,7 +569,7 @@ fields in canonical semantic order as `selected_schema`.
 
 ### Goal
 
-Version the source identity evidence and finalize the Harpy-owned `point_id`
+Version the source identity metadata and finalize the Harpy-owned `point_id`
 contract without scanning rows.
 
 ### Files
@@ -794,7 +788,6 @@ Counters needed to enforce scan invariants remain internal and transient.
 - empty batches and fragmented chunk boundaries;
 - exact batch-size bound;
 - scan-derived bounds versus footer statistics;
-- deterministic evidence for metadata- and scan-derived facts;
 - confirmation that only selected columns are read;
 - confirmation that there is only one content pass.
 
@@ -1014,7 +1007,7 @@ Approve:
 
 - build-ready validated source;
 - value normalization and value-table contract;
-- evidence and error semantics;
+- error semantics;
 - measured Xenium performance.
 
 Only after Gate C should exact-level cache construction begin.

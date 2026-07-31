@@ -833,12 +833,11 @@ than converting every point value through Python strings. Raw labels that
 normalize to the same value are merged; no collision count is returned or
 persisted.
 
-Every derived fact records its evidence method where useful:
+The authoritative source for each build fact is fixed:
 
-```text
-PARQUET_METADATA
-STREAMING_SCAN
-```
+- row count and fragment offsets come from Parquet metadata;
+- coordinate bounds and normalized value counts come from the streaming scan;
+- stale-source detection uses the versioned source signature.
 
 The validator must fail clearly when required correctness cannot be established.
 It must not claim full validation based only on incomplete or untrustworthy
