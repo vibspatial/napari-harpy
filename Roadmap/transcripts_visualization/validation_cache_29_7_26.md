@@ -101,20 +101,26 @@ physical file inventory is authoritative for cache construction.
 The first implementation supports local filesystem paths only. Remote URIs and
 fsspec-backed stores fail with a clear unsupported-source error.
 
-### Footer preflight plus one fused scan
+### Footer source inspection plus one fused scan
 
-Validation has two execution stages:
+Validation performs two kinds of work:
 
-1. a metadata-first Parquet footer preflight;
-2. one bounded streaming scan over only the columns required for facts that
-   footers cannot prove safely.
+1. construct a private `_FooterPointsSource` from Parquet file and footer
+   metadata without decoding point columns;
+2. perform one bounded streaming scan over the actual `x`, `y`, and `value`
+   data.
+
+V5 repeats the same private footer inspection after the content scan only to
+recompute and compare the source signature. It does not perform another content
+scan.
 
 Do not implement independent full scans for row count, coordinate validation,
 bounds, value validation, and value counts.
 
-The footer stage may provide preliminary bounds and null information. The fused
-scan remains authoritative for coordinate finiteness and value counts in the
-initial build-ready validation mode.
+The footer stage handles only structural facts. It does not derive preliminary
+bounds, inspect footer null statistics, or decide whether the content scan can
+be skipped. The content scan always establishes coordinate validity, exact
+bounds, value validity, and normalized value counts.
 
 The authoritative source for each build fact is fixed:
 
@@ -187,9 +193,10 @@ Dictionary values are normalized once per dictionary, not once per row.
 Numeric and binary value columns are not silently converted to strings in the
 first version.
 
-### Build-ready versus preflight-only results
+### Build-ready versus private intermediate results
 
-A footer preflight result is useful but is not a validated source.
+`_FooterPointsSource` and any content-scan result are private intermediate
+objects. Neither is a validated source.
 
 Only successful completion of every required validation stage may produce
 `ValidatedPointsSource`. Partial results must use distinct types and cannot be
@@ -289,21 +296,38 @@ class PointsBounds:
 
 Construction rejects non-finite values and inverted ranges.
 
-### `ParquetPointsPreflight`
+### `_FooterPointsSource`
 
-This internal result contains:
+```python
+@dataclass(frozen=True)
+class _FooterPointsSource:
+    source: ParquetPointsSource
+    fragments: tuple[ParquetSourceFragment, ...]
+    selected_schema: pa.Schema
+    row_count: int
+```
 
-- the unresolved source;
-- ordered fragments;
-- compatible selected-column schema;
-- total footer row count;
-- fragment row offsets;
-- available row-group statistics;
-- preliminary bounds, if trustworthy statistics exist;
-- footer and inventory signature material;
-- decisions about which content scans remain required.
+This private object is constructed solely from file inventory and Parquet
+footers. Its fragments contain the row offsets and ordered row-group metadata
+required by the source-signature method. V3 computes the signature from this
+object without reopening files.
 
 It is not accepted by the cache builder.
+
+### `_ScannedPointsContent`
+
+The bounded content scan may return this small private result:
+
+```python
+@dataclass(frozen=True)
+class _ScannedPointsContent:
+    row_count: int
+    bounds: PointsBounds
+    value_table: pa.Table
+```
+
+Invalid-value counters remain transient. If content is invalid, the scan raises
+an error and returns no `_ScannedPointsContent`.
 
 ### `ValidatedPointsSource`
 
@@ -348,7 +372,7 @@ Use a small package-specific exception hierarchy rooted in `ValueError`:
 ```text
 PointsSourceValidationError
   ├── PointsSourceResolutionError
-  ├── ParquetPreflightError
+  ├── ParquetFooterValidationError
   └── PointContentValidationError
 ```
 
@@ -387,8 +411,8 @@ The returned `ValidatedPointsSource` is passed directly to cache construction.
 Validation returns no result wrapper or diagnostics report.
 
 An optional convenience function may later resolve and validate in one call.
-The separate functions remain available so source resolution and footer
-preflight can be tested and diagnosed independently.
+The private footer reader and content scanner remain independently testable
+without becoming public API.
 
 ## Slice overview
 
@@ -398,7 +422,7 @@ Each slice should be independently reviewable, tested, and mergeable.
 |---|---|---:|
 | V0 | Package scaffold, immutable models, errors | No |
 | V1 | Explicit SpatialData-to-Parquet source resolution | No |
-| V2 | Deterministic footer inventory and schema preflight | No |
+| V2 | Private footer-backed source and schema validation | No |
 | V3 | Source signature and internal point-identity contract | No |
 | V4 | Fused coordinate/value content scan | Once |
 | V5 | Public validation orchestration and build-ready source | No additional scan |
@@ -436,9 +460,9 @@ src/napari_harpy/core/multi_scale_cache_points/errors.py
 - the minimal validation-error base and source-resolution errors required by V1;
 - narrow exports from `__init__.py`.
 
-Do not implement or expose fragment, bounds, identity-policy, preflight, or
-validated-source models in V0. Add each contract in the first slice that uses
-it, once that slice has established its concrete requirements.
+Do not implement or expose fragment, bounds, identity-policy, footer-source,
+scan-result, or validated-source models in V0. Add each contract in the first
+slice that uses it, once that slice has established its concrete requirements.
 
 ### Tests
 
@@ -515,12 +539,13 @@ the authoritative physical Parquet schema.
 - resolution time is independent of source row count;
 - source resolution contains no cache-building logic.
 
-## Slice V2: deterministic Parquet footer preflight
+## Slice V2: deterministic Parquet footer source
 
 ### Goal
 
-Produce a deterministic physical inventory and validate everything available
-from Parquet metadata without decoding point columns.
+Construct the private `_FooterPointsSource`: a deterministic physical inventory
+and selected schema obtained from Parquet metadata without decoding point
+columns.
 
 ### Files
 
@@ -546,10 +571,7 @@ tests/test_multi_scale_cache_points_validation.py
 - collect file sizes, modification times, row counts, and ordered row-group
   records containing row counts and compressed sizes;
 - calculate cumulative fragment row offsets with `uint64` overflow checks;
-- collect available null counts and coordinate statistics;
-- calculate preliminary bounds only when all required statistics are present
-  and trustworthy;
-- return `ParquetPointsPreflight`.
+- return `_FooterPointsSource`.
 
 File discovery should use supported PyArrow dataset APIs where practical. The
 normalized inventory and ordering remain Harpy contracts rather than incidental
@@ -567,8 +589,8 @@ the selected schema incompatible. They are neither read nor retained in
 
 The first version rejects a selected column whose physical type, logical type,
 or nullability changes between fragments rather than attempting implicit
-coercion. After all fragments pass this check, preflight records the selected
-fields in canonical semantic order as `selected_schema`.
+coercion. After all fragments pass this check, `_FooterPointsSource` records the
+selected fields in canonical semantic order as `selected_schema`.
 
 ### Tests
 
@@ -583,8 +605,6 @@ fields in canonical semantic order as `selected_schema`.
 - selected-column nullability mismatch;
 - compatible selected columns when unrelated columns differ between fragments;
 - dictionary-encoded strings;
-- complete, incomplete, and absent statistics;
-- valid and invalid footer-derived bounds;
 - ordered row-group records and derived row-group counts;
 - row-group compressed-size aggregation across physical column chunks;
 - fragment/row-group row-count reconciliation;
@@ -594,9 +614,10 @@ fields in canonical semantic order as `selected_schema`.
 
 ### Exit criteria
 
-- preflight returns exact footer row counts and deterministic offsets;
+- `_FooterPointsSource` contains exact footer row counts and deterministic
+  offsets;
 - no selected data column is decoded;
-- the Xenium footer preflight is expected to complete in under one second on
+- the Xenium footer inspection is expected to complete in under one second on
   the reference local SSD, recorded as a hypothesis until benchmarked formally.
 
 ## Slice V3: source signature and internal point identity
@@ -730,7 +751,7 @@ levels.
 
 ### Tests
 
-- repeated preflight produces the same signature;
+- repeated footer inspection produces the same signature;
 - golden canonical JSON bytes and SHA-256 digest;
 - construction order of Python dictionaries does not affect the digest;
 - path separator normalization;
@@ -774,13 +795,18 @@ The implementation should process Arrow arrays directly. Converting a bounded
 batch to NumPy is acceptable where it remains faster and memory-bounded.
 Converting complete fragments to pandas is not.
 
+The scan reads the actual Parquet data pages for only the selected `x`, `y`,
+and `value` columns. It validates each row-group and fragment row count against
+`_FooterPointsSource` while traversing them, then returns the compact private
+`_ScannedPointsContent`. It does not retain point batches after their
+aggregates have been updated.
+
 ### Coordinate behavior
 
 - accept supported numeric Arrow integer and floating types;
 - convert safely to `float64` for validation and bounds;
 - reject null, NaN, positive infinity, and negative infinity;
-- do not downcast canonical coordinates during validation;
-- reconcile scan bounds with footer bounds and reject an invalid disagreement.
+- do not downcast canonical coordinates during validation.
 
 Scan-derived bounds are authoritative for the first build-ready mode.
 
@@ -823,7 +849,7 @@ Counters needed to enforce scan invariants remain internal and transient.
 - value-count and row-count reconciliation;
 - empty batches and fragmented chunk boundaries;
 - exact batch-size bound;
-- scan-derived bounds versus footer statistics;
+- row-group, fragment, and total scanned-row reconciliation with footer counts;
 - confirmation that only selected columns are read;
 - confirmation that there is only one content pass.
 
@@ -839,17 +865,49 @@ Counters needed to enforce scan invariants remain internal and transient.
 
 ### Goal
 
-Connect resolution, preflight, signature, internal point identity, and fused
-scanning into the stable validation API that provides the input to cache
-construction.
+Connect resolution, private footer inspection, signature construction, internal
+point identity, and fused scanning into the stable validation API that provides
+the input to cache construction.
 
 ### Implement
 
+The orchestration shape is deliberately small:
+
+```python
+footer_before = _read_footer_points_source(source)
+signature_before = build_source_signature(footer_before)
+
+scanned = _scan_points_content(
+    footer_before,
+    max_batch_rows=max_batch_rows,
+)
+
+footer_after = _read_footer_points_source(source)
+signature_after = build_source_signature(footer_after)
+
+if signature_before != signature_after:
+    raise PointsSourceValidationError("source changed during validation")
+
+return _construct_validated_points_source(
+    footer=footer_before,
+    scanned=scanned,
+    source_signature=signature_before,
+)
+```
+
 - `validate_parquet_points_source(...)`;
 - consistent error translation and context;
-- reconciliation between footer and scan row counts;
-- reconciliation between footer and scan bounds;
+- construct `_FooterPointsSource` and its source signature before scanning;
+- reconcile scanned row-group, fragment, total, and value-table counts with the
+  footer source;
+- repeat the private footer inspection after scanning and reject a changed
+  source signature;
 - final immutable `ValidatedPointsSource` returned directly.
+
+`ValidatedPointsSource` is constructed only after the footer facts, scanned
+content, and source-stability check agree. It combines the footer source's
+physical inventory and selected schema with the scan's exact bounds and value
+table. Partial intermediate objects are never returned as build-ready input.
 
 The validated source contains deterministic build facts only. Validation does
 not return or persist timings, machine information, transient counters, or a
@@ -862,7 +920,7 @@ format semantics.
 
 ### Failure behavior
 
-- resolution or preflight errors start no content scan;
+- resolution or footer-validation errors start no content scan;
 - content errors return no build-ready source;
 - validation creates no files beside the canonical dataset;
 - errors do not mutate the SpatialData object or dataframe.
@@ -870,9 +928,11 @@ format semantics.
 ### Tests
 
 - complete valid workflow using internal point ids;
-- every stage called exactly once;
+- one content scan with footer inspection before and after it;
 - footer/scan row-count disagreement;
-- footer/scan bound disagreement policy;
+- row-group and fragment scan-count disagreement;
+- value-table count disagreement;
+- source-signature change during validation;
 - deterministic validated source across runs;
 - error code and path/column context;
 - headless import and operation;
@@ -925,7 +985,7 @@ It reports machine-readable JSON plus a concise console summary containing:
 - cold/warm run label;
 - source path and signature method;
 - file, row-group, row, batch, and value counts;
-- footer, scan, and total times;
+- initial footer, scan, final footer, and total times;
 - largest batch rows and decoded bytes;
 - peak resident memory when measured reliably;
 - validated-source summary.
@@ -940,7 +1000,7 @@ validation API.
 
 On the investigated local SSD and current development machine:
 
-- footer preflight should complete in under 1 second;
+- each footer inspection should complete in under 1 second;
 - full validation should complete in under 30 seconds on warm storage;
 - a cold validation target of under 60 seconds is reasonable;
 - incremental validation memory should remain below 512 MiB;
@@ -1055,7 +1115,8 @@ The validation block is complete when:
 - the new package is independent of `_transcript_tiles.py`;
 - a backed local SpatialData points element resolves without Dask graph
   inspection;
-- footer preflight is deterministic and does not decode data pages;
+- `_FooterPointsSource` construction is deterministic and does not decode data
+  pages;
 - build-ready validation uses one bounded content pass;
 - coordinates are finite and bounds are exact;
 - values are valid, normalized, deterministic, and exactly counted;

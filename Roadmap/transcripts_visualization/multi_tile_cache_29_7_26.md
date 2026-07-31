@@ -801,32 +801,34 @@ Parquet path, but the path remains authoritative for the fast build. Arbitrary
 filtered or transformed Dask dataframes are not silently assumed to map
 one-to-one to that physical dataset.
 
-### Structural preflight
+### Private footer source inspection
 
-The metadata-first preflight:
+The validator first constructs a private `_FooterPointsSource` that:
 
 - verifies that the path is a readable Parquet dataset;
 - creates a deterministic relative file inventory;
 - validates compatible schemas across files and row groups;
 - validates required column names and physical types;
 - collects file sizes, row counts, ordered row-group row counts and compressed
-  sizes, and available statistics;
+  sizes;
 - computes deterministic source-fragment row offsets;
-- derives bounds from trustworthy statistics when possible;
-- records when a bounded data scan is required;
-- computes the versioned source signature.
+- provides the complete metadata input for the versioned source signature.
 
-This stage should normally inspect Parquet footers without decoding all point
-rows.
+This private object does not contain preliminary coordinate bounds, footer null
+statistics, or decisions about whether scanning can be skipped. It inspects
+Parquet footers without decoding point rows and is not accepted by the cache
+builder.
 
 ### Bounded content validation
 
-Only checks that cannot be established safely from metadata perform data reads:
+The validator always performs one bounded streaming scan over the actual
+Parquet data pages for the selected `x`, `y`, and `value` columns. It establishes:
 
 - missing, NaN, or infinite coordinates;
 - missing or normalized-empty values;
 - normalized value counts;
-- bounds when usable Parquet statistics are absent.
+- exact coordinate bounds;
+- scanned row counts per row group, fragment, and complete source.
 
 Reads use bounded PyArrow batches. Dictionary-encoded values are handled by
 normalizing dictionary values once and aggregating their integer indices rather
@@ -841,8 +843,9 @@ The authoritative source for each build fact is fixed:
 - stale-source detection uses the versioned source signature.
 
 The validator must fail clearly when required correctness cannot be established.
-It must not claim full validation based only on incomplete or untrustworthy
-statistics.
+It constructs `ValidatedPointsSource` only after the scanned counts agree with
+the footer source, value counts sum to the source row count, and a repeated
+footer inspection produces the same source signature.
 
 ### Validation acceptance dataset
 
@@ -1423,8 +1426,9 @@ Deliverables:
 - implement immutable unresolved and validated source models;
 - resolve backed SpatialData points elements to explicit Parquet datasets;
 - implement deterministic Parquet file inventory and fragment offsets;
-- validate schema and available footer statistics;
-- implement bounded PyArrow scans for checks that require row data;
+- construct the private footer-backed source inventory and validate the selected
+  schema;
+- implement one bounded PyArrow scan over the selected point data;
 - build the normalized value table efficiently;
 - implement and version the source-signature method;
 - implement and version the internal point-identity policy;
