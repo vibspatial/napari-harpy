@@ -18,18 +18,6 @@ Before V2–V5 are frozen, I found four small issues worth resolving.
 
 
 
-3. Source mutation during validation/build is unspecified
-
-The signature captures the inventory, but the roadmap does not currently require checking that the files remain unchanged while the content scan runs.
-
-A practical policy would be:
-
-- V5 rechecks the footer inventory/signature after the streaming scan;
-- validation fails if it differs from the pre-scan signature;
-- Phase 1 rechecks the source signature before publishing the completed cache.
-
-This does not turn the signature into a full content hash, but it closes the ordinary “source changed while processing” race.
-
 4. Gate C is sequenced incorrectly
 
 Gate C is marked “after V5” but requires measured Xenium performance ([line 1011](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:1011)); performance is measured in V6, and Phase 0’s definition of done also requires V6 ([line 1036](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:1036)).
