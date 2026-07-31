@@ -281,7 +281,7 @@ class ViewerWidget(QWidget):
         # refresh only the Viewer shapes section when that happens.
         self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
         self._app_state.shapes_element_reloaded.connect(self._on_shapes_element_reloaded)
-        self._app_state.viewer_adapter.image_overlay_layers_changed.connect(self._on_image_overlay_layers_changed)
+        self._app_state.viewer_adapter.image_layers_changed.connect(self._on_image_layers_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -581,7 +581,7 @@ class ViewerWidget(QWidget):
             self.images_section_layout.addWidget(row)
             self._image_cards.append(card)
             self._image_rows.append(row)
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
 
     def _rebuild_labels_cards(self, sdata: SpatialData, labels_names: list[str]) -> None:
         _clear_layout(self.labels_section_layout)
@@ -1006,46 +1006,53 @@ class ViewerWidget(QWidget):
             build_image_loaded_card_spec(request, result),
         )
 
-    def _on_image_overlay_layers_changed(self) -> None:
-        """Re-query complete overlay membership after adapter lifecycle changes."""
+    def _on_image_layers_changed(self) -> None:
+        """Re-query complete image membership after adapter lifecycle changes."""
         for card in self._image_cards:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
 
-    def _refresh_image_card_overlay_membership(self, card: _ImageCardWidget) -> None:
+    def _refresh_image_card_membership(self, card: _ImageCardWidget) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
         if sdata is None or not coordinate_system:
-            card.set_loaded_overlay_bindings([])
+            card.set_loaded_image_bindings(
+                stack_binding=None,
+                overlay_bindings=(),
+            )
             return
 
         try:
-            bindings = self._get_live_overlay_bindings(
+            stack_binding, overlay_bindings = self._get_live_image_bindings(
                 sdata,
                 card.image_name,
                 coordinate_system,
                 channel_names=card.channel_names,
             )
-            card.set_loaded_overlay_bindings(bindings)
+            card.set_loaded_image_bindings(
+                stack_binding=stack_binding,
+                overlay_bindings=overlay_bindings,
+            )
         except ValueError as error:
             message = str(error)
-            card.set_overlay_membership_error(message)
+            card.set_image_membership_error(message)
             self._set_action_feedback(
-                title="Image Overlay Error",
+                title="Image Membership Error",
                 lines=[message],
                 kind="error",
             )
 
-    def _get_live_overlay_bindings(
+    def _get_live_image_bindings(
         self,
         sdata: SpatialData,
         image_name: str,
         coordinate_system: str,
         *,
         channel_names: Sequence[str],
-    ) -> list[ImageLayerBinding]:
-        """Return valid overlay bindings in the viewer's current layer order."""
+    ) -> tuple[ImageLayerBinding | None, list[ImageLayerBinding]]:
+        """Partition valid image bindings in the viewer's current layer order."""
         adapter = self._app_state.viewer_adapter
-        bindings: list[ImageLayerBinding] = []
+        stack_bindings: list[ImageLayerBinding] = []
+        overlay_bindings: list[ImageLayerBinding] = []
         seen_channel_indices: set[int] = set()
 
         for layer in adapter.get_loaded_image_layers(sdata, image_name):
@@ -1057,6 +1064,9 @@ class ViewerWidget(QWidget):
             if binding.element_name != image_name:
                 continue
             if binding.coordinate_system != coordinate_system:
+                continue
+            if binding.image_display_mode == "stack":
+                stack_bindings.append(binding)
                 continue
             if binding.image_display_mode != "overlay":
                 continue
@@ -1082,9 +1092,21 @@ class ViewerWidget(QWidget):
                 )
 
             seen_channel_indices.add(channel_index)
-            bindings.append(binding)
+            overlay_bindings.append(binding)
 
-        return bindings
+        if len(stack_bindings) > 1:
+            raise ValueError(
+                f"Found multiple live stack bindings for image `{image_name}` "
+                f"and coordinate system `{coordinate_system}`."
+            )
+        if stack_bindings and overlay_bindings:
+            raise ValueError(
+                f"Image `{image_name}` cannot have both live stack and overlay bindings "
+                f"in coordinate system `{coordinate_system}`."
+            )
+
+        stack_binding = stack_bindings[0] if stack_bindings else None
+        return stack_binding, overlay_bindings
 
     def _find_image_card(self, image_name: str) -> _ImageCardWidget | None:
         return next(
@@ -1104,7 +1126,7 @@ class ViewerWidget(QWidget):
         if card is None or sdata is None or not coordinate_system:
             return None
 
-        bindings = self._get_live_overlay_bindings(
+        _, bindings = self._get_live_image_bindings(
             sdata,
             image_name,
             coordinate_system,
@@ -1140,7 +1162,7 @@ class ViewerWidget(QWidget):
             return
 
         if binding is None:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
             return
 
         layer = binding.layer
@@ -1183,7 +1205,7 @@ class ViewerWidget(QWidget):
             return
 
         if binding is None:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
             return
 
         normalized_color = _normalized_color_or_none(color)
@@ -1232,7 +1254,7 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            live_bindings = self._get_live_overlay_bindings(
+            _, live_bindings = self._get_live_image_bindings(
                 sdata,
                 image_name,
                 coordinate_system,
@@ -1243,7 +1265,10 @@ class ViewerWidget(QWidget):
                 None,
             )
             if existing_binding is not None:
-                card.set_loaded_overlay_bindings(live_bindings)
+                card.set_loaded_image_bindings(
+                    stack_binding=None,
+                    overlay_bindings=live_bindings,
+                )
                 card.finish_overlay_channel_add(channel_index, succeeded=True)
                 self._app_state.viewer_adapter.activate_layer(existing_binding.layer)
                 return
@@ -1315,7 +1340,7 @@ class ViewerWidget(QWidget):
             return
 
         if removed_layer is None:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
             return
 
         card.finish_overlay_channel_remove(channel_index, succeeded=True)
@@ -1339,7 +1364,7 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            bindings = self._get_live_overlay_bindings(
+            _, bindings = self._get_live_image_bindings(
                 sdata,
                 image_name,
                 coordinate_system,
@@ -1369,7 +1394,7 @@ class ViewerWidget(QWidget):
             return
 
         if missing_target:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
         if bindings:
             self._set_action_feedback(
                 title="Image Overlay Updated",

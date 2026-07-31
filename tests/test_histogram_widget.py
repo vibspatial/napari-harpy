@@ -829,6 +829,22 @@ def test_histogram_widget_syncs_viewer_color_from_matching_overlay_before_calcul
     assert widget._histogram_controller.result_for_card(card_id) is None
 
 
+def test_histogram_widget_ignores_registered_overlay_that_is_not_loaded(
+    qtbot,
+    sdata_blobs: SpatialData,
+) -> None:
+    viewer = LayerListDummyViewer()
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    unloaded_layer = make_overlay_layer()
+    register_overlay_layer(widget, unloaded_layer, sdata_blobs)
+
+    _card_id, card = add_valid_histogram_card(widget)
+
+    assert card.overlay_row is None
+    assert not card.pending_overlay_controls.isHidden()
+    assert card.load_overlay_button.isEnabled()
+
+
 def test_histogram_widget_keeps_viewer_color_for_duplicate_matching_overlay_layers(
     qtbot,
     sdata_blobs: SpatialData,
@@ -1307,7 +1323,7 @@ def test_histogram_widget_does_not_duplicate_layer_callbacks_after_repeated_over
     calculate_card(widget, qtbot, card)
 
     for _ in range(3):
-        widget.app_state.viewer_adapter.image_overlay_layers_changed.emit()
+        widget.app_state.viewer_adapter.image_layers_changed.emit()
 
     contrast_updates: list[tuple[float, float] | None] = []
     original_set_contrast_limits = card.plot_widget.set_contrast_limits

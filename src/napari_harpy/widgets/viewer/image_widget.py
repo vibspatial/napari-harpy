@@ -76,9 +76,9 @@ class _ImageCardWidget(QFrame):
     ``ViewerWidget`` validates the active context and performs each mutation.
     Visibility and color requests then return through the live layer's native
     property event directly to the selected row. Completed membership changes
-    instead return through
-    ``ViewerAdapter.image_overlay_layers_changed``; the Viewer re-queries live
-    bindings and calls ``set_loaded_overlay_bindings`` to reconcile this card.
+    instead return through ``ViewerAdapter.image_layers_changed``; the Viewer
+    re-queries complete live image membership and calls
+    ``set_loaded_image_bindings`` to reconcile this card atomically.
     """
 
     add_update_requested = Signal(object)
@@ -102,6 +102,8 @@ class _ImageCardWidget(QFrame):
         self._selected_rows_by_channel_index: dict[int, _OverlayChannelRow] = {}
         self._selected_channel_order: list[int] = []
         self._last_used_overlay_colors: dict[int, str] = {}
+        self._loaded_stack_binding: ImageLayerBinding | None = None
+        self._membership_initialized = False
         self._membership_error: str | None = None
         self._channel_names_by_casefold: dict[str, list[tuple[int, str]]] = {}
         for channel_index, channel_name in enumerate(channel_names):
@@ -255,14 +257,32 @@ class _ImageCardWidget(QFrame):
         return tuple(row.channel_name for row in self.selected_overlay_rows)
 
     @property
+    def loaded_stack_binding(self) -> ImageLayerBinding | None:
+        return self._loaded_stack_binding
+
+    @property
     def available_channel_names(self) -> tuple[str, ...]:
         return tuple(self._channel_completer_model.stringList())
 
-    def set_loaded_overlay_bindings(self, bindings: Sequence[ImageLayerBinding]) -> None:
-        """Reconcile selected-only rows against complete live overlay membership."""
-        ordered_bindings: list[ImageLayerBinding] = []
+    def set_loaded_image_bindings(
+        self,
+        *,
+        stack_binding: ImageLayerBinding | None,
+        overlay_bindings: Sequence[ImageLayerBinding],
+    ) -> None:
+        """Reconcile one validated, complete live image-membership snapshot."""
+        ordered_bindings = tuple(overlay_bindings)
+        if stack_binding is not None and stack_binding.image_display_mode != "stack":
+            raise ValueError("The stack binding must have image display mode `stack`.")
+        if stack_binding is not None and ordered_bindings:
+            raise ValueError(
+                f"Image `{self.image_name}` cannot have both stack and overlay bindings."
+            )
+
         seen_channel_indices: set[int] = set()
-        for binding in bindings:
+        for binding in ordered_bindings:
+            if binding.image_display_mode != "overlay":
+                raise ValueError("Every overlay binding must have image display mode `overlay`.")
             channel_index = _binding_channel_index(binding)
             _binding_channel_name(binding)
             if channel_index in seen_channel_indices:
@@ -271,9 +291,13 @@ class _ImageCardWidget(QFrame):
                     f"and channel index {channel_index}."
                 )
             seen_channel_indices.add(channel_index)
-            ordered_bindings.append(binding)
 
-        self.set_overlay_membership_error(None)
+        was_initialized = self._membership_initialized
+        had_stack = self._loaded_stack_binding is not None
+        had_overlays = bool(self._selected_channel_order)
+
+        self._loaded_stack_binding = stack_binding
+        self.set_image_membership_error(None)
         next_channel_indices = [_binding_channel_index(binding) for binding in ordered_bindings]
         next_bindings_by_channel_index = {_binding_channel_index(binding): binding for binding in ordered_bindings}
 
@@ -313,6 +337,16 @@ class _ImageCardWidget(QFrame):
         self._refresh_search_model()
         self._refresh_membership_presentation()
 
+        has_stack = stack_binding is not None
+        has_overlays = bool(next_channel_indices)
+        if not was_initialized:
+            self._select_display_mode("overlay" if has_overlays else "stack")
+        elif not had_overlays and has_overlays:
+            self._select_display_mode("overlay")
+        elif not had_stack and has_stack:
+            self._select_display_mode("stack")
+        self._membership_initialized = True
+
     def refresh_overlay_channel_presentation(
         self,
         channel_index: int,
@@ -329,7 +363,7 @@ class _ImageCardWidget(QFrame):
         for row in self._selected_rows_by_channel_index.values():
             row.dispose()
 
-    def set_overlay_membership_error(self, message: str | None) -> None:
+    def set_image_membership_error(self, message: str | None) -> None:
         """Set or clear a card-scoped binding invariant error."""
         self._membership_error = message
         self._refresh_overlay_availability()
@@ -368,6 +402,7 @@ class _ImageCardWidget(QFrame):
             warning = self._membership_error
 
         is_available = warning is None
+        self.add_update_button.setEnabled(self._membership_error is None)
         self.overlay_toggle.setEnabled(self.channel_error is None and bool(self.channel_names))
         self.channel_search_input.setEnabled(is_available)
         self.remove_all_channels_button.setEnabled(is_available and bool(self._selected_channel_order))
@@ -377,6 +412,11 @@ class _ImageCardWidget(QFrame):
         self.channel_warning_label.setText(warning or "")
         self.channel_warning_label.setToolTip(format_tooltip(warning) if warning else "")
         self.channel_warning_label.setVisible(warning is not None)
+
+    def _select_display_mode(self, mode: ImageDisplayMode) -> None:
+        toggle = self.overlay_toggle if mode == "overlay" else self.stack_toggle
+        if not toggle.isChecked():
+            toggle.setChecked(True)
 
     def _on_stack_toggled(self, checked: bool) -> None:
         if checked:

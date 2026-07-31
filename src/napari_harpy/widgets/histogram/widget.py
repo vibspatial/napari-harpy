@@ -246,8 +246,10 @@ class _HistogramCard:
 class HistogramWidget(QWidget):
     """Qt shell for explicit per-card image histogram and overlay requests.
 
-    Adapter ``image_overlay_layers_changed`` events trigger card membership
-    reconciliation. Each live ``_OverlayChannelRow`` listens directly to its
+    Adapter ``image_layers_changed`` events trigger card membership
+    reconciliation. Histogram intersects registry matches with layers currently
+    present in napari, and ignores stack-only membership. Each live
+    ``_OverlayChannelRow`` listens directly to its
     bound layer's visibility and colormap events. User intent signals are handled
     by ``HistogramWidget``, which validates the current live binding before
     changing its visibility or colormap, or requesting its removal through
@@ -326,7 +328,7 @@ class HistogramWidget(QWidget):
 
         self._app_state.sdata_changed.connect(self._on_sdata_changed)
         self._app_state.coordinate_system_changed.connect(self._on_coordinate_system_changed)
-        self._app_state.viewer_adapter.image_overlay_layers_changed.connect(self._on_image_overlay_layers_changed)
+        self._app_state.viewer_adapter.image_layers_changed.connect(self._on_image_layers_changed)
         self._update_empty_state()
 
     @property
@@ -1154,7 +1156,7 @@ class HistogramWidget(QWidget):
         self._clear_card_contrast_sync(histogram_card)
         histogram_card.plot_widget.clear_histogram()
 
-    def _on_image_overlay_layers_changed(self) -> None:
+    def _on_image_layers_changed(self) -> None:
         for histogram_card in self._cards.values():
             self._refresh_card_overlay_state(histogram_card)
             result = self._histogram_controller.result_for_card(histogram_card.card_id)
@@ -1171,7 +1173,15 @@ class HistogramWidget(QWidget):
                 message=validation_message or "Choose a valid image channel.",
             )
 
-        matches = self._app_state.viewer_adapter.layer_bindings.find_bindings(
+        adapter = self._app_state.viewer_adapter
+        live_layer_ids = {
+            id(layer)
+            for layer in adapter.get_loaded_image_layers(
+                sdata,
+                target.image_name,
+            )
+        }
+        matches = adapter.layer_bindings.find_bindings(
             sdata=sdata,
             element_type="image",
             element_name=target.image_name,
@@ -1179,7 +1189,11 @@ class HistogramWidget(QWidget):
             image_display_mode="overlay",
             channel_name=target.channel_name,
         )
-        image_bindings = [binding for binding in matches if isinstance(binding, ImageLayerBinding)]
+        image_bindings = [
+            binding
+            for binding in matches
+            if isinstance(binding, ImageLayerBinding) and id(binding.layer) in live_layer_ids
+        ]
         if not image_bindings:
             return _HistogramOverlayMatch(state="missing")
         if len(image_bindings) > 1:
