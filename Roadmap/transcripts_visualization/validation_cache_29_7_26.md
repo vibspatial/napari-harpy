@@ -358,6 +358,16 @@ value: string
 n_points: uint64
 ```
 
+`ValidatedPointsSource` describes the source version identified by its
+`source_signature`; it is not a permanent assertion that the physical files
+remain unchanged. At construction handoff, the cache builder freshly recomputes
+the metadata-only signature before staging and again immediately before
+publication. While both guards match, the builder trusts the validated content
+facts and does not reconstruct `ValidatedPointsSource`, repeat the content scan,
+or independently recompute source row counts, bounds, and normalized value
+counts from point data. The parent roadmap specifies the complete construction
+flow.
+
 Performance timings, transient counters, machine information, and validation
 generation timestamps are not fields of `ValidatedPointsSource`, are not
 returned in a public report wrapper, and are not persisted as validation
@@ -1101,12 +1111,34 @@ Changing these later may invalidate built caches.
 
 Approve:
 
+- the public validation API and private intermediate boundaries;
 - build-ready validated source;
 - value normalization and value-table contract;
-- error semantics;
-- measured Xenium performance.
+- source-signature and internal point-identity integration;
+- error semantics and focused correctness tests.
 
-Only after Gate C should exact-level cache construction begin.
+Gate C freezes the functional validation contract. V6 may benchmark, profile,
+harden, and optimize the implementation without casually changing those
+semantics. A V6 finding that requires a functional contract change explicitly
+reopens the affected Gate C decision.
+
+### Gate D: after V6
+
+Approve:
+
+- the expected Xenium source facts;
+- measured initial-footer, scan, final-footer, total-time, and peak-memory
+  behavior;
+- confirmation that batch and materialization bounds hold on the acceptance
+  source;
+- a profile-backed decision for any missed performance hypothesis;
+- readiness to begin the exact-level cache writer.
+
+The performance hypotheses are evaluation targets, not automatic pass/fail
+thresholds. Gate D records whether to optimize, accept the measured behavior, or
+revise a hypothesis with supporting measurements.
+
+Only after Gate D should exact-level cache construction begin.
 
 ## Phase 0 definition of done
 

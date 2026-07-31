@@ -996,6 +996,69 @@ measurements, and generation timestamps. It is not a cryptographic hash of
 every Parquet data page, so the UI and API must not claim stronger guarantees
 than it provides.
 
+### Construction-time source-signature guards
+
+Cache construction trusts the content facts already established by
+`ValidatedPointsSource` when the current source signature matches its
+`source_signature`. The builder does not reconstruct `ValidatedPointsSource`,
+repeat the bounded content scan, or independently recompute source row counts,
+bounds, and normalized value counts from point data.
+
+`_read_current_source_signature(validated)` is metadata-only. It freshly
+discovers the current Parquet files, reads their filesystem and footer metadata,
+constructs `_FooterPointsSource`, and applies the versioned signature method. It
+does not decode the `x`, `y`, or `value` data pages and must not reuse the stale
+footer object retained from validation.
+
+The initial builder flow is:
+
+```python
+expected_signature = validated.source_signature
+
+signature_at_start = _read_current_source_signature(validated)
+
+if signature_at_start != expected_signature:
+    raise PointsSourceValidationError(
+        "The points source changed after it was validated."
+    )
+
+staging = create_staging_cache()
+
+try:
+    build_exact_level(validated, staging)
+    build_sampled_levels(staging)
+    write_metadata_and_manifest(staging)
+    validate_staged_cache(staging)
+
+    signature_before_publish = _read_current_source_signature(
+        validated
+    )
+
+    if signature_before_publish != expected_signature:
+        raise PointsSourceValidationError(
+            "The points source changed while the cache was being built."
+        )
+
+    write_completion_marker(staging)
+    publish_staged_cache(staging)
+
+except Exception:
+    reject_incomplete_staging_cache(staging)
+    raise
+```
+
+Both comparisons use the original signature stored in
+`ValidatedPointsSource`, not merely the two freshly calculated signatures. A
+failure to inspect the current source is also a failed guard. The initial guard
+runs before staging work begins. The final guard runs after staged-cache
+validation and immediately before the completion marker and atomic publication.
+
+A failed guard never publishes the staged generation and preserves any existing
+completed cache. Normal staged-cache validation still checks the cache's own
+metadata, manifest, files, row groups, and writer accounting. It does not repeat
+source-content validation or rebuild source row-count, bounds, and value-count
+aggregates from the Parquet point data.
+
 The reader reports at least:
 
 ```text
@@ -1008,6 +1071,10 @@ ABSENT
 
 A cache generation id is mandatory even when source freshness is
 `UNVERIFIABLE`.
+
+After publication, the reader uses the same metadata-only signature method to
+classify a later source change as `STALE`. This runtime freshness check does not
+replace the two construction-time guards.
 
 ### Grid convention
 
@@ -1452,6 +1519,17 @@ Exit criteria:
   values;
 - repeated validation produces the same ordered inventory and source signature.
 
+The Phase 0 review sequence is defined by the validation roadmap:
+
+- Gate C follows V5 and freezes the functional validation contract;
+- V6 benchmarks, profiles, and hardens that implementation on the Xenium
+  acceptance source;
+- Gate D follows V6 and is the go/no-go decision for beginning the exact-level
+  cache writer.
+
+A V6 finding that requires a functional semantic change reopens the affected
+Gate C decision. Phase 1 does not begin before Gate D.
+
 ### Phase 1: persistent cache construction
 
 Begin with an internal exact-level performance spike:
@@ -1467,6 +1545,8 @@ Then complete the cache builder:
 
 - define the new dataclasses and cache schema in the new package;
 - accept the returned `ValidatedPointsSource` as the cache-construction input;
+- freshly recompute the metadata-only source signature and require it to match
+  the validated signature before creating the staged cache;
 - generate a fresh cache-generation id and consume the validated source
   signature;
 - generate and propagate stable internal `point_id` values;
@@ -1479,6 +1559,8 @@ Then complete the cache builder:
 - enforce the global coarsest-level budget;
 - write metadata and manifest;
 - validate the complete staged cache;
+- freshly recompute the metadata-only source signature again and require it to
+  match the validated signature immediately before completion and publication;
 - publish with completion marker and atomic replacement;
 - expose the public backed-points-element builder.
 
@@ -1491,6 +1573,10 @@ Exit criteria:
 - every sampled level is deterministic and nested;
 - coarsest total never exceeds the overview budget;
 - manifest accounting matches physical row groups;
+- the builder performs no second source-content validation pass and trusts
+  `ValidatedPointsSource` while both source-signature guards pass;
+- a source-signature mismatch before or during construction publishes nothing
+  and preserves any existing completed cache;
 - rebuilding cannot expose an incomplete cache;
 - building never writes an incomplete cache at the final visible path;
 - full build time, peak memory, level sizes, and fragmentation are recorded on
@@ -1647,9 +1733,12 @@ Test:
 
 Test:
 
-- invalid and empty sources;
-- missing/non-finite coordinates;
-- missing/empty values;
+- source-signature mismatch before staging begins;
+- source-signature mismatch immediately before publication;
+- footer-inspection failure at either construction guard;
+- failed guards preserve the existing completed cache and never expose staging;
+- construction guards perform no point-data scan or source-content
+  reconciliation;
 - stable internal point ids;
 - tile-boundary coordinates;
 - deterministic value ids;
@@ -1661,7 +1750,7 @@ Test:
 - dense-tile sharding;
 - cross-partition tile co-location semantics;
 - manifest accounting;
-- source signature;
+- metadata-only source-signature guards;
 - first build and rebuild rollback;
 - incomplete-cache rejection.
 
@@ -1813,9 +1902,11 @@ The next work should be:
 3. implement explicit SpatialData-to-Parquet resolution;
 4. implement footer-first validation and bounded PyArrow content scans;
 5. implement the versioned source signature and internal point-identity policy;
-6. validate and benchmark the Xenium acceptance dataset;
-7. review the validation contract before beginning the exact-level writer;
-8. then run the exact tile-size/layout benchmark and sampler work in Phase 1.
+6. complete V5 and freeze the functional validation contract at Gate C;
+7. run the V6 Xenium benchmark, profiling, and hardening work;
+8. make the Gate D go/no-go decision for the exact-level writer;
+9. only after Gate D, run the exact tile-size/layout benchmark and sampler work
+   in Phase 1.
 
 This order addresses the decisions most likely to force a costly rewrite if
 they are deferred.
