@@ -405,7 +405,7 @@ whole-dataset render budget.
 The complete system has an offline construction side and a runtime side:
 
 ```text
-SpatialData points element + explicit Parquet path
+Backed SpatialData points element
                          │
                          ▼
               PointsSourceResolver
@@ -736,32 +736,36 @@ A representative model is:
 ```python
 @dataclass(frozen=True)
 class ValidatedPointsSource:
-    parquet_path: Path
-    parquet_files: tuple[ParquetSourceFile, ...]
-    x_column: str
-    y_column: str
-    value_column: str
-    row_count: int
-    partition_row_offsets: tuple[int, ...]
-    bounds: PointsBounds
+    source: ParquetPointsSource
+    fragments: tuple[ParquetSourceFragment, ...]
     selected_schema: pa.Schema
+    row_count: int
+    bounds: PointsBounds
     value_table: pa.Table
     source_signature: str
     source_signature_method: str
-    point_id_policy: str
+    value_normalization_method: str
+    point_id_policy: PointIdentityPolicy
 ```
 
 `selected_schema` contains only the caller-selected `x`, `y`, and `value` fields
 in canonical semantic order. Unselected source columns are not part of the
 build contract and need not match across fragments.
 
+The nested `source` retains the selected columns and canonical SpatialData
+identity without duplicating path state. Its `element_path` and `parquet_path`
+remain derived properties.
+
 The precise names may change during implementation, but the separation between
 an unresolved source and a validated immutable build input is required.
 
-### Explicit physical source
+### Canonical physical source
 
-The fast path receives or resolves the physical Parquet dataset explicitly. It
-does not reverse-engineer an arbitrary Dask expression graph.
+For the initial SpatialData contract, the resolver derives the physical
+Parquet dataset from the backed store path and points-element name. The
+resulting source description exposes that concrete path explicitly to the
+validator and builder. It does not reverse-engineer an arbitrary Dask
+expression graph.
 
 The intended API separation is:
 
@@ -795,11 +799,17 @@ The API does not accept a source transcript-id column. Validation establishes
 deterministic fragment offsets, and cache construction generates a Harpy-owned
 `uint64 point_id` from each fragment offset and row position.
 
-The resolver uses SpatialData to locate the element and its `points.parquet`
-dataset. A lower-level caller may supply both a Dask dataframe and explicit
-Parquet path, but the path remains authoritative for the fast build. Arbitrary
-filtered or transformed Dask dataframes are not silently assumed to map
-one-to-one to that physical dataset.
+For the supported SpatialData contract, the resolver derives the element path
+as `points/<points_name>` and its `points.parquet` dataset from the backed store
+path. `/` is not allowed inside `points_name`. `ParquetPointsSource` stores only
+`spatialdata_path`, `points_name`, and the selected columns; its `element_path`
+and `parquet_path` are derived properties. The former is the
+SpatialData-root-relative logical path, while the latter is the concrete
+filesystem path ending in `points.parquet`.
+
+A future standalone or non-canonical Parquet entry point should use a separate
+source contract. Arbitrary filtered or transformed Dask dataframes are not
+silently assumed to map one-to-one to the canonical physical dataset.
 
 ### Private footer source inspection
 
@@ -878,26 +888,28 @@ The logical cache layout is:
 
 ```text
 <sdata.zarr>/
-  <resolved points element path>/
-    points.parquet
-    transcripts_vis/
-      metadata.json
-      manifest.parquet
-      values.parquet
-      levels/
-        level_0/
-          part-00000.parquet
-          ...
-        level_1/
-          ...
-        level_n/
-          ...
-      COMPLETED
+  points/
+    <points_name>/
+      points.parquet
+      transcripts_vis/
+        metadata.json
+        manifest.parquet
+        values.parquet
+        levels/
+          level_0/
+            part-00000.parquet
+            ...
+          level_1/
+            ...
+          level_n/
+            ...
+        COMPLETED
 ```
 
-The points-element path must be resolved through SpatialData. Do not assume it
-is always `points/<points_name>`, and do not infer the physical Parquet path by
-inspecting Dask graph internals.
+`ParquetPointsSource.element_path` derives `points/<points_name>` from the
+validated name, and `ParquetPointsSource.parquet_path` derives
+`<spatialdata_path>/<element_path>/points.parquet`. Do not infer a different
+physical Parquet path by inspecting Dask graph internals.
 
 All paths stored in metadata or the manifest are relative to the cache root.
 

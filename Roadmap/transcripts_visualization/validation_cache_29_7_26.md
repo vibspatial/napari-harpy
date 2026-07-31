@@ -14,8 +14,8 @@ runtime store, scheduler, renderer, and napari integration. If this document
 conflicts with that roadmap, the parent roadmap wins.
 
 This roadmap covers only the work needed to turn a backed SpatialData points
-element and an explicit physical Parquet dataset into a validated, immutable
-input for cache construction.
+element and its canonically located physical Parquet dataset into a validated,
+immutable input for cache construction.
 
 It does not implement:
 
@@ -90,9 +90,12 @@ Internal models, normalized dictionaries, cache payloads, and sampling code use
 values as genes when that is the dataset semantics, but the cache core does not
 encode that assumption.
 
-### Explicit physical Parquet source
+### Canonical physical Parquet source
 
-The fast path receives or resolves the physical Parquet dataset explicitly.
+For the initial SpatialData contract, the resolver derives the physical
+Parquet dataset from the backed store path and points-element name. The
+resulting source description exposes that concrete path explicitly to the
+validator and builder.
 
 It does not inspect or reverse-engineer a Dask expression graph to discover
 files. A Dask dataframe may be retained as source context, but the validated
@@ -226,13 +229,35 @@ It validates non-empty, distinct column names without performing IO.
 class ParquetPointsSource:
     spatialdata_path: Path
     points_name: str
-    element_path: str
-    parquet_path: Path
     columns: PointColumnSelection
+
+    @property
+    def element_path(self) -> str:
+        return f"points/{self.points_name}"
+
+    @property
+    def parquet_path(self) -> Path:
+        return self.spatialdata_path / self.element_path / "points.parquet"
 ```
 
 This means that SpatialData resolution succeeded. It does not mean that the
 Parquet dataset or its row values are valid.
+
+The supported SpatialData storage contract places points at
+`points/<points_name>/points.parquet` and disallows `/` inside an element name.
+Store `spatialdata_path` and `points_name` once; derive both `element_path` and
+`parquet_path`. Do not retain independently supplied path state that could
+disagree with either input.
+
+`element_path` and `parquet_path` are related but have different meanings:
+`element_path` is the SpatialData-root-relative logical element path, such as
+`points/transcripts`; `parquet_path` is the concrete filesystem path to that
+element's Parquet dataset, such as
+`/data/example.zarr/points/transcripts/points.parquet`.
+
+Supporting a standalone or non-canonical Parquet dataset later requires a
+separate source contract rather than adding an independently configurable
+`parquet_path` to this SpatialData-specific model.
 
 Do not store mutable SpatialData or Dask objects in this immutable physical
 source description.
@@ -453,7 +478,7 @@ Create the new package and type boundaries without performing IO.
 ```text
 src/napari_harpy/core/multi_scale_cache_points/__init__.py
 src/napari_harpy/core/multi_scale_cache_points/models.py
-tests/test_multi_scale_cache_points_models.py
+tests/multi_scale_cache_points/test_models.py
 ```
 
 Add an errors module only if keeping the hierarchy in `models.py` creates
@@ -476,12 +501,9 @@ slice that uses it, once that slice has established its concrete requirements.
 
 ### Tests
 
-- frozen dataclass behavior;
 - non-empty and distinct selected column names;
 - immutable physical-source description without SpatialData or Dask objects;
-- minimal validation-error and source-resolution-error inheritance;
-- narrow package exports;
-- no import of Qt, napari, VisPy, or `_transcript_tiles`.
+- minimal validation-error and source-resolution-error inheritance.
 
 ### Exit criteria
 
@@ -501,7 +523,7 @@ dataset without scanning rows or inspecting Dask internals.
 
 ```text
 src/napari_harpy/core/multi_scale_cache_points/source.py
-tests/test_multi_scale_cache_points_source.py
+tests/multi_scale_cache_points/test_source.py
 ```
 
 ### Implement
@@ -511,8 +533,10 @@ tests/test_multi_scale_cache_points_source.py
 - require the named points element to exist;
 - validate that the element is represented as a Dask dataframe, without
   computing it;
-- use `sdata.locate_element(points)` and require one resolved element path;
-- construct the physical `points.parquet` path from the resolved element path;
+- derive `element_path` as `points/<points_name>` according to the supported
+  SpatialData points-storage contract;
+- reject a points name containing `/`;
+- use the derived `parquet_path` property as the physical dataset path;
 - validate requested column names against dataframe metadata as an early
   user-facing check;
 - return `ParquetPointsSource`;
@@ -526,7 +550,6 @@ the authoritative physical Parquet schema.
 - call `.compute()`;
 - enumerate Parquet files;
 - inspect Dask layers, expressions, tasks, or partition inputs;
-- assume the element path is `points/<points_name>`;
 - mutate the SpatialData object or dataframe.
 
 ### Tests
@@ -536,9 +559,9 @@ the authoritative physical Parquet schema.
 - unbacked SpatialData;
 - missing points element;
 - non-Dask points value;
-- no located path and multiple located paths;
+- derived `points/<points_name>` element path;
+- points name containing `/`;
 - missing dataframe metadata column;
-- custom nested resolved element path;
 - unsupported remote/non-local source;
 - proof that no Dask compute is called.
 
@@ -561,7 +584,7 @@ columns.
 
 ```text
 src/napari_harpy/core/multi_scale_cache_points/validation.py
-tests/test_multi_scale_cache_points_validation.py
+tests/multi_scale_cache_points/test_footer.py
 ```
 
 ### Implement
@@ -641,7 +664,7 @@ contract without scanning rows.
 
 ```text
 src/napari_harpy/core/multi_scale_cache_points/signature.py
-tests/test_multi_scale_cache_points_signature.py
+tests/multi_scale_cache_points/test_signature.py
 ```
 
 ### Source-signature method
@@ -788,6 +811,13 @@ levels.
 Perform all build-ready content validation in one bounded pass over `x`, `y`,
 and `value`.
 
+### Files
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/validation.py
+tests/multi_scale_cache_points/test_scan.py
+```
+
 ### Implementation shape
 
 Iterate deterministic fragments, row groups, and batches using PyArrow. The
@@ -878,6 +908,13 @@ Counters needed to enforce scan invariants remain internal and transient.
 Connect resolution, private footer inspection, signature construction, internal
 point identity, and fused scanning into the stable validation API that provides
 the input to cache construction.
+
+### Files
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/validation.py
+tests/multi_scale_cache_points/test_validation.py
+```
 
 ### Implement
 
@@ -1074,13 +1111,19 @@ unit suite. CI must not depend on a private local dataset.
 As slices are added, prefer:
 
 ```bash
-.venv/bin/pytest -q tests/test_multi_scale_cache_points_models.py
-.venv/bin/pytest -q tests/test_multi_scale_cache_points_source.py
-.venv/bin/pytest -q tests/test_multi_scale_cache_points_validation.py
-.venv/bin/pytest -q tests/test_multi_scale_cache_points_signature.py
+.venv/bin/pytest -q tests/multi_scale_cache_points/test_models.py
+.venv/bin/pytest -q tests/multi_scale_cache_points/test_source.py
+.venv/bin/pytest -q tests/multi_scale_cache_points/test_footer.py
+.venv/bin/pytest -q tests/multi_scale_cache_points/test_signature.py
+.venv/bin/pytest -q tests/multi_scale_cache_points/test_scan.py
+.venv/bin/pytest -q tests/multi_scale_cache_points/test_validation.py
 ```
 
 Run linting only on the added package and tests.
+
+Keep subsystem-specific shared fixtures in
+`tests/multi_scale_cache_points/conftest.py` when they become necessary. The
+directory does not need an `__init__.py`.
 
 The legacy `tests/test_transcript_tiles.py` remains independent. New validation
 tests must not import its implementation helpers.
