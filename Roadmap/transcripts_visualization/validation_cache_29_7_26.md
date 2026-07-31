@@ -453,21 +453,25 @@ without becoming public API.
 
 Each slice should be independently reviewable, tested, and mergeable.
 
-| Slice | Deliverable | Full row scan |
-|---|---|---:|
-| V0 | Package scaffold, immutable models, errors | No |
-| V1 | Explicit SpatialData-to-Parquet source resolution | No |
-| V2 | Private footer-backed source and schema validation | No |
-| V3 | Source signature and internal point-identity contract | No |
-| V4 | Fused coordinate/value content scan | Once |
-| V5 | Public validation orchestration and build-ready source | No additional scan |
-| V6 | Xenium benchmark, profiling, and hardening | Once per benchmark run |
+| Slice | Status | Deliverable | Full row scan |
+|---|---|---|---:|
+| V0 | Implemented | Package scaffold, immutable models, errors | No |
+| V1 | Next | Explicit SpatialData-to-Parquet source resolution | No |
+| V2 | Planned | Private footer-backed source and schema validation | No |
+| V3 | Planned | Source signature and internal point-identity contract | No |
+| V4 | Planned | Fused coordinate/value content scan | Once |
+| V5 | Planned | Public validation orchestration and build-ready source | No additional scan |
+| V6 | Planned | Xenium benchmark, profiling, and hardening | Once per benchmark run |
 
 V0 through V5 deliver the build-ready validation path. The API always uses the
 Harpy-owned internal point identity and does not accept a source identity
 column.
 
 ## Slice V0: scaffold immutable contracts
+
+Implementation status: **complete as of 2026-07-31**. The package scaffold,
+minimal immutable contracts, error hierarchy, and focused model tests are in
+place. V0 performs no SpatialData, Dask, filesystem, or Parquet IO.
 
 ### Goal
 
@@ -1206,13 +1210,15 @@ The validation block is complete when:
 
 ## Immediate next slice
 
-Begin with V0 only:
+Proceed with V1 only:
 
-1. create `core/multi_scale_cache_points/`;
-2. add the minimal immutable model and error contracts used by V1;
-3. keep `__init__.py` exports narrow;
-4. add focused headless model tests;
-5. review the contracts before implementing SpatialData or Parquet IO.
+1. add `core/multi_scale_cache_points/source.py`;
+2. resolve one backed local SpatialData points element without computing it or
+   inspecting its Dask graph;
+3. validate the selected columns against dataframe metadata;
+4. return the V0 `ParquetPointsSource` with canonical derived paths;
+5. test the supported path with the real `backed_sdata_blobs` fixture and keep
+   error-branch tests focused.
 
-Do not implement cache writing, sampling, rendering, or legacy-module migration
-in this slice.
+Do not enumerate Parquet fragments or implement footer validation, cache
+writing, sampling, rendering, or legacy-module migration in this slice.
