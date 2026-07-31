@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
-from qtpy.QtCore import QSignalBlocker, QSize, Qt
+from qtpy.QtCore import QSignalBlocker, QSize, QStringListModel, Qt
 from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
+    QCompleter,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -65,6 +66,7 @@ from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CALCULATE_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
+    COMPLETER_POPUP_STYLESHEET,
     DISCLOSURE_CHEVRON_SIZE,
     SECONDARY_BUTTON_STYLESHEET,
     WIDGET_ACCENT_BORDER_COLOR,
@@ -80,6 +82,7 @@ from napari_harpy.widgets.shared_styles import (
     WIDGET_TEXT_MUTED_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
     CompactComboBox,
+    CompleterPopupLineEdit,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
@@ -176,7 +179,7 @@ class _HistogramCard:
     ``_HistogramOverlayMatch.state``:
 
     - ``missing`` shows ``pending_overlay_controls``, containing the initial
-      color picker and Load overlay button;
+      color picker and `Load in viewer` button;
     - ``unique`` replaces the pending controls with ``overlay_row``, which
       presents visibility, channel name, colormap, and removal controls;
     - ``ambiguous`` replaces the editing controls with
@@ -190,6 +193,10 @@ class _HistogramCard:
     ``HistogramWidget`` owns membership reconciliation and validated layer
     mutations.
 
+    ``channel_search_input`` may contain transient search text.
+    ``accepted_channel_name`` is the persistent selection used for Histogram
+    and overlay target resolution; typing alone never changes that target.
+
     Contrast synchronization remains separate because it belongs to the
     calculated Histogram plot rather than the overlay row.
     """
@@ -198,7 +205,9 @@ class _HistogramCard:
     container: QFrame
     coordinate_system_combo: CompactComboBox
     image_combo: CompactComboBox
-    channel_combo: CompactComboBox
+    channel_search_input: CompleterPopupLineEdit
+    channel_completer_model: QStringListModel
+    accepted_channel_name: str | None
     viewer_controls: QWidget
     viewer_controls_layout: QVBoxLayout
     pending_overlay_controls: QWidget
@@ -227,6 +236,11 @@ class _HistogramCard:
     overlay_row: _OverlayChannelRow | None = None
     contrast_sync_state: _HistogramContrastSyncState | None = None
     contrast_sync_message: str | None = None
+
+    @property
+    def channel_names(self) -> tuple[str, ...]:
+        """Return the channels currently exposed by the completer model."""
+        return tuple(self.channel_completer_model.stringList())
 
 
 class HistogramWidget(QWidget):
@@ -425,16 +439,40 @@ class HistogramWidget(QWidget):
         image_combo.currentIndexChanged.connect(
             lambda _index, current_card_id=card_id: self._on_card_image_changed(current_card_id)
         )
-        channel_combo = self._create_combo(f"histogram_channel_combo_{card_id}", placeholder="Choose channel")
-        channel_combo.currentIndexChanged.connect(
-            lambda _index, current_card_id=card_id: self._on_card_channel_changed(current_card_id)
+        channel_search_input = CompleterPopupLineEdit()
+        channel_search_input.setObjectName(f"histogram_channel_search_input_{card_id}")
+        channel_search_input.setPlaceholderText("Search or select channel")
+        channel_search_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
+        channel_search_input.setMinimumWidth(0)
+        channel_search_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        channel_search_input.set_completion_popup_on_entry_enabled(True)
+
+        channel_completer_model = QStringListModel(channel_search_input)
+        channel_completer = QCompleter(channel_completer_model, channel_search_input)
+        channel_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        channel_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        channel_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        channel_completer.setMaxVisibleItems(10)
+        channel_completer.popup().setStyleSheet(COMPLETER_POPUP_STYLESHEET)
+        channel_search_input.setCompleter(channel_completer)
+        channel_completer.activated[str].connect(
+            lambda text, current_card_id=card_id: self._accept_card_channel_text(current_card_id, text)
+        )
+        channel_search_input.returnPressed.connect(
+            lambda current_card_id=card_id, current_input=channel_search_input: self._accept_card_channel_text(
+                current_card_id,
+                current_input.text(),
+            )
+        )
+        channel_search_input.editingFinished.connect(
+            lambda current_card_id=card_id: self._restore_card_channel_text_by_id(current_card_id)
         )
 
         overlay_color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0])
         overlay_color_button.setObjectName(f"histogram_overlay_color_button_{card_id}")
         overlay_color_button.setEnabled(False)
 
-        load_overlay_button = QPushButton("Load overlay")
+        load_overlay_button = QPushButton("Load in viewer")
         load_overlay_button.setObjectName(f"histogram_load_overlay_button_{card_id}")
         load_overlay_button.setCursor(Qt.CursorShape.PointingHandCursor)
         load_overlay_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
@@ -478,7 +516,7 @@ class HistogramWidget(QWidget):
 
         form.addRow(create_form_label("Coordinate system"), coordinate_system_combo)
         form.addRow(create_form_label("Image"), image_combo)
-        form.addRow(create_form_label("Channel"), channel_combo)
+        form.addRow(create_form_label("Channel"), channel_search_input)
         form.addRow(create_form_label("Viewer"), viewer_controls)
 
         settings_toggle = QToolButton()
@@ -635,7 +673,9 @@ class HistogramWidget(QWidget):
             container=container,
             coordinate_system_combo=coordinate_system_combo,
             image_combo=image_combo,
-            channel_combo=channel_combo,
+            channel_search_input=channel_search_input,
+            channel_completer_model=channel_completer_model,
+            accepted_channel_name=None,
             viewer_controls=viewer_controls,
             viewer_controls_layout=viewer_controls_layout,
             pending_overlay_controls=pending_overlay_controls,
@@ -698,6 +738,7 @@ class HistogramWidget(QWidget):
 
     def _on_sdata_changed(self, _sdata: SpatialData | None) -> None:
         for histogram_card in self._cards.values():
+            self._dispose_card_overlay_row(histogram_card)
             self._refresh_card_selectors(histogram_card, select_default_scale=True)
             self._update_card_state(histogram_card.card_id)
 
@@ -714,6 +755,7 @@ class HistogramWidget(QWidget):
 
     def _on_card_coordinate_system_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
+        self._dispose_card_overlay_row(histogram_card)
         histogram_card.viewer_action_message = None
         self._refresh_card_image_options(histogram_card)
         self._refresh_card_channel_options(histogram_card)
@@ -722,16 +764,61 @@ class HistogramWidget(QWidget):
 
     def _on_card_image_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
+        self._dispose_card_overlay_row(histogram_card)
         histogram_card.viewer_action_message = None
         self._refresh_card_channel_options(histogram_card)
         self._refresh_card_scale_options(histogram_card, select_default=True)
         self._update_card_state(card_id)
 
-    def _on_card_channel_changed(self, card_id: str) -> None:
-        histogram_card = self._get_card(card_id)
+    def _accept_card_channel_text(self, card_id: str, text: str) -> None:
+        histogram_card = self._cards.get(card_id)
+        if histogram_card is None or not histogram_card.channel_search_input.isEnabled():
+            return
+
+        channel_name = self._resolve_card_channel_text(histogram_card, text)
+        if channel_name is None:
+            self._restore_card_channel_text(histogram_card)
+            return
+        if channel_name == histogram_card.accepted_channel_name:
+            histogram_card.channel_search_input.setText(channel_name)
+            return
+
+        # A row belongs to the previously accepted target. Disconnect it before
+        # changing target identity; reconciliation may construct a replacement.
+        self._dispose_card_overlay_row(histogram_card)
+        histogram_card.accepted_channel_name = channel_name
+        histogram_card.channel_search_input.setText(channel_name)
         histogram_card.viewer_action_message = None
         self._refresh_overlay_color_default(histogram_card)
         self._on_card_target_or_settings_changed(card_id)
+
+    @staticmethod
+    def _resolve_card_channel_text(histogram_card: _HistogramCard, text: str) -> str | None:
+        normalized_text = text.strip()
+        if not normalized_text:
+            return None
+
+        for channel_name in histogram_card.channel_names:
+            if channel_name == normalized_text:
+                return channel_name
+
+        matches = [
+            channel_name
+            for channel_name in histogram_card.channel_names
+            if channel_name.casefold() == normalized_text.casefold()
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _restore_card_channel_text_by_id(self, card_id: str) -> None:
+        histogram_card = self._cards.get(card_id)
+        if histogram_card is not None:
+            self._restore_card_channel_text(histogram_card)
+
+    @staticmethod
+    def _restore_card_channel_text(histogram_card: _HistogramCard) -> None:
+        accepted_text = histogram_card.accepted_channel_name or ""
+        if histogram_card.channel_search_input.text() != accepted_text:
+            histogram_card.channel_search_input.setText(accepted_text)
 
     def _on_card_target_or_settings_changed(self, card_id: str) -> None:
         histogram_card = self._get_card(card_id)
@@ -783,7 +870,6 @@ class HistogramWidget(QWidget):
     def _refresh_card_channel_options(self, histogram_card: _HistogramCard) -> None:
         sdata = self.selected_spatialdata
         image_name = self._current_text_data(histogram_card.image_combo)
-        current_channel_name = self._current_text_data(histogram_card.channel_combo)
         channel_names: list[str] = []
         channel_error: str | None = None
 
@@ -796,8 +882,16 @@ class HistogramWidget(QWidget):
                 if not channel_names:
                     channel_error = f"Image `{image_name}` does not expose channel names."
 
-        selected_channel_name = current_channel_name if current_channel_name in channel_names else None
-        self._set_combo_items(histogram_card.channel_combo, channel_names, selected_channel_name)
+        if (
+            histogram_card.accepted_channel_name is not None
+            and histogram_card.accepted_channel_name not in channel_names
+        ):
+            self._dispose_card_overlay_row(histogram_card)
+            histogram_card.accepted_channel_name = None
+
+        histogram_card.channel_completer_model.setStringList(channel_names)
+        histogram_card.channel_search_input.setEnabled(bool(channel_names) and channel_error is None)
+        self._restore_card_channel_text(histogram_card)
         self._card_channel_errors[histogram_card.card_id] = channel_error or ""
         self._refresh_overlay_color_default(histogram_card)
 
@@ -835,11 +929,12 @@ class HistogramWidget(QWidget):
         self._refresh_settings_summary(histogram_card)
 
     def _refresh_overlay_color_default(self, histogram_card: _HistogramCard) -> None:
-        channel_index = histogram_card.channel_combo.currentIndex()
-        if channel_index < 0:
+        channel_name = histogram_card.accepted_channel_name
+        if channel_name is None:
             histogram_card.overlay_color_button.set_color(DEFAULT_OVERLAY_COLORS[0])
             return
 
+        channel_index = histogram_card.channel_names.index(channel_name)
         histogram_card.overlay_color_button.set_color(
             DEFAULT_OVERLAY_COLORS[channel_index % len(DEFAULT_OVERLAY_COLORS)]
         )
@@ -1524,7 +1619,7 @@ class HistogramWidget(QWidget):
         if channel_error:
             return None, channel_error
 
-        channel_name = self._current_text_data(histogram_card.channel_combo)
+        channel_name = histogram_card.accepted_channel_name
         if channel_name is None:
             return None, "Choose a channel."
 

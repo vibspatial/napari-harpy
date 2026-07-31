@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from napari.layers import Image
 from qtpy.QtCore import QObject, Qt, Signal
-from qtpy.QtWidgets import QComboBox, QLabel, QWidget
+from qtpy.QtWidgets import QComboBox, QCompleter, QLabel, QWidget
 from spatialdata import SpatialData
 
 import napari_harpy.core.histogram as histogram_module
@@ -116,6 +116,12 @@ def set_combo_data(combo: QComboBox, data: str) -> None:
     raise AssertionError(f"Combo data {data!r} is not available.")
 
 
+def accept_channel(card, channel_name: str) -> None:
+    card.channel_search_input.setText(channel_name)
+    card.channel_search_input.returnPressed.emit()
+    assert card.accepted_channel_name == channel_name
+
+
 def tooltip_text(widget) -> str:
     return unescape(widget.toolTip()).replace("&#8203;", "").replace("\u200b", "")
 
@@ -139,7 +145,7 @@ def add_valid_histogram_card(widget: HistogramWidget) -> tuple[str, object]:
     card_id = widget.add_histogram_card()
     card = widget._cards[card_id]
     set_combo_data(card.image_combo, "blobs_image")
-    set_combo_data(card.channel_combo, "0")
+    accept_channel(card, "0")
     return card_id, card
 
 
@@ -274,7 +280,7 @@ def test_histogram_cards_can_be_added_and_removed_without_mutating_sdata(qtbot, 
     assert widget.findChild(QWidget, f"histogram_viewer_controls_{card_id}").styleSheet() == (
         histogram_widget_module._CARD_SUBCONTAINER_STYLESHEET
     )
-    assert card.load_overlay_button.text() == "Load overlay"
+    assert card.load_overlay_button.text() == "Load in viewer"
     assert card.calculate_button.text() == "Show histogram"
     assert card.sync_percentiles_button.text() == "Sync contrast limits"
     assert card.sync_percentiles_button.styleSheet() == histogram_widget_module.CALCULATE_BUTTON_STYLESHEET
@@ -307,7 +313,7 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
 
     assert card.coordinate_system_combo.currentText() == "global"
     assert combo_texts(card.image_combo) == ["blobs_image", "blobs_multiscale_image"]
-    assert combo_texts(card.channel_combo) == ["0", "1", "2"]
+    assert card.channel_names == ("0", "1", "2")
     assert card.calculate_button.isEnabled()
     assert card.calculate_button.styleSheet() == histogram_widget_module.CALCULATE_BUTTON_STYLESHEET
     assert not card.sync_percentiles_button.isEnabled()
@@ -334,6 +340,88 @@ def test_histogram_widget_populates_target_selectors_and_starts_controller_job(
     np.testing.assert_allclose(card.plot_widget._bar_item.opts["height"], np.array([2.0, 1.0]))
 
 
+def test_histogram_widget_channel_selector_uses_persistent_substring_completion(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    monkeypatch.setattr(
+        histogram_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda _sdata, _image_name: ["DAPI", "CD3", "PanCK"],
+    )
+    widget = make_widget_with_sdata(qtbot, sdata_blobs)
+    card_id = widget.add_histogram_card()
+    card = widget._cards[card_id]
+    set_combo_data(card.image_combo, "blobs_image")
+
+    completer = card.channel_search_input.completer()
+    assert completer is not None
+    assert completer.completionMode() == QCompleter.CompletionMode.PopupCompletion
+    assert completer.caseSensitivity() == Qt.CaseSensitivity.CaseInsensitive
+    assert completer.filterMode() == Qt.MatchFlag.MatchContains
+    assert completer.maxVisibleItems() == 10
+    assert card.channel_search_input._show_completion_popup_on_entry is True
+
+    completer.setCompletionPrefix("ap")
+    assert completer.completionCount() == 1
+    assert completer.currentCompletion() == "DAPI"
+
+    monkeypatch.setattr(
+        card.channel_search_input,
+        "clear_after_accepted_completion",
+        lambda _text: pytest.fail("Histogram selections must remain visible."),
+    )
+    completer.activated[str].emit("DAPI")
+
+    assert card.accepted_channel_name == "DAPI"
+    assert card.channel_search_input.text() == "DAPI"
+
+
+def test_histogram_widget_channel_target_changes_only_after_valid_acceptance(
+    qtbot,
+    monkeypatch,
+    sdata_blobs: SpatialData,
+) -> None:
+    monkeypatch.setattr(
+        histogram_widget_module,
+        "get_image_channel_names_from_sdata",
+        lambda _sdata, _image_name: ["DAPI", "dapi", "CD3"],
+    )
+    viewer = LayerListDummyViewer()
+    widget = make_widget_with_viewer_and_sdata(qtbot, viewer, sdata_blobs)
+    card_id = widget.add_histogram_card()
+    card = widget._cards[card_id]
+    set_combo_data(card.image_combo, "blobs_image")
+    accept_channel(card, "DAPI")
+
+    card.channel_search_input.setText("CD3")
+    target, error = widget._resolve_card_target(card)
+
+    assert error is None
+    assert target is not None
+    assert target.channel_name == "DAPI"
+
+    card.channel_search_input.editingFinished.emit()
+    assert card.channel_search_input.text() == "DAPI"
+
+    card.channel_search_input.setText("unknown")
+    card.channel_search_input.returnPressed.emit()
+    assert card.accepted_channel_name == "DAPI"
+    assert card.channel_search_input.text() == "DAPI"
+
+    card.channel_search_input.setText("DaPi")
+    card.channel_search_input.returnPressed.emit()
+    assert card.accepted_channel_name == "DAPI"
+    assert card.channel_search_input.text() == "DAPI"
+
+    card.channel_search_input.setText("cd3")
+    card.channel_search_input.returnPressed.emit()
+    assert card.accepted_channel_name == "CD3"
+    assert card.channel_search_input.text() == "CD3"
+    assert list(viewer.layers) == []
+
+
 def test_histogram_widget_passes_selected_multiscale_scale_to_controller_job(
     qtbot,
     sdata_blobs: SpatialData,
@@ -344,7 +432,7 @@ def test_histogram_widget_passes_selected_multiscale_scale_to_controller_job(
 
     card_id, card = add_valid_histogram_card(widget)
     set_combo_data(card.image_combo, "blobs_multiscale_image")
-    set_combo_data(card.channel_combo, "0")
+    accept_channel(card, "0")
     set_combo_data(card.scale_combo, "scale1")
 
     def capture_worker(job: HistogramJob) -> _DeferredWorker:
@@ -530,7 +618,8 @@ def test_histogram_widget_refresh_preserves_valid_target_and_clears_invalid_down
     widget._on_sdata_changed(sdata_blobs)
 
     assert card.image_combo.currentData() == "blobs_image"
-    assert card.channel_combo.currentData() == "0"
+    assert card.accepted_channel_name == "0"
+    assert card.channel_search_input.text() == "0"
 
     monkeypatch.setattr(
         histogram_widget_module,
@@ -548,7 +637,8 @@ def test_histogram_widget_refresh_preserves_valid_target_and_clears_invalid_down
     widget._on_sdata_changed(sdata_blobs)
 
     assert card.image_combo.currentIndex() == -1
-    assert card.channel_combo.currentIndex() == -1
+    assert card.accepted_channel_name is None
+    assert card.channel_search_input.text() == ""
     assert not card.calculate_button.isEnabled()
 
 
@@ -564,7 +654,8 @@ def test_histogram_widget_rejects_images_without_channel_names(
     card = widget._cards[card_id]
     set_combo_data(card.image_combo, "blobs_image")
 
-    assert card.channel_combo.count() == 0
+    assert card.channel_names == ()
+    assert not card.channel_search_input.isEnabled()
     assert not card.calculate_button.isEnabled()
     assert "does not expose channel names" in card.status_label.text()
 
@@ -787,10 +878,12 @@ def test_histogram_widget_shared_row_disconnects_when_target_changes(qtbot, sdat
     stale_row = card.overlay_row
     assert stale_row is not None
 
-    set_combo_data(card.channel_combo, "1")
+    accept_channel(card, "1")
     layer.colormap = "#123456"
 
+    assert list(viewer.layers) == [layer]
     assert card.overlay_row is None
+    assert not card.pending_overlay_controls.isHidden()
     assert stale_row.color_button.current_color == "#ABCDEF"
     assert card.overlay_color_button.current_color == "#FF00FF"
 
@@ -809,10 +902,11 @@ def test_histogram_widget_stale_row_intent_cannot_mutate_new_target(
     stale_row = card.overlay_row
     assert stale_row is not None
 
-    set_combo_data(card.channel_combo, "1")
+    accept_channel(card, "1")
 
     assert card.overlay_row is not None
     assert card.overlay_row.binding.layer is second_layer
+    assert list(viewer.layers) == [first_layer, second_layer]
 
     stale_row.visibility_change_requested.emit(0, False)
     stale_row.color_change_requested.emit(0, "#123456")
@@ -977,7 +1071,8 @@ def test_histogram_widget_shared_row_removes_only_its_overlay_and_returns_to_pen
     assert list(viewer.layers) == [sibling_layer]
     assert card.overlay_row is None
     assert not card.pending_overlay_controls.isHidden()
-    assert card.channel_combo.currentData() == "0"
+    assert card.accepted_channel_name == "0"
+    assert card.channel_search_input.text() == "0"
     assert card.overlay_color_button.current_color == "#ABCDEF"
     assert "Overlay removed from viewer." in card.status_label.text()
 
@@ -998,7 +1093,8 @@ def test_histogram_widget_napari_removal_returns_live_row_to_pending(
 
     assert card.overlay_row is None
     assert not card.pending_overlay_controls.isHidden()
-    assert card.channel_combo.currentData() == "0"
+    assert card.accepted_channel_name == "0"
+    assert card.channel_search_input.text() == "0"
     assert card.overlay_color_button.current_color == "#ABCDEF"
 
 
