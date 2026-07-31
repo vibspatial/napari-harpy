@@ -42,7 +42,7 @@ from napari_harpy.widgets.viewer.styles import CARD_TITLE_STYLESHEET, DETAIL_PAN
 _CHANNEL_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
 _SUBSECTION_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 11px; font-weight: 600;"
-_MAX_VISIBLE_OVERLAY_CHANNELS = 5
+_MAX_VISIBLE_OVERLAY_CHANNELS = 10
 
 
 class _ImageCardWidget(QFrame):
@@ -685,15 +685,25 @@ class _ImageCardWidget(QFrame):
     def _set_channel_scroll_height(self, channel_rows: list[QWidget]) -> None:
         visible_rows = channel_rows[:_MAX_VISIBLE_OVERLAY_CHANNELS]
         if not visible_rows:
-            self.channel_scroll_area.setMaximumHeight(0)
+            self.channel_list_widget.setMinimumHeight(0)
+            self.channel_scroll_area.setFixedHeight(0)
             return
 
-        visible_height = sum(row.sizeHint().height() for row in visible_rows)
-        visible_height += self.channel_list_layout.spacing() * max(0, len(visible_rows) - 1)
+        spacing = self.channel_list_layout.spacing()
         margins = self.channel_list_layout.contentsMargins()
-        visible_height += margins.top() + margins.bottom()
+        vertical_margins = margins.top() + margins.bottom()
+        content_height = sum(row.sizeHint().height() for row in channel_rows)
+        content_height += spacing * max(0, len(channel_rows) - 1)
+        content_height += vertical_margins
+        self.channel_list_widget.setMinimumHeight(content_height)
+
+        visible_height = sum(row.sizeHint().height() for row in visible_rows)
+        visible_height += spacing * max(0, len(visible_rows) - 1)
+        visible_height += vertical_margins
         visible_height += self.channel_scroll_area.frameWidth() * 2
-        self.channel_scroll_area.setMaximumHeight(visible_height)
+        # A maximum alone allows the parent layout to compress the viewport and
+        # introduce a scrollbar before the configured row cap is reached.
+        self.channel_scroll_area.setFixedHeight(visible_height)
 
     def _initial_color_for_channel(self, channel_index: int) -> str:
         cached_color = self._last_used_overlay_colors.get(channel_index)

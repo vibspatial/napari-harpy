@@ -1666,6 +1666,49 @@ def test_viewer_widget_overlay_composer_keeps_many_channels_searchable(qtbot, mo
     assert image_card.channel_search_input.completer().completionMode() == (QCompleter.CompletionMode.PopupCompletion)
 
 
+def test_image_card_overlay_viewport_grows_through_ten_rows_then_scrolls(qtbot) -> None:
+    channel_names = [f"channel_{index}" for index in range(12)]
+    bindings = [
+        ImageLayerBinding(
+            layer=Image(np.zeros((8, 8))),
+            element_name="image",
+            coordinate_system="global",
+            sdata_id=1,
+            image_display_mode="overlay",
+            channel_index=index,
+            channel_name=channel_name,
+        )
+        for index, channel_name in enumerate(channel_names)
+    ]
+    card = _ImageCardWidget(
+        image_name="image",
+        channel_names=channel_names,
+    )
+    qtbot.addWidget(card)
+    card.show()
+
+    viewport_heights: list[int] = []
+    for channel_count in (1, 3, 10):
+        card.set_loaded_image_bindings(
+            stack_binding=None,
+            overlay_bindings=bindings[:channel_count],
+        )
+        qtbot.wait(1)
+        viewport_heights.append(card.channel_scroll_area.height())
+
+    assert viewport_heights[0] < viewport_heights[1] < viewport_heights[2]
+    assert card.channel_scroll_area.verticalScrollBar().maximum() == 0
+
+    card.set_loaded_image_bindings(
+        stack_binding=None,
+        overlay_bindings=bindings[:11],
+    )
+    qtbot.wait(1)
+
+    assert card.channel_scroll_area.height() == viewport_heights[2]
+    assert card.channel_scroll_area.verticalScrollBar().maximum() > 0
+
+
 def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
