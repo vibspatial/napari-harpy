@@ -456,8 +456,8 @@ Each slice should be independently reviewable, tested, and mergeable.
 | Slice | Status | Deliverable | Full row scan |
 |---|---|---|---:|
 | V0 | Implemented | Package scaffold, immutable models, errors | No |
-| V1 | Next | Explicit SpatialData-to-Parquet source resolution | No |
-| V2 | Planned | Private footer-backed source and schema validation | No |
+| V1 | Implemented | Explicit SpatialData-to-Parquet source resolution | No |
+| V2 | Next | Private footer-backed source and schema validation | No |
 | V3 | Planned | Source signature and internal point-identity contract | No |
 | V4 | Planned | Fused coordinate/value content scan | Once |
 | V5 | Planned | Public validation orchestration and build-ready source | No additional scan |
@@ -518,6 +518,11 @@ slice that uses it, once that slice has established its concrete requirements.
 
 ## Slice V1: explicit SpatialData source resolution
 
+Implementation status: **complete as of 2026-07-31**. The resolver accepts a
+backed local SpatialData points element, validates selected Dask metadata
+columns, and returns the V0 `ParquetPointsSource` without computing rows,
+inspecting Dask graphs, or opening Parquet files.
+
 ### Goal
 
 Resolve one backed SpatialData points element to a physical local Parquet
@@ -558,16 +563,15 @@ the authoritative physical Parquet schema.
 
 ### Tests
 
-- valid backed local SpatialData points element;
-- default and explicitly selected columns;
-- unbacked SpatialData;
-- missing points element;
-- non-Dask points value;
-- derived `points/<points_name>` element path;
-- points name containing `/`;
-- missing dataframe metadata column;
-- unsupported remote/non-local source;
-- proof that no Dask compute is called.
+- resolve `blobs_points` from the real `backed_sdata_blobs` fixture with
+  `value="genes"`, and verify the returned contract and canonical Parquet path;
+- reject an unbacked SpatialData object;
+- reject an unknown points element;
+- reject a missing selected column.
+
+These tests cover Harpy's resolver behavior. They do not retest SpatialData's
+backing, path, or points-container API, and they do not use mocks to prove the
+absence of `.compute()` calls.
 
 ### Exit criteria
 
@@ -1210,15 +1214,15 @@ The validation block is complete when:
 
 ## Immediate next slice
 
-Proceed with V1 only:
+Proceed with V2 only:
 
-1. add `core/multi_scale_cache_points/source.py`;
-2. resolve one backed local SpatialData points element without computing it or
-   inspecting its Dask graph;
-3. validate the selected columns against dataframe metadata;
-4. return the V0 `ParquetPointsSource` with canonical derived paths;
-5. test the supported path with the real `backed_sdata_blobs` fixture and keep
-   error-branch tests focused.
+1. add the private footer, fragment, row-group, and selected-schema contracts
+   when their concrete V2 requirements are implemented;
+2. enumerate the canonical Parquet dataset deterministically;
+3. validate the selected physical schemas and collect footer metadata without
+   decoding point columns;
+4. derive deterministic fragment offsets;
+5. add focused PyArrow fixtures for Harpy's footer and schema behavior.
 
-Do not enumerate Parquet fragments or implement footer validation, cache
-writing, sampling, rendering, or legacy-module migration in this slice.
+Do not scan selected data pages or implement signatures, point identities,
+cache writing, sampling, rendering, or legacy-module migration in this slice.
