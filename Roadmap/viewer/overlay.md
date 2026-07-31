@@ -2009,7 +2009,7 @@ color_change_requested = Signal(str)
 
 ## Slice 4c: Display-mode controls and removal of the transitional request
 
-Status: specified on 2026-07-31.
+Status: implemented on 2026-07-31.
 
 ### Goal
 
