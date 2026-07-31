@@ -425,6 +425,33 @@ def format_tooltip(message: str) -> str:
     return f"<qt><div style='color: {TOOLTIP_TEXT_COLOR}; max-width: 360px;'>{escaped_message}</div></qt>"
 
 
+class _ElidedLabel(QLabel):
+    """Single-line label that shows a tooltip only when the text is elided."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setMinimumWidth(0)
+        self.setMinimumHeight(36)
+        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._update_elided_text()
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self._update_elided_text()
+
+    def resizeEvent(self, event: object) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def _update_elided_text(self) -> None:
+        available_width = max(0, self.contentsRect().width())
+        elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
+        super().setText(elided_text)
+        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
+
+
 def format_feedback_text(message: str) -> str:
     """Return text with napari-friendly inline identifier styling."""
     return _INLINE_BACKTICK_RE.sub(r'"\1"', message)

@@ -19,10 +19,10 @@ from napari_harpy.widgets.shared_styles import (
     COMPLETER_POPUP_STYLESHEET,
     CompactComboBox,
     CompleterPopupLineEdit,
+    _ElidedLabel,
     build_input_control_stylesheet,
     create_form_label,
 )
-from napari_harpy.widgets.viewer.disclosure import _ElidedLabel
 from napari_harpy.widgets.viewer.styles import (
     CARD_TITLE_STYLESHEET,
     DETAIL_PANEL_STYLESHEET,

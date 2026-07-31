@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
-from qtpy.QtWidgets import QFrame, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFrame, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from napari_harpy.widgets.shared_styles import (
     DISCLOSURE_CHEVRON_SIZE,
@@ -38,33 +38,6 @@ _DISCLOSURE_BUTTON_STYLESHEET = (
 )
 _ELEMENT_DISCLOSURE_STYLESHEET = "QFrame[harpyViewerDisclosureRow='true'] {background: transparent; border: 0px;}"
 _DISCLOSURE_CONTENT_STYLESHEET = "QWidget { background: transparent; }"
-
-
-class _ElidedLabel(QLabel):
-    """Single-line label that shows a tooltip only when the text is elided."""
-
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._full_text = text
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.setMinimumWidth(0)
-        self.setMinimumHeight(36)
-        self.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._update_elided_text()
-
-    def set_full_text(self, text: str) -> None:
-        self._full_text = text
-        self._update_elided_text()
-
-    def resizeEvent(self, event: object) -> None:
-        super().resizeEvent(event)
-        self._update_elided_text()
-
-    def _update_elided_text(self) -> None:
-        available_width = max(0, self.contentsRect().width())
-        elided_text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, available_width)
-        super().setText(elided_text)
-        self.setToolTip(format_tooltip(self._full_text) if elided_text != self._full_text else "")
 
 
 class _ElidedToolButton(QToolButton):
