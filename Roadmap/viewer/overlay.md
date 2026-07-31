@@ -1697,6 +1697,22 @@ Mode selection is editor intent. Live bindings are layer truth. They may differ
 temporarily while the user has selected a replacement mode but has not yet
 loaded anything in that mode.
 
+### Representation replacement rule
+
+- The last successful load operation determines the live representation.
+- Selecting Stack or Overlay changes editor presentation only; it does not
+  mutate napari layers.
+- Successfully accepting the first overlay channel removes the matching Stack
+  and makes Overlay the live representation.
+- Successfully invoking `Load in viewer` in Stack mode removes matching
+  overlays and makes Stack the live representation.
+- A valid reconciled snapshot therefore contains either one Stack binding or
+  one or more Overlay bindings, never both.
+- Mixed live membership is an invariant error and is not resolved through
+  presentation precedence.
+- Removing the live representation does not automatically load or select the
+  other representation.
+
 ## Slice 4a: Unified image-membership lifecycle
 
 Status: specified on 2026-07-31.
@@ -1710,6 +1726,7 @@ reordering.
 ### Target files
 
 - `src/napari_harpy/viewer/adapter.py`
+- `src/napari_harpy/widgets/viewer/image_widget.py`
 - `src/napari_harpy/widgets/viewer/widget.py`
 - `src/napari_harpy/widgets/histogram/widget.py`
 - `tests/test_viewer_adapter.py`
@@ -1735,6 +1752,9 @@ reordering.
   retain an event payload that could become stale.
 - Histogram continues to select only overlay bindings. A stack-only
   invalidation may cause a harmless reconciliation no-op.
+- Histogram must intersect registry matches with image layers that are
+  currently loaded in napari. A registered but not yet inserted overlay binding
+  is not live and must not create a Histogram row.
 - Visibility, colormap, and contrast remain native napari property events.
   Do not add image-presentation signals to the adapter.
 
@@ -1750,16 +1770,59 @@ reordering.
   bindings.
 - Treat multiple matching stack bindings as an invariant error; do not silently
   select one or remove layers.
+- Treat simultaneous matching stack and overlay bindings as an invariant error.
+  Normal adapter operations keep these representations mutually exclusive.
+- On a membership invariant error, surface the existing card/global feedback,
+  retain the previous safely reconciled presentation, and do not mutate or
+  remove napari layers.
 - Pass the resolved stack binding and overlay bindings to the owning image card.
 - Reconciliation updates presentation only. It must not load, remove, or
   convert layers.
+
+### Image-card membership API
+
+- Replace the overlay-only card reconciliation entry point with a complete
+  membership API:
+
+```python
+def set_loaded_image_bindings(
+    self,
+    *,
+    stack_binding: ImageLayerBinding | None,
+    overlay_bindings: Sequence[ImageLayerBinding],
+) -> None:
+    ...
+```
+
+- The card retains the current stack binding so Slice 4b can construct its
+  fixed-binding live row without another source of truth.
+- The same call reconciles existing overlay rows and captures previous versus
+  next membership before applying mode-transition rules.
+- Snapshot `overlay_bindings` to a tuple, then validate the complete snapshot
+  before changing card state or disposing rows.
+- Reject a snapshot that contains both a stack binding and one or more overlay
+  bindings.
+- Require `stack_binding.image_display_mode == "stack"` when a stack binding is
+  present.
+- Require every overlay binding to have `image_display_mode == "overlay"` and
+  retain the existing channel-index, channel-name, and duplicate validation.
+- The card must not discover bindings or call `ViewerAdapter`; Viewer owns the
+  live query and validation.
+- Viewer is the primary context validator and should not call the card method
+  with an invalid snapshot. The card validation remains a defensive boundary
+  for direct or future callers.
+- The card method updates local membership and presentation only. It must not
+  mutate, remove, load, or convert napari layers.
 
 ### Mode transition rule
 
 - Initial card hydration selects Overlay when live overlay bindings exist,
   otherwise Stack.
-- A newly appearing stack binding selects Stack.
 - A newly appearing first overlay binding selects Overlay.
+- A newly appearing stack binding selects Stack after the valid snapshot
+  confirms that no overlay binding exists.
+- Mixed stack-plus-overlay membership has no mode precedence because it is an
+  invariant error, not a representable card state.
 - Membership disappearance never selects another mode:
   - removing the last overlay preserves Overlay;
   - removing the stack preserves Stack.
@@ -1770,6 +1833,8 @@ reordering.
 - Existing stack and overlay bindings hydrate the correct card mode.
 - Napari-side stack removal is observed without direct Viewer layer-list
   subscriptions.
+- Registered but unloaded image bindings never appear as live Viewer or
+  Histogram membership.
 - Overlay ordering and membership continue to reconcile through the same
   adapter-owned lifecycle.
 - No consumer receives both a stack-specific and overlay-specific membership
@@ -1783,9 +1848,18 @@ reordering.
 - Image-layer reordering invalidates current image membership.
 - Viewer partitions stack and overlay bindings correctly.
 - Duplicate stack binding reports an invariant error without mutation.
+- Mixed stack-plus-overlay membership reports an invariant error without
+  mutation.
+- Card reconciliation retains one stack binding and reconciles ordered overlay
+  bindings through one call.
+- Card reconciliation rejects mixed or incorrectly typed display-mode bindings
+  before changing existing presentation state.
 - Initial Stack and Overlay hydration.
-- First membership appearance selects its corresponding mode.
+- First overlay appearance selects Overlay.
+- Stack appearance selects Stack only when no overlay exists.
 - Last-membership removal preserves the current mode.
+- Histogram ignores registered overlay bindings whose layers are not currently
+  loaded in napari.
 - Existing Histogram overlay reconciliation remains green after the signal
   migration.
 
