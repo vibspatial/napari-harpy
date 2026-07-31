@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from functools import partial
 
-from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
+from qtpy.QtCore import QStringListModel, Qt, Signal
 from qtpy.QtWidgets import (
-    QCheckBox,
+    QButtonGroup,
     QCompleter,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -29,7 +29,6 @@ from napari_harpy.widgets.image_layer_row import (
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
-    CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
     WIDGET_TEXT_MUTED_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
@@ -46,14 +45,6 @@ _SUBSECTION_LABEL_STYLESHEET = f"color: {WIDGET_TEXT_MUTED_COLOR}; font-size: 11
 _MAX_VISIBLE_OVERLAY_CHANNELS = 5
 
 
-@dataclass(frozen=True)
-class ImageLoadRequest:
-    image_name: str
-    mode: ImageDisplayMode
-    channels: list[int]
-    channel_colors: list[str]
-
-
 class _ImageCardWidget(QFrame):
     """Render one image card and emit image-layer user intent.
 
@@ -62,10 +53,11 @@ class _ImageCardWidget(QFrame):
     napari layers. Instead, its signals carry stack and focused overlay intent
     to ``ViewerWidget``:
 
-    - ``add_update_requested`` carries an ``ImageLoadRequest`` for the
-      transitional stack-only Add/Update action;
-    - ``overlay_channel_add_requested`` carries image name, channel index, and
-      requested initial color;
+    - ``stack_load_requested`` carries the image name when the user invokes the
+      explicit ``Load in viewer`` action while no Stack is loaded;
+    - ``overlay_channel_add_requested`` carries the image name, channel index,
+      and initial color immediately after the composer accepts one channel.
+      Overlay loading has no aggregate apply action;
     - ``overlay_channel_remove_requested`` carries image name and channel
       index;
     - ``overlay_channels_remove_all_requested`` carries image name;
@@ -94,7 +86,7 @@ class _ImageCardWidget(QFrame):
     card atomically.
     """
 
-    add_update_requested = Signal(object)
+    stack_load_requested = Signal(str)
     overlay_channel_add_requested = Signal(str, int, str)
     overlay_channel_remove_requested = Signal(str, int)
     overlay_channels_remove_all_requested = Signal(str)
@@ -144,14 +136,18 @@ class _ImageCardWidget(QFrame):
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.setSpacing(16)
 
-        self.stack_toggle = QCheckBox("stack")
-        self.stack_toggle.setObjectName(f"viewer_widget_stack_toggle_{image_name}")
-        self.stack_toggle.setStyleSheet(CHECKBOX_STYLESHEET)
-        self.stack_toggle.setChecked(True)
+        self.display_mode_group = QButtonGroup(self)
+        self.display_mode_group.setExclusive(True)
 
-        self.overlay_toggle = QCheckBox("overlay")
+        self.stack_toggle = QRadioButton("stack")
+        self.stack_toggle.setObjectName(f"viewer_widget_stack_toggle_{image_name}")
+
+        self.overlay_toggle = QRadioButton("overlay")
         self.overlay_toggle.setObjectName(f"viewer_widget_overlay_toggle_{image_name}")
-        self.overlay_toggle.setStyleSheet(CHECKBOX_STYLESHEET)
+
+        self.display_mode_group.addButton(self.stack_toggle)
+        self.display_mode_group.addButton(self.overlay_toggle)
+        self.stack_toggle.setChecked(True)
 
         mode_layout.addWidget(self.stack_toggle)
         mode_layout.addWidget(self.overlay_toggle)
@@ -178,7 +174,7 @@ class _ImageCardWidget(QFrame):
 
         self.channel_search_input = CompleterPopupLineEdit()
         self.channel_search_input.setObjectName(f"viewer_widget_channel_search_input_{image_name}")
-        self.channel_search_input.setPlaceholderText("Search or add channels")
+        self.channel_search_input.setPlaceholderText("Search and add channels")
         self.channel_search_input.setStyleSheet(build_input_control_stylesheet("QLineEdit"))
         self.channel_search_input.setMinimumWidth(0)
         self.channel_search_input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -244,16 +240,16 @@ class _ImageCardWidget(QFrame):
         self.stack_row_layout.setSpacing(0)
         self.stack_row_container.hide()
 
-        self.add_update_button = QPushButton("Add / Update in viewer")
-        self.add_update_button.setObjectName(f"viewer_widget_add_update_image_button_{image_name}")
-        self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.add_update_button.setMinimumHeight(28)
-        self.add_update_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
-        self.add_update_button.setToolTip("")
+        self.stack_load_button = QPushButton("Load in viewer")
+        self.stack_load_button.setObjectName(f"viewer_widget_load_image_stack_button_{image_name}")
+        self.stack_load_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stack_load_button.setMinimumHeight(28)
+        self.stack_load_button.setStyleSheet(ACTION_BUTTON_STYLESHEET)
+        self.stack_load_button.setToolTip("")
 
-        self.add_update_button.clicked.connect(self._emit_add_update_request)
-        self.stack_toggle.toggled.connect(self._on_stack_toggled)
-        self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
+        self.stack_load_button.clicked.connect(self._emit_stack_load_request)
+        self.stack_toggle.toggled.connect(self._on_display_mode_toggled)
+        self.overlay_toggle.toggled.connect(self._on_display_mode_toggled)
         self._channel_completer.activated[str].connect(self._request_channel_from_text)
         self.channel_search_input.returnPressed.connect(self._request_channel_from_input)
         self.remove_all_channels_button.clicked.connect(self._emit_remove_all_requested)
@@ -262,7 +258,7 @@ class _ImageCardWidget(QFrame):
         layout.addWidget(self.channel_warning_label)
         layout.addWidget(self.channel_panel)
         layout.addWidget(self.stack_row_container)
-        layout.addWidget(self.add_update_button)
+        layout.addWidget(self.stack_load_button)
 
         self._refresh_overlay_availability()
         self._refresh_search_model()
@@ -321,9 +317,7 @@ class _ImageCardWidget(QFrame):
         if stack_binding is not None and stack_binding.image_display_mode != "stack":
             raise ValueError("The stack binding must have image display mode `stack`.")
         if stack_binding is not None and ordered_bindings:
-            raise ValueError(
-                f"Image `{self.image_name}` cannot have both stack and overlay bindings."
-            )
+            raise ValueError(f"Image `{self.image_name}` cannot have both stack and overlay bindings.")
 
         seen_channel_indices: set[int] = set()
         for binding in ordered_bindings:
@@ -362,9 +356,7 @@ class _ImageCardWidget(QFrame):
                     parent=self.stack_row_container,
                 )
                 row.remove_requested.connect(partial(self._emit_stack_remove_requested, stack_binding))
-                row.visibility_change_requested.connect(
-                    partial(self._emit_stack_visibility_requested, stack_binding)
-                )
+                row.visibility_change_requested.connect(partial(self._emit_stack_visibility_requested, stack_binding))
                 row.color_change_requested.connect(partial(self._emit_stack_color_requested, stack_binding))
                 self._stack_row = row
                 self.stack_row_layout.addWidget(row)
@@ -501,7 +493,7 @@ class _ImageCardWidget(QFrame):
             warning = self._membership_error
 
         is_available = warning is None
-        self.add_update_button.setEnabled(self._membership_error is None)
+        self.stack_load_button.setEnabled(self._membership_error is None)
         self.overlay_toggle.setEnabled(self.channel_error is None and bool(self.channel_names))
         self.channel_search_input.setEnabled(is_available)
         self.remove_all_channels_button.setEnabled(is_available and bool(self._overlay_channel_order))
@@ -519,36 +511,16 @@ class _ImageCardWidget(QFrame):
         if not toggle.isChecked():
             toggle.setChecked(True)
 
-    def _on_stack_toggled(self, checked: bool) -> None:
+    def _on_display_mode_toggled(self, checked: bool) -> None:
         if checked:
-            with QSignalBlocker(self.overlay_toggle):
-                self.overlay_toggle.setChecked(False)
             self._refresh_mode_presentation()
-            return
-
-        if not self.overlay_toggle.isChecked():
-            with QSignalBlocker(self.stack_toggle):
-                self.stack_toggle.setChecked(True)
-        self._refresh_mode_presentation()
-
-    def _on_overlay_toggled(self, checked: bool) -> None:
-        if checked:
-            with QSignalBlocker(self.stack_toggle):
-                self.stack_toggle.setChecked(False)
-            self._refresh_mode_presentation()
-            return
-
-        if not self.stack_toggle.isChecked():
-            with QSignalBlocker(self.stack_toggle):
-                self.stack_toggle.setChecked(True)
-        self._refresh_mode_presentation()
 
     def _refresh_mode_presentation(self) -> None:
         """Render editor content from selected mode and live Stack membership.
 
         Selected mode | Stack loaded | Visible content
         Overlay       | either       | Overlay channel panel
-        Stack         | no           | Add/Update button
+        Stack         | no           | Load in viewer button
         Stack         | yes          | Live Stack row
 
         A Stack layer can be added or removed through napari while the selected
@@ -559,22 +531,15 @@ class _ImageCardWidget(QFrame):
         stack_selected = self.stack_toggle.isChecked()
         self.channel_panel.setVisible(not stack_selected)
         self.stack_row_container.setVisible(stack_selected and self._stack_row is not None)
-        self.add_update_button.setVisible(stack_selected and self._stack_row is None)
+        self.stack_load_button.setVisible(stack_selected and self._stack_row is None)
 
     def display_mode(self) -> str:
         return "overlay" if self.overlay_toggle.isChecked() else "stack"
 
-    def _emit_add_update_request(self, _checked: bool = False) -> None:
-        if self.display_mode() != "stack":
+    def _emit_stack_load_request(self, _checked: bool = False) -> None:
+        if self.display_mode() != "stack" or self._stack_row is not None:
             return
-        self.add_update_requested.emit(
-            ImageLoadRequest(
-                image_name=self.image_name,
-                mode="stack",
-                channels=[],
-                channel_colors=[],
-            )
-        )
+        self.stack_load_requested.emit(self.image_name)
 
     def _request_channel_from_input(self) -> None:
         self._request_channel_from_text(self.channel_search_input.text())
@@ -720,9 +685,7 @@ class _ImageCardWidget(QFrame):
             return cached_color
 
         used_colors = {
-            color
-            for row in self.overlay_rows
-            if (color := _solid_color_from_layer(row.binding.layer)) is not None
+            color for row in self.overlay_rows if (color := _solid_color_from_layer(row.binding.layer)) is not None
         }
         for color in DEFAULT_OVERLAY_COLORS:
             normalized_color = _normalized_color_or_none(color)

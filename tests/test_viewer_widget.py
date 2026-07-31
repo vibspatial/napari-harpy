@@ -14,7 +14,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QComboBox, QCompleter
+from qtpy.QtWidgets import QComboBox, QCompleter, QRadioButton
 from shapely.geometry import LineString, Polygon
 from spatialdata import SpatialData
 from spatialdata.models import ShapesModel
@@ -908,7 +908,7 @@ def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, s
 
     widget.images_section_toggle.click()
     widget.image_rows[0].toggle_button.click()
-    widget.image_cards[0].add_update_button.click()
+    widget.image_cards[0].stack_load_button.click()
 
     assert len(viewer.layers) == 1
     assert viewer.layers[0].name == "blobs_image"
@@ -1588,7 +1588,7 @@ def test_viewer_widget_ignores_shapes_element_events_for_other_sdata_or_coordina
     assert "1 shapes element(s)" in widget.summary_label.text()
 
 
-def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
+def test_viewer_widget_image_mode_radio_buttons_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
 
@@ -1599,25 +1599,31 @@ def test_viewer_widget_image_mode_toggles_are_mutually_exclusive(qtbot, sdata_bl
 
     image_card = widget.image_cards[0]
 
+    assert isinstance(image_card.stack_toggle, QRadioButton)
+    assert isinstance(image_card.overlay_toggle, QRadioButton)
+    assert image_card.display_mode_group.exclusive()
     assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
     assert image_card.channel_section_label.text() == "Channels"
-    assert image_card.add_update_button.isEnabled()
+    assert image_card.stack_load_button.text() == "Load in viewer"
+    assert image_card.stack_load_button.isEnabled()
+    assert not hasattr(image_card, "add_update_button")
+    assert not hasattr(image_card, "add_update_requested")
 
     image_card.overlay_toggle.setChecked(True)
 
     assert not image_card.stack_toggle.isChecked()
     assert image_card.overlay_toggle.isChecked()
     assert not image_card.channel_panel.isHidden()
-    assert image_card.add_update_button.isHidden()
+    assert image_card.stack_load_button.isHidden()
 
     image_card.stack_toggle.setChecked(True)
 
     assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
-    assert image_card.add_update_button.isEnabled()
+    assert image_card.stack_load_button.isEnabled()
 
 
 def test_viewer_widget_overlay_composer_keeps_many_channels_searchable(qtbot, monkeypatch) -> None:
@@ -2152,7 +2158,7 @@ def test_viewer_widget_styled_overlay_precondition_error_uses_error_card(qtbot, 
     assert "The selected observation column is not available" in widget.global_action_feedback_label.text()
 
 
-def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) -> None:
+def test_viewer_widget_load_image_stack_creates_layer_and_live_row(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
 
@@ -2163,7 +2169,7 @@ def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) ->
 
     first_card = widget.image_cards[0]
 
-    first_card.add_update_button.click()
+    first_card.stack_load_button.click()
 
     assert len(viewer.layers) == 1
     layer = viewer.layers[0]
@@ -2172,11 +2178,13 @@ def test_viewer_widget_add_update_image_loads_stack_layer(qtbot, sdata_blobs) ->
     assert binding is not None
     assert binding.image_display_mode == "stack"
     assert viewer.layers.selection.active is layer
+    assert first_card.stack_row is not None
+    assert first_card.stack_load_button.isHidden()
     _assert_action_feedback_card(widget, title="Image Layer Created", kind="success")
     assert 'Created image layer for "blobs_image" in stack mode' in widget.global_action_feedback_label.text()
 
 
-def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata_blobs) -> None:
+def test_viewer_widget_loaded_stack_has_no_update_action(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
 
@@ -2187,13 +2195,85 @@ def test_viewer_widget_add_update_image_reuses_existing_stack_layer(qtbot, sdata
 
     first_card = widget.image_cards[0]
 
-    first_card.add_update_button.click()
+    first_card.stack_load_button.click()
     first_layer = viewer.layers[0]
-
-    first_card.add_update_button.click()
 
     assert len(viewer.layers) == 1
     assert viewer.layers[0] is first_layer
+    assert first_card.stack_row is not None
+    assert first_card.stack_load_button.isHidden()
+
+
+def test_viewer_widget_mode_switch_is_presentation_only_until_first_overlay_is_accepted(
+    qtbot,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    card = widget.image_cards[0]
+    card.stack_load_button.click()
+    stack_layer = viewer.layers[0]
+
+    card.overlay_toggle.setChecked(True)
+
+    assert list(viewer.layers) == [stack_layer]
+    assert card.overlay_toggle.isChecked()
+    assert not card.channel_panel.isHidden()
+
+    card.channel_search_input.setText("1")
+    card.channel_search_input.returnPressed.emit()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0] is not stack_layer
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(viewer.layers[0])
+    assert isinstance(binding, ImageLayerBinding)
+    assert binding.image_display_mode == "overlay"
+    assert binding.channel_index == 1
+    assert card.loaded_stack_binding is None
+    assert card.loaded_overlay_channel_indices == (1,)
+    assert card.overlay_toggle.isChecked()
+
+
+def test_viewer_widget_explicit_stack_load_replaces_overlays_after_mode_switch(
+    qtbot,
+    sdata_blobs,
+) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer)
+    qtbot.addWidget(widget)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(sdata_blobs)
+
+    card = widget.image_cards[0]
+    card.overlay_toggle.setChecked(True)
+    for channel_name in ("0", "2"):
+        card.channel_search_input.setText(channel_name)
+        card.channel_search_input.returnPressed.emit()
+    overlay_layers = list(viewer.layers)
+
+    card.stack_toggle.setChecked(True)
+
+    assert list(viewer.layers) == overlay_layers
+    assert card.stack_toggle.isChecked()
+    assert not card.stack_load_button.isHidden()
+
+    card.stack_load_button.click()
+
+    assert len(viewer.layers) == 1
+    assert viewer.layers[0] not in overlay_layers
+    binding = widget.app_state.viewer_adapter.layer_bindings.get_binding(viewer.layers[0])
+    assert isinstance(binding, ImageLayerBinding)
+    assert binding.image_display_mode == "stack"
+    assert card.loaded_overlay_channel_indices == ()
+    assert card.loaded_stack_binding is binding
+    assert card.stack_row is not None
+    assert card.stack_load_button.isHidden()
 
 
 def test_viewer_widget_overlay_composer_requests_one_channel_with_default_color(qtbot, monkeypatch) -> None:
@@ -2677,7 +2757,7 @@ def test_viewer_widget_hydrates_and_tracks_stack_membership(qtbot, sdata_blobs) 
     assert image_card.stack_toggle.isChecked()
     assert image_card.stack_row is not None
     assert image_card.stack_row.layer_label.text() == "Stack"
-    assert image_card.add_update_button.isHidden()
+    assert image_card.stack_load_button.isHidden()
 
     layer = result.primary_layer
     stale_row = image_card.stack_row
@@ -2687,7 +2767,7 @@ def test_viewer_widget_hydrates_and_tracks_stack_membership(qtbot, sdata_blobs) 
     assert image_card.loaded_stack_binding is None
     assert image_card.stack_row is None
     assert image_card.stack_toggle.isChecked()
-    assert not image_card.add_update_button.isHidden()
+    assert not image_card.stack_load_button.isHidden()
 
     layer.visible = False
     layer.colormap = "#123456"
@@ -2709,7 +2789,7 @@ def test_viewer_widget_stack_row_syncs_visibility_colormap_and_removal(
         widget.app_state.set_sdata(sdata_blobs)
 
     image_card = widget.image_cards[0]
-    image_card.add_update_button.click()
+    image_card.stack_load_button.click()
     layer = viewer.layers[0]
     row = image_card.stack_row
     assert row is not None
@@ -2776,7 +2856,7 @@ def test_viewer_widget_stack_row_syncs_visibility_colormap_and_removal(
     assert list(viewer.layers) == []
     assert image_card.stack_row is None
     assert image_card.stack_toggle.isChecked()
-    assert not image_card.add_update_button.isHidden()
+    assert not image_card.stack_load_button.isHidden()
     assert "Removed Stack" in widget.global_action_feedback_label.text()
 
 
@@ -2896,7 +2976,7 @@ def test_viewer_widget_stack_property_failure_restores_live_row_state(
     assert "colormap rejected" in widget.global_action_feedback_label.text()
 
 
-def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
+def test_viewer_widget_load_image_stack_uses_selected_coordinate_system(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
     fake_sdata = object()
@@ -2942,7 +3022,7 @@ def test_viewer_widget_add_update_image_uses_selected_coordinate_system(qtbot, m
     widget.coordinate_system_combo.setCurrentIndex(1)
     image_card = widget.image_cards[0]
 
-    image_card.add_update_button.click()
+    image_card.stack_load_button.click()
 
     assert recorded_calls == [(fake_sdata, "image_local", "local", "stack")]
     assert activated_layers == [fake_layer]

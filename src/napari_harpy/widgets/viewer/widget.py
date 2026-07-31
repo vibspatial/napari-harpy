@@ -60,10 +60,7 @@ from napari_harpy.widgets.shared_styles import (
 )
 from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
-from napari_harpy.widgets.viewer.image_widget import (
-    ImageLoadRequest,
-    _ImageCardWidget,
-)
+from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
 from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
@@ -556,7 +553,12 @@ class ViewerWidget(QWidget):
                 channel_names=channel_names,
                 channel_error=channel_error,
             )
-            card.add_update_requested.connect(self._add_or_update_image_layer)
+            # Stack and Overlay intentionally have separate load intents:
+            # Stack loads only through its explicit pending action, while
+            # accepting a composer channel immediately requests one focused
+            # Overlay load. Do not route them through an aggregate image
+            # Add/Update request.
+            card.stack_load_requested.connect(self._load_image_stack)
             # Image cards emit intent only. ViewerWidget owns validation and
             # adapter mutations; adapter lifecycle reconciliation renders the
             # resulting live membership back into each card.
@@ -971,23 +973,14 @@ class ViewerWidget(QWidget):
             build_styled_shapes_card_spec(request, result),
         )
 
-    def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
+    def _load_image_stack(self, image_name: str) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
-        image_name = request.image_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
                 title="Image Load Error",
                 lines=["Load a SpatialData object and select a coordinate system first."],
-                kind="error",
-            )
-            return
-
-        if request.mode != "stack":
-            self._set_action_feedback(
-                title="Image Load Error",
-                lines=["Overlay channels are added individually from the searchable channel composer."],
                 kind="error",
             )
             return
@@ -1006,7 +999,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_image_loaded_card_spec(request, result),
+            build_image_loaded_card_spec(image_name, result),
         )
 
     def _on_image_layers_changed(self) -> None:
@@ -1448,17 +1441,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_image_loaded_card_spec(
-                ImageLoadRequest(
-                    image_name=image_name,
-                    mode="overlay",
-                    channels=list(result.channels),
-                    channel_colors=[
-                        getattr(getattr(layer, "colormap", None), "name", channel_color) for layer in result.layers
-                    ],
-                ),
-                result,
-            ),
+            build_image_loaded_card_spec(image_name, result),
         )
 
     def _remove_image_overlay_channel(

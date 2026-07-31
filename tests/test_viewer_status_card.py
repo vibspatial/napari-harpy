@@ -375,7 +375,6 @@ def test_build_styled_shapes_card_spec_rejects_missing_color_source() -> None:
 
 
 def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
-    request = SimpleNamespace(image_name="blobs_image")
     result = SimpleNamespace(
         layers=(object(), object()),
         mode="overlay",
@@ -384,7 +383,7 @@ def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
         channel_names=("DAPI", "CD8"),
     )
 
-    spec = build_image_loaded_card_spec(request, result)
+    spec = build_image_loaded_card_spec("blobs_image", result)
 
     assert spec.title == "Image Layer Created"
     assert spec.kind == "success"
@@ -392,7 +391,6 @@ def test_build_image_loaded_card_spec_reports_overlay_channels() -> None:
 
 
 def test_build_image_loaded_card_spec_falls_back_to_overlay_channel_indices() -> None:
-    request = SimpleNamespace(image_name="blobs_image")
     result = SimpleNamespace(
         layers=(object(),),
         mode="overlay",
@@ -400,6 +398,6 @@ def test_build_image_loaded_card_spec_falls_back_to_overlay_channel_indices() ->
         channels=(0,),
     )
 
-    spec = build_image_loaded_card_spec(request, result)
+    spec = build_image_loaded_card_spec("blobs_image", result)
 
     assert spec.lines == ('Created image overlay for "blobs_image" with channel "0".',)
