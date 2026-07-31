@@ -145,11 +145,12 @@ No operation constructs a pandas or Arrow table containing all transcripts.
 
 ### Deterministic fragment order and internal point identity
 
-Source files are ordered by their normalized Parquet-dataset-root-relative POSIX
-paths using a documented bytewise ordering. For a directory-backed dataset, the
-dataset root is the resolved Parquet directory. For a supported single-file
-dataset, the relative path is the file name. The order is not inherited from a
-Dask graph or filesystem directory iteration.
+Source files are ordered lexicographically by their normalized
+Parquet-dataset-root-relative POSIX path strings. This is ordinary string
+ordering, not natural sorting: for example, `part.1.parquet`,
+`part.10.parquet`, `part.2.parquet`. The dataset root is the resolved canonical
+`points.parquet/` directory. Order is not inherited from a Dask graph or
+filesystem directory iteration.
 
 Every source row receives a Harpy-owned `uint64` identity:
 
@@ -597,26 +598,33 @@ tests/multi_scale_cache_points/test_footer.py
 
 ### Implement
 
-- validate that the Parquet path exists and is a directory or supported single
-  Parquet file;
-- discover physical data files while excluding metadata and unrelated files;
-- normalize Parquet-dataset-root-relative POSIX paths, using the file name for a
-  supported single-file dataset;
-- sort fragments deterministically;
+- require the canonical `points.parquet` path to exist and be a directory;
+- recursively include every regular file whose name ends in `.parquet`;
+- ignore non-Parquet files and the standard `_metadata` and
+  `_common_metadata` files;
+- treat every other discovered `.parquet` file as a source fragment rather
+  than trying to classify some Parquet files as unrelated;
+- normalize fragment paths to Parquet-dataset-root-relative POSIX strings;
+- sort those strings lexicographically, without natural sorting;
 - open each footer with PyArrow;
 - require at least one file, row group, and source row;
-- validate selected columns in every physical schema;
-- validate compatible Arrow logical types across fragments;
-- require numeric `x` and `y`;
-- require supported value string/dictionary types;
+- validate the selected Arrow fields in every fragment;
+- require compatible selected Arrow data types and nullability across fragments;
+- require supported integer/floating coordinate fields and supported
+  string/dictionary-string value fields;
 - collect file sizes, modification times, row counts, and ordered row-group
   records containing row counts and compressed sizes;
 - calculate cumulative fragment row offsets with `uint64` overflow checks;
 - return `_FooterPointsSource`.
 
-File discovery should use supported PyArrow dataset APIs where practical. The
-normalized inventory and ordering remain Harpy contracts rather than incidental
-PyArrow ordering.
+V2 supports only the canonical directory-backed SpatialData source established
+by V1. A future standalone or non-canonical Parquet entry point requires its
+own source contract; V2 does not add single-file source behavior implicitly.
+
+Because the first version is local-filesystem-only, deterministic inventory
+discovery may use `pathlib.Path`. PyArrow opens and validates each discovered
+footer. Inventory and ordering remain Harpy contracts rather than incidental
+filesystem or PyArrow ordering.
 
 ### Schema compatibility
 
@@ -628,30 +636,32 @@ may be present, absent, or have different types across fragments without making
 the selected schema incompatible. They are neither read nor retained in
 `selected_schema`.
 
-The first version rejects a selected column whose physical type, logical type,
-or nullability changes between fragments rather than attempting implicit
-coercion. After all fragments pass this check, `_FooterPointsSource` records the
-selected fields in canonical semantic order as `selected_schema`.
+Compatibility compares each selected Arrow field's data type and nullability.
+The first version accepts signed and unsigned Arrow integer or floating-point
+types for `x` and `y`. It accepts Arrow `string`, `large_string`, or a dictionary
+with an integer index and one of those string value types for `value`.
+
+The first version rejects a selected Arrow data-type or nullability change
+between fragments rather than attempting implicit coercion. Parquet
+compression and encoding choices are not schema compatibility criteria. After
+all fragments pass, `_FooterPointsSource` records the selected fields in
+canonical semantic order `x`, `y`, `value` as `selected_schema`.
 
 ### Tests
 
-- directory and single-file datasets;
-- empty dataset directory;
-- corrupt footer;
-- zero-row and zero-row-group cases;
-- deterministic ordering with names such as `part.1`, `part.10`, `part.2`;
-- metadata files excluded from fragments;
-- missing selected column in one fragment;
-- incompatible coordinate or value types;
-- selected-column nullability mismatch;
-- compatible selected columns when unrelated columns differ between fragments;
-- dictionary-encoded strings;
-- ordered row-group records and derived row-group counts;
-- row-group compressed-size aggregation across physical column chunks;
-- fragment/row-group row-count reconciliation;
-- deterministic offsets;
-- offset overflow;
-- no row-group data-page reads.
+- one controlled multi-file, multi-row-group valid dataset covering lexical
+  fragment ordering, offsets, selected schema, dictionary-string values, and
+  ordered row-group records;
+- empty-directory and corrupt-footer rejection;
+- missing or incompatible selected-field rejection, while unrelated fields do
+  not affect compatibility;
+- zero-row source rejection.
+
+These tests exercise Harpy's inventory, compatibility, and aggregation
+contracts. They do not retest PyArrow's footer parser, compression
+implementation, or every supported dtype combination. The implementation's
+metadata-only control flow, rather than mocks around PyArrow internals, keeps
+V2 from decoding data pages.
 
 ### Exit criteria
 
