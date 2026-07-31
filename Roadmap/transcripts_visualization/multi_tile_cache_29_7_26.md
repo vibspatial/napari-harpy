@@ -809,7 +809,8 @@ The metadata-first preflight:
 - creates a deterministic relative file inventory;
 - validates compatible schemas across files and row groups;
 - validates required column names and physical types;
-- collects file sizes, row counts, row-group counts, and available statistics;
+- collects file sizes, row counts, ordered row-group row counts and compressed
+  sizes, and available statistics;
 - computes deterministic source-fragment row offsets;
 - derives bounds from trustworthy statistics when possible;
 - records when a bounded data scan is required;

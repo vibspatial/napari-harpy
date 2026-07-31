@@ -42,7 +42,7 @@ from napari_harpy.core.spatialdata import (
 )
 from napari_harpy.viewer.adapter import ImageLayerBinding
 from napari_harpy.viewer.points_styling import PointsLoadResult
-from napari_harpy.widgets.overlay_channel_row import (
+from napari_harpy.widgets.image_layer_row import (
     _normalized_color_or_none,
     _solid_color_from_layer,
 )
@@ -60,10 +60,7 @@ from napari_harpy.widgets.shared_styles import (
 )
 from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
-from napari_harpy.widgets.viewer.image_widget import (
-    ImageLoadRequest,
-    _ImageCardWidget,
-)
+from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
 from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
 from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
 from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
@@ -281,7 +278,7 @@ class ViewerWidget(QWidget):
         # refresh only the Viewer shapes section when that happens.
         self._app_state.shapes_element_written.connect(self._on_shapes_element_written)
         self._app_state.shapes_element_reloaded.connect(self._on_shapes_element_reloaded)
-        self._app_state.viewer_adapter.image_overlay_layers_changed.connect(self._on_image_overlay_layers_changed)
+        self._app_state.viewer_adapter.image_layers_changed.connect(self._on_image_layers_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
@@ -556,7 +553,12 @@ class ViewerWidget(QWidget):
                 channel_names=channel_names,
                 channel_error=channel_error,
             )
-            card.add_update_requested.connect(self._add_or_update_image_layer)
+            # Stack and Overlay intentionally have separate load intents:
+            # Stack loads only through its explicit pending action, while
+            # accepting a composer channel immediately requests one focused
+            # Overlay load. Do not route them through an aggregate image
+            # Add/Update request.
+            card.stack_load_requested.connect(self._load_image_stack)
             # Image cards emit intent only. ViewerWidget owns validation and
             # adapter mutations; adapter lifecycle reconciliation renders the
             # resulting live membership back into each card.
@@ -565,6 +567,9 @@ class ViewerWidget(QWidget):
             card.overlay_channels_remove_all_requested.connect(self._remove_all_image_overlay_channels)
             card.overlay_channel_visibility_requested.connect(self._change_image_overlay_channel_visibility)
             card.overlay_channel_color_requested.connect(self._change_image_overlay_channel_color)
+            card.stack_remove_requested.connect(self._remove_image_stack_layer)
+            card.stack_visibility_requested.connect(self._change_image_stack_visibility)
+            card.stack_color_requested.connect(self._change_image_stack_color)
             row = _DisclosureElementWidget(
                 title=image_name,
                 object_name=f"viewer_widget_image_row_{image_name}",
@@ -581,7 +586,7 @@ class ViewerWidget(QWidget):
             self.images_section_layout.addWidget(row)
             self._image_cards.append(card)
             self._image_rows.append(row)
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
 
     def _rebuild_labels_cards(self, sdata: SpatialData, labels_names: list[str]) -> None:
         _clear_layout(self.labels_section_layout)
@@ -968,23 +973,14 @@ class ViewerWidget(QWidget):
             build_styled_shapes_card_spec(request, result),
         )
 
-    def _add_or_update_image_layer(self, request: ImageLoadRequest) -> None:
+    def _load_image_stack(self, image_name: str) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
-        image_name = request.image_name
 
         if sdata is None or not coordinate_system:
             self._set_action_feedback(
                 title="Image Load Error",
                 lines=["Load a SpatialData object and select a coordinate system first."],
-                kind="error",
-            )
-            return
-
-        if request.mode != "stack":
-            self._set_action_feedback(
-                title="Image Load Error",
-                lines=["Overlay channels are added individually from the searchable channel composer."],
                 kind="error",
             )
             return
@@ -1003,49 +999,56 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_image_loaded_card_spec(request, result),
+            build_image_loaded_card_spec(image_name, result),
         )
 
-    def _on_image_overlay_layers_changed(self) -> None:
-        """Re-query complete overlay membership after adapter lifecycle changes."""
+    def _on_image_layers_changed(self) -> None:
+        """Re-query complete image membership after adapter lifecycle changes."""
         for card in self._image_cards:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
 
-    def _refresh_image_card_overlay_membership(self, card: _ImageCardWidget) -> None:
+    def _refresh_image_card_membership(self, card: _ImageCardWidget) -> None:
         sdata = self._app_state.sdata
         coordinate_system = self._app_state.coordinate_system
         if sdata is None or not coordinate_system:
-            card.set_loaded_overlay_bindings([])
+            card.set_loaded_image_bindings(
+                stack_binding=None,
+                overlay_bindings=(),
+            )
             return
 
         try:
-            bindings = self._get_live_overlay_bindings(
+            stack_binding, overlay_bindings = self._get_live_image_bindings(
                 sdata,
                 card.image_name,
                 coordinate_system,
                 channel_names=card.channel_names,
             )
-            card.set_loaded_overlay_bindings(bindings)
+            card.set_loaded_image_bindings(
+                stack_binding=stack_binding,
+                overlay_bindings=overlay_bindings,
+            )
         except ValueError as error:
             message = str(error)
-            card.set_overlay_membership_error(message)
+            card.set_image_membership_error(message)
             self._set_action_feedback(
-                title="Image Overlay Error",
+                title="Image Membership Error",
                 lines=[message],
                 kind="error",
             )
 
-    def _get_live_overlay_bindings(
+    def _get_live_image_bindings(
         self,
         sdata: SpatialData,
         image_name: str,
         coordinate_system: str,
         *,
         channel_names: Sequence[str],
-    ) -> list[ImageLayerBinding]:
-        """Return valid overlay bindings in the viewer's current layer order."""
+    ) -> tuple[ImageLayerBinding | None, list[ImageLayerBinding]]:
+        """Partition valid image bindings in the viewer's current layer order."""
         adapter = self._app_state.viewer_adapter
-        bindings: list[ImageLayerBinding] = []
+        stack_bindings: list[ImageLayerBinding] = []
+        overlay_bindings: list[ImageLayerBinding] = []
         seen_channel_indices: set[int] = set()
 
         for layer in adapter.get_loaded_image_layers(sdata, image_name):
@@ -1057,6 +1060,9 @@ class ViewerWidget(QWidget):
             if binding.element_name != image_name:
                 continue
             if binding.coordinate_system != coordinate_system:
+                continue
+            if binding.image_display_mode == "stack":
+                stack_bindings.append(binding)
                 continue
             if binding.image_display_mode != "overlay":
                 continue
@@ -1082,9 +1088,21 @@ class ViewerWidget(QWidget):
                 )
 
             seen_channel_indices.add(channel_index)
-            bindings.append(binding)
+            overlay_bindings.append(binding)
 
-        return bindings
+        if len(stack_bindings) > 1:
+            raise ValueError(
+                f"Found multiple live stack bindings for image `{image_name}` "
+                f"and coordinate system `{coordinate_system}`."
+            )
+        if stack_bindings and overlay_bindings:
+            raise ValueError(
+                f"Image `{image_name}` cannot have both live stack and overlay bindings "
+                f"in coordinate system `{coordinate_system}`."
+            )
+
+        stack_binding = stack_bindings[0] if stack_bindings else None
+        return stack_binding, overlay_bindings
 
     def _find_image_card(self, image_name: str) -> _ImageCardWidget | None:
         return next(
@@ -1104,7 +1122,7 @@ class ViewerWidget(QWidget):
         if card is None or sdata is None or not coordinate_system:
             return None
 
-        bindings = self._get_live_overlay_bindings(
+        _, bindings = self._get_live_image_bindings(
             sdata,
             image_name,
             coordinate_system,
@@ -1113,6 +1131,158 @@ class ViewerWidget(QWidget):
         return next(
             (binding for binding in bindings if binding.channel_index == channel_index),
             None,
+        )
+
+    def _resolve_exact_live_stack_binding(
+        self,
+        image_name: str,
+    ) -> ImageLayerBinding | None:
+        """Resolve the Stack row against the Viewer's current live context."""
+        card = self._find_image_card(image_name)
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if card is None or sdata is None or not coordinate_system:
+            return None
+
+        stack_binding, _ = self._get_live_image_bindings(
+            sdata,
+            image_name,
+            coordinate_system,
+            channel_names=card.channel_names,
+        )
+        row = card.stack_row
+        if stack_binding is not None and row is not None and row.binding is stack_binding:
+            return stack_binding
+
+        self._refresh_image_card_membership(card)
+        return None
+
+    def _change_image_stack_visibility(
+        self,
+        image_name: str,
+        visible: bool,
+    ) -> None:
+        """Apply Stack-row intent; napari's ``visible`` event renders it."""
+        card = self._find_image_card(image_name)
+        if card is None:
+            return
+
+        try:
+            binding = self._resolve_exact_live_stack_binding(image_name)
+        except ValueError as error:
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+        if binding is None:
+            return
+
+        layer = binding.layer
+        try:
+            if layer.visible == visible:
+                card.refresh_stack_presentation(binding)
+                return
+            layer.visible = visible
+        except (TypeError, RuntimeError, ValueError) as error:
+            card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f"Could not update Stack visibility: {error}"],
+                kind="error",
+            )
+
+    def _change_image_stack_color(
+        self,
+        image_name: str,
+        color: str,
+    ) -> None:
+        """Apply Stack-row intent; napari's ``colormap`` event renders it."""
+        card = self._find_image_card(image_name)
+        if card is None:
+            return
+
+        try:
+            binding = self._resolve_exact_live_stack_binding(image_name)
+        except ValueError as error:
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+        if binding is None:
+            return
+
+        layer = binding.layer
+        if layer.rgb:
+            card.refresh_stack_presentation(binding)
+            return
+
+        normalized_color = _normalized_color_or_none(color)
+        if normalized_color is None:
+            card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f'Could not update Stack color: "{color}" is not a valid color.'],
+                kind="error",
+            )
+            return
+
+        try:
+            if _solid_color_from_layer(layer) == normalized_color:
+                card.refresh_stack_presentation(binding)
+                return
+            layer.colormap = normalized_color
+        except (TypeError, RuntimeError, ValueError) as error:
+            card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f"Could not update Stack color: {error}"],
+                kind="error",
+            )
+
+    def _remove_image_stack_layer(self, image_name: str) -> None:
+        """Remove the exact current Stack binding while preserving other images."""
+        card = self._find_image_card(image_name)
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if card is None or sdata is None or not coordinate_system:
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
+            return
+
+        binding: ImageLayerBinding | None = None
+        try:
+            binding = self._resolve_exact_live_stack_binding(image_name)
+            if binding is None:
+                return
+            removed_layer = self._app_state.viewer_adapter.remove_image_stack_layer(
+                sdata,
+                image_name,
+                coordinate_system,
+            )
+        except (TypeError, RuntimeError, ValueError) as error:
+            if binding is not None:
+                card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f"Could not remove Stack: {error}"],
+                kind="error",
+            )
+            return
+
+        if removed_layer is None:
+            self._refresh_image_card_membership(card)
+            return
+        self._set_action_feedback(
+            title="Image Stack Updated",
+            lines=[f'Removed Stack for image "{image_name}" from the viewer.'],
+            kind="success",
         )
 
     def _change_image_overlay_channel_visibility(
@@ -1140,7 +1310,7 @@ class ViewerWidget(QWidget):
             return
 
         if binding is None:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
             return
 
         layer = binding.layer
@@ -1183,7 +1353,7 @@ class ViewerWidget(QWidget):
             return
 
         if binding is None:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
             return
 
         normalized_color = _normalized_color_or_none(color)
@@ -1232,7 +1402,7 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            live_bindings = self._get_live_overlay_bindings(
+            _, live_bindings = self._get_live_image_bindings(
                 sdata,
                 image_name,
                 coordinate_system,
@@ -1243,7 +1413,10 @@ class ViewerWidget(QWidget):
                 None,
             )
             if existing_binding is not None:
-                card.set_loaded_overlay_bindings(live_bindings)
+                card.set_loaded_image_bindings(
+                    stack_binding=None,
+                    overlay_bindings=live_bindings,
+                )
                 card.finish_overlay_channel_add(channel_index, succeeded=True)
                 self._app_state.viewer_adapter.activate_layer(existing_binding.layer)
                 return
@@ -1268,17 +1441,7 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.activate_layer(result.primary_layer)
         self._apply_status_card_spec(
             self.global_action_feedback_label,
-            build_image_loaded_card_spec(
-                ImageLoadRequest(
-                    image_name=image_name,
-                    mode="overlay",
-                    channels=list(result.channels),
-                    channel_colors=[
-                        getattr(getattr(layer, "colormap", None), "name", channel_color) for layer in result.layers
-                    ],
-                ),
-                result,
-            ),
+            build_image_loaded_card_spec(image_name, result),
         )
 
     def _remove_image_overlay_channel(
@@ -1315,7 +1478,7 @@ class ViewerWidget(QWidget):
             return
 
         if removed_layer is None:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
             return
 
         card.finish_overlay_channel_remove(channel_index, succeeded=True)
@@ -1339,7 +1502,7 @@ class ViewerWidget(QWidget):
             return
 
         try:
-            bindings = self._get_live_overlay_bindings(
+            _, bindings = self._get_live_image_bindings(
                 sdata,
                 image_name,
                 coordinate_system,
@@ -1369,7 +1532,7 @@ class ViewerWidget(QWidget):
             return
 
         if missing_target:
-            self._refresh_image_card_overlay_membership(card)
+            self._refresh_image_card_membership(card)
         if bindings:
             self._set_action_feedback(
                 title="Image Overlay Updated",

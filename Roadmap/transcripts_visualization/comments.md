@@ -16,30 +16,7 @@ The initial V0 scope is particularly clear and ready to implement: [`PointColumn
 
 Before V2–V5 are frozen, I found four small issues worth resolving.
 
-1. `ValidationEvidence` is still dangling
 
-The validation outcome still promises evidence ([line 47](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:47)), and an evidence enum remains ([line 257](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:257)). However, `ValidatedPointsSource` contains no evidence fields ([line 284](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:284)), consistently with the decision not to expose a diagnostics report.
-
-I recommend removing `ValidationEvidence` and the remaining evidence requirements. The roadmap can simply state which facts are authoritative:
-
-- row count and fragment offsets: Parquet metadata;
-- bounds and value counts: streaming scan;
-- stale-source detection: source signature.
-
-2. Row-group signature material needs an internal model
-
-`ParquetSourceFragment` currently retains only `row_group_count` ([line 228](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:228)), while the signature requires each row group’s row count and compressed size ([line 607](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:607)).
-
-Before V2, I recommend defining an internal immutable row-group record, probably:
-
-```python
-@dataclass(frozen=True)
-class ParquetSourceRowGroup:
-    row_count: int
-    compressed_size_bytes: int
-```
-
-`ParquetSourceFragment` can then contain `row_groups: tuple[ParquetSourceRowGroup, ...]`. It need not be publicly exported.
 
 3. Source mutation during validation/build is unspecified
 

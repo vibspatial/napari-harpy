@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from napari_harpy.viewer.labels_styling import LabelsLoadResult
     from napari_harpy.viewer.points_styling import PointsLoadResult
     from napari_harpy.viewer.shapes_styling import ShapesLoadResult
-    from napari_harpy.widgets.viewer.image_widget import ImageLoadRequest
     from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest
     from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
     from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
@@ -227,10 +226,9 @@ def build_styled_shapes_card_spec(
 
 
 def build_image_loaded_card_spec(
-    request: ImageLoadRequest,
+    image_name: str,
     result: ImageLoadResult,
 ) -> _ViewerStatusCardSpec:
-    image_name = request.image_name
     display_name, was_shortened = format_feedback_identifier(image_name)
     action = _created_updated_action(result.created)
     if result.mode == "stack":
