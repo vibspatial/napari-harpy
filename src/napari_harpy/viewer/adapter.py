@@ -1791,6 +1791,31 @@ class ViewerAdapter(QObject):
 
         return removed_layers
 
+    def remove_image_stack_layer(
+        self,
+        sdata: SpatialData,
+        image_name: str,
+        coordinate_system: str,
+    ) -> Image | None:
+        """Remove one loaded stack while preserving any unrelated image layers."""
+        layers = self._get_loaded_image_layer_for_coordinate_system(
+            sdata,
+            image_name,
+            coordinate_system,
+            image_display_mode="stack",
+        )
+        if not layers:
+            return None
+        if len(layers) > 1:
+            raise ValueError(
+                f"Found multiple live stack layers for image `{image_name}` "
+                f"and coordinate system `{coordinate_system}`."
+            )
+
+        layer = layers[0]
+        self._remove_layer_from_viewer_and_registry(layer)
+        return layer
+
     def remove_image_overlay_channel(
         self,
         sdata: SpatialData,

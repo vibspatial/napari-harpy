@@ -24,7 +24,7 @@ from napari_harpy.widgets.shared_styles import (
     format_tooltip,
 )
 
-_CHANNEL_VISIBILITY_BUTTON_STYLESHEET = (
+_IMAGE_LAYER_VISIBILITY_BUTTON_STYLESHEET = (
     "QToolButton {"
     "background: transparent; "
     "border: 1px solid transparent; "
@@ -37,22 +37,24 @@ _CHANNEL_VISIBILITY_BUTTON_STYLESHEET = (
 
 
 @dataclass(frozen=True)
-class _OverlayColormapPresentation:
+class _ImageColormapPresentation:
     name: str
     colors: tuple[str, ...]
     solid_color: str | None
 
 
-class _OverlayChannelRow(QWidget):
-    """Present one loaded channel and bridge intent with live napari state.
+class _ImageLayerRow(QWidget):
+    """Present one loaded image layer and bridge intent with live napari state.
 
     A row keeps its construction-time binding for its entire lifetime. Its owner
     must dispose this row and construct another one when the binding changes.
 
-    User actions never mutate the layer directly. The row emits visibility,
-    color, or removal intent to its owning Viewer or Histogram widget. The owner
-    validates the current live binding before assigning ``layer.visible`` or
-    ``layer.colormap``, or requesting removal through ``ViewerAdapter``.
+    User actions never mutate the layer directly. Identity-free visibility,
+    color, and removal intent returns to the owning Viewer or Histogram widget,
+    which binds its own channel, card, or image identity while connecting the
+    signals. The owner validates the current live binding before assigning
+    ``layer.visible`` or ``layer.colormap``, or requesting removal through
+    ``ViewerAdapter``.
 
     A successful property assignment causes napari to emit
     ``layer.events.visible`` or ``layer.events.colormap``. Every row bound to
@@ -73,74 +75,71 @@ class _OverlayChannelRow(QWidget):
     shared mutation handler.
     """
 
-    remove_requested = Signal(int)
-    visibility_change_requested = Signal(int, bool)
-    color_change_requested = Signal(int, str)
+    remove_requested = Signal()
+    visibility_change_requested = Signal(bool)
+    color_change_requested = Signal(str)
 
     def __init__(
         self,
         binding: ImageLayerBinding,
+        *,
+        display_label: str,
+        accessibility_label: str,
+        show_colormap: bool = True,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.binding = binding
+        self.display_label = display_label
+        self.accessibility_label = accessibility_label
+        self._show_colormap = show_colormap
         self._disposed = False
-        channel_index = _binding_channel_index(binding)
-        channel_name = _binding_channel_name(binding)
-        self.setObjectName("overlay_channel_row")
+        self.setObjectName("image_layer_row")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
         self.visibility_button = QToolButton(self)
-        self.visibility_button.setObjectName("overlay_channel_visibility_button")
+        self.visibility_button.setObjectName("image_layer_visibility_button")
         self.visibility_button.setCheckable(True)
         self.visibility_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.visibility_button.setFixedSize(28, 22)
         self.visibility_button.setIconSize(QSize(16, 16))
-        self.visibility_button.setStyleSheet(_CHANNEL_VISIBILITY_BUTTON_STYLESHEET)
+        self.visibility_button.setStyleSheet(_IMAGE_LAYER_VISIBILITY_BUTTON_STYLESHEET)
 
-        self.channel_label = _ElidedLabel(channel_name, self)
-        self.channel_label.setObjectName("overlay_channel_label")
+        self.layer_label = _ElidedLabel(display_label, self)
+        self.layer_label.setObjectName("image_layer_label")
+        self.layer_label.setAccessibleName(accessibility_label)
 
         self.color_button = OverlayColorButton(DEFAULT_OVERLAY_COLORS[0], self)
-        self.color_button.setObjectName("overlay_channel_color_button")
+        self.color_button.setObjectName("image_layer_color_button")
+        self.color_button.setVisible(self._show_colormap)
 
         self.remove_button = QPushButton("×")
-        self.remove_button.setObjectName("overlay_channel_remove_button")
-        self.remove_button.setAccessibleName(f"Remove channel {channel_name} from viewer")
-        self.remove_button.setToolTip(format_tooltip(f"Remove channel {channel_name} from viewer"))
+        self.remove_button.setObjectName("image_layer_remove_button")
+        remove_message = f"Remove {accessibility_label} from viewer"
+        self.remove_button.setAccessibleName(remove_message)
+        self.remove_button.setToolTip(format_tooltip(remove_message))
         self.remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.remove_button.setFixedWidth(28)
-        self.remove_button.clicked.connect(
-            lambda _checked=False, current_channel_index=channel_index: self.remove_requested.emit(
-                current_channel_index
-            )
-        )
+        self.remove_button.clicked.connect(lambda _checked=False: self.remove_requested.emit())
 
         self.visibility_button.toggled.connect(self._on_visibility_toggled)
         self.color_button.color_selected.connect(self._on_color_selected)
 
         layout.addWidget(self.visibility_button)
-        layout.addWidget(self.channel_label, 1)
+        layout.addWidget(self.layer_label, 1)
         layout.addWidget(self.color_button)
         layout.addWidget(self.remove_button)
         self._connect_presentation_events()
         self.refresh_presentation()
 
-    @property
-    def channel_index(self) -> int:
-        return _binding_channel_index(self.binding)
-
-    @property
-    def channel_name(self) -> str:
-        return _binding_channel_name(self.binding)
-
     def refresh_presentation(self) -> None:
         """Render visibility and colormap from the authoritative live layer."""
         self._apply_visibility(self.binding.layer.visible)
-        self._sync_colormap_from_layer()
+        if self._show_colormap:
+            self._sync_colormap_from_layer()
 
     def dispose(self) -> None:
         """Idempotently disconnect this row from its napari layer."""
@@ -152,15 +151,17 @@ class _OverlayChannelRow(QWidget):
             layer.events.visible.disconnect(self._on_layer_visible_changed)
         except (TypeError, RuntimeError, ValueError):
             pass
-        try:
-            layer.events.colormap.disconnect(self._on_layer_colormap_changed)
-        except (TypeError, RuntimeError, ValueError):
-            pass
+        if self._show_colormap:
+            try:
+                layer.events.colormap.disconnect(self._on_layer_colormap_changed)
+            except (TypeError, RuntimeError, ValueError):
+                pass
 
     def _connect_presentation_events(self) -> None:
         layer = self.binding.layer
         layer.events.visible.connect(self._on_layer_visible_changed)
-        layer.events.colormap.connect(self._on_layer_colormap_changed)
+        if self._show_colormap:
+            layer.events.colormap.connect(self._on_layer_colormap_changed)
 
     def _on_layer_visible_changed(self, _event: object) -> None:
         self._apply_visibility(self.binding.layer.visible)
@@ -169,10 +170,10 @@ class _OverlayChannelRow(QWidget):
         self._sync_colormap_from_layer()
 
     def _on_visibility_toggled(self, visible: bool) -> None:
-        self.visibility_change_requested.emit(self.channel_index, visible)
+        self.visibility_change_requested.emit(visible)
 
     def _on_color_selected(self, color: str) -> None:
-        self.color_change_requested.emit(self.channel_index, color)
+        self.color_change_requested.emit(color)
 
     def _apply_visibility(self, visible: bool) -> None:
         # Reflect napari state without turning this programmatic eye update into
@@ -181,7 +182,7 @@ class _OverlayChannelRow(QWidget):
             self.visibility_button.setChecked(visible)
         self.visibility_button.setIcon(create_visibility_eye_icon(visible=visible))
         action = "Hide" if visible else "Show"
-        message = f"{action} channel {self.channel_name}"
+        message = f"{action} {self.accessibility_label}"
         self.visibility_button.setAccessibleName(message)
         self.visibility_button.setToolTip(format_tooltip(message))
 
@@ -219,25 +220,25 @@ def _solid_color_from_layer(layer: object) -> str | None:
 
 def _colormap_presentation_from_layer(
     layer: object,
-) -> _OverlayColormapPresentation | None:
+) -> _ImageColormapPresentation | None:
     colormap = getattr(layer, "colormap", None)
     name = getattr(colormap, "name", None)
     display_name = name if isinstance(name, str) and name else "Custom colormap"
     colors = _colormap_colors_as_hex(getattr(colormap, "colors", None))
     if len(colors) == 1:
-        return _OverlayColormapPresentation(
+        return _ImageColormapPresentation(
             name=display_name,
             colors=colors,
             solid_color=colors[0],
         )
     if len(colors) == 2 and colors[0] == "#000000":
-        return _OverlayColormapPresentation(
+        return _ImageColormapPresentation(
             name=display_name,
             colors=colors,
             solid_color=colors[1],
         )
     if len(colors) >= 2:
-        return _OverlayColormapPresentation(
+        return _ImageColormapPresentation(
             name=display_name,
             colors=colors,
             solid_color=None,
@@ -246,7 +247,7 @@ def _colormap_presentation_from_layer(
     if isinstance(name, str):
         solid_color = _normalized_color_or_none(name)
         if solid_color is not None:
-            return _OverlayColormapPresentation(
+            return _ImageColormapPresentation(
                 name=name,
                 colors=(solid_color,),
                 solid_color=solid_color,
@@ -254,7 +255,7 @@ def _colormap_presentation_from_layer(
     if isinstance(colormap, str):
         solid_color = _normalized_color_or_none(colormap)
         if solid_color is not None:
-            return _OverlayColormapPresentation(
+            return _ImageColormapPresentation(
                 name=colormap,
                 colors=(solid_color,),
                 solid_color=solid_color,
