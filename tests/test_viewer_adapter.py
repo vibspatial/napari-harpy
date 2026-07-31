@@ -784,6 +784,78 @@ def test_viewer_adapter_remove_image_layers_removes_stack_and_overlay_bindings(s
     assert adapter.layer_bindings.get_binding(overlay_layer) is None
 
 
+def test_viewer_adapter_remove_image_stack_layer_preserves_nonmatching_layers(sdata_blobs) -> None:
+    stack_layer = make_image_layer(name="blobs_image")
+    overlay_layer = make_image_layer(name="blobs_image[0]")
+    other_stack_layer = make_image_layer(name="other_image")
+    viewer = DummyViewer([stack_layer, overlay_layer, other_stack_layer])
+    adapter = ViewerAdapter(viewer)
+    adapter.register_image_layer(
+        stack_layer,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="stack",
+    )
+    adapter.register_image_layer(
+        overlay_layer,
+        sdata=sdata_blobs,
+        image_name="blobs_image",
+        coordinate_system="global",
+        image_display_mode="overlay",
+        channel_index=0,
+        channel_name="0",
+    )
+    adapter.register_image_layer(
+        other_stack_layer,
+        sdata=sdata_blobs,
+        image_name="other_image",
+        coordinate_system="global",
+        image_display_mode="stack",
+    )
+    image_events: list[str] = []
+    adapter.image_layers_changed.connect(lambda: image_events.append("changed"))
+
+    removed_layer = adapter.remove_image_stack_layer(
+        sdata_blobs,
+        "blobs_image",
+        "global",
+    )
+
+    assert removed_layer is stack_layer
+    assert list(viewer.layers) == [overlay_layer, other_stack_layer]
+    assert adapter.layer_bindings.get_binding(stack_layer) is None
+    assert adapter.layer_bindings.get_binding(overlay_layer) is not None
+    assert adapter.layer_bindings.get_binding(other_stack_layer) is not None
+    assert image_events == ["changed"]
+
+
+def test_viewer_adapter_remove_image_stack_layer_rejects_duplicate_live_matches(
+    sdata_blobs,
+) -> None:
+    first_layer = make_image_layer(name="blobs_image")
+    second_layer = make_image_layer(name="blobs_image duplicate")
+    viewer = DummyViewer([first_layer, second_layer])
+    adapter = ViewerAdapter(viewer)
+    for layer in (first_layer, second_layer):
+        adapter.register_image_layer(
+            layer,
+            sdata=sdata_blobs,
+            image_name="blobs_image",
+            coordinate_system="global",
+            image_display_mode="stack",
+        )
+
+    with pytest.raises(ValueError, match="multiple live stack layers"):
+        adapter.remove_image_stack_layer(
+            sdata_blobs,
+            "blobs_image",
+            "global",
+        )
+
+    assert list(viewer.layers) == [first_layer, second_layer]
+
+
 def test_viewer_adapter_remove_image_overlay_channel_preserves_nonmatching_layers(sdata_blobs) -> None:
     target_layer = make_image_layer(name="blobs_image[1]")
     sibling_layer = make_image_layer(name="blobs_image[2]")

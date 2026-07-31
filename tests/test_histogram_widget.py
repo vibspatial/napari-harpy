@@ -924,8 +924,8 @@ def test_histogram_widget_stale_row_intent_cannot_mutate_new_target(
     assert card.overlay_row.binding.layer is second_layer
     assert list(viewer.layers) == [first_layer, second_layer]
 
-    stale_row.visibility_change_requested.emit(0, False)
-    stale_row.color_change_requested.emit(0, "#123456")
+    stale_row.visibility_change_requested.emit(False)
+    stale_row.color_change_requested.emit("#123456")
 
     assert first_layer.visible is True
     assert second_layer.visible is True
@@ -1004,8 +1004,8 @@ def test_histogram_widget_shared_row_skips_equal_property_assignments(
     layer.events.visible.connect(visible_events.append)
     layer.events.colormap.connect(colormap_events.append)
 
-    row.visibility_change_requested.emit(0, True)
-    row.color_change_requested.emit(0, "#00FFFF")
+    row.visibility_change_requested.emit(True)
+    row.color_change_requested.emit("#00FFFF")
 
     assert visible_events == []
     assert colormap_events == []
@@ -1051,7 +1051,7 @@ def test_histogram_widget_rejected_live_row_assignment_restores_authoritative_pr
     monkeypatch.setattr(
         widget,
         "_resolve_exact_card_overlay_binding",
-        lambda histogram_card, channel_index: rejecting_binding,
+        lambda histogram_card, expected_binding: rejecting_binding,
     )
 
     row.visibility_button.click()
@@ -1060,7 +1060,7 @@ def test_histogram_widget_rejected_live_row_assignment_restores_authoritative_pr
     assert "visibility rejected" in card.status_label.text()
 
     row.color_button.set_color("#123456")
-    row.color_change_requested.emit(0, "#123456")
+    row.color_change_requested.emit("#123456")
 
     assert row.color_button.current_color == "#00FFFF"
     assert "colormap rejected" in card.status_label.text()
