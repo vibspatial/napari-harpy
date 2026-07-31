@@ -1877,7 +1877,25 @@ def set_loaded_image_bindings(
 
 ## Slice 4b: Shared live image-layer row and Stack controls
 
-Status: specified on 2026-07-31.
+Status: implemented on 2026-07-31.
+
+Implemented outcome:
+
+- `_OverlayChannelRow` was generalized to the presentation-focused
+  `_ImageLayerRow`, with explicit semantic labels and identity-free intent
+  signals.
+- Viewer and Histogram bind their own image, channel, and card identity while
+  retaining their separate live-binding validation and mutation handlers.
+- `_ImageCardWidget` now reconciles zero or one live Stack row; the row owns the
+  binding and the temporary `_loaded_stack_binding` field has been removed.
+- Loaded grayscale stacks expose live eye, colormap, and removal controls.
+  RGB(A) stacks expose eye and removal controls without a misleading colormap
+  picker.
+- `ViewerAdapter.remove_image_stack_layer(...)` removes only the exact Stack
+  representation and preserves unrelated image layers.
+- Stack visibility and colormap presentation synchronize through native napari
+  layer events, while membership and removal continue through
+  `image_layers_changed`.
 
 ### Goal
 

@@ -42,7 +42,7 @@ from napari_harpy.core.spatialdata import (
 )
 from napari_harpy.viewer.adapter import ImageLayerBinding
 from napari_harpy.viewer.points_styling import PointsLoadResult
-from napari_harpy.widgets.overlay_channel_row import (
+from napari_harpy.widgets.image_layer_row import (
     _normalized_color_or_none,
     _solid_color_from_layer,
 )
@@ -565,6 +565,9 @@ class ViewerWidget(QWidget):
             card.overlay_channels_remove_all_requested.connect(self._remove_all_image_overlay_channels)
             card.overlay_channel_visibility_requested.connect(self._change_image_overlay_channel_visibility)
             card.overlay_channel_color_requested.connect(self._change_image_overlay_channel_color)
+            card.stack_remove_requested.connect(self._remove_image_stack_layer)
+            card.stack_visibility_requested.connect(self._change_image_stack_visibility)
+            card.stack_color_requested.connect(self._change_image_stack_color)
             row = _DisclosureElementWidget(
                 title=image_name,
                 object_name=f"viewer_widget_image_row_{image_name}",
@@ -1135,6 +1138,158 @@ class ViewerWidget(QWidget):
         return next(
             (binding for binding in bindings if binding.channel_index == channel_index),
             None,
+        )
+
+    def _resolve_exact_live_stack_binding(
+        self,
+        image_name: str,
+    ) -> ImageLayerBinding | None:
+        """Resolve the Stack row against the Viewer's current live context."""
+        card = self._find_image_card(image_name)
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if card is None or sdata is None or not coordinate_system:
+            return None
+
+        stack_binding, _ = self._get_live_image_bindings(
+            sdata,
+            image_name,
+            coordinate_system,
+            channel_names=card.channel_names,
+        )
+        row = card.stack_row
+        if stack_binding is not None and row is not None and row.binding is stack_binding:
+            return stack_binding
+
+        self._refresh_image_card_membership(card)
+        return None
+
+    def _change_image_stack_visibility(
+        self,
+        image_name: str,
+        visible: bool,
+    ) -> None:
+        """Apply Stack-row intent; napari's ``visible`` event renders it."""
+        card = self._find_image_card(image_name)
+        if card is None:
+            return
+
+        try:
+            binding = self._resolve_exact_live_stack_binding(image_name)
+        except ValueError as error:
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+        if binding is None:
+            return
+
+        layer = binding.layer
+        try:
+            if layer.visible == visible:
+                card.refresh_stack_presentation(binding)
+                return
+            layer.visible = visible
+        except (TypeError, RuntimeError, ValueError) as error:
+            card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f"Could not update Stack visibility: {error}"],
+                kind="error",
+            )
+
+    def _change_image_stack_color(
+        self,
+        image_name: str,
+        color: str,
+    ) -> None:
+        """Apply Stack-row intent; napari's ``colormap`` event renders it."""
+        card = self._find_image_card(image_name)
+        if card is None:
+            return
+
+        try:
+            binding = self._resolve_exact_live_stack_binding(image_name)
+        except ValueError as error:
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[str(error)],
+                kind="error",
+            )
+            return
+        if binding is None:
+            return
+
+        layer = binding.layer
+        if layer.rgb:
+            card.refresh_stack_presentation(binding)
+            return
+
+        normalized_color = _normalized_color_or_none(color)
+        if normalized_color is None:
+            card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f'Could not update Stack color: "{color}" is not a valid color.'],
+                kind="error",
+            )
+            return
+
+        try:
+            if _solid_color_from_layer(layer) == normalized_color:
+                card.refresh_stack_presentation(binding)
+                return
+            layer.colormap = normalized_color
+        except (TypeError, RuntimeError, ValueError) as error:
+            card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f"Could not update Stack color: {error}"],
+                kind="error",
+            )
+
+    def _remove_image_stack_layer(self, image_name: str) -> None:
+        """Remove the exact current Stack binding while preserving other images."""
+        card = self._find_image_card(image_name)
+        sdata = self._app_state.sdata
+        coordinate_system = self._app_state.coordinate_system
+        if card is None or sdata is None or not coordinate_system:
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=["Load a SpatialData object and select a coordinate system first."],
+                kind="error",
+            )
+            return
+
+        binding: ImageLayerBinding | None = None
+        try:
+            binding = self._resolve_exact_live_stack_binding(image_name)
+            if binding is None:
+                return
+            removed_layer = self._app_state.viewer_adapter.remove_image_stack_layer(
+                sdata,
+                image_name,
+                coordinate_system,
+            )
+        except (TypeError, RuntimeError, ValueError) as error:
+            if binding is not None:
+                card.refresh_stack_presentation(binding)
+            self._set_action_feedback(
+                title="Image Stack Error",
+                lines=[f"Could not remove Stack: {error}"],
+                kind="error",
+            )
+            return
+
+        if removed_layer is None:
+            self._refresh_image_card_membership(card)
+            return
+        self._set_action_feedback(
+            title="Image Stack Updated",
+            lines=[f'Removed Stack for image "{image_name}" from the viewer.'],
+            kind="success",
         )
 
     def _change_image_overlay_channel_visibility(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 
 from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
 from qtpy.QtWidgets import (
@@ -19,11 +20,11 @@ from qtpy.QtWidgets import (
 
 from napari_harpy.viewer.adapter import ImageLayerBinding
 from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
-from napari_harpy.widgets.overlay_channel_row import (
+from napari_harpy.widgets.image_layer_row import (
     _binding_channel_index,
     _binding_channel_name,
+    _ImageLayerRow,
     _normalized_color_or_none,
-    _OverlayChannelRow,
     _solid_color_from_layer,
 )
 from napari_harpy.widgets.shared_styles import (
@@ -72,13 +73,25 @@ class _ImageCardWidget(QFrame):
       index, and requested visibility;
     - ``overlay_channel_color_requested`` carries image name, channel index,
       and requested solid color.
+    - ``stack_remove_requested``, ``stack_visibility_requested``, and
+      ``stack_color_requested`` carry focused intent for the one reconciled
+      Stack row.
+
+    When connecting a live row's intent signals, the card uses ``partial`` to
+    capture that row's construction-time binding as ``expected_binding``. Each
+    intent handler then locates the card's current row and requires
+    ``row.binding is expected_binding`` before forwarding the request to
+    ``ViewerWidget``. This rejects delayed signals from a disposed or replaced
+    row before they can target a newly loaded layer.
 
     ``ViewerWidget`` validates the active context and performs each mutation.
-    Visibility and color requests then return through the live layer's native
-    property event directly to the selected row. Completed membership changes
-    instead return through ``ViewerAdapter.image_layers_changed``; the Viewer
-    re-queries complete live image membership and calls
-    ``set_loaded_image_bindings`` to reconcile this card atomically.
+    It also resolves current live napari membership after the card-local
+    identity check. Visibility and color requests then return through the live
+    layer's native property event directly to the selected row. Completed
+    membership changes instead return through
+    ``ViewerAdapter.image_layers_changed``; the Viewer re-queries complete live
+    image membership and calls ``set_loaded_image_bindings`` to reconcile this
+    card atomically.
     """
 
     add_update_requested = Signal(object)
@@ -87,6 +100,9 @@ class _ImageCardWidget(QFrame):
     overlay_channels_remove_all_requested = Signal(str)
     overlay_channel_visibility_requested = Signal(str, int, bool)
     overlay_channel_color_requested = Signal(str, int, str)
+    stack_remove_requested = Signal(str)
+    stack_visibility_requested = Signal(str, bool)
+    stack_color_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -99,10 +115,10 @@ class _ImageCardWidget(QFrame):
         self.image_name = image_name
         self.channel_names = channel_names
         self.channel_error = channel_error
-        self._selected_rows_by_channel_index: dict[int, _OverlayChannelRow] = {}
-        self._selected_channel_order: list[int] = []
+        self._overlay_rows_by_channel_index: dict[int, _ImageLayerRow] = {}
+        self._overlay_channel_order: list[int] = []
         self._last_used_overlay_colors: dict[int, str] = {}
-        self._loaded_stack_binding: ImageLayerBinding | None = None
+        self._stack_row: _ImageLayerRow | None = None
         self._membership_initialized = False
         self._membership_error: str | None = None
         self._channel_names_by_casefold: dict[str, list[tuple[int, str]]] = {}
@@ -220,6 +236,14 @@ class _ImageCardWidget(QFrame):
         self.channel_scroll_area.setWidget(self.channel_list_widget)
         channel_layout.addWidget(self.channel_scroll_area)
 
+        self.stack_row_container = QWidget()
+        self.stack_row_container.setObjectName(f"viewer_widget_stack_row_container_{image_name}")
+        self.stack_row_container.setStyleSheet(_CHANNEL_PANEL_STYLESHEET)
+        self.stack_row_layout = QVBoxLayout(self.stack_row_container)
+        self.stack_row_layout.setContentsMargins(24, 10, 0, 0)
+        self.stack_row_layout.setSpacing(0)
+        self.stack_row_container.hide()
+
         self.add_update_button = QPushButton("Add / Update in viewer")
         self.add_update_button.setObjectName(f"viewer_widget_add_update_image_button_{image_name}")
         self.add_update_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -237,6 +261,7 @@ class _ImageCardWidget(QFrame):
         layout.addLayout(mode_layout)
         layout.addWidget(self.channel_warning_label)
         layout.addWidget(self.channel_panel)
+        layout.addWidget(self.stack_row_container)
         layout.addWidget(self.add_update_button)
 
         self._refresh_overlay_availability()
@@ -244,21 +269,25 @@ class _ImageCardWidget(QFrame):
         self._refresh_membership_presentation()
 
     @property
-    def selected_overlay_rows(self) -> list[_OverlayChannelRow]:
-        """Return selected rows in their rendered napari order."""
-        return [self._selected_rows_by_channel_index[channel_index] for channel_index in self._selected_channel_order]
+    def overlay_rows(self) -> list[_ImageLayerRow]:
+        """Return live Overlay rows in their rendered napari order."""
+        return [self._overlay_rows_by_channel_index[channel_index] for channel_index in self._overlay_channel_order]
+
+    @property
+    def stack_row(self) -> _ImageLayerRow | None:
+        return self._stack_row
 
     @property
     def loaded_overlay_channel_indices(self) -> tuple[int, ...]:
-        return tuple(self._selected_channel_order)
+        return tuple(self._overlay_channel_order)
 
     @property
     def loaded_overlay_channel_names(self) -> tuple[str, ...]:
-        return tuple(row.channel_name for row in self.selected_overlay_rows)
+        return tuple(_binding_channel_name(row.binding) for row in self.overlay_rows)
 
     @property
     def loaded_stack_binding(self) -> ImageLayerBinding | None:
-        return self._loaded_stack_binding
+        return self._stack_row.binding if self._stack_row is not None else None
 
     @property
     def available_channel_names(self) -> tuple[str, ...]:
@@ -270,7 +299,24 @@ class _ImageCardWidget(QFrame):
         stack_binding: ImageLayerBinding | None,
         overlay_bindings: Sequence[ImageLayerBinding],
     ) -> None:
-        """Reconcile one validated, complete live image-membership snapshot."""
+        """Render one complete Stack/Overlay membership snapshot.
+
+        ``ViewerWidget`` builds the snapshot from image layers currently
+        present in napari for the active SpatialData object, image, and
+        coordinate system. This method does not query ``ViewerAdapter`` or
+        inspect the napari viewer.
+
+        ``stack_binding`` and ``overlay_bindings`` describe the entire current
+        membership, not an incremental addition or removal. Before changing
+        any rows, this method validates display modes, Overlay channel
+        identity, duplicate channels, and mutual exclusion between Stack and
+        Overlay membership.
+
+        A valid snapshot updates presentation only: existing rows are retained
+        when their binding identity is unchanged, replaced bindings receive
+        new rows, and absent bindings have their rows disposed. This method
+        never loads, removes, or mutates napari layers.
+        """
         ordered_bindings = tuple(overlay_bindings)
         if stack_binding is not None and stack_binding.image_display_mode != "stack":
             raise ValueError("The stack binding must have image display mode `stack`.")
@@ -293,20 +339,47 @@ class _ImageCardWidget(QFrame):
             seen_channel_indices.add(channel_index)
 
         was_initialized = self._membership_initialized
-        had_stack = self._loaded_stack_binding is not None
-        had_overlays = bool(self._selected_channel_order)
+        had_stack = self._stack_row is not None
+        had_overlays = bool(self._overlay_channel_order)
 
-        self._loaded_stack_binding = stack_binding
         self.set_image_membership_error(None)
+        current_stack_row = self._stack_row
+        if current_stack_row is not None and current_stack_row.binding is not stack_binding:
+            self._stack_row = None
+            current_stack_row.dispose()
+            self.stack_row_layout.removeWidget(current_stack_row)
+            current_stack_row.deleteLater()
+
+        if stack_binding is not None:
+            if self._stack_row is None:
+                is_rgb = stack_binding.layer.rgb
+                display_label = "RGB stack" if is_rgb else "Stack"
+                row = _ImageLayerRow(
+                    stack_binding,
+                    display_label=display_label,
+                    accessibility_label=f"{display_label} for image {self.image_name}",
+                    show_colormap=not is_rgb,
+                    parent=self.stack_row_container,
+                )
+                row.remove_requested.connect(partial(self._emit_stack_remove_requested, stack_binding))
+                row.visibility_change_requested.connect(
+                    partial(self._emit_stack_visibility_requested, stack_binding)
+                )
+                row.color_change_requested.connect(partial(self._emit_stack_color_requested, stack_binding))
+                self._stack_row = row
+                self.stack_row_layout.addWidget(row)
+            else:
+                self._stack_row.refresh_presentation()
+
         next_channel_indices = [_binding_channel_index(binding) for binding in ordered_bindings]
         next_bindings_by_channel_index = {_binding_channel_index(binding): binding for binding in ordered_bindings}
 
-        for channel_index in tuple(self._selected_channel_order):
-            row = self._selected_rows_by_channel_index[channel_index]
+        for channel_index in tuple(self._overlay_channel_order):
+            row = self._overlay_rows_by_channel_index[channel_index]
             next_binding = next_bindings_by_channel_index.get(channel_index)
             if next_binding is row.binding:
                 continue
-            self._selected_rows_by_channel_index.pop(channel_index)
+            self._overlay_rows_by_channel_index.pop(channel_index)
             if next_binding is None:
                 self._remember_row_solid_color(row)
             row.dispose()
@@ -315,25 +388,43 @@ class _ImageCardWidget(QFrame):
 
         for binding in ordered_bindings:
             channel_index = _binding_channel_index(binding)
-            row = self._selected_rows_by_channel_index.get(channel_index)
+            row = self._overlay_rows_by_channel_index.get(channel_index)
             if row is None:
-                row = _OverlayChannelRow(
+                channel_name = _binding_channel_name(binding)
+                row = _ImageLayerRow(
                     binding,
-                    self.channel_list_widget,
+                    display_label=channel_name,
+                    accessibility_label=f"channel {channel_name}",
+                    parent=self.channel_list_widget,
                 )
-                row.remove_requested.connect(self._emit_overlay_channel_remove_requested)
-                row.visibility_change_requested.connect(self._emit_overlay_channel_visibility_requested)
-                row.color_change_requested.connect(self._emit_overlay_channel_color_requested)
-                self._selected_rows_by_channel_index[channel_index] = row
+                row.remove_requested.connect(
+                    partial(
+                        self._emit_overlay_channel_remove_requested,
+                        binding,
+                    )
+                )
+                row.visibility_change_requested.connect(
+                    partial(
+                        self._emit_overlay_channel_visibility_requested,
+                        binding,
+                    )
+                )
+                row.color_change_requested.connect(
+                    partial(
+                        self._emit_overlay_channel_color_requested,
+                        binding,
+                    )
+                )
+                self._overlay_rows_by_channel_index[channel_index] = row
             else:
                 row.refresh_presentation()
 
-        for row in self._selected_rows_by_channel_index.values():
+        for row in self._overlay_rows_by_channel_index.values():
             self.channel_list_layout.removeWidget(row)
         for channel_index in next_channel_indices:
-            self.channel_list_layout.addWidget(self._selected_rows_by_channel_index[channel_index])
+            self.channel_list_layout.addWidget(self._overlay_rows_by_channel_index[channel_index])
 
-        self._selected_channel_order = next_channel_indices
+        self._overlay_channel_order = next_channel_indices
         self._refresh_search_model()
         self._refresh_membership_presentation()
 
@@ -353,14 +444,22 @@ class _ImageCardWidget(QFrame):
         binding: ImageLayerBinding,
     ) -> None:
         """Refresh one row only when it owns the resolved live binding."""
-        row = self._selected_rows_by_channel_index.get(channel_index)
+        row = self._overlay_rows_by_channel_index.get(channel_index)
         if row is None or row.binding is not binding:
             return
         row.refresh_presentation()
 
+    def refresh_stack_presentation(self, binding: ImageLayerBinding) -> None:
+        """Refresh the Stack row only when it owns the resolved live binding."""
+        row = self._stack_row
+        if row is not None and row.binding is binding:
+            row.refresh_presentation()
+
     def dispose(self) -> None:
-        """Disconnect all selected rows from their live napari layers."""
-        for row in self._selected_rows_by_channel_index.values():
+        """Disconnect all live rows from their napari layers."""
+        if self._stack_row is not None:
+            self._stack_row.dispose()
+        for row in self._overlay_rows_by_channel_index.values():
             row.dispose()
 
     def set_image_membership_error(self, message: str | None) -> None:
@@ -382,12 +481,12 @@ class _ImageCardWidget(QFrame):
 
     def cache_overlay_channel_color(self, channel_index: int) -> None:
         """Cache the current live solid color for one selected row."""
-        row = self._selected_rows_by_channel_index.get(channel_index)
+        row = self._overlay_rows_by_channel_index.get(channel_index)
         if row is not None:
             self._remember_row_solid_color(row)
 
     def cache_all_overlay_channel_colors(self) -> None:
-        for row in self.selected_overlay_rows:
+        for row in self.overlay_rows:
             self._remember_row_solid_color(row)
 
     def _refresh_overlay_availability(self) -> None:
@@ -405,8 +504,10 @@ class _ImageCardWidget(QFrame):
         self.add_update_button.setEnabled(self._membership_error is None)
         self.overlay_toggle.setEnabled(self.channel_error is None and bool(self.channel_names))
         self.channel_search_input.setEnabled(is_available)
-        self.remove_all_channels_button.setEnabled(is_available and bool(self._selected_channel_order))
-        for row in self._selected_rows_by_channel_index.values():
+        self.remove_all_channels_button.setEnabled(is_available and bool(self._overlay_channel_order))
+        if self._stack_row is not None:
+            self._stack_row.setEnabled(self._membership_error is None)
+        for row in self._overlay_rows_by_channel_index.values():
             row.setEnabled(is_available)
 
         self.channel_warning_label.setText(warning or "")
@@ -422,27 +523,43 @@ class _ImageCardWidget(QFrame):
         if checked:
             with QSignalBlocker(self.overlay_toggle):
                 self.overlay_toggle.setChecked(False)
-            self.channel_panel.setVisible(False)
-            self.add_update_button.setVisible(True)
+            self._refresh_mode_presentation()
             return
 
         if not self.overlay_toggle.isChecked():
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(True)
+        self._refresh_mode_presentation()
 
     def _on_overlay_toggled(self, checked: bool) -> None:
         if checked:
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(False)
-            self.channel_panel.setVisible(True)
-            self.add_update_button.setVisible(False)
+            self._refresh_mode_presentation()
             return
 
-        self.channel_panel.setVisible(False)
-        self.add_update_button.setVisible(True)
         if not self.stack_toggle.isChecked():
             with QSignalBlocker(self.stack_toggle):
                 self.stack_toggle.setChecked(True)
+        self._refresh_mode_presentation()
+
+    def _refresh_mode_presentation(self) -> None:
+        """Render editor content from selected mode and live Stack membership.
+
+        Selected mode | Stack loaded | Visible content
+        Overlay       | either       | Overlay channel panel
+        Stack         | no           | Add/Update button
+        Stack         | yes          | Live Stack row
+
+        A Stack layer can be added or removed through napari while the selected
+        mode remains unchanged. Refresh this presentation after membership
+        updates as well as after mode-toggle events, so Stack switches
+        correctly between its pending button and live row.
+        """
+        stack_selected = self.stack_toggle.isChecked()
+        self.channel_panel.setVisible(not stack_selected)
+        self.stack_row_container.setVisible(stack_selected and self._stack_row is not None)
+        self.add_update_button.setVisible(stack_selected and self._stack_row is None)
 
     def display_mode(self) -> str:
         return "overlay" if self.overlay_toggle.isChecked() else "stack"
@@ -469,7 +586,7 @@ class _ImageCardWidget(QFrame):
         if resolved is None:
             return
         channel_index, _channel_name = resolved
-        if channel_index in self._selected_rows_by_channel_index:
+        if channel_index in self._overlay_rows_by_channel_index:
             return
         self.overlay_channel_add_requested.emit(
             self.image_name,
@@ -496,14 +613,25 @@ class _ImageCardWidget(QFrame):
         if resolved is not None and resolved[0] == channel_index:
             self.channel_search_input.clear()
 
-    def _emit_overlay_channel_remove_requested(self, channel_index: int) -> None:
+    def _emit_overlay_channel_remove_requested(
+        self,
+        expected_binding: ImageLayerBinding,
+    ) -> None:
+        channel_index = _binding_channel_index(expected_binding)
+        row = self._overlay_rows_by_channel_index.get(channel_index)
+        if row is None or row.binding is not expected_binding:
+            return
         self.overlay_channel_remove_requested.emit(self.image_name, channel_index)
 
     def _emit_overlay_channel_visibility_requested(
         self,
-        channel_index: int,
+        expected_binding: ImageLayerBinding,
         visible: bool,
     ) -> None:
+        channel_index = _binding_channel_index(expected_binding)
+        row = self._overlay_rows_by_channel_index.get(channel_index)
+        if row is None or row.binding is not expected_binding:
+            return
         self.overlay_channel_visibility_requested.emit(
             self.image_name,
             channel_index,
@@ -512,22 +640,49 @@ class _ImageCardWidget(QFrame):
 
     def _emit_overlay_channel_color_requested(
         self,
-        channel_index: int,
+        expected_binding: ImageLayerBinding,
         color: str,
     ) -> None:
+        channel_index = _binding_channel_index(expected_binding)
+        row = self._overlay_rows_by_channel_index.get(channel_index)
+        if row is None or row.binding is not expected_binding:
+            return
         self.overlay_channel_color_requested.emit(
             self.image_name,
             channel_index,
             color,
         )
 
+    def _emit_stack_remove_requested(self, expected_binding: ImageLayerBinding) -> None:
+        if self._stack_row is None or self._stack_row.binding is not expected_binding:
+            return
+        self.stack_remove_requested.emit(self.image_name)
+
+    def _emit_stack_visibility_requested(
+        self,
+        expected_binding: ImageLayerBinding,
+        visible: bool,
+    ) -> None:
+        if self._stack_row is None or self._stack_row.binding is not expected_binding:
+            return
+        self.stack_visibility_requested.emit(self.image_name, visible)
+
+    def _emit_stack_color_requested(
+        self,
+        expected_binding: ImageLayerBinding,
+        color: str,
+    ) -> None:
+        if self._stack_row is None or self._stack_row.binding is not expected_binding:
+            return
+        self.stack_color_requested.emit(self.image_name, color)
+
     def _emit_remove_all_requested(self, _checked: bool = False) -> None:
-        if not self._selected_channel_order:
+        if not self._overlay_channel_order:
             return
         self.overlay_channels_remove_all_requested.emit(self.image_name)
 
     def _refresh_search_model(self) -> None:
-        selected_channel_indices = set(self._selected_channel_order)
+        selected_channel_indices = set(self._overlay_channel_order)
         available_names = [
             channel_name
             for channel_index, channel_name in enumerate(self.channel_names)
@@ -536,14 +691,15 @@ class _ImageCardWidget(QFrame):
         self._channel_completer_model.setStringList(available_names)
 
     def _refresh_membership_presentation(self) -> None:
-        selected_count = len(self._selected_channel_order)
+        selected_count = len(self._overlay_channel_order)
         count_text = f"{selected_count} channel" if selected_count == 1 else f"{selected_count} channels"
         self.selected_count_label.setText(count_text)
         self.no_selected_channels_label.setVisible(selected_count == 0)
         self.channel_scroll_area.setVisible(selected_count > 0)
         self.remove_all_channels_button.setVisible(selected_count > 0)
-        self._set_channel_scroll_height(self.selected_overlay_rows)
+        self._set_channel_scroll_height(self.overlay_rows)
         self._refresh_overlay_availability()
+        self._refresh_mode_presentation()
 
     def _set_channel_scroll_height(self, channel_rows: list[QWidget]) -> None:
         visible_rows = channel_rows[:_MAX_VISIBLE_OVERLAY_CHANNELS]
@@ -565,7 +721,7 @@ class _ImageCardWidget(QFrame):
 
         used_colors = {
             color
-            for row in self.selected_overlay_rows
+            for row in self.overlay_rows
             if (color := _solid_color_from_layer(row.binding.layer)) is not None
         }
         for color in DEFAULT_OVERLAY_COLORS:
@@ -575,7 +731,7 @@ class _ImageCardWidget(QFrame):
 
         return DEFAULT_OVERLAY_COLORS[len(used_colors) % len(DEFAULT_OVERLAY_COLORS)]
 
-    def _remember_row_solid_color(self, row: _OverlayChannelRow) -> None:
+    def _remember_row_solid_color(self, row: _ImageLayerRow) -> None:
         color = _solid_color_from_layer(row.binding.layer)
         if color is not None:
-            self._last_used_overlay_colors[row.channel_index] = color
+            self._last_used_overlay_colors[_binding_channel_index(row.binding)] = color
