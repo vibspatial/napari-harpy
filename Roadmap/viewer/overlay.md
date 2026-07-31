@@ -688,8 +688,8 @@ Slice 2 removes the aggregate overlay checkbox request path. The existing image
 - never applies the complete overlay membership;
 - retains only the stack request behavior needed until Slice 4.
 
-Do not complete the radio-button and contextual `Load stack` redesign here.
-Slice 4 owns that final mode cleanup and label change.
+Do not complete the final mode-control and contextual `Load stack` redesign
+here. Slice 4 owns that cleanup and label change.
 
 Existing `ImageLoadRequest` code may remain only where the temporary stack path
 still needs it. Remove overlay-only request-building helpers that depend on the
@@ -2026,10 +2026,13 @@ presentation are available.
 
 ### Mode controls
 
-- Replace the mutually managed Stack/Overlay checkboxes with
-  `QRadioButton` controls in an exclusive `QButtonGroup`.
-- Exactly one editor mode is selected.
-- Default to Stack only when membership hydration does not select Overlay.
+- Use Harpy-styled `QCheckBox` controls with Overlay on the left and Stack on
+  the right.
+- Manage the checkboxes as mutually exclusive mode choices so exactly one
+  editor mode is always selected.
+- Default to Overlay when no live image membership exists.
+- Initial membership hydration selects Stack for an existing Stack binding and
+  Overlay for existing Overlay bindings.
 - Selecting a mode changes presentation only:
   - selecting Overlay shows the overlay composer;
   - selecting Stack shows either its live row or pending action.
@@ -2080,12 +2083,13 @@ stack_load_requested = Signal(str)
 - Adding the first overlay replaces the Stack only after channel acceptance.
 - Mode switching alone never mutates napari layers.
 - Creating or rebuilding cards never loads images automatically.
-- Stack and Overlay controls have native mutually exclusive semantics.
+- Stack and Overlay checkboxes remain mutually exclusive despite their
+  checkbox presentation.
 
 ### Focused tests
 
-- Default Stack mode without automatic loading.
-- Mutually exclusive radio controls.
+- Default Overlay mode without automatic loading.
+- Mutually exclusive Harpy-styled checkbox controls with Overlay first.
 - Existing stack and overlay mode hydration.
 - Stack-loaded row versus stack-pending action visibility.
 - Mode switching without adapter calls or layer mutations.

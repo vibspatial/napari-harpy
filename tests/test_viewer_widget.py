@@ -14,7 +14,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QComboBox, QCompleter, QRadioButton
+from qtpy.QtWidgets import QCheckBox, QComboBox, QCompleter
 from shapely.geometry import LineString, Polygon
 from spatialdata import SpatialData
 from spatialdata.models import ShapesModel
@@ -642,10 +642,10 @@ def test_viewer_widget_refreshes_cards_when_shared_sdata_changes(qtbot, sdata_bl
         "blobs_polygons",
     ]
     assert widget.image_cards[0].channel_names == ["0", "1", "2"]
-    assert widget.image_cards[0].stack_toggle.text() == "stack"
-    assert widget.image_cards[0].stack_toggle.isChecked()
     assert widget.image_cards[0].overlay_toggle.text() == "overlay"
-    assert not widget.image_cards[0].overlay_toggle.isChecked()
+    assert widget.image_cards[0].overlay_toggle.isChecked()
+    assert widget.image_cards[0].stack_toggle.text() == "stack"
+    assert not widget.image_cards[0].stack_toggle.isChecked()
     assert widget.image_cards[0].available_channel_names == ("0", "1", "2")
     assert widget.image_cards[0].loaded_overlay_channel_indices == ()
     assert widget.image_cards[0].selected_count_label.text() == "0 channels"
@@ -835,7 +835,7 @@ def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbo
 
     assert first_image_row.is_expanded()
     assert not first_image_row.detail_widget.isHidden()
-    assert widget.image_cards[0].stack_toggle.isChecked()
+    assert widget.image_cards[0].overlay_toggle.isChecked()
 
     second_image_row.toggle_button.click()
 
@@ -908,6 +908,7 @@ def test_viewer_widget_progressive_disclosure_actions_still_load_layers(qtbot, s
 
     widget.images_section_toggle.click()
     widget.image_rows[0].toggle_button.click()
+    widget.image_cards[0].stack_toggle.setChecked(True)
     widget.image_cards[0].stack_load_button.click()
 
     assert len(viewer.layers) == 1
@@ -1588,7 +1589,7 @@ def test_viewer_widget_ignores_shapes_element_events_for_other_sdata_or_coordina
     assert "1 shapes element(s)" in widget.summary_label.text()
 
 
-def test_viewer_widget_image_mode_radio_buttons_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
+def test_viewer_widget_image_mode_checkboxes_are_mutually_exclusive(qtbot, sdata_blobs) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
 
@@ -1599,31 +1600,38 @@ def test_viewer_widget_image_mode_radio_buttons_are_mutually_exclusive(qtbot, sd
 
     image_card = widget.image_cards[0]
 
-    assert isinstance(image_card.stack_toggle, QRadioButton)
-    assert isinstance(image_card.overlay_toggle, QRadioButton)
-    assert image_card.display_mode_group.exclusive()
-    assert image_card.stack_toggle.isChecked()
-    assert not image_card.overlay_toggle.isChecked()
-    assert image_card.channel_panel.isHidden()
+    assert isinstance(image_card.overlay_toggle, QCheckBox)
+    assert isinstance(image_card.stack_toggle, QCheckBox)
+    mode_layout = image_card.layout().itemAt(0).layout()
+    assert mode_layout.itemAt(0).widget() is image_card.overlay_toggle
+    assert mode_layout.itemAt(1).widget() is image_card.stack_toggle
+    assert image_card.overlay_toggle.isChecked()
+    assert not image_card.stack_toggle.isChecked()
+    assert not image_card.channel_panel.isHidden()
     assert image_card.channel_section_label.text() == "Channels"
     assert image_card.stack_load_button.text() == "Load in viewer"
-    assert image_card.stack_load_button.isEnabled()
+    assert image_card.stack_load_button.isHidden()
     assert not hasattr(image_card, "add_update_button")
     assert not hasattr(image_card, "add_update_requested")
 
-    image_card.overlay_toggle.setChecked(True)
+    image_card.overlay_toggle.setChecked(False)
 
-    assert not image_card.stack_toggle.isChecked()
     assert image_card.overlay_toggle.isChecked()
-    assert not image_card.channel_panel.isHidden()
-    assert image_card.stack_load_button.isHidden()
+    assert not image_card.stack_toggle.isChecked()
 
     image_card.stack_toggle.setChecked(True)
 
-    assert image_card.stack_toggle.isChecked()
     assert not image_card.overlay_toggle.isChecked()
+    assert image_card.stack_toggle.isChecked()
     assert image_card.channel_panel.isHidden()
     assert image_card.stack_load_button.isEnabled()
+
+    image_card.overlay_toggle.setChecked(True)
+
+    assert image_card.overlay_toggle.isChecked()
+    assert not image_card.stack_toggle.isChecked()
+    assert not image_card.channel_panel.isHidden()
+    assert image_card.stack_load_button.isHidden()
 
 
 def test_viewer_widget_overlay_composer_keeps_many_channels_searchable(qtbot, monkeypatch) -> None:
@@ -2169,6 +2177,7 @@ def test_viewer_widget_load_image_stack_creates_layer_and_live_row(qtbot, sdata_
 
     first_card = widget.image_cards[0]
 
+    first_card.stack_toggle.setChecked(True)
     first_card.stack_load_button.click()
 
     assert len(viewer.layers) == 1
@@ -2195,6 +2204,7 @@ def test_viewer_widget_loaded_stack_has_no_update_action(qtbot, sdata_blobs) -> 
 
     first_card = widget.image_cards[0]
 
+    first_card.stack_toggle.setChecked(True)
     first_card.stack_load_button.click()
     first_layer = viewer.layers[0]
 
@@ -2216,6 +2226,7 @@ def test_viewer_widget_mode_switch_is_presentation_only_until_first_overlay_is_a
         widget.app_state.set_sdata(sdata_blobs)
 
     card = widget.image_cards[0]
+    card.stack_toggle.setChecked(True)
     card.stack_load_button.click()
     stack_layer = viewer.layers[0]
 
@@ -2789,6 +2800,7 @@ def test_viewer_widget_stack_row_syncs_visibility_colormap_and_removal(
         widget.app_state.set_sdata(sdata_blobs)
 
     image_card = widget.image_cards[0]
+    image_card.stack_toggle.setChecked(True)
     image_card.stack_load_button.click()
     layer = viewer.layers[0]
     row = image_card.stack_row
@@ -3022,6 +3034,7 @@ def test_viewer_widget_load_image_stack_uses_selected_coordinate_system(qtbot, m
     widget.coordinate_system_combo.setCurrentIndex(1)
     image_card = widget.image_cards[0]
 
+    image_card.stack_toggle.setChecked(True)
     image_card.stack_load_button.click()
 
     assert recorded_calls == [(fake_sdata, "image_local", "local", "stack")]

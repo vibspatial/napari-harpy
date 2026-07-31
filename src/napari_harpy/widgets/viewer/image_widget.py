@@ -3,15 +3,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from functools import partial
 
-from qtpy.QtCore import QStringListModel, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, QStringListModel, Qt, Signal
 from qtpy.QtWidgets import (
-    QButtonGroup,
+    QCheckBox,
     QCompleter,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -29,6 +28,7 @@ from napari_harpy.widgets.image_layer_row import (
 )
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
+    CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
     WIDGET_TEXT_MUTED_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
@@ -136,21 +136,17 @@ class _ImageCardWidget(QFrame):
         mode_layout.setContentsMargins(0, 0, 0, 0)
         mode_layout.setSpacing(16)
 
-        self.display_mode_group = QButtonGroup(self)
-        self.display_mode_group.setExclusive(True)
-
-        self.stack_toggle = QRadioButton("stack")
-        self.stack_toggle.setObjectName(f"viewer_widget_stack_toggle_{image_name}")
-
-        self.overlay_toggle = QRadioButton("overlay")
+        self.overlay_toggle = QCheckBox("overlay")
         self.overlay_toggle.setObjectName(f"viewer_widget_overlay_toggle_{image_name}")
+        self.overlay_toggle.setStyleSheet(CHECKBOX_STYLESHEET)
+        self.overlay_toggle.setChecked(True)
 
-        self.display_mode_group.addButton(self.stack_toggle)
-        self.display_mode_group.addButton(self.overlay_toggle)
-        self.stack_toggle.setChecked(True)
+        self.stack_toggle = QCheckBox("stack")
+        self.stack_toggle.setObjectName(f"viewer_widget_stack_toggle_{image_name}")
+        self.stack_toggle.setStyleSheet(CHECKBOX_STYLESHEET)
 
-        mode_layout.addWidget(self.stack_toggle)
         mode_layout.addWidget(self.overlay_toggle)
+        mode_layout.addWidget(self.stack_toggle)
         mode_layout.addStretch(1)
 
         self.channel_warning_label = QLabel()
@@ -248,8 +244,8 @@ class _ImageCardWidget(QFrame):
         self.stack_load_button.setToolTip("")
 
         self.stack_load_button.clicked.connect(self._emit_stack_load_request)
-        self.stack_toggle.toggled.connect(self._on_display_mode_toggled)
-        self.overlay_toggle.toggled.connect(self._on_display_mode_toggled)
+        self.overlay_toggle.toggled.connect(self._on_overlay_toggled)
+        self.stack_toggle.toggled.connect(self._on_stack_toggled)
         self._channel_completer.activated[str].connect(self._request_channel_from_text)
         self.channel_search_input.returnPressed.connect(self._request_channel_from_input)
         self.remove_all_channels_button.clicked.connect(self._emit_remove_all_requested)
@@ -423,7 +419,7 @@ class _ImageCardWidget(QFrame):
         has_stack = stack_binding is not None
         has_overlays = bool(next_channel_indices)
         if not was_initialized:
-            self._select_display_mode("overlay" if has_overlays else "stack")
+            self._select_display_mode("stack" if has_stack else "overlay")
         elif not had_overlays and has_overlays:
             self._select_display_mode("overlay")
         elif not had_stack and has_stack:
@@ -511,9 +507,29 @@ class _ImageCardWidget(QFrame):
         if not toggle.isChecked():
             toggle.setChecked(True)
 
-    def _on_display_mode_toggled(self, checked: bool) -> None:
+    def _on_overlay_toggled(self, checked: bool) -> None:
         if checked:
+            with QSignalBlocker(self.stack_toggle):
+                self.stack_toggle.setChecked(False)
             self._refresh_mode_presentation()
+            return
+
+        if not self.stack_toggle.isChecked():
+            with QSignalBlocker(self.overlay_toggle):
+                self.overlay_toggle.setChecked(True)
+        self._refresh_mode_presentation()
+
+    def _on_stack_toggled(self, checked: bool) -> None:
+        if checked:
+            with QSignalBlocker(self.overlay_toggle):
+                self.overlay_toggle.setChecked(False)
+            self._refresh_mode_presentation()
+            return
+
+        if not self.overlay_toggle.isChecked():
+            with QSignalBlocker(self.stack_toggle):
+                self.stack_toggle.setChecked(True)
+        self._refresh_mode_presentation()
 
     def _refresh_mode_presentation(self) -> None:
         """Render editor content from selected mode and live Stack membership.
