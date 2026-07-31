@@ -1158,7 +1158,21 @@ events, a general subscription framework, or a full colormap picker.
 
 ## Slice 3b: Shared overlay row and Histogram live-overlay alignment
 
-Status: specified on 2026-07-30.
+Status: implemented on 2026-07-30.
+
+Implementation result:
+
+- `_OverlayChannelRow` and colormap interpretation now live in a focused shared
+  widget module used by Viewer and Histogram.
+- Viewer retains its Slice 3a behavior and fixed-binding row reconstruction.
+- Each Histogram card reconciles invalid, missing, unique, and ambiguous overlay
+  matches and owns at most one shared live row.
+- Histogram live-row visibility, color, and removal intent is re-resolved
+  against the exact current binding before mutation.
+- Native napari visibility and colormap events update every bound peer row
+  independently; adapter lifecycle events remain membership-only.
+- Histogram pending load color and contrast-limit synchronization remain
+  separate from live-row presentation.
 
 ### Dependency
 
