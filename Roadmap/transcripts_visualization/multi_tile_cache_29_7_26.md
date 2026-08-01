@@ -412,7 +412,7 @@ Backed SpatialData points element
                          │
                          ▼
               PointsSourceValidator
-             footers + bounded scans
+          file metadata + bounded scans
                          │
                          ▼
               ValidatedPointsSource
@@ -737,7 +737,7 @@ A representative model is:
 @dataclass(frozen=True)
 class ValidatedPointsSource:
     source: ParquetPointsSource
-    fragments: tuple[ParquetSourceFragment, ...]
+    files: tuple[ParquetSourceFile, ...]
     selected_schema: pa.Schema
     row_count: int
     bounds: PointsBounds
@@ -750,7 +750,7 @@ class ValidatedPointsSource:
 
 `selected_schema` contains only the caller-selected `x`, `y`, and `value` fields
 in canonical semantic order. Unselected source columns are not part of the
-build contract and need not match across fragments.
+build contract and need not match across source files.
 
 The nested `source` retains the selected columns and canonical SpatialData
 identity without duplicating path state. Its `element_path` and `parquet_path`
@@ -796,8 +796,8 @@ cancellation protocol. Those orchestration concerns may be added later without
 changing the validated-source or cache-format contracts.
 
 The API does not accept a source transcript-id column. Validation establishes
-deterministic fragment offsets, and cache construction generates a Harpy-owned
-`uint64 point_id` from each fragment offset and row position.
+deterministic source-file offsets, and cache construction generates a Harpy-owned
+`uint64 point_id` from each source-file offset and row position.
 
 For the supported SpatialData contract, the resolver derives the element path
 as `points/<points_name>` and its `points.parquet` dataset from the backed store
@@ -811,9 +811,9 @@ A future standalone or non-canonical Parquet entry point should use a separate
 source contract. Arbitrary filtered or transformed Dask dataframes are not
 silently assumed to map one-to-one to the canonical physical dataset.
 
-### Private footer source inspection
+### Private Parquet source inventory
 
-The validator first constructs a private `_FooterPointsSource` that:
+The validator first constructs a private `_ParquetSourceInventory` that:
 
 - verifies that the path is a readable Parquet dataset;
 - creates a deterministic relative file inventory;
@@ -821,12 +821,12 @@ The validator first constructs a private `_FooterPointsSource` that:
 - validates required column names and physical types;
 - collects file sizes, row counts, ordered row-group row counts and compressed
   sizes;
-- computes deterministic source-fragment row offsets;
+- computes deterministic source-file row offsets;
 - provides the complete metadata input for the versioned source signature.
 
-This private object does not contain preliminary coordinate bounds, footer null
-statistics, or decisions about whether scanning can be skipped. It inspects
-Parquet footers without decoding point rows and is not accepted by the cache
+This private object does not contain preliminary coordinate bounds, file-metadata
+null statistics, or decisions about whether scanning can be skipped. It reads
+Parquet file metadata without decoding point rows and is not accepted by the cache
 builder.
 
 ### Bounded content validation
@@ -838,7 +838,7 @@ Parquet data pages for the selected `x`, `y`, and `value` columns. It establishe
 - missing or normalized-empty values;
 - normalized value counts;
 - exact coordinate bounds;
-- scanned row counts per row group, fragment, and complete source.
+- scanned row counts per row group, source file, and complete source.
 
 Reads use bounded PyArrow batches. Dictionary-encoded values are handled by
 normalizing dictionary values once and aggregating their integer indices rather
@@ -848,14 +848,14 @@ persisted.
 
 The authoritative source for each build fact is fixed:
 
-- row count and fragment offsets come from Parquet metadata;
+- row count and source-file offsets come from Parquet metadata;
 - coordinate bounds and normalized value counts come from the streaming scan;
 - stale-source detection uses the versioned source signature.
 
 The validator must fail clearly when required correctness cannot be established.
 It constructs `ValidatedPointsSource` only after the scanned counts agree with
-the footer source, value counts sum to the source row count, and a repeated
-footer inspection produces the same source signature.
+the source inventory, value counts sum to the source row count, and a repeated
+inventory inspection produces the same source signature.
 
 ### Validation acceptance dataset
 
@@ -876,7 +876,7 @@ At the time of investigation it contains:
 - `y` bounds approximately `[22.7206, 37581.4706]`;
 
 The validated source must contain those counts and measured coordinate bounds
-without materializing the complete dataframe, produce deterministic fragment
+without materializing the complete dataframe, produce deterministic source-file
 offsets and a repeatable source signature, and remain within a documented
 bounded-memory envelope.
 
@@ -996,11 +996,11 @@ Two identities solve different problems.
 : Evidence that the cache still corresponds to the canonical points source.
 
 The first source-signature method is
-`harpy-parquet-footer-inventory-sha256-v1`. It hashes the exact canonical UTF-8
+`harpy-parquet-source-inventory-sha256-v1`. It hashes the exact canonical UTF-8
 JSON representation specified by the validation roadmap. The payload contains
 the SpatialData-relative element path, selected `x`, `y`, and `value` names and
-normalized type descriptors, ordered dataset-relative fragments, file sizes,
-available nanosecond modification times, footer and row-group row counts,
+normalized type descriptors, ordered dataset-relative source files, file sizes,
+available nanosecond modification times, file-metadata and row-group row counts,
 row-group compressed sizes, and total row count.
 
 It excludes the absolute host path, Parquet min/max statistics, performance
@@ -1017,10 +1017,10 @@ repeat the bounded content scan, or independently recompute source row counts,
 bounds, and normalized value counts from point data.
 
 `_read_current_source_signature(validated)` is metadata-only. It freshly
-discovers the current Parquet files, reads their filesystem and footer metadata,
-constructs `_FooterPointsSource`, and applies the versioned signature method. It
+discovers the current Parquet files, reads their filesystem and file metadata,
+constructs `_ParquetSourceInventory`, and applies the versioned signature method. It
 does not decode the `x`, `y`, or `value` data pages and must not reuse the stale
-footer object retained from validation.
+source inventory retained from validation.
 
 The initial builder flow is:
 
@@ -1170,7 +1170,7 @@ value_id: uint32
 point_id: uint64
 ```
 
-`point_id` is the Harpy-owned identity generated from deterministic fragment
+`point_id` is the Harpy-owned identity generated from deterministic source-file
 offsets and row positions before sampling and propagated unchanged through
 every level. It is never written back to canonical SpatialData. The renderer
 does not upload it to the GPU unless a measured picking design requires that.
@@ -1229,12 +1229,12 @@ being added.
 Sampling begins by assigning every source row a Harpy-owned `uint64 point_id`:
 
 ```text
-point_id = fragment_row_offset + row_position_within_fragment
+point_id = source_file_row_offset + row_position_within_file
 ```
 
-The policy name is `harpy-fragment-row-offset-uint64-v1`.
+The policy name is `harpy-source-file-row-offset-uint64-v1`.
 
-Validation establishes deterministic dataset-relative fragment ordering and
+Validation establishes deterministic dataset-relative source-file ordering and
 row offsets. The builder generates ids batch by batch without materializing a
 full-source identity array. Reproducibility is guaranteed only while the
 validated file inventory and row order remain stable; the versioned source
@@ -1504,8 +1504,8 @@ Deliverables:
 - create `core/multi_scale_cache_points/` as the new implementation home;
 - implement immutable unresolved and validated source models;
 - resolve backed SpatialData points elements to explicit Parquet datasets;
-- implement deterministic Parquet file inventory and fragment offsets;
-- construct the private footer-backed source inventory and validate the selected
+- implement deterministic Parquet file inventory and source-file offsets;
+- construct the private metadata-backed source inventory and validate the selected
   schema;
 - implement one bounded PyArrow scan over the selected point data;
 - build the normalized value table efficiently;
@@ -1523,7 +1523,7 @@ Exit criteria:
 - missing or incompatible Parquet sources fail before cache writing;
 - metadata-only facts avoid full scans;
 - all streaming reads have bounded batch sizes;
-- internal point ids can be derived deterministically from validated fragment
+- internal point ids can be derived deterministically from validated source-file
   offsets;
 - the public validation API accepts no caller-supplied identity column;
 - the initial validation API exposes no progress or cancellation protocol;
@@ -1735,7 +1735,7 @@ Test:
 - missing, empty, and whitespace-padded normalized values;
 - normalization-equivalent raw values merge without collision telemetry;
 - dictionary-encoded and plain-string values;
-- deterministic fragment offsets and internal point ids;
+- deterministic source-file offsets and internal point ids;
 - repeatable source signatures and inventory-change detection;
 - bounded batch reads;
 - no dependency on Dask graph inspection;
@@ -1747,7 +1747,7 @@ Test:
 
 - source-signature mismatch before staging begins;
 - source-signature mismatch immediately before publication;
-- footer-inspection failure at either construction guard;
+- source-metadata-inspection failure at either construction guard;
 - failed guards preserve the existing completed cache and never expose staging;
 - construction guards perform no point-data scan or source-content
   reconciliation;
@@ -1912,7 +1912,7 @@ The next work should be:
 1. create the empty `core/multi_scale_cache_points/` package boundary;
 2. define unresolved and validated Parquet source models;
 3. implement explicit SpatialData-to-Parquet resolution;
-4. implement footer-first validation and bounded PyArrow content scans;
+4. implement source-inventory-first validation and bounded PyArrow content scans;
 5. implement the versioned source signature and internal point-identity policy;
 6. complete V5 and freeze the functional validation contract at Gate C;
 7. run the V6 Xenium benchmark, profiling, and hardening work;
