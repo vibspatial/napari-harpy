@@ -814,45 +814,31 @@ It returns only the lowercase hexadecimal digest. Callers record
 
 Do not introduce a `PointIdentityPolicy` dataclass or enum in V3. The complete
 versioned string is the policy value later stored by `ValidatedPointsSource` and
-cache metadata.
+cache metadata. Do not add a scalar `point_id_for_row` helper: it has no
+production consumer, and cache construction must not call Python once per
+source row.
 
-The scalar identity helper contract is:
-
-```python
-def point_id_for_row(
-    source_file: ParquetSourceFile,
-    row_position: int,
-) -> int: ...
-```
-
-`row_position` is zero-based within `source_file`. It must be an integer other
-than `bool` and satisfy
-`0 <= row_position < source_file.row_count`. The result is:
+The policy fixes the identity formula as:
 
 ```text
 source_file.row_offset + row_position
 ```
 
-The helper returns a Python `int` whose value is valid as `uint64`; it does not
-create a NumPy or Arrow scalar or array. The cache writer later materializes
-bounded `uint64` batches. Passing `ParquetSourceFile` rather than a source-file
-index makes the required validated row count and global offset explicit and
-allows files to be processed independently.
+Here `row_position` is zero-based within the source file. V2 already establishes
+contiguous source-file offsets and restricts the complete source row count to at
+most `2**64 - 1`, so the formula defines unique ids in `[0, row_count)` without
+materializing them. V3 records the versioned policy but adds no row-wise identity
+implementation.
 
-V2 already restricts the complete source row count to at most `2**64 - 1`.
-Therefore valid ids occupy `[0, row_count)` and the helper still performs a
-defensive `uint64` result check. Invalid positions and overflow raise
-`PointsSourceValidationError`. Use `invalid_point_row_position` for a non-integer
-or `bool` position, `point_row_position_out_of_range` for a negative or
-past-the-file position, and `point_id_overflow` for a result outside the
-`uint64` range.
+The exact-level writer owns the eventual batch-oriented implementation. It will
+derive a half-open id range from `source_file.row_offset`, the batch's zero-based
+start within that file, and the batch row count, then materialize a bounded
+NumPy or Arrow `uint64` array. Define a shared batch helper only if the concrete
+writer has more than one real consumer or otherwise benefits from one.
 
-Implement helpers that:
+Implement:
 
 - build and hash the canonical source-signature payload;
-- map a source file and row position to its cumulative `uint64 point_id`;
-- reject out-of-range row positions;
-- validate identity coverage at source-file boundaries;
 - expose the signature-method and point-id-policy constants;
 - document that file inventory or row-order changes invalidate reproducibility.
 
@@ -874,13 +860,11 @@ levels.
 - absolute source-store relocation alone does not enter the canonical payload;
 - Parquet statistics are excluded from the canonical payload;
 - signature limitations are documented;
-- first, last, and cross-file point ids;
-- identity uniqueness across source-file boundaries;
-- `uint64` overflow rejection.
+- the exact `POINT_ID_POLICY` version string is frozen.
 
 ### Exit criteria
 
-- signature and point-identity methods have explicit version strings;
+- the signature method and point-identity policy have explicit version strings;
 - signature computation reads no point data pages;
 - the same validated inventory produces the same signature across processes.
 
@@ -1292,8 +1276,9 @@ Proceed with V3 only:
 2. construct the versioned canonical source-signature payload directly from
    V2's immutable source inventory;
 3. serialize and hash that payload according to the frozen JSON contract;
-4. add the internal source-file-row-offset `uint64 point_id` policy and helpers;
-5. add focused golden signature and source-file-boundary identity tests.
+4. add and freeze the internal source-file-row-offset `uint64 point_id` policy
+   constant without a row-wise helper;
+5. add focused golden signature tests and freeze the exact policy constant.
 
 Do not reopen Parquet files, scan selected data pages, or implement cache
 writing, sampling, rendering, or legacy-module migration in this slice.

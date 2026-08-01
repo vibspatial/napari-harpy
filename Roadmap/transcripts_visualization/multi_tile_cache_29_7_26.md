@@ -1236,11 +1236,13 @@ point_id = source_file_row_offset + row_position_within_file
 
 The policy name is `harpy-source-file-row-offset-uint64-v1`.
 
-V3 exposes that complete name as the `POINT_ID_POLICY` string constant. Its
-scalar helper accepts a `ParquetSourceFile` plus a zero-based row position and
-returns `source_file.row_offset + row_position` as a Python `int` constrained
-to the `uint64` range. NumPy or Arrow `uint64` batches are materialized later by
-the cache writer.
+V3 exposes that complete name as the `POINT_ID_POLICY` string constant but does
+not add a scalar row-to-id helper. Such a helper would have no production
+consumer and must not be called once per source row. The exact-level writer owns
+the batch-oriented implementation: it combines `source_file.row_offset` with a
+batch's zero-based start and row count, then materializes a bounded NumPy or
+Arrow `uint64` array. A shared batch helper should be introduced only if the
+concrete writer demonstrates a need for one.
 
 Validation establishes deterministic dataset-relative source-file ordering and
 row offsets. The builder generates ids batch by batch without materializing a
