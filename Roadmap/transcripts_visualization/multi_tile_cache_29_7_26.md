@@ -745,7 +745,7 @@ class ValidatedPointsSource:
     source_signature: str
     source_signature_method: str
     value_normalization_method: str
-    point_id_policy: PointIdentityPolicy
+    point_id_policy: str
 ```
 
 `selected_schema` contains only the caller-selected `x`, `y`, and `value` fields
@@ -798,6 +798,8 @@ changing the validated-source or cache-format contracts.
 The API does not accept a source transcript-id column. Validation establishes
 deterministic source-file offsets, and cache construction generates a Harpy-owned
 `uint64 point_id` from each source-file offset and row position.
+`point_id_policy` stores the complete versioned policy name as a string; the
+initial parameter-free policy does not require a wrapper model.
 
 For the supported SpatialData contract, the resolver derives the element path
 as `points/<points_name>` and its `points.parquet` dataset from the backed store
@@ -1233,6 +1235,12 @@ point_id = source_file_row_offset + row_position_within_file
 ```
 
 The policy name is `harpy-source-file-row-offset-uint64-v1`.
+
+V3 exposes that complete name as the `POINT_ID_POLICY` string constant. Its
+scalar helper accepts a `ParquetSourceFile` plus a zero-based row position and
+returns `source_file.row_offset + row_position` as a Python `int` constrained
+to the `uint64` range. NumPy or Arrow `uint64` batches are materialized later by
+the cache writer.
 
 Validation establishes deterministic dataset-relative source-file ordering and
 row offsets. The builder generates ids batch by batch without materializing a

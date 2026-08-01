@@ -369,7 +369,7 @@ class ValidatedPointsSource:
     source_signature: str
     source_signature_method: str
     value_normalization_method: str
-    point_id_policy: PointIdentityPolicy
+    point_id_policy: str
 ```
 
 `selected_schema` is the canonical Arrow schema for only the caller-selected
@@ -400,6 +400,10 @@ returned in a public report wrapper, and are not persisted as validation
 metadata. Source-file modification times remain deterministic inputs to the
 source signature. V6 benchmark tooling owns any measurements needed to evaluate
 or optimize validation.
+
+`point_id_policy` stores the complete versioned policy name. V3 does not add a
+`PointIdentityPolicy` wrapper model; a string is sufficient for the initial
+parameter-free policy and avoids exposing a speculative contract.
 
 ## Error contract
 
@@ -790,18 +794,66 @@ documentation.
 
 ### Internal `point_id`
 
-The initial policy name is:
+Expose the signature method and point-identity policy as module constants:
+
+```python
+SOURCE_SIGNATURE_METHOD = "harpy-parquet-source-inventory-sha256-v1"
+POINT_ID_POLICY = "harpy-source-file-row-offset-uint64-v1"
+```
+
+The signature entry point is:
+
+```python
+def build_source_signature(
+    inventory: _ParquetSourceInventory,
+) -> str: ...
+```
+
+It returns only the lowercase hexadecimal digest. Callers record
+`SOURCE_SIGNATURE_METHOD` separately where the method name is required.
+
+Do not introduce a `PointIdentityPolicy` dataclass or enum in V3. The complete
+versioned string is the policy value later stored by `ValidatedPointsSource` and
+cache metadata.
+
+The scalar identity helper contract is:
+
+```python
+def point_id_for_row(
+    source_file: ParquetSourceFile,
+    row_position: int,
+) -> int: ...
+```
+
+`row_position` is zero-based within `source_file`. It must be an integer other
+than `bool` and satisfy
+`0 <= row_position < source_file.row_count`. The result is:
 
 ```text
-harpy-source-file-row-offset-uint64-v1
+source_file.row_offset + row_position
 ```
+
+The helper returns a Python `int` whose value is valid as `uint64`; it does not
+create a NumPy or Arrow scalar or array. The cache writer later materializes
+bounded `uint64` batches. Passing `ParquetSourceFile` rather than a source-file
+index makes the required validated row count and global offset explicit and
+allows files to be processed independently.
+
+V2 already restricts the complete source row count to at most `2**64 - 1`.
+Therefore valid ids occupy `[0, row_count)` and the helper still performs a
+defensive `uint64` result check. Invalid positions and overflow raise
+`PointsSourceValidationError`. Use `invalid_point_row_position` for a non-integer
+or `bool` position, `point_row_position_out_of_range` for a negative or
+past-the-file position, and `point_id_overflow` for a result outside the
+`uint64` range.
 
 Implement helpers that:
 
-- map `(source-file index, row position)` to cumulative `uint64 point_id`;
+- build and hash the canonical source-signature payload;
+- map a source file and row position to its cumulative `uint64 point_id`;
 - reject out-of-range row positions;
 - validate identity coverage at source-file boundaries;
-- expose the point-id-policy name and version;
+- expose the signature-method and point-id-policy constants;
 - document that file inventory or row-order changes invalidate reproducibility.
 
 The source signature must change when source-file inventory or ordering changes,
