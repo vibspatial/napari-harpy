@@ -15,3 +15,9 @@ class PointsSourceResolutionError(PointsSourceValidationError):
     """Report that a logical points element cannot resolve to a supported source."""
 
     default_code = "points_source_resolution"
+
+
+class ParquetMetadataValidationError(PointsSourceValidationError):
+    """Report invalid Parquet source inventory, schema, or file metadata."""
+
+    default_code = "parquet_metadata_validation"
