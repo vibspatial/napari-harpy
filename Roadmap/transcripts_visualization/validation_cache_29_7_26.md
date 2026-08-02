@@ -177,22 +177,46 @@ scratch storage for identity validation.
 The method name is:
 
 ```text
-harpy-string-trim-unicode-case-sensitive-v1
+harpy-string-trim-unicode-white-space-case-sensitive-v1
 ```
 
-The initial policy:
+The initial policy freezes the following Unicode `White_Space` code points as
+part of version 1:
+
+```text
+U+0009-U+000D, U+0020, U+0085, U+00A0, U+1680,
+U+2000-U+200A, U+2028-U+2029, U+202F, U+205F, U+3000
+```
+
+The implementation constructs one string containing exactly those code points
+and passes it as `characters` to `pyarrow.compute.utf8_trim()`. It does not use
+`pyarrow.compute.utf8_trim_whitespace()` or Python `str.strip()`, whose behavior
+could follow the Unicode version of the installed runtime rather than this
+frozen contract.
+
+The remaining policy is:
 
 - accepts Arrow `string`, `large_string`, or dictionary encoding of those
   value types;
-- rejects null values;
-- trims leading and trailing Unicode whitespace;
+- rejects any null logical point value;
+- trims only leading and trailing occurrences of the frozen whitespace set;
 - rejects values that become empty;
 - remains case-sensitive;
-- assigns value ids by deterministic normalized-label ordering;
+- performs no Unicode normalization, case folding, or internal-whitespace
+  rewriting;
+- orders normalized labels by ascending UTF-8 bytes, independent of locale;
+- assigns contiguous `uint32` value ids in that order after the full scan;
 - merges raw labels that normalize to the same value;
 - never calls Python `hash()`.
 
-Dictionary values are normalized once per dictionary, not once per row.
+For a dictionary array, a null index and an index that references a null
+dictionary value are both invalid logical point values. A referenced dictionary
+value that normalizes to an empty string is also invalid. Null or
+normalized-empty dictionary entries that are not referenced by any row in that
+array are ignored. Dictionary values are normalized once per returned dictionary
+array, and counts are aggregated from its integer indices rather than by
+materializing one Python string per row. Different dictionary entries or raw
+labels that normalize to the same label contribute to the same global count.
 
 Numeric and binary value columns are not silently converted to strings in the
 first version.
@@ -969,15 +993,35 @@ later representation.
 
 ### Value behavior
 
-- handle plain and dictionary-encoded string arrays;
-- validate nulls before normalization;
-- normalize dictionary values once per encountered dictionary;
-- aggregate counts by normalized label;
-- sort normalized labels deterministically;
+- handle plain `string`, `large_string`, and dictionary-encoded string arrays;
+- implement the frozen
+  `harpy-string-trim-unicode-white-space-case-sensitive-v1` policy;
+- for a plain-string array, reject nulls, normalize the complete bounded array
+  with `pyarrow.compute.utf8_trim()`, reject normalized-empty values with Arrow
+  compute kernels, and run `pyarrow.compute.value_counts()` on that normalized
+  array;
+- for a dictionary array, reject null indices, normalize its dictionary once,
+  run `pyarrow.compute.value_counts()` on its integer indices, validate only the
+  referenced normalized dictionary entries, and map the aggregate index counts
+  to normalized labels;
+- convert only the distinct-label/count output of those Arrow kernels to Python
+  while merging it into the source-wide count mapping; never convert a complete
+  point-value batch to a Python list or process it row by row;
+- ignore invalid unreferenced physical dictionary entries, while rejecting a
+  referenced null or normalized-empty entry;
+- merge counts from normalization-equivalent labels;
+- sort the final normalized labels by ascending `label.encode("utf-8")`, without
+  locale-aware comparison;
 - assign contiguous `uint32` value ids;
 - reject more values than `uint32` can represent;
 - build the required Arrow `value_table`;
 - require value counts to sum to the exact row count.
+
+These Arrow compute calls are eager, bounded in-memory kernels over the current
+record batch. Calling them inside the batch loop does not construct a Dask task
+graph, reread Parquet data, or retain preceding batches. Multiple in-memory
+kernel passes over the current bounded array are allowed; the one-content-pass
+rule prohibits a second traversal of the Parquet source.
 
 Normalization-equivalent raw labels are merged by definition. Validation tests
 that behavior, but it does not count, return, or persist normalization
@@ -1020,9 +1064,17 @@ content result.
 - negative and very large finite coordinates;
 - plain-string, large-string, and dictionary values;
 - different dictionaries and dictionary orders across row groups;
-- whitespace trimming and case sensitivity;
-- null and normalized-empty values;
+- every boundary in the frozen whitespace set, plus a nearby non-whitespace
+  code point;
+- case sensitivity and the absence of Unicode normalization;
+- deterministic UTF-8-byte label order;
+- null and normalized-empty plain-string values;
+- null dictionary indices and referenced null or normalized-empty dictionary
+  entries;
+- ignored unreferenced null and normalized-empty dictionary entries;
 - merging normalization-equivalent raw labels without collision telemetry;
+- confirmation that plain-string aggregation converts only distinct batch
+  labels, not every point value, to Python;
 - value-count and row-count reconciliation;
 - empty batches and fragmented chunk boundaries;
 - exact batch-size bound;

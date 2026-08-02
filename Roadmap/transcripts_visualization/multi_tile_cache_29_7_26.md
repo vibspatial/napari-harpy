@@ -843,10 +843,13 @@ Parquet data pages for the selected `x`, `y`, and `value` columns. It establishe
 - scanned row counts per row group, source file, and complete source.
 
 Reads use bounded PyArrow batches. Dictionary-encoded values are handled by
-normalizing dictionary values once and aggregating their integer indices rather
-than converting every point value through Python strings. Raw labels that
-normalize to the same value are merged; no collision count is returned or
-persisted.
+normalizing each returned dictionary once and aggregating its integer indices
+rather than converting every point value through Python strings. Plain-string
+batches use eager, bounded Arrow normalization and `value_counts` kernels; only
+their distinct-label/count results enter the Python source-wide accumulator.
+These calls do not construct a Dask graph or reread the Parquet source. Raw
+labels that normalize to the same value are merged; no collision count is
+returned or persisted.
 
 Content validation is fail-fast. A file-open, decode, structural, coordinate,
 or value failure stops the scan immediately; validation does not traverse the
@@ -1131,7 +1134,12 @@ n_points: uint64
 
 Values are normalized according to one documented policy, assigned stable
 ids in deterministic order, and never inferred from GPU palette order. The
-initial policy is `harpy-string-trim-unicode-case-sensitive-v1`.
+initial policy is
+`harpy-string-trim-unicode-white-space-case-sensitive-v1`: it trims an explicit
+versioned set of Unicode `White_Space` code points, remains case-sensitive,
+performs no other Unicode normalization, and orders labels by ascending UTF-8
+bytes. Null logical values and referenced normalized-empty values are rejected;
+invalid unreferenced physical dictionary entries are ignored.
 
 ### `manifest.parquet`
 
