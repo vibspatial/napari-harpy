@@ -891,6 +891,21 @@ tests/multi_scale_cache_points/test_scan.py
 
 ### Implementation shape
 
+The private scan entry point is:
+
+```python
+def _scan_points_content(
+    inventory: _ParquetSourceInventory,
+    *,
+    max_batch_rows: int = 524_288,
+) -> _ScannedPointsContent: ...
+```
+
+Do not accept source paths, selected column names, schemas, file inventories, or
+row counts as separate arguments. `_ParquetSourceInventory` is the single source
+of those already-validated structural inputs. Keeping one immutable input avoids
+independently supplied state that could disagree during the scan.
+
 Iterate deterministic source files, row groups, and batches using PyArrow. The
 scan maintains compact accumulators for:
 
@@ -901,6 +916,24 @@ scan maintains compact accumulators for:
 - missing and normalized-empty values;
 - normalized value counts;
 - normalized value cardinality.
+
+The physical traversal contract is:
+
+1. traverse `inventory.files` in its existing deterministic order;
+2. resolve each physical file as
+   `inventory.source.parquet_path / source_file.relative_path`;
+3. open that file as a `pyarrow.parquet.ParquetFile`;
+4. traverse physical row-group indices from zero through
+   `source_file.row_group_count - 1` in order;
+5. call `ParquetFile.iter_batches()` for exactly one row group at a time, using
+   `row_groups=[row_group_index]`, `batch_size=max_batch_rows`, and only the
+   selected physical columns in semantic `x`, `y`, `value` order;
+6. process each returned record batch before requesting the next one.
+
+The selected column names come from `inventory.source.columns`. Coordinates and
+values must be requested together in the same batch traversal. Do not run a
+separate coordinate pass, value pass, bounds pass, null-count pass, or
+value-count pass, and do not reread any selected column for another aggregate.
 
 The implementation should process Arrow arrays directly. Converting a bounded
 batch to NumPy is acceptable where it remains faster and memory-bounded.
