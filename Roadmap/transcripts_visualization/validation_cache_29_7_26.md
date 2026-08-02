@@ -463,8 +463,8 @@ Each slice should be independently reviewable, tested, and mergeable.
 | V0 | Implemented | Package scaffold, immutable models, errors | No |
 | V1 | Implemented | Explicit SpatialData-to-Parquet source resolution | No |
 | V2 | Implemented | Private Parquet source inventory and schema validation | No |
-| V3 | Next | Source signature and internal point-identity contract | No |
-| V4 | Planned | Fused coordinate/value content scan | Once |
+| V3 | Implemented | Source signature and internal point-identity contract | No |
+| V4 | Next | Fused coordinate/value content scan | Once |
 | V5 | Planned | Public validation orchestration and build-ready source | No additional scan |
 | V6 | Planned | Xenium benchmark, profiling, and hardening | Once per benchmark run |
 
@@ -686,6 +686,13 @@ V2 from decoding data pages.
   the reference local SSD, recorded as a hypothesis until benchmarked formally.
 
 ## Slice V3: source signature and internal point identity
+
+Implementation status: **complete as of 2026-08-02**. V3 constructs and hashes
+the canonical metadata-only source-signature payload directly from V2's
+immutable inventory. It freezes the signature-method and point-identity-policy
+constants without reopening Parquet files or adding a row-wise identity helper.
+Focused tests freeze the canonical bytes and digest and cover the intended
+included and excluded source facts.
 
 ### Goal
 
@@ -1270,15 +1277,17 @@ The validation block is complete when:
 
 ## Immediate next slice
 
-Proceed with V3 only:
+Proceed with V4 only:
 
-1. add `core/multi_scale_cache_points/signature.py`;
-2. construct the versioned canonical source-signature payload directly from
-   V2's immutable source inventory;
-3. serialize and hash that payload according to the frozen JSON contract;
-4. add and freeze the internal source-file-row-offset `uint64 point_id` policy
-   constant without a row-wise helper;
-5. add focused golden signature tests and freeze the exact policy constant.
+1. add the minimal `PointsBounds`, `_ScannedPointsContent`, and content-error
+   contracts required by the fused scan;
+2. implement one bounded traversal of the selected `x`, `y`, and `value` data
+   pages in deterministic inventory order;
+3. establish exact finite coordinate bounds and normalized value counts in that
+   same traversal;
+4. reconcile row-group, source-file, total, and value counts with V2's inventory;
+5. add focused scan tests for Harpy's validation, normalization, and bounded-read
+   behavior.
 
-Do not reopen Parquet files, scan selected data pages, or implement cache
-writing, sampling, rendering, or legacy-module migration in this slice.
+Do not implement V5 orchestration, cache writing, sampling, rendering, or
+legacy-module migration in this slice.
