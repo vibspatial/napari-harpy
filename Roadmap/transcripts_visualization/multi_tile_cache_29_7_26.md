@@ -1172,6 +1172,20 @@ value_id: uint32
 point_id: uint64
 ```
 
+The first cache format stores tile-local `x_rel` and `y_rel` as `float32`.
+Validation and tile assignment operate from `float64` working coordinates and
+`float64` source bounds; the writer subtracts the tile origin before converting
+the relative values. Global point coordinates are not stored as per-row
+`float32` values.
+
+Raw tile-local `float16` is not part of the initial format. Its quantization
+step grows with tile size and it cannot represent relative values above 65,504,
+which is insufficient for a possible approximately 100,000-unit overview tile.
+It may also be expanded to `float32` by the initial rendering backend, removing
+the intended bandwidth benefit. A later measured optimization may use
+level-restricted `float16` or normalized `uint16`, but requires an explicit
+format version and renderer-quality evidence.
+
 `point_id` is the Harpy-owned identity generated from deterministic source-file
 offsets and row positions before sampling and propagated unchanged through
 every level. It is never written back to canonical SpatialData. The renderer

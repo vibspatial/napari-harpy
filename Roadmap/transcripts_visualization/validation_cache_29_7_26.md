@@ -948,11 +948,24 @@ aggregates have been updated.
 ### Coordinate behavior
 
 - accept supported numeric Arrow integer and floating types;
-- convert safely to `float64` for validation and bounds;
+- convert each bounded coordinate batch to `float64` for validation and bounds;
 - reject null, NaN, positive infinity, and negative infinity;
-- do not downcast canonical coordinates during validation.
+- do not require finite source coordinates to be exactly representable as
+  `float32`;
+- do not quantize or downcast source coordinates during validation.
 
-Scan-derived bounds are authoritative for the first build-ready mode.
+Scan-derived `float64` bounds are authoritative for the first build-ready mode.
+The initial datasets are expected to use intrinsic pixel coordinates, commonly
+within roughly a 100,000-by-100,000 space, where global `float32` would already
+have negligible rendering error. That rendering assumption does not require V4
+to discard source precision: validation retains only four bounds and bounded
+working batches, so using `float64` here has no material cache or GPU cost.
+
+Coordinate quantization belongs to cache construction. The initial writer
+calculates tile membership and tile-local coordinates from the validated source,
+then stores `x_rel` and `y_rel` as `float32`. V4 does not reject integer or
+floating coordinates merely because their original values would change in that
+later representation.
 
 ### Value behavior
 
