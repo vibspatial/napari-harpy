@@ -136,7 +136,7 @@ The authoritative source for each build fact is fixed:
 PyArrow reads use a configurable maximum batch-row count. Validation retains
 only compact aggregates:
 
-- scalar row and error counts;
+- scalar row counts;
 - coordinate minima and maxima;
 - the value count dictionary;
 - file and row-group metadata.
@@ -419,9 +419,12 @@ PointsSourceValidationError
 Exceptions should carry a stable short error code and human-readable message.
 Path and column context should be included without dumping row data.
 
-Structural failures stop before content scanning. The fused scan aggregates
-independent value-error counts where practical so a user does not need to
-rerun a 136-million-row validation for every invalid column.
+Validation is fail-fast. Structural failures stop before content scanning, and
+the fused scan raises immediately when a Parquet read, row-count invariant,
+coordinate check, or value check fails. It does not continue through the source
+to construct exhaustive error counts. A vectorized check may naturally produce
+an invalid count for the current batch; an error may include that count only when
+it is clearly described as batch-local rather than source-wide.
 
 No `ValidatedPointsSource` is returned alongside an error.
 
@@ -910,10 +913,7 @@ Iterate deterministic source files, row groups, and batches using PyArrow. The
 scan maintains compact accumulators for:
 
 - rows scanned;
-- missing and non-finite `x` values;
-- missing and non-finite `y` values;
 - authoritative `x` and `y` minima and maxima;
-- missing and normalized-empty values;
 - normalized value counts;
 - normalized value cardinality.
 
@@ -993,6 +993,26 @@ The default `max_batch_rows` is a build parameter and must be validated as a
 positive integer. The largest observed batch must never exceed it.
 Counters needed to enforce scan invariants remain internal and transient.
 
+The scan uses deterministic fail-fast behavior:
+
+1. validate `max_batch_rows` before opening a source file;
+2. fail immediately on file-open, decode, schema, or structural errors;
+3. for each decoded batch, validate selected `x`, then `y`, then `value` before
+   committing that batch to successful bounds or value-count aggregates;
+4. on the first invalid selected array, raise `PointContentValidationError` and
+   request no further batches;
+5. include the dataset-relative source file, physical row-group index, selected
+   column role and name, and failure category in the error message;
+6. reconcile the scanned row count immediately after each row group and source
+   file, failing at the first disagreement;
+7. return `_ScannedPointsContent` only after the complete source and final value
+   counts reconcile successfully.
+
+If a batch-local vectorized check yields an invalid count, the message may
+include it for context but must not present it as a complete-source diagnostic.
+The scan retains no cross-batch invalid-data counters and returns no partial
+content result.
+
 ### Tests
 
 - all supported numeric coordinate types;
@@ -1013,8 +1033,8 @@ Counters needed to enforce scan invariants remain internal and transient.
 ### Exit criteria
 
 - a valid source produces exact row count, bounds, and value table;
-- every independent invalid-value count is included in the same validation
-  error where practical;
+- every read, structural, coordinate, or value failure stops the scan without
+  requesting another batch;
 - memory use scales with batch size and value cardinality, not point count;
 - no Dask compute occurs.
 

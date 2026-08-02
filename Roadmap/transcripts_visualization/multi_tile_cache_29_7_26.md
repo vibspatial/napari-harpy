@@ -848,6 +848,12 @@ than converting every point value through Python strings. Raw labels that
 normalize to the same value are merged; no collision count is returned or
 persisted.
 
+Content validation is fail-fast. A file-open, decode, structural, coordinate,
+or value failure stops the scan immediately; validation does not traverse the
+remaining source to produce exhaustive diagnostics. Errors include file,
+row-group, selected-column, and failure-category context. A naturally available
+invalid count may be reported only as local to the failing batch.
+
 The authoritative source for each build fact is fixed:
 
 - row count and source-file offsets come from Parquet metadata;
