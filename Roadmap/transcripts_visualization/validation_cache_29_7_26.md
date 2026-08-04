@@ -1081,6 +1081,65 @@ The temporary mapping is discarded after its counts have been added to the
 source-wide mapping. Neither mapping uses dictionary indices as global
 identities.
 
+### Row-count and value-count reconciliation
+
+Reconciliation uses ordinary transient Python integer counters inside
+`_scan_points_content()`. It creates no report object, persists no counters, and
+performs no additional Parquet read. The required relationships are:
+
+```text
+sum(batch.num_rows within one row group)
+    == inventory row-group row count
+
+sum(observed row-group rows within one source file)
+    == inventory source-file row count
+
+sum(observed source-file rows)
+    == inventory total row count
+
+sum(global normalized value counts)
+    == observed total rows
+    == inventory total row count
+```
+
+For each fully valid batch, first require that its local normalized value counts
+sum to `batch.num_rows`. Then add its row count to the current row-group counter,
+its bounds to the successful bounds aggregate, and its value counts to the
+source-wide mapping. Do not commit any of those successful aggregates until the
+batch's `x`, `y`, and `value` arrays have all passed validation.
+
+If an accumulating row-group count exceeds its inventory count, fail immediately.
+If it is too small, fail when the row-group iterator ends. At the end of each row
+group, source file, and complete source, compare the observed count with the
+corresponding inventory count and fail at the first disagreement. Empty batches
+contribute zero rows and no bounds or value counts.
+
+The scan uses these stable error codes:
+
+- `batch_value_count_mismatch` when one batch's normalized counts do not sum to
+  its row count;
+- `row_group_row_count_mismatch` when decoded batch rows do not reconcile with
+  one row group's metadata count;
+- `source_file_row_count_mismatch` when observed row-group rows do not reconcile
+  with one source file's metadata count;
+- `source_row_count_mismatch` when observed source-file rows do not reconcile
+  with `_ParquetSourceInventory.row_count`;
+- `value_count_mismatch` when the final source-wide normalized counts do not sum
+  to the observed and inventory row count.
+
+All are `PointContentValidationError` failures and include the applicable
+dataset-relative file and row-group context. File-level and source-level checks
+are required even though V2's inventory invariants make them mathematically
+redundant after every row group passes; they are effectively free and retain
+clear scope-specific failure contracts.
+
+`_ScannedPointsContent.row_count` is populated from the successfully observed
+total, not copied from the inventory. It is returned only after that total and
+the final value counts both reconcile with the inventory. Reconciliation can
+detect skipped, duplicated, or truncated traversal and incorrect value-count
+aggregation. It is not a content hash and does not detect a source mutation that
+preserves all reconciled counts and source-signature fields.
+
 ### Execution policy
 
 Start with deterministic sequential source-file traversal and PyArrow's bounded
@@ -1101,10 +1160,13 @@ The scan uses deterministic fail-fast behavior:
    request no further batches;
 5. include the dataset-relative source file, physical row-group index, selected
    column role and name, and failure category in the error message;
-6. reconcile the scanned row count immediately after each row group and source
-   file, failing at the first disagreement;
-7. return `_ScannedPointsContent` only after the complete source and final value
-   counts reconcile successfully.
+6. reconcile the batch-local value counts with `batch.num_rows`, then reconcile
+   the scanned row count immediately after each row group and source file,
+   failing at the first disagreement;
+7. reconcile the observed source total with `_ParquetSourceInventory.row_count`
+   and the global normalized value counts with both totals;
+8. return `_ScannedPointsContent` with the observed row count only after every
+   reconciliation succeeds.
 
 If a batch-local vectorized check yields an invalid count, the message may
 include it for context but must not present it as a complete-source diagnostic.
@@ -1129,10 +1191,12 @@ content result.
 - merging normalization-equivalent raw labels without collision telemetry;
 - confirmation that plain-string aggregation converts only distinct batch
   labels, not every point value, to Python;
-- value-count and row-count reconciliation;
+- batch-local value-count disagreement;
+- too few and too many decoded rows at row-group scope;
+- row-group, source-file, total-source, and final value-count reconciliation,
+  including the stable scope-specific error codes;
 - empty batches and fragmented chunk boundaries;
 - exact batch-size bound;
-- row-group, source-file, and total scanned-row reconciliation with file-metadata counts;
 - confirmation that only selected columns are read;
 - confirmation that there is only one content pass.
 

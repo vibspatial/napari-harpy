@@ -860,6 +860,16 @@ remaining source to produce exhaustive diagnostics. Errors include file,
 row-group, selected-column, and failure-category context. A naturally available
 invalid count may be reported only as local to the failing batch.
 
+The scan reconciles counts without another data pass: batch rows sum to each
+inventory row-group count, observed row groups sum to each source-file count,
+observed source files sum to the inventory total, and normalized value counts
+sum to both the observed and inventory totals. Batch-local value counts must
+also sum to the current batch row count. Scope counters are transient Python
+integers; no reconciliation report is returned or persisted. The returned scan
+row count is the successfully observed total rather than a copied metadata
+value. These checks detect traversal and aggregation disagreement, not
+same-count content mutation.
+
 The authoritative source for each build fact is fixed:
 
 - row count and source-file offsets come from Parquet metadata;
