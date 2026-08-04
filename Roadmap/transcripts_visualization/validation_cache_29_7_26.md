@@ -483,6 +483,25 @@ PointsSourceValidationError
 Exceptions should carry a stable short error code and human-readable message.
 Path and column context should be included without dumping row data.
 
+V4 uses a deliberately small set of general content-scan codes:
+
+- `invalid_max_batch_rows` when `max_batch_rows` is not a positive integer;
+- `parquet_content_read_failed` when a selected data page cannot be opened or
+  decoded during the content pass;
+- `invalid_coordinate_content` for a null or non-finite selected coordinate;
+- `invalid_value_content` for a null logical value, a referenced null dictionary
+  value, a normalized-empty value, or a normalized label that cannot be
+  represented by the exact value-table schema;
+- `value_cardinality_overflow` when more than `2**32` distinct normalized values
+  would be required.
+
+These codes identify stable failure categories. The human-readable message adds
+the specific reason, selected role and column name, dataset-relative source file,
+and physical row-group index where applicable. Do not create separate codes for
+each numeric dtype, kind of non-finite value, whitespace character, or dictionary
+index representation. Reconciliation has its additional scope-specific codes in
+the V4 reconciliation contract.
+
 Validation is fail-fast. Structural failures stop before content scanning, and
 the fused scan raises immediately when a Parquet read, row-count invariant,
 coordinate check, or value check fails. It does not continue through the source
@@ -952,9 +971,15 @@ and `value`.
 ### Files
 
 ```text
+src/napari_harpy/core/multi_scale_cache_points/errors.py
+src/napari_harpy/core/multi_scale_cache_points/models.py
 src/napari_harpy/core/multi_scale_cache_points/validation.py
 tests/multi_scale_cache_points/test_scan.py
 ```
+
+`errors.py` gains the minimal `PointContentValidationError` subclass and
+`models.py` gains `PointsBounds`. `_ScannedPointsContent` remains private to
+`validation.py`. V4 does not widen the package's public exports.
 
 ### Implementation shape
 
