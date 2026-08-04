@@ -418,13 +418,35 @@ class ValidatedPointsSource:
 cache columns. Its fields retain their physical source names and are ordered by
 semantic role: `x`, `y`, `value`. Unselected source columns are not included.
 
-`value_table` uses the cache contract:
+`value_table` uses this exact Arrow schema:
 
-```text
-value_id: uint32
-value: string
-n_points: uint64
+```python
+_VALUE_TABLE_SCHEMA = pa.schema(
+    [
+        pa.field("value_id", pa.uint32(), nullable=False),
+        pa.field("value", pa.string(), nullable=False),
+        pa.field("n_points", pa.uint64(), nullable=False),
+    ]
+)
 ```
+
+The table contains exactly those columns in that order, with no schema or field
+metadata. Its logical contract does not require a particular Arrow chunk layout.
+For `N` normalized values:
+
+- the table has `N` rows and, because empty point sources are rejected,
+  `1 <= N <= 2**32`;
+- `value_id` is exactly the contiguous sequence `0, 1, ..., N - 1`;
+- `value` contains unique, normalized, non-empty labels sorted
+  lexicographically by `value.encode("utf-8")`;
+- every `n_points` is positive and is the exact count in the original source,
+  not a count from a sampled cache level;
+- `sum(value_table["n_points"]) == ValidatedPointsSource.row_count`.
+
+The scan constructs the same `string` output field whether the physical source
+value uses Arrow `string`, `large_string`, or dictionary-encoded strings. If a
+normalized value cannot be represented by this exact output schema, validation
+fails rather than changing the schema.
 
 `ValidatedPointsSource` describes the source version identified by its
 `source_signature`; it is not a permanent assertion that the physical files
@@ -1030,10 +1052,12 @@ later representation.
 - merge counts from normalization-equivalent labels;
 - sort the final normalized labels by ascending `label.encode("utf-8")`, without
   locale-aware comparison;
-- assign contiguous `uint32` value ids;
-- reject more values than `uint32` can represent;
-- build the required Arrow `value_table`;
-- require value counts to sum to the exact row count.
+- assign contiguous `uint32` value ids from zero through `N - 1`;
+- reject cardinality greater than `2**32`;
+- build the required exact, non-nullable Arrow `value_table` schema without
+  field or schema metadata;
+- require every value count to be positive and their sum to equal the exact
+  source row count.
 
 These Arrow compute calls are eager, bounded in-memory kernels over the current
 record batch. Calling them inside the batch loop does not construct a Dask task

@@ -1130,19 +1130,30 @@ layout; the global coarsest budget remains mandatory.
 Required columns:
 
 ```text
-value_id: uint32
-value: string
-n_points: uint64
+value_id: uint32, non-nullable
+value: string, non-nullable
+n_points: uint64, non-nullable
 ```
 
-Values are normalized according to one documented policy, assigned stable
-ids in deterministic order, and never inferred from GPU palette order. The
-initial policy is
+The file contains exactly those columns in that order and carries no custom
+Arrow schema or field metadata. For `N` normalized values, its rows use
+contiguous `value_id` values from zero through `N - 1`; normalized labels are
+unique, non-empty, and sorted lexicographically by their UTF-8 bytes; every
+`n_points` is positive; and the counts sum to the exact original source row
+count. `n_points` is not a sampled-level count. Empty sources are rejected, and
+the initial format supports at most `2**32` distinct values.
+
+Values are normalized according to one documented policy, assigned stable ids
+in deterministic order, and never inferred from GPU palette order. The initial
+policy is
 `harpy-string-trim-unicode-white-space-case-sensitive-v1`: it trims an explicit
 versioned set of Unicode `White_Space` code points, remains case-sensitive,
 performs no other Unicode normalization, and orders labels by ascending UTF-8
 bytes. Null logical values and referenced normalized-empty values are rejected;
-invalid unreferenced physical dictionary entries are ignored.
+invalid unreferenced physical dictionary entries are ignored. Arrow `string`,
+`large_string`, and dictionary-string source encodings all produce the same
+canonical `string` output field; an unrepresentable normalized label is a
+validation failure rather than a schema change.
 
 ### `manifest.parquet`
 
