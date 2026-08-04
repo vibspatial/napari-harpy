@@ -849,7 +849,10 @@ batches use eager, bounded Arrow normalization and `value_counts` kernels; only
 their distinct-label/count results enter the Python source-wide accumulator.
 These calls do not construct a Dask graph or reread the Parquet source. Raw
 labels that normalize to the same value are merged; no collision count is
-returned or persisted.
+returned or persisted. Dictionary indices remain local physical codes and are
+never treated as dataset-wide value identities. Counts are merged globally by
+normalized label, so dictionary membership and index ordering may differ across
+batches or row groups without changing the final `value_table`.
 
 Content validation is fail-fast. A file-open, decode, structural, coordinate,
 or value failure stops the scan immediately; validation does not traverse the

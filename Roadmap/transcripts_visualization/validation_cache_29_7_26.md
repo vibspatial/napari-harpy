@@ -218,6 +218,24 @@ array, and counts are aggregated from its integer indices rather than by
 materializing one Python string per row. Different dictionary entries or raw
 labels that normalize to the same label contribute to the same global count.
 
+Dictionary-array processing follows this exact reduction:
+
+```text
+normalize dictionary labels once
+    -> count integer indices
+    -> merge normalization-equivalent labels within that array
+    -> merge label counts into the source-wide value-count mapping
+```
+
+Dictionary indices are local physical codes. An index has meaning only together
+with the dictionary belonging to that returned array; index `0` may identify a
+different label in another batch or row group. The source-wide accumulator is
+therefore keyed by normalized string label, never by a dictionary index. After
+the complete scan, labels are sorted and assigned `value_id`; ids are not
+assigned while processing individual dictionaries. Consequently, differences
+in dictionary membership, index ordering, row-group layout, or batch boundaries
+cannot change the final `value_table`.
+
 Numeric and binary value columns are not silently converted to strings in the
 first version.
 
@@ -1026,6 +1044,18 @@ rule prohibits a second traversal of the Parquet source.
 Normalization-equivalent raw labels are merged by definition. Validation tests
 that behavior, but it does not count, return, or persist normalization
 collisions.
+
+The dictionary reduction has two deliberately separate mappings:
+
+- a temporary per-array mapping from normalized label to count, which merges
+  multiple local indices whose raw dictionary labels normalize identically;
+- one source-wide mapping from normalized label to count, which merges results
+  across batches, row groups, source files, and differently ordered
+  dictionaries.
+
+The temporary mapping is discarded after its counts have been added to the
+source-wide mapping. Neither mapping uses dictionary indices as global
+identities.
 
 ### Execution policy
 
