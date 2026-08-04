@@ -1786,7 +1786,9 @@ This phase requires a new schema version if physical row-group semantics change.
 
 ### Source resolution and validation
 
-Test:
+Use a small number of focused, multi-row-group fixtures to cover the following
+contracts. The bullets are not a requirement for one test per Arrow dtype,
+invalid-value variant, encoding combination, or PyArrow guarantee:
 
 - missing, non-Parquet, and unreadable paths;
 - deterministic file ordering;

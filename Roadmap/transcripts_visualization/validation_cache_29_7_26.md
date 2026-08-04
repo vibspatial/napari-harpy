@@ -1175,30 +1175,41 @@ content result.
 
 ### Tests
 
-- all supported numeric coordinate types;
-- coordinate null, NaN, and infinities;
-- negative and very large finite coordinates;
-- plain-string, large-string, and dictionary values;
-- different dictionaries and dictionary orders across row groups;
-- every boundary in the frozen whitespace set, plus a nearby non-whitespace
-  code point;
-- case sensitivity and the absence of Unicode normalization;
-- deterministic UTF-8-byte label order;
-- null and normalized-empty plain-string values;
-- null dictionary indices and referenced null or normalized-empty dictionary
-  entries;
-- ignored unreferenced null and normalized-empty dictionary entries;
-- merging normalization-equivalent raw labels without collision telemetry;
-- confirmation that plain-string aggregation converts only distinct batch
-  labels, not every point value, to Python;
-- batch-local value-count disagreement;
-- too few and too many decoded rows at row-group scope;
-- row-group, source-file, total-source, and final value-count reconciliation,
-  including the stable scope-specific error codes;
-- empty batches and fragmented chunk boundaries;
-- exact batch-size bound;
-- confirmation that only selected columns are read;
-- confirmation that there is only one content pass.
+Keep V4 coverage focused on Harpy's contracts rather than constructing a
+Cartesian product of Arrow types and invalid values. Use approximately five
+readable test functions:
+
+1. A successful plain-string scan over two tiny files, multiple row groups, and
+   row groups larger than `max_batch_rows`. One integer and one floating
+   coordinate column, negative and reasonably large finite coordinates, and a
+   compact set of padded, case-distinct, and normalization-equivalent labels
+   jointly verify observed row count, exact bounds, normalization, UTF-8 order,
+   the exact `value_table` schema, and successful scope reconciliation.
+2. A successful dictionary scan uses differently ordered local dictionaries,
+   multiple local indices that normalize to one label, and an unreferenced null
+   or normalized-empty dictionary entry. It verifies only the final normalized
+   counts and table, independent of dictionary encoding and order.
+3. One small parameterized fail-fast test covers representative semantic failure
+   categories: an invalid coordinate, a normalized-empty plain-string value,
+   and a referenced null dictionary value. It checks the applicable stable error
+   code and that no subsequent batch is requested; it does not enumerate every
+   numeric dtype, non-finite value, whitespace code point, or dictionary index
+   type.
+4. One controlled decoded-row disagreement verifies row-group reconciliation.
+   Do not independently force every mathematically redundant file-level and
+   source-level error branch. Test `batch_value_count_mismatch` directly only if
+   the implementation naturally exposes a small normalization/count helper; do
+   not introduce an abstraction solely to inject that failure.
+5. One recording Parquet-reader wrapper verifies Harpy's physical scan contract:
+   only `x`, `y`, and `value` are requested, one row group is requested at a
+   time, the configured `batch_size` is forwarded, and there is exactly one
+   content traversal.
+
+Do not unit-test PyArrow's own `RecordBatch` equal-column-length invariant,
+documented batch-size behavior, dictionary representation, or numeric casting
+matrix. Empty batches need a dedicated case only if Harpy later creates them or
+adds behavior beyond treating them as zero rows. The opt-in V6 Xenium run owns
+real-data performance and memory acceptance; it is not part of this unit suite.
 
 ### Exit criteria
 
@@ -1390,16 +1401,17 @@ sidecars until the profile identifies a material bottleneck.
 
 ### Tiny Parquet fixtures
 
-Build deterministic temporary Parquet datasets that vary:
+Build a small number of deterministic temporary Parquet datasets with the
+physical properties needed by the focused slice tests:
 
-- file count and filename ordering;
-- row-group count and size;
-- statistics presence;
-- coordinate dtypes and invalid values;
-- plain and dictionary value encodings;
-- schema mismatch.
+- one multi-file, multi-row-group plain-string scan fixture;
+- one differently ordered dictionary scan fixture;
+- minimal invalid-content variants derived from those fixtures;
+- the V2 schema-mismatch fixtures already required by inventory validation.
 
-Use PyArrow directly so fixture physical properties are explicit.
+Use PyArrow directly so file and row-group properties are explicit, but do not
+vary dtypes, invalid values, statistics, and encodings combinatorially. Prefer a
+single fixture that exercises several compatible success invariants together.
 
 ### SpatialData resolver fixture
 
