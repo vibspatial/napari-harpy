@@ -529,7 +529,7 @@ def resolve_spatialdata_points_source(
 def validate_parquet_points_source(
     source: ParquetPointsSource,
     *,
-    max_batch_rows: int = 524_288,
+    max_batch_rows: int = 1_048_576,
 ) -> ValidatedPointsSource: ...
 ```
 
@@ -550,8 +550,8 @@ Each slice should be independently reviewable, tested, and mergeable.
 | V1 | Implemented | Explicit SpatialData-to-Parquet source resolution | No |
 | V2 | Implemented | Private Parquet source inventory and schema validation | No |
 | V3 | Implemented | Source signature and internal point-identity contract | No |
-| V4 | Next | Fused coordinate/value content scan | Once |
-| V5 | Planned | Public validation orchestration and build-ready source | No additional scan |
+| V4 | Implemented | Fused coordinate/value content scan | Once |
+| V5 | Next | Public validation orchestration and build-ready source | No additional scan |
 | V6 | Planned | Xenium benchmark, profiling, and hardening | Once per benchmark run |
 
 V0 through V5 deliver the build-ready validation path. The API always uses the
@@ -989,7 +989,7 @@ The private scan entry point is:
 def _scan_points_content(
     inventory: _ParquetSourceInventory,
     *,
-    max_batch_rows: int = 524_288,
+    max_batch_rows: int = 1_048_576,
 ) -> _ScannedPointsContent: ...
 ```
 
@@ -1171,8 +1171,12 @@ Start with deterministic sequential source-file traversal and PyArrow's bounded
 decode threading. Add bounded multi-file concurrency only after profiling
 demonstrates a benefit and memory remains predictable.
 
-The default `max_batch_rows` is a build parameter and must be validated as a
-positive integer. The largest observed batch must never exceed it.
+The default `max_batch_rows` is `1_048_576` and must be validated as a positive
+integer. The largest observed batch must never exceed it. On the initial Xenium
+acceptance source, this matches the largest physical row-group size and reduced
+the warm median scan time from approximately 2.386 seconds at `524_288` to 1.819
+seconds. A larger setting did not reduce the 168 one-row-group-at-a-time batches
+and provided no material improvement.
 Counters needed to enforce scan invariants remain internal and transient.
 
 The scan uses deterministic fail-fast behavior:
@@ -1548,19 +1552,21 @@ The validation block is complete when:
 - no validation operation writes to or mutates the canonical SpatialData store;
 - all focused tests pass.
 
-## Immediate next slice
+## Implemented V4 slice
 
-Proceed with V4 only:
+V4 now provides:
 
-1. add the minimal `PointsBounds`, `_ScannedPointsContent`, and content-error
+1. the minimal `PointsBounds`, `_ScannedPointsContent`, and content-error
    contracts required by the fused scan;
-2. implement one bounded traversal of the selected `x`, `y`, and `value` data
-   pages in deterministic inventory order;
-3. establish exact finite coordinate bounds and normalized value counts in that
-   same traversal;
-4. reconcile row-group, source-file, total, and value counts with V2's inventory;
-5. add focused scan tests for Harpy's validation, normalization, and bounded-read
+2. one bounded traversal of the selected `x`, `y`, and `value` data pages in
+   deterministic inventory order;
+3. exact finite coordinate bounds and normalized value counts from that same
+   traversal;
+4. row-group, source-file, total, and value-count reconciliation with V2's
+   inventory;
+5. focused scan tests for Harpy's validation, normalization, and bounded-read
    behavior.
 
-Do not implement V5 orchestration, cache writing, sampling, rendering, or
-legacy-module migration in this slice.
+V5 orchestration, cache writing, sampling, rendering, and legacy-module
+migration remain outside V4. V5 is the next implementation slice, subject to its
+own readiness review.

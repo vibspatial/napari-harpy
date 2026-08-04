@@ -783,7 +783,7 @@ def resolve_spatialdata_points_source(
 def validate_parquet_points_source(
     source: ParquetPointsSource,
     *,
-    max_batch_rows: int = 524_288,
+    max_batch_rows: int = 1_048_576,
 ) -> ValidatedPointsSource: ...
 ```
 
