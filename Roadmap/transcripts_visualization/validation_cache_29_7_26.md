@@ -1259,9 +1259,15 @@ the input to cache construction.
 ### Files
 
 ```text
+src/napari_harpy/core/multi_scale_cache_points/__init__.py
+src/napari_harpy/core/multi_scale_cache_points/models.py
 src/napari_harpy/core/multi_scale_cache_points/validation.py
 tests/multi_scale_cache_points/test_validation.py
 ```
+
+`models.py` gains the public immutable `ValidatedPointsSource` contract.
+`validation.py` gains the public orchestration entry point, and `__init__.py`
+exports both names as part of the deliberately small package API.
 
 ### Implement
 
@@ -1280,7 +1286,10 @@ inventory_after = _read_parquet_source_inventory(source)
 signature_after = build_source_signature(inventory_after)
 
 if signature_before != signature_after:
-    raise PointsSourceValidationError("source changed during validation")
+    raise PointsSourceValidationError(
+        "The Parquet points source changed during validation.",
+        code="source_changed_during_validation",
+    )
 
 return _construct_validated_points_source(
     inventory=inventory_before,
@@ -1303,6 +1312,14 @@ content, and source-stability check agree. It combines the source inventory's
 physical inventory and selected schema with the scan's exact bounds and value
 table. Partial intermediate objects are never returned as build-ready input.
 
+The validated `row_count` is copied from `inventory_before`, which remains the
+authoritative metadata source after the scan has reconciled its observed total
+with that count. `bounds` and `value_table` come from `scanned`. The remaining
+method fields use the frozen `SOURCE_SIGNATURE_METHOD`,
+`VALUE_NORMALIZATION_METHOD`, and `POINT_ID_POLICY` constants. V5 records the
+point-identity policy but does not generate point ids; exact cache construction
+later applies that policy using each source file's `row_offset`.
+
 The validated source contains deterministic build facts only. Validation does
 not return or persist timings, machine information, transient counters, or a
 generation timestamp. V6 measures performance outside the public API.
@@ -1316,21 +1333,27 @@ format semantics.
 
 - resolution or source-metadata-validation errors start no content scan;
 - content errors return no build-ready source;
+- a changed post-scan source signature raises `PointsSourceValidationError` with
+  stable code `source_changed_during_validation` and returns no build-ready
+  source;
 - validation creates no files beside the canonical dataset;
 - errors do not mutate the SpatialData object or dataframe.
 
 ### Tests
 
-- complete valid workflow using internal point ids;
-- one content scan with source-inventory inspection before and after it;
-- inventory/scan row-count disagreement;
-- row-group and source-file scan-count disagreement;
-- value-table count disagreement;
-- source-signature change during validation;
-- deterministic validated source across runs;
-- error code and path/column context;
-- headless import and operation;
-- no cache files created.
+- one complete valid workflow verifies all returned build facts, including the
+  recorded internal point-identity policy but not generated point ids;
+- the valid workflow performs one content scan with source-inventory inspection
+  before and after it;
+- a changed post-scan source signature raises the frozen error code;
+- repeated validation produces equivalent deterministic build facts;
+- an existing inventory or content-validation failure propagates without
+  returning a partial `ValidatedPointsSource`.
+
+V5 tests do not repeat V4's batch, row-group, source-file, value-count,
+fail-fast, or detailed path/column-context coverage. Headless imports and the
+absence of cache writes follow naturally from this read-only orchestration and
+need no dedicated tests unless V5 introduces behavior beyond the contract above.
 
 ### Exit criteria
 
