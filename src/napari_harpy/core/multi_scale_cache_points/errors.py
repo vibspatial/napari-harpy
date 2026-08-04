@@ -21,3 +21,9 @@ class ParquetMetadataValidationError(PointsSourceValidationError):
     """Report invalid Parquet source inventory, schema, or file metadata."""
 
     default_code = "parquet_metadata_validation"
+
+
+class PointContentValidationError(PointsSourceValidationError):
+    """Report invalid decoded point content or content-scan reconciliation."""
+
+    default_code = "point_content_validation"

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from napari_harpy.core.multi_scale_cache_points.errors import (
     ParquetMetadataValidationError,
+    PointContentValidationError,
     PointsSourceValidationError,
 )
 
@@ -29,6 +31,29 @@ class PointColumnSelection:
             raise PointsSourceValidationError(
                 "Point columns `x`, `y`, and `value` must be distinct.",
                 code="duplicate_point_column",
+            )
+
+
+@dataclass(frozen=True)
+class PointsBounds:
+    """Exact finite coordinate bounds observed during point-content scanning."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    def __post_init__(self) -> None:
+        bounds = (self.x_min, self.x_max, self.y_min, self.y_max)
+        if not all(isinstance(value, float) and math.isfinite(value) for value in bounds):
+            raise PointContentValidationError(
+                "Point bounds must contain finite floats.",
+                code="invalid_coordinate_content",
+            )
+        if self.x_min > self.x_max or self.y_min > self.y_max:
+            raise PointContentValidationError(
+                "Point bounds must not contain an inverted coordinate range.",
+                code="invalid_coordinate_content",
             )
 
 
