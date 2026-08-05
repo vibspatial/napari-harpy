@@ -1346,51 +1346,189 @@ consume implementation effort that the value-aware sampler would replace. The
 writer should move directly from exact-level primitives to the specified
 value-aware sampled levels.
 
-## Physical Parquet layout: benchmark before freezing
+## Physical Parquet layout: tile-co-located bucketed shuffle
 
-The current writer processes source Dask partitions independently. This keeps
-construction simple, but one logical tile can be scattered across many part
-files. A cold viewport read could then require many file opens and small random
-row-group reads.
+Source partitions and source-file ordering must not determine cache locality.
+A partition-local writer, previously called Layout A, is rejected as the
+production direction: a shuffled source could scatter one logical tile across
+nearly every output file and make routine viewport reads depend on many file
+opens and small row-group reads.
 
-The Phase 1 construction benchmark must compare:
+For an arbitrarily ordered source, this guarantee necessarily requires a full
+logical redistribution of the exact-level rows. A direct one-pass Parquet writer
+cannot append later rows to an already completed row group, while retaining an
+unfinished buffer for every logical tile would be unbounded. The implementation
+therefore does not claim to avoid the shuffle; it makes that shuffle local,
+disk-backed, bounded, and deterministic at the final cache boundary.
 
-### Layout A: current partition-local writing
+The production requirement is the tile co-location property previously called
+Layout B:
 
-- no global shuffle;
-- one part file per source partition;
-- the same tile may occur in many files.
+- all rows for one logical tile are redistributed to one deterministic writer
+  bucket;
+- one ordinary tile is co-located in one final bucket file;
+- a tile exceeding `max_rows_per_row_group` uses a deterministic sequence of
+  row groups or physical shards in that same bucket;
+- every row group contains exactly one logical tile;
+- one bucket file may contain row groups for several logical tiles;
+- source partition boundaries have no influence on the final tile locality.
 
-### Layout B: hash shuffle by logical tile
+Deterministic tile buckets, previously described separately as Layout C, are the
+initial bounded implementation of this Layout B requirement rather than a
+competing physical layout. The expected construction flow is:
 
-- rows for one tile are co-located before writing;
-- dense tiles still split into row groups;
-- fewer files per tile;
-- higher construction shuffle and memory cost.
+```text
+construct a Harpy-owned Dask dataframe from the validated physical inventory
+→ read and annotate bounded source partitions
+→ calculate tile_x and tile_y
+→ generate point_id and map value_id
+→ calculate a deterministic integer bucket_id
+→ perform a full local disk-backed shuffle by bucket_id
+→ sort each complete output bucket by (tile_y, tile_x, point_id)
+→ write one or more row groups per tile
+→ record each row group in the manifest
+```
 
-### Layout C: deterministic tile buckets
+The bucket mapping must use an explicit stable, versioned hash; Python's built-in
+`hash()` is not suitable. Tiles and rows receive deterministic final ordering,
+with `point_id` as the within-tile tie-breaker.
 
-- logical tiles map to a bounded set of writer buckets;
-- each bucket contains several tiles;
-- pathological dense tiles receive deterministic sub-shards;
-- balances file count, locality, and construction memory.
+The initial local implementation uses Dask because it is already a construction
+dependency and provides an on-disk single-machine shuffle. Harpy constructs the
+Dask dataframe itself from `ValidatedPointsSource`; it does not accept or inspect
+an arbitrary caller graph. With `B` integer buckets, the intended partitioning is
+equivalent to:
+
+```python
+bucketed = annotated.set_index(
+    "bucket_id",
+    divisions=list(range(B + 1)),
+    shuffle_method="disk",
+    drop=False,
+)
+```
+
+Explicit divisions avoid a quantile-discovery pass and make output partition
+`i` correspond to bucket `i`. Dask shuffle arrival order is not part of the
+cache contract; the final `(tile_y, tile_x, point_id)` sort establishes the
+deterministic order before Parquet writing.
+
+### Intermediate Dask contracts
+
+The names `annotated`, `bucketed`, and `bucket file` refer to distinct stages:
+
+```text
+validated physical source
+→ annotated: source-partitioned lazy Dask dataframe
+→ bucketed: bucket-partitioned lazy Dask dataframe
+→ ordered bucket: one computed and deterministically sorted output partition
+→ bucket-<id>.parquet: final persistent level file
+```
+
+`annotated` is not a stored cache artifact. Its partitions still correspond to
+Harpy-owned bounded reads from the validated source inventory. Its minimum hot
+columns are:
+
+```text
+tile_x
+tile_y
+x_rel
+y_rel
+value_id
+point_id
+bucket_id
+```
+
+Additional source-provenance columns may exist only while constructing
+`point_id`; they are removed before final level writing. The serialized per-row
+`tile_id`, where required by the level schema, is derived during final grouped
+writing rather than created as a Python string in the annotation hot path.
+
+`bucketed` is also not a stored cache artifact. It is the lazy result of the
+disk-shuffle graph. When that graph executes, every annotated input partition is
+split into temporary fragments by `bucket_id`; Dask's local shuffle storage
+collects all fragments for bucket `i` into output partition `i`. Those temporary
+fragments are internal, disposable shuffle data and are not Parquet files named
+`bucket-<id>.parquet`.
+
+For example:
+
+```text
+annotated source partition 0: A1(bucket_id=7), B1(bucket_id=3)
+annotated source partition 1: C1(bucket_id=5), A2(bucket_id=7)
+annotated source partition 2: B2(bucket_id=3), A3(bucket_id=7)
+
+computed bucketed partition 7: A2, A3, A1
+```
+
+The shuffle guarantees that all of tile A is in output partition 7, but does not
+guarantee arrival order. The bucket finalizer sorts the computed partition by
+`(tile_y, tile_x, point_id)`, producing contiguous, deterministic tile runs:
+
+```text
+ordered bucket 7: A1, A2, A3, ...other complete tiles in bucket 7...
+```
+
+Only then does a `ParquetWriter` create the persistent file. It processes each
+contiguous logical-tile run in deterministic order, splits the run by
+`max_rows_per_row_group`, writes each resulting shard as one row group, and emits
+the corresponding manifest row:
+
+```text
+bucket-007.parquet
+  row group 0: complete tile A, or tile A shard 0
+  row group 1: tile A shard 1, or the next complete tile
+  ...
+```
+
+Thus, a Dask shuffle bucket is a temporary logical output partition; a final
+bucket Parquet file is created only by the subsequent grouped writer.
+
+Bounded source batches alone do not guarantee bounded memory because one bucket
+or tile may be very large. Each bucket is an independent finalization unit: one
+finalizer computes, sorts, writes, and releases one output bucket. This does not
+make the complete build globally sequential. A configured, bounded number of
+bucket finalizers may run concurrently when their combined memory remains within
+the construction envelope and additional writers improve measured storage
+throughput.
+
+An ordinary bucket is finalized in memory only when it fits the configured
+per-bucket limit. An oversized bucket must be recursively repartitioned on disk
+using further deterministic tile-key bits, or processed by an equivalent bounded
+external grouping/sort. A pathological single tile is streamed into
+deterministic row-group shards. The production writer must not require a complete
+oversized bucket or tile in memory.
+
+The Phase 1 construction spike must select practical values and algorithms for:
+
+- bucket count and deterministic bucket/file names;
+- Dask partition construction and disk-shuffle configuration;
+- maximum in-memory finalization bucket size;
+- recursive spill or bounded external-grouping fallback and cleanup;
+- dense-tile row-group and shard creation;
+- file rollover, writer concurrency, and memory limits.
 
 Measure:
 
-- total build time;
-- peak memory;
-- shuffle volume;
-- total disk size;
-- number of files;
-- manifest size;
+- total build time and peak memory;
+- shuffle and temporary spill volume;
+- total disk size and temporary peak disk usage;
+- average and maximum output-bucket rows and bytes;
+- largest logical-tile row count;
+- finalization throughput and peak memory at the evaluated bounded concurrency
+  settings;
+- number of final files, row groups, and manifest rows;
 - row groups and files touched per logical tile;
 - cold and warm single-tile latency;
 - viewport latency for small, medium, and large views;
 - behavior on local SSD and, if relevant, networked storage.
 
-The top-level manifest contract deliberately supports all three layouts.
-Implementation must not freeze the physical writer strategy until this benchmark
-is reviewed.
+The spike optimizes this tile-co-located design; it does not reopen
+partition-local Layout A as a production fallback. Different physical source
+orders may still produce different Harpy `point_id` values under the initial
+source-row identity policy, so canonical here means deterministic tile-local
+organization for one validated source, not byte-identical caches after source
+rows are reordered.
 
 ## View planning
 
@@ -1613,9 +1751,11 @@ Begin with an internal exact-level performance spike:
 
 - benchmark 256- and 512-unit exact tiles on the Xenium acceptance dataset;
 - use numeric construction keys rather than per-row Python `tile_id` strings;
-- preserve bounded concurrency and memory;
-- implement partition-local Layout A first;
-- measure Layout C only if read locality or fragmentation requires it;
+- implement the tile-co-located Layout B contract through deterministic writer
+  buckets and a full local disk-backed Dask shuffle;
+- sort each completed bucket deterministically before final Parquet writing;
+- make source partition boundaries irrelevant to final tile locality;
+- preserve bounded concurrency, memory, and temporary disk usage;
 - retain the row-group-per-logical-tile manifest invariant.
 
 Then complete the cache builder:

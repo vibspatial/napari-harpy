@@ -194,9 +194,16 @@ Every physical level row group contains rows for exactly one logical tile. A
 logical tile may have multiple deterministic shards. Manifest rows describe
 those physical shards and reconcile to logical-tile and complete-level counts.
 
-The manifest contract supports partition-local files, hash-shuffled files, and
-deterministic tile buckets. The exact physical layout is selected after the
-construction spike rather than assumed from the legacy implementation.
+The production writer must co-locate a tile independently of source partition
+boundaries. All rows for a tile map to one deterministic writer bucket; an
+ordinary tile is written into one final bucket file, while a pathological dense
+tile may use a deterministic sequence of row groups or physical shards in that
+same bucket. A bucket file may contain row groups for several tiles.
+
+This is the tile-shuffled Layout B contract. Deterministic tile buckets are its
+bounded implementation, not a separate competing layout. The construction spike
+selects the bucket, spill, grouping, and sharding parameters; it does not compare
+against partition-local Layout A as a production candidate.
 
 ### Staging and publication
 
@@ -215,10 +222,14 @@ named review gates rather than guessed during implementation:
 - the exact public build configuration and result models;
 - the default `overview_point_budget` and `max_rows_per_row_group`;
 - grid-origin normalization and exact maximum-boundary behavior;
-- the production physical layout after the Layout A spike;
+- the stable bucket hash, bucket count, and deterministic file naming;
+- Harpy-owned Dask partition construction and disk-shuffle configuration;
+- maximum in-memory finalization bucket size, recursive spill or external-
+  grouping fallback, file rollover, and cleanup;
 - exact value-aware allocation weights and minimum-allocation behavior;
 - same-geometry bridge stratification;
-- stable hash algorithm, seed representation, and collision tie-breaking;
+- sampler priority-hash algorithm, seed representation, and collision
+  tie-breaking;
 - bounded worker concurrency and memory limits;
 - whether the first public builder exposes progress and cancellation or remains
   a synchronous core API wrapped later by product integration;
@@ -259,7 +270,7 @@ The new implementation may borrow proven algorithms and test cases from
 |---|---|---|---:|---:|
 | C0 | Next | Minimal construction contracts and schemas | No | No |
 | C1 | Planned | Pure grid and level build planning | No | No |
-| C2 | Planned | Exact-level performance and physical-layout spike | Yes | No |
+| C2 | Planned | Exact-level bucketed tile-shuffle spike | Yes | No |
 | C3 | Planned | Production exact-level writer | Yes | No |
 | C4 | Planned | Versioned value-aware sampling contract and spike | No original-source rescan | No |
 | C5 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
@@ -358,51 +369,105 @@ terminal overview-budget rule. Avoid combinatorial extent/budget tests.
   consulting a viewport or renderer;
 - no filesystem or point-row IO occurs.
 
-## Slice C2: exact-level performance and physical-layout spike
+## Slice C2: exact-level bucketed tile-shuffle spike
 
 ### Goal
 
-Demonstrate an efficient bounded exact-level construction path on the Xenium
-acceptance source before freezing the production writer layout.
+Demonstrate an efficient bounded implementation of the required tile-co-located
+exact-level layout on the Xenium acceptance source.
 
 ### Spike contract
 
 - consume `ValidatedPointsSource` directly;
 - compare 256- and 512-unit exact tiles while retaining 512 as the parent
   roadmap's default unless evidence requires an explicit design change;
-- traverse validated source files, row groups, and bounded batches in
-  deterministic order;
+- construct the input Dask dataframe only from the validated ordered physical
+  inventory, using Harpy-owned readers that preserve source-file offsets and row
+  positions; never accept or inspect an arbitrary caller graph;
+- read only the selected columns through bounded source partitions;
 - generate batch-oriented internal `point_id` arrays;
 - normalize and map source values to the validated `value_table` without
   Python-per-row string handling;
 - assign tiles from `float64` working coordinates and produce tile-local
   `float32` coordinates;
 - use numeric construction keys;
-- implement partition-local Layout A first;
+- map each logical tile to a deterministic writer bucket using an explicit
+  stable hash rather than Python's built-in `hash()`;
+- perform the unavoidable full logical redistribution with Dask's local
+  disk-backed shuffle over the integer `bucket_id`;
+- use explicit integer divisions so each output Dask partition corresponds to
+  one writer bucket and no quantile-discovery scan is needed;
+- sort every completed bucket by `(tile_y, tile_x, point_id)` so Dask's parallel
+  arrival order cannot affect final cache ordering;
+- co-locate every ordinary tile in one final bucket file, independently of
+  source partitions;
+- finalize one bucket in memory only when it is within the configured memory
+  envelope;
+- recursively repartition an oversized bucket on disk by further deterministic
+  tile-key bits, or use an equivalent bounded external grouping/sort;
+- stream a pathological single tile into deterministic row groups or physical
+  shards without retaining the complete tile in memory;
+- treat each bucket as an independent compute-sort-write-release unit and run
+  only a configured, bounded number of finalizers concurrently;
 - preserve the row-group-per-logical-tile invariant;
-- retain bounded concurrency and memory;
+- retain bounded concurrency, memory, and temporary disk usage;
 - write only a unique benchmark/staging artifact, never `COMPLETED` or the final
   visible cache path.
+
+### Required intermediate semantics
+
+C2 must keep these stages distinct:
+
+```text
+validated physical source
+→ annotated: source-partitioned lazy Dask dataframe
+→ bucketed: bucket-partitioned lazy Dask dataframe
+→ ordered bucket: one computed and sorted output partition
+→ bucket-<id>.parquet: final level file inside the disposable spike artifact
+```
+
+`annotated` retains the Harpy-owned bounded source partitions and contains at
+least `tile_x`, `tile_y`, `x_rel`, `y_rel`, `value_id`, `point_id`, and
+`bucket_id`. It is neither shuffled nor persisted as a cache level.
+
+`bucketed` is the lazy result of the disk-shuffle graph. Output Dask partition
+`i` contains all rows assigned to integer bucket `i`, possibly in
+nondeterministic arrival order. Dask's temporary on-disk fragments are internal
+shuffle state; they are not final bucket Parquet files.
+
+The finalizer computes one bucket partition, applies the deterministic
+`(tile_y, tile_x, point_id)` sort, groups the resulting contiguous rows by
+logical tile, and writes one Parquet row group per capacity-bounded tile shard.
+Only this finalizer creates `bucket-<id>.parquet` and its manifest candidates.
+Oversized buckets follow the bounded fallback above before final writing.
 
 Measure at least:
 
 - exact build time and peak RSS;
-- written bytes, file count, row-group count, and manifest rows;
+- shuffle volume, spill bytes, and peak temporary disk usage;
+- average and maximum Dask output-bucket rows and bytes;
+- largest logical-tile row count;
+- finalization throughput and peak RSS at each evaluated bounded concurrency;
+- written bytes, bucket/file count, row-group count, and manifest rows;
 - rows, files, and row groups touched per logical tile;
 - coordinate reconstruction error;
 - membership and point-id coverage;
 - representative cold and warm tile reads from the spike artifact.
 
-Measure deterministic tile buckets, Layout C, only if Layout A shows material
-fragmentation or read-locality problems. Do not implement Layout B or C merely
-to complete a comparison table.
+Vary only parameters that materially affect this design, such as bucket count,
+Dask disk-shuffle configuration, finalization-memory limit, oversized-bucket
+fallback, writer concurrency, and row-group size. Do not spend the spike
+implementing partition-local Layout A for comparison.
 
 ### Exit criteria
 
 - 512-unit exact construction is demonstrated or a measured change is approved;
 - peak memory remains bounded independently of source row count;
+- temporary disk use and cleanup are measured and bounded by a documented
+  construction policy;
 - exact membership, identity, and coordinate reconstruction are correct;
-- one physical-layout strategy is approved for C3;
+- bucket mapping, spill/grouping, file, and dense-tile sharding policies are
+  approved for C3;
 - spike artifacts are removed after measurements are recorded.
 
 ## Slice C3: production exact-level writer
@@ -414,7 +479,12 @@ populate a caller-owned staging generation.
 
 ### Implement
 
-- the approved physical writer layout and deterministic file naming;
+- the approved bucketed tile-shuffle writer and deterministic file naming;
+- the Harpy-owned Dask input construction and local disk-backed shuffle;
+- deterministic per-bucket sorting and finalization;
+- bounded oversized-bucket repartitioning or external grouping;
+- bounded concurrent finalization governed by the approved combined memory and
+  storage-throughput policy;
 - bounded selected-column reads using the validated physical inventory;
 - vectorized `uint64 point_id` construction from file offsets and row positions;
 - normalized-value to `uint32 value_id` mapping from the validated value table;
@@ -433,8 +503,11 @@ not silently extend `values.parquet` or repair the canonical source.
 
 Use tiny multi-file and multi-row-group fixtures to cover file offsets, batch
 boundaries, tile boundaries, dense-tile sharding, dictionary/plain values, exact
-membership, deterministic output, and coordinate reconstruction tolerance. Test
-Harpy's accounting; do not retest Parquet compression internals.
+membership, deterministic output, and coordinate reconstruction tolerance.
+Deliberately spread one logical tile across several source files and verify that
+the exact writer co-locates it in one final bucket file or its documented dense-
+tile shard sequence. Test Harpy's accounting; do not retest Parquet compression
+internals.
 
 ### Exit criteria
 
@@ -672,7 +745,8 @@ or benchmark-only cache generations are removed after their results are recorded
 
 - profile before introducing concurrency or native extensions;
 - optimize only measured bottlenecks;
-- reopen the physical-layout gate if fragmentation or tile-read latency is poor;
+- reopen the bucket-count, spill, grouping, or sharding decision if locality,
+  build cost, or tile-read latency is poor;
 - reopen the sampler gate if value or spatial preservation is unacceptable;
 - record target misses with an explicit accept, optimize, or redesign decision;
 - do not weaken correctness, determinism, bounded memory, or publication safety
@@ -704,7 +778,10 @@ Approve:
 Approve:
 
 - exact tile size;
-- production physical layout;
+- stable bucket hash, bucket count, and deterministic file naming;
+- Dask disk-shuffle configuration and finalization-memory limit;
+- bounded oversized-bucket fallback, file-rollover, and dense-tile sharding
+  policies;
 - bounded read/write strategy and concurrency envelope;
 - coordinate reconstruction tolerance;
 - exact-writer performance viability.
@@ -746,6 +823,8 @@ Phase 1 is complete when:
 - the canonical SpatialData source remains unchanged;
 - source-signature guards run before staging and before publication;
 - the exact level has complete membership and point identity;
+- exact tiles are physically co-located independently of source partition
+  boundaries;
 - tile-local coordinate reconstruction meets the frozen tolerance;
 - sampled levels are deterministic, nested, spatially stratified, and value aware;
 - every tile and level respects its capacity or global budget;
@@ -764,5 +843,5 @@ Phase 1 is complete when:
 Start with **C0: minimal construction contracts and schemas**. Before writing
 code, refine only the decisions C0 genuinely requires: the first cache schema
 version, minimal build configuration fields, payload and manifest Arrow schemas,
-and which construction errors must be public. Do not settle the sampler or
-physical writer layout prematurely.
+and which construction errors must be public. Do not settle the sampler or the
+bucket-count, spill, and grouping details owned by later slices prematurely.
