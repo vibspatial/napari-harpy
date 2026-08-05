@@ -167,10 +167,9 @@ sum(manifest.n_points where level == 0) <= overview_point_budget
 For a source whose exact membership already satisfies the overview budget, one
 exact level is sufficient.
 
-### Provisional minimal level payload
+### Locked level point payload
 
-The exact physical schema is not frozen before C2. Its provisional minimal point
-payload is:
+Every exact and sampled level uses this physical per-point payload:
 
 ```text
 x_rel: float32
@@ -179,11 +178,10 @@ value_id: uint32
 point_id: uint64
 ```
 
-Because one row group contains one logical tile and the manifest supplies its
-numeric tile key, C0 must not inherit per-row `tile_id`, `tile_x`, or `tile_y`
-from the legacy payload. C2 determines whether any repeated tile field has a
-concrete construction or Phase 2 consumer that justifies its storage. Gate B
-freezes the exact-level Arrow schema.
+`tile_id`, `tile_x`, and `tile_y` are not point-payload columns. One row group
+contains one logical tile, and its manifest row supplies `level`, `tile_x`, and
+`tile_y`; `tile_id` is derived from that numeric tile key. Repeating these values
+for every point would add storage and decoding work without adding information.
 
 Construction uses numeric tile keys internally. Per-row Python `tile_id` strings
 are not part of the hot construction path. Global coordinates can be
@@ -230,7 +228,6 @@ named review gates rather than guessed during implementation:
 - the exact public build configuration and result models;
 - the default `overview_point_budget` and `max_rows_per_row_group`;
 - grid-origin normalization and exact maximum-boundary behavior;
-- the exact physical point payload and whether any per-row tile field is needed;
 - the provisional minimal manifest fields and whether any derived field must be
   persisted;
 - writer engine selection between the focused Dask and direct-PyArrow
@@ -263,9 +260,9 @@ src/napari_harpy/core/multi_scale_cache_points/
   publication.py
 ```
 
-`schema.py` is added only after Gate B freezes the exact payload or Gate D
-freezes the complete manifest and metadata schema; C0 must not create it merely
-to mirror the legacy module.
+`schema.py` is added only when C2/C3 needs to materialize the locked point
+payload as an Arrow schema or after Gate D freezes the complete manifest and
+metadata schema; C0 must not create it merely to mirror the legacy module.
 
 A pure planner may justify `build_plan.py`; do not add it before Slice C1 makes
 that boundary concrete. Small helpers should remain in their consuming module
@@ -345,7 +342,8 @@ gate.
 
 - C1 and C2 can accept typed configuration without dictionaries of unrelated
   options;
-- physical schemas remain explicitly deferred to their owning gates;
+- concrete Arrow schema objects remain deferred to their consuming slices even
+  though the point-payload columns and types are already locked;
 - the public API remains small and independent of Qt, napari, and VisPy.
 
 ## Slice C1: pure grid and level build planning
@@ -492,9 +490,9 @@ C2 compares only these two approaches based on installed dependencies. Do not
 introduce DuckDB, Polars, Spark, or another execution dependency unless both
 focused candidates fail the locked requirements.
 
-### Physical-format minimization
+### Locked physical point payload
 
-Start from the provisional exact-level payload:
+Both writer candidates must emit the locked exact-level payload:
 
 ```text
 x_rel: float32
@@ -503,10 +501,10 @@ value_id: uint32
 point_id: uint64
 ```
 
-Do not repeat `tile_id`, `tile_x`, or `tile_y` per point unless a concrete
-construction or Phase 2 read consumer demonstrates that the manifest tile key
-is insufficient. Validate coordinate reconstruction and a representative tile
-read using the minimal payload before Gate B freezes its Arrow schema.
+Do not repeat `tile_id`, `tile_x`, or `tile_y` per point. Validate coordinate
+reconstruction and a representative tile read using the manifest tile key and
+the locked payload. Changing this contract later requires an explicit cache-
+format revision; it is not a writer-engine decision at Gate B.
 
 Use the provisional minimal manifest semantics from the parent roadmap. In
 particular, do not copy per-row `schema_version` or the derived string `tile_id`
@@ -568,8 +566,8 @@ A or add unrelated writer engines for comparison.
 - exact membership, identity, and coordinate reconstruction are correct;
 - one writer engine is selected from the two focused candidates with recorded
   correctness, complexity, performance, and operational reasons;
-- the exact-level payload schema and the decision on repeated per-row tile fields
-  are approved for C3;
+- both writer candidates use the locked exact-level payload and reconstruct
+  coordinates correctly from its manifest tile key;
 - bucket mapping, spill/grouping, single-owner output, file, and dense-tile
   sharding policies are approved for C3;
 - spike artifacts are removed after measurements are recorded.
@@ -594,7 +592,7 @@ populate a caller-owned staging generation.
 - vectorized `uint64 point_id` construction from file offsets and row positions;
 - normalized-value to `uint32 value_id` mapping from the validated value table;
 - numeric tile assignment and tile-local `float32` conversion;
-- the Gate B-approved minimal exact-level Arrow payload;
+- the locked four-column exact-level point payload;
 - deterministic ordering within physical shards;
 - dense-tile splitting by `max_rows_per_row_group`;
 - one logical tile per row group and deterministic `tile_shard` numbering;
@@ -891,7 +889,6 @@ Approve:
 - exact tile size;
 - writer-engine selection and the reasons for rejecting the other focused
   candidate;
-- exact-level Arrow payload and the decision on repeated per-row tile fields;
 - stable bucket hash, bucket count, and deterministic file naming;
 - engine-specific shuffle/spill configuration and finalization-memory limit;
 - bounded oversized-bucket fallback, file-rollover, and dense-tile sharding
@@ -959,6 +956,6 @@ Phase 1 is complete when:
 Start with **C0: minimal logical construction contracts**. Before writing code,
 refine only the decisions C0 genuinely requires: minimal build configuration,
 level-plan records, ownership of later version strings, and which construction
-errors must be public. Do not define payload, manifest, or metadata Arrow schemas
-before their owning gates, and do not settle the sampler or writer-engine details
-owned by later slices prematurely.
+errors must be public. Do not materialize Arrow schema objects before their
+consuming slices, and do not settle the sampler or writer-engine details owned
+by later slices prematurely.

@@ -1209,9 +1209,9 @@ The manifest should be sorted/indexable by `(level, tile_y, tile_x,
 tile_shard)`. Whether the whole compact manifest is loaded into memory or
 queried as an Arrow dataset is decided from benchmarked manifest size.
 
-### Level payload semantics before schema
+### Level point-payload contract
 
-The provisional minimal physical point payload is:
+Every exact and sampled level uses this physical per-point payload:
 
 ```text
 x_rel: float32
@@ -1220,13 +1220,13 @@ value_id: uint32
 point_id: uint64
 ```
 
-Because every row group contains one logical tile and the manifest supplies its
-`level`, `tile_x`, and `tile_y`, the initial design does not presume that
-`tile_id`, `tile_x`, or `tile_y` must be repeated for every point. A reader can
-reconstruct global coordinates from the manifest tile origin plus `x_rel` and
-`y_rel`. C2 must validate this against construction and future Phase 2 reader
-needs before Gate B freezes the exact-level payload schema. Any repeated per-row
-tile field requires a concrete consumer and measured justification.
+`tile_id`, `tile_x`, and `tile_y` are not point-payload columns. Every row group
+contains one logical tile, and its manifest row supplies `level`, `tile_x`, and
+`tile_y`; `tile_id` is derived from that numeric key. A reader reconstructs
+global coordinates from the manifest tile origin plus `x_rel` and `y_rel`.
+Repeating tile identity for every point would add storage and decoding work
+without adding information. Changing this contract later requires an explicit
+cache-format revision.
 
 The first cache format stores tile-local `x_rel` and `y_rel` as `float32`.
 Validation and tile assignment operate from `float64` working coordinates and
@@ -1460,9 +1460,8 @@ bucket_id
 ```
 
 Additional source-provenance columns may exist only while constructing
-`point_id`; they are removed before final level writing. If Gate B retains a
-serialized per-row `tile_id`, it is derived during final grouped writing rather
-than created as a Python string in the annotation hot path.
+`point_id`; they are removed before final level writing. No serialized per-row
+`tile_id`, `tile_x`, or `tile_y` is created during annotation or finalization.
 
 `bucketed` is also not a stored cache artifact. It is the lazy result of the
 disk-shuffle graph. When that graph executes, every annotated input partition is
@@ -1798,8 +1797,7 @@ The implementation is divided into independently reviewable slices in
 Begin with an internal exact-level performance spike:
 
 - use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
-- evaluate the provisional minimal numeric payload rather than inheriting
-  per-row tile columns from the legacy schema;
+- use the locked four-column numeric point payload without per-row tile columns;
 - implement the tile-co-located Layout B contract through deterministic writer
   buckets;
 - compare only Dask local disk shuffle plus Arrow finalization with direct
@@ -2032,7 +2030,7 @@ Test:
 - global and per-level budgets;
 - dense-tile sharding;
 - cross-partition tile co-location semantics;
-- minimal payload reconstruction without presumed per-row tile columns;
+- reconstruction from the locked point payload and manifest tile key;
 - local no-task-retry execution, single-owner bucket paths, and whole-staging
   rejection after a finalizer failure;
 - manifest accounting;
@@ -2188,11 +2186,12 @@ The next work follows the construction companion roadmap:
 2. implement C1's IO-free 512-based level plan;
 3. in C2, compare the focused Dask disk-shuffle and direct-PyArrow spill
    candidates under the same tile-co-location contract;
-4. minimize and freeze the exact-level payload, writer engine, bucket policy,
-   bounded fallback, and local single-owner output at Gate B;
+4. freeze the writer engine, bucket policy, bounded fallback, and local single-
+   owner output at Gate B while retaining the locked point payload;
 5. implement the selected production exact writer in C3;
 6. proceed through value-aware sampling, staged-cache validation, publication,
    and the complete Xenium benchmark in the remaining Phase 1 slices.
 
-This order keeps logical cache requirements stable while deferring physical
-writer and schema choices until focused evidence exists.
+This order keeps logical cache requirements stable while deferring the physical
+writer and the remaining manifest and metadata schema choices until focused
+evidence exists.
