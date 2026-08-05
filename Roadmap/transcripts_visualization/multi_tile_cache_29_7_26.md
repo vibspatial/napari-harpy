@@ -1173,7 +1173,7 @@ invalid unreferenced physical dictionary entries are ignored. Arrow `string`,
 canonical `string` output field; an unrepresentable normalized label is a
 validation failure rather than a schema change.
 
-### `manifest.parquet`: semantics before schema
+### `manifest.parquet` contract
 
 One row describes one physical Parquet row group:
 
@@ -1187,12 +1187,18 @@ row_group: int32
 tile_shard: int32
 ```
 
-This is the provisional minimal column set, not a schema frozen from the legacy
-metadata dataframe. `schema_version` belongs to `metadata.json` unless C6 shows
-that a per-row copy has an independent consumer. `tile_id` is derivable from
-`(level, tile_x, tile_y)` and is omitted unless the C2/C6 review identifies a
-measured runtime need that outweighs the repeated storage. Gate D freezes the
-complete manifest Arrow schema.
+The initial manifest contains exactly this logical column set. It does not
+contain `tile_id` or `schema_version`:
+
+- `tile_id` is derived as `f"{level}/{tile_x}/{tile_y}"` from the manifest's
+  numeric tile key;
+- `schema_version` is stored once in `metadata.json`, which owns the schema
+  version for the complete cache generation.
+
+Repeating either value in every manifest row adds storage without adding
+information. Gate D freezes the remaining Arrow details, including nullability
+and metadata policy, but does not reopen these two exclusions. Adding either
+column later requires an explicit cache-format revision.
 
 Requirements:
 

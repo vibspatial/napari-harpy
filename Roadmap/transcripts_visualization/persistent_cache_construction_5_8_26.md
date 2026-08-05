@@ -228,8 +228,7 @@ named review gates rather than guessed during implementation:
 - the exact public build configuration and result models;
 - the default `overview_point_budget` and `max_rows_per_row_group`;
 - grid-origin normalization and exact maximum-boundary behavior;
-- the provisional minimal manifest fields and whether any derived field must be
-  persisted;
+- the remaining Arrow details for the locked manifest column set;
 - writer engine selection between the focused Dask and direct-PyArrow
   candidates;
 - the stable bucket hash, bucket count, and deterministic file naming;
@@ -506,10 +505,12 @@ reconstruction and a representative tile read using the manifest tile key and
 the locked payload. Changing this contract later requires an explicit cache-
 format revision; it is not a writer-engine decision at Gate B.
 
-Use the provisional minimal manifest semantics from the parent roadmap. In
-particular, do not copy per-row `schema_version` or the derived string `tile_id`
-from the legacy metadata dataframe without independent justification. C2 records
-the physical row-group facts needed by C6; Gate D owns the final manifest schema.
+Use the locked manifest column set from the parent roadmap. Do not copy
+`schema_version` or the derived string `tile_id` from the legacy metadata
+dataframe: `schema_version` belongs once in `metadata.json`, while `tile_id` is
+derived from `(level, tile_x, tile_y)`. C2 records the physical row-group facts
+needed by C6; Gate D owns the remaining manifest Arrow details but does not
+reopen these exclusions.
 
 ### Initial local execution and failure contract
 
@@ -733,6 +734,8 @@ semantics and physical accounting can be validated independently.
 - write `values.parquet` directly from the validated canonical value table;
 - write deterministic `manifest.parquet` rows sorted by
   `(level, tile_y, tile_x, tile_shard)`;
+- write no manifest `tile_id` or `schema_version` column; derive the former from
+  the numeric tile key and store the latter once in `metadata.json`;
 - write `metadata.json` with cache identity, source identity, geometry, ordered
   level records, build parameters, value-normalization method, point-id policy,
   sampler version, writer layout, and coordinate dtype contract;
@@ -752,7 +755,8 @@ canonical source to recompute bounds, values, or row counts.
 
 Start from one tiny valid staged generation and derive a small set of corruptions:
 missing files, escaped paths, wrong row-group references, count disagreement,
-schema mismatch, budget overflow, and non-nested membership where validated at
+schema mismatch or an unexpected manifest column such as `tile_id` or
+`schema_version`, budget overflow, and non-nested membership where validated at
 this phase. Avoid one test per metadata field.
 
 ### Exit criteria
