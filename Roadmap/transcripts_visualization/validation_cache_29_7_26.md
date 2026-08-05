@@ -552,7 +552,7 @@ Each slice should be independently reviewable, tested, and mergeable.
 | V3 | Implemented | Source signature and internal point-identity contract | No |
 | V4 | Implemented | Fused coordinate/value content scan | Once |
 | V5 | Implemented | Public validation orchestration and build-ready source | No additional scan |
-| V6 | Next | Xenium benchmark, profiling, and hardening | Once per benchmark run |
+| V6 | Implemented | Xenium benchmark, profiling decision, and hardening | Once per benchmark run |
 
 V0 through V5 deliver the build-ready validation path. The API always uses the
 Harpy-owned internal point identity and does not accept a source identity
@@ -1380,6 +1380,10 @@ need no dedicated tests unless V5 introduces behavior beyond the contract above.
 
 ## Slice V6: Xenium benchmark and hardening
 
+Implementation status: **complete as of 2026-08-05**. The reusable benchmark
+tool is implemented, one warm-labelled acceptance run was performed as requested,
+and all source-fact, timing, batch-bound, and resident-memory checks passed.
+
 ### Acceptance source
 
 ```text
@@ -1396,29 +1400,89 @@ Expected investigated values:
 - `x` bounds approximately `[38.3088, 54047.2059]`;
 - `y` bounds approximately `[22.7206, 37581.4706]`;
 
-The dataset path is not hardcoded into normal tests. A benchmark script or
-opt-in test receives it through an explicit command-line argument or environment
-variable.
+The dataset path is not hardcoded into normal tests. The benchmark script
+receives it through an explicit command-line argument.
 
 ### Benchmark entry point
 
-Add an explicit developer tool such as:
+Add this explicit developer tool:
 
 ```text
 scripts/benchmark_multi_scale_cache_points_validation.py
 ```
 
+The initial command-line contract is:
+
+```bash
+.venv/bin/python scripts/benchmark_multi_scale_cache_points_validation.py \
+    /path/to/sdata.zarr \
+    --points-name transcripts_global_ROI1 \
+    --x x \
+    --y y \
+    --value gene \
+    --runs 3 \
+    --run-label warm \
+    --json-output /tmp/xenium-validation-benchmark.json
+```
+
+The positional path is the SpatialData zarr root, not the nested
+`points.parquet` directory. Column flags default to `x`, `y`, and `gene` in the
+same way as source resolution. `--runs` must be a positive integer. The tool
+does not hardcode the private acceptance-source path and remains excluded from
+the normal unit suite.
+
+Each measured run calls the real public `validate_parquet_points_source()`
+entry point. Benchmark-only wrappers around the existing private inventory,
+scan, and content-reader boundaries collect timings and batch measurements while
+delegating to the original implementation. The benchmark must not copy the V5
+orchestration or V4 scan into the script, add timing fields to
+`ValidatedPointsSource`, or widen the public validation API.
+
+The requested `--run-label` is recorded verbatim for every run. The benchmark
+does not infer that a first process run is cold. Use `cold` only when the caller
+has deliberately prepared cold filesystem-cache conditions outside the script;
+otherwise use an honest label such as `first` or `warm`. The tool does not run
+privileged operating-system cache-purge commands.
+
+`--json-output` writes one versioned JSON document containing run-independent
+context and one record per measured run. The console receives a concise human-
+readable summary. The JSON output records its schema version, command parameters,
+and measurement units explicitly so later runs remain comparable.
+
 It reports machine-readable JSON plus a concise console summary containing:
 
-- package and dependency versions;
-- machine and storage context when available;
-- cold/warm run label;
+- Python, napari-harpy, PyArrow, NumPy, Dask, SpatialData, and psutil versions
+  when available;
+- operating system, architecture, processor, logical CPU count, total physical
+  memory, and source-filesystem capacity/free-space context when available;
+- caller-supplied run label and run index;
 - source path and signature method;
 - file, row-group, row, batch, and value counts;
 - initial inventory, scan, final inventory, and total times;
-- largest batch rows and decoded bytes;
-- peak resident memory when measured reliably;
+- largest batch rows and `pyarrow.RecordBatch.nbytes`;
+- resident-memory baseline, observed peak, and incremental peak;
 - validated-source summary.
+
+All durations are monotonic wall-clock seconds. `largest_batch_nbytes` is
+defined as the maximum `RecordBatch.nbytes` observed from the actual scan; it is
+not presented as the process's peak allocation. Batch count and maxima are
+collected while the validator consumes its real batch iterator.
+
+Resident memory is sampled with psutil over the complete public validation call.
+The initial sampling interval is 10 milliseconds and is included in the JSON.
+For each run, report:
+
+```text
+baseline_rss_bytes
+peak_rss_bytes
+incremental_peak_rss_bytes = max(0, peak_rss_bytes - baseline_rss_bytes)
+```
+
+RSS sampling includes Python and native PyArrow memory, unlike `tracemalloc`.
+Psutil remains a benchmark-tool dependency rather than a production validation
+dependency. If it is unavailable, the script must report memory measurement as
+unavailable rather than substitute a Python-only peak; a formal Gate D run must
+measure RSS on an environment where psutil is available.
 
 The benchmark is read-only. These measurements belong to the benchmark output;
 they are not returned by `validate_parquet_points_source(...)` and are not
@@ -1439,6 +1503,56 @@ On the investigated local SSD and current development machine:
 These are hypotheses, not permanent product guarantees. Record actual results,
 hardware, batch size, and cache state before changing them.
 
+### Recorded acceptance run: 2026-08-05
+
+The benchmark was deliberately run once with `--runs 1 --run-label warm`; no
+repetitions or averages were calculated. It used the default
+`max_batch_rows=1_048_576` on a Darwin arm64 machine with 12 logical CPUs and
+32 GiB of physical memory. Relevant package versions were Python 3.13.11,
+napari-harpy 0.1.0, PyArrow 24.0.0, NumPy 2.3.5, Dask 2026.1.1, SpatialData
+0.7.3, and psutil 7.2.2.
+
+Measured stages were:
+
+| Measurement | Result |
+|---|---:|
+| Initial inventory | 0.484130 s |
+| Content scan | 2.023164 s |
+| Final inventory | 0.007511 s |
+| Complete public validation | 2.515662 s |
+| Batch count | 168 |
+| Largest batch | 1,048,576 rows |
+| Largest `RecordBatch.nbytes` | 19,183,567 bytes |
+| Baseline RSS | 154,501,120 bytes |
+| Peak RSS | 358,350,848 bytes |
+| Incremental peak RSS | 203,849,728 bytes (194.4 MiB) |
+
+The validated result matched every investigated source fact:
+
+- 136,578,750 rows;
+- 65 files and 168 row groups;
+- 5,122 normalized values;
+- `x` bounds `[38.30882352941177, 54047.205882352944]`;
+- `y` bounds `[22.72058823529412, 37581.470588235294]`;
+- source signature
+  `1c731c8158fa778a62135a57b90e0d636bf790a485af14db611dc8254e8f956b`.
+
+That signature and those source facts also match the earlier full V5 acceptance
+validation, providing a determinism check without repeating this benchmark for
+an average. Both inventory passes were below 1 second, warm validation was far
+below 30 seconds, incremental RSS remained below 512 MiB, and observed batches
+remained bounded by the configured maximum. No code path requested a complete
+source file as an Arrow table or materialized a dataframe; the scan retained
+only its current bounded record batch and compact aggregates.
+
+A genuine cold-filesystem-cache run was not attempted and the `cold` hypothesis
+remains unmeasured. This is recorded as a non-blocking limitation rather than
+mislabeling the first run; the initial exact-writer work depends on the measured
+warm interactive path. The temporary JSON benchmark output was inspected and
+then deleted as requested. PyArrow emitted sandbox-related warnings when it
+could not query several CPU cache sysctls, but validation completed successfully
+and the warnings did not invalidate the recorded measurements.
+
 ### Profile before optimizing
 
 Profile separately:
@@ -1453,6 +1567,12 @@ Profile separately:
 
 Do not introduce concurrency, custom native code, or persistent validation
 sidecars until the profile identifies a material bottleneck.
+
+Run the benchmark before adding new optimization work. Detailed profiling is
+required when a performance or memory hypothesis is missed or when a result
+needs explanation; it is not mandatory busywork for an already explained result
+that satisfies the hypotheses. Any optimization decision records the relevant
+profile and whether work is accepted, deferred, or rejected.
 
 ### Exit criteria
 
@@ -1536,6 +1656,10 @@ Changing these later may invalidate built caches.
 
 ### Gate C: after V5
 
+Status: **approved as of 2026-08-05**. V5's implementation and focused review
+freeze the initial functional validation contract for V6 measurement and
+hardening, subject to the explicit reopening rule below.
+
 Approve:
 
 - the public validation API and private intermediate boundaries;
@@ -1550,6 +1674,12 @@ semantics. A V6 finding that requires a functional contract change explicitly
 reopens the affected Gate C decision.
 
 ### Gate D: after V6
+
+Status: **approved as of 2026-08-05 for the initial exact-level writer**. The
+single requested warm acceptance run matched all expected source facts and met
+the timing, batch-bound, and memory hypotheses by a wide margin. No missed target
+requires additional profiling before writer work. A genuine cold-cache result
+may be recorded later without blocking this decision.
 
 Approve:
 
