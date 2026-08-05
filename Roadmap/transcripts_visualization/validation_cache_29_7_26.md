@@ -551,8 +551,8 @@ Each slice should be independently reviewable, tested, and mergeable.
 | V2 | Implemented | Private Parquet source inventory and schema validation | No |
 | V3 | Implemented | Source signature and internal point-identity contract | No |
 | V4 | Implemented | Fused coordinate/value content scan | Once |
-| V5 | Next | Public validation orchestration and build-ready source | No additional scan |
-| V6 | Planned | Xenium benchmark, profiling, and hardening | Once per benchmark run |
+| V5 | Implemented | Public validation orchestration and build-ready source | No additional scan |
+| V6 | Next | Xenium benchmark, profiling, and hardening | Once per benchmark run |
 
 V0 through V5 deliver the build-ready validation path. The API always uses the
 Harpy-owned internal point identity and does not accept a source identity
@@ -1250,6 +1250,10 @@ real-data performance and memory acceptance; it is not part of this unit suite.
 
 ## Slice V5: validation orchestration and build-ready source
 
+Implementation status: **complete as of 2026-08-04**. The public validator now
+combines the deterministic inventory, source signature, fused content scan, and
+post-scan source-stability guard into one immutable build-ready result.
+
 ### Goal
 
 Connect resolution, private source-inventory inspection, signature construction, internal
@@ -1274,27 +1278,36 @@ exports both names as part of the deliberately small package API.
 The orchestration shape is deliberately small:
 
 ```python
-inventory_before = _read_parquet_source_inventory(source)
-signature_before = build_source_signature(inventory_before)
+inventory_before_scan = _read_parquet_source_inventory(source)
+signature_before_scan = build_source_signature(inventory_before_scan)
 
 scanned = _scan_points_content(
-    inventory_before,
+    inventory_before_scan,
     max_batch_rows=max_batch_rows,
 )
 
-inventory_after = _read_parquet_source_inventory(source)
-signature_after = build_source_signature(inventory_after)
+inventory_after_scan = _read_parquet_source_inventory(source)
+signature_after_scan = build_source_signature(inventory_after_scan)
 
-if signature_before != signature_after:
+if signature_before_scan != signature_after_scan:
     raise PointsSourceValidationError(
         "The Parquet points source changed during validation.",
         code="source_changed_during_validation",
     )
 
-return _construct_validated_points_source(
-    inventory=inventory_before,
-    scanned=scanned,
-    source_signature=signature_before,
+# Reconcile scanned.row_count and scanned.value_table with inventory_before_scan.
+
+return ValidatedPointsSource(
+    source=inventory_before_scan.source,
+    files=inventory_before_scan.files,
+    selected_schema=inventory_before_scan.selected_schema,
+    row_count=inventory_before_scan.row_count,
+    bounds=scanned.bounds,
+    value_table=scanned.value_table,
+    source_signature=signature_before_scan,
+    source_signature_method=SOURCE_SIGNATURE_METHOD,
+    value_normalization_method=VALUE_NORMALIZATION_METHOD,
+    point_id_policy=POINT_ID_POLICY,
 )
 ```
 
@@ -1312,10 +1325,10 @@ content, and source-stability check agree. It combines the source inventory's
 physical inventory and selected schema with the scan's exact bounds and value
 table. Partial intermediate objects are never returned as build-ready input.
 
-The validated `row_count` is copied from `inventory_before`, which remains the
-authoritative metadata source after the scan has reconciled its observed total
-with that count. `bounds` and `value_table` come from `scanned`. The remaining
-method fields use the frozen `SOURCE_SIGNATURE_METHOD`,
+The validated `row_count` is copied from `inventory_before_scan`, which remains
+the authoritative metadata source after the scan has reconciled its observed
+total with that count. `bounds` and `value_table` come from `scanned`. The
+remaining method fields use the frozen `SOURCE_SIGNATURE_METHOD`,
 `VALUE_NORMALIZATION_METHOD`, and `POINT_ID_POLICY` constants. V5 records the
 point-identity policy but does not generate point ids; exact cache construction
 later applies that policy using each source file's `row_offset`.
@@ -1591,5 +1604,25 @@ V4 now provides:
    behavior.
 
 V5 orchestration, cache writing, sampling, rendering, and legacy-module
-migration remain outside V4. V5 is the next implementation slice, subject to its
-own readiness review.
+migration remain outside V4.
+
+## Implemented V5 slice
+
+V5 now provides:
+
+1. the public immutable `ValidatedPointsSource` build contract;
+2. one public `validate_parquet_points_source()` orchestration entry point;
+3. deterministic inventory and source-signature construction before the one V4
+   content scan;
+4. a fresh metadata-only inventory and signature check after scanning, with a
+   stable source-change error;
+5. the frozen signature, value-normalization, and point-identity method names in
+   the returned build input;
+6. focused tests for the successful workflow, deterministic output,
+   source-change rejection, and error propagation.
+
+The implementation also validates the initial Xenium acceptance source with
+136,578,750 rows, 65 files, 168 row groups, and 5,122 normalized values. V6
+remains responsible for formal timing, memory measurement, profiling, and the
+Gate D readiness decision. Cache writing, sampling, rendering, and legacy-module
+migration remain outside V5.
