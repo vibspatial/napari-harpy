@@ -1,0 +1,768 @@
+# Persistent Points Cache Construction
+
+Status: implementation roadmap for Phase 1 cache construction
+
+Roadmap date: 2026-08-05
+
+## Authority and scope
+
+This document expands Phase 1, persistent cache construction, from
+[multi_tile_cache_29_7_26.md](multi_tile_cache_29_7_26.md).
+
+The parent roadmap remains authoritative for the complete multiscale cache,
+runtime store, scheduler, renderer, and napari integration. The completed
+[validation_cache_29_7_26.md](validation_cache_29_7_26.md) remains authoritative
+for source resolution, source signatures, value normalization, and
+`ValidatedPointsSource`. If this document conflicts with either contract, the
+parent roadmap wins and the conflict must be resolved before implementation.
+
+Phase 0 is complete and Gate D has approved beginning the exact-level writer.
+This roadmap covers only the work needed to turn one `ValidatedPointsSource`
+into a complete, local, persistent multiscale points cache.
+
+It does not implement:
+
+- runtime cache opening or freshness classification;
+- viewport-to-tile planning or LOD selection;
+- request scheduling or CPU/GPU caches;
+- napari, Qt, VisPy, or GPU rendering;
+- value-selective tile IO;
+- remote/object-store construction or publication;
+- mutation of the canonical SpatialData points element;
+- removal of `_transcript_tiles.py` or its legacy tests.
+
+The canonical `points.parquet` dataset remains read-only. Every cache artifact is
+derived, Harpy-owned, and disposable.
+
+## Outcome
+
+Phase 1 must produce a completed cache rooted at:
+
+```text
+<sdata.zarr>/points/<points_name>/transcripts_vis/
+```
+
+with:
+
+```text
+metadata.json
+manifest.parquet
+values.parquet
+levels/
+  level_0/
+  ...
+  level_n/
+COMPLETED
+```
+
+The completed cache must provide:
+
+- one exact finest level containing every validated source row exactly once;
+- deterministic Harpy-owned `uint64 point_id` values;
+- tile-local `float32` coordinates with documented reconstruction tolerance;
+- self-contained, nested, value-aware sampled levels;
+- the initial 512-all → 512-at-4,096 → 1,024-at-8,192 →
+  2,048-at-16,384 → 4,096-at-32,768 progression;
+- further spatial levels when needed to satisfy the global overview budget;
+- deterministic `values.parquet`, metadata, manifest, files, row groups, and
+  shard numbering;
+- source-signature guards before staging and immediately before publication;
+- staged validation and a completion marker;
+- local publication that never exposes an incomplete cache and preserves an
+  existing completed cache on failure;
+- measured build time, peak memory, disk usage, and fragmentation on the Xenium
+  acceptance source.
+
+An exact-only artifact may be used internally by implementation spikes. It is
+not a completed multiscale cache for a source whose exact representation exceeds
+the overview budget.
+
+## Locked inputs from Phase 0
+
+Construction accepts the public immutable `ValidatedPointsSource` and trusts its
+content facts while source-signature guards pass. It does not:
+
+- resolve SpatialData again;
+- inspect a Dask graph;
+- repeat the validation content scan;
+- recompute source bounds or the global value table from point data;
+- accept a caller-supplied transcript or point identity column.
+
+The builder consumes:
+
+- `source` and its canonical physical Parquet path;
+- ordered source files, row offsets, and row-group metadata;
+- the selected source schema and columns;
+- source row count and exact scan-derived bounds;
+- the canonical normalized `value_table`;
+- source-signature method and value;
+- value-normalization method;
+- point-identity policy.
+
+Construction necessarily reads the selected source point rows again to create
+the cache. That is a construction pass, not a second validation pass. It must be
+bounded and must not independently recreate Phase 0 diagnostics.
+
+## Locked construction contracts
+
+### Source identity and point identity
+
+The expected source signature is always
+`validated.source_signature`. A fresh metadata-only signature must match before
+staging begins and again after staged-cache validation, immediately before the
+completion marker and publication.
+
+The initial point identity policy is:
+
+```text
+point_id = source_file.row_offset + row_position_within_file
+```
+
+with method name:
+
+```text
+harpy-source-file-row-offset-uint64-v1
+```
+
+IDs are generated in bounded arrays by the exact writer and propagated unchanged
+through every sampled level. Construction never writes them back to SpatialData.
+
+### Point-only, self-contained levels
+
+Every level stores actual source representatives. No level stores invented
+centroids or a raster. Serialized levels are ordered from coarsest to finest:
+
+```text
+level_0 ⊆ level_1 ⊆ ... ⊆ level_n
+level_n = exact source membership
+```
+
+The runtime will render one self-contained level at a time. Residual or disjoint
+levels are not part of the first format.
+
+### Initial level schedule
+
+The initial target is:
+
+| Design label | Tile geometry | Maximum rows per tile |
+|---|---:|---:|
+| Exact | 512 | all source rows |
+| Sampled finest bridge | 512 | 4,096 |
+| L1 | 1,024 | 8,192 |
+| L2 | 2,048 | 16,384 |
+| L3 | 4,096 | 32,768 |
+| Later spatial levels | double preceding edge | initially double preceding capacity |
+
+Capacity is a maximum, not a fill target. Sparse tiles retain all candidates.
+The terminal coarsest level is globally allocated so that:
+
+```text
+sum(manifest.n_points where level == 0) <= overview_point_budget
+```
+
+For a source whose exact membership already satisfies the overview budget, one
+exact level is sufficient.
+
+### Required level payload
+
+The initial payload contains only:
+
+```text
+tile_id
+tile_x
+tile_y
+x_rel: float32
+y_rel: float32
+value_id: uint32
+point_id: uint64
+```
+
+Construction uses numeric tile keys internally. Per-row Python `tile_id` strings
+are not part of the hot construction path. Global coordinates are reconstructed
+as:
+
+```text
+x = x_origin + tile_x * tile_size + x_rel
+y = y_origin + tile_y * tile_size + y_rel
+```
+
+Arbitrary source attributes are not copied into visualization levels.
+
+### Physical row-group invariant
+
+Every physical level row group contains rows for exactly one logical tile. A
+logical tile may have multiple deterministic shards. Manifest rows describe
+those physical shards and reconcile to logical-tile and complete-level counts.
+
+The manifest contract supports partition-local files, hash-shuffled files, and
+deterministic tile buckets. The exact physical layout is selected after the
+construction spike rather than assumed from the legacy implementation.
+
+### Staging and publication
+
+Every local build, including the first, uses a unique sibling staging directory.
+`COMPLETED` is written only after all required artifacts have been validated and
+the final source-signature guard passes. Failure publishes nothing incomplete
+and preserves any previously completed cache.
+
+## Decisions deliberately left for slice refinement
+
+The high-level slices below are ready, but these details must be frozen at their
+named review gates rather than guessed during implementation:
+
+- whether the first public format redefines `harpy-transcripts-vis-0.1` or uses
+  a new `0.2` schema version;
+- the exact public build configuration and result models;
+- the default `overview_point_budget` and `max_rows_per_row_group`;
+- grid-origin normalization and exact maximum-boundary behavior;
+- the production physical layout after the Layout A spike;
+- exact value-aware allocation weights and minimum-allocation behavior;
+- same-geometry bridge stratification;
+- stable hash algorithm, seed representation, and collision tie-breaking;
+- bounded worker concurrency and memory limits;
+- whether the first public builder exposes progress and cancellation or remains
+  a synchronous core API wrapped later by product integration;
+- exact local replacement and rollback mechanics on each supported platform.
+
+## Expected package shape
+
+Construction is expected to add modules only as their responsibilities become
+concrete:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/
+  schema.py
+  builder.py
+  exact_level.py
+  sampling.py
+  parquet_writer.py
+  manifest.py
+  publication.py
+```
+
+A pure planner may justify `build_plan.py`; do not add it before Slice C1 makes
+that boundary concrete. Small helpers should remain in their consuming module
+rather than creating speculative modules.
+
+Focused tests remain under:
+
+```text
+tests/multi_scale_cache_points/
+```
+
+The new implementation may borrow proven algorithms and test cases from
+`_transcript_tiles.py`, but it must not import that module.
+
+## Slice overview
+
+| Slice | Status | Deliverable | Reads source point rows | Publishes cache |
+|---|---|---|---:|---:|
+| C0 | Next | Minimal construction contracts and schemas | No | No |
+| C1 | Planned | Pure grid and level build planning | No | No |
+| C2 | Planned | Exact-level performance and physical-layout spike | Yes | No |
+| C3 | Planned | Production exact-level writer | Yes | No |
+| C4 | Planned | Versioned value-aware sampling contract and spike | No original-source rescan | No |
+| C5 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
+| C6 | Planned | Metadata, values, manifest, and staged-cache validation | No | No |
+| C7 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
+| C8 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
+
+Each slice must be independently reviewable. C2 and C4 are deliberate spikes;
+their artifacts are internal and disposable, but their measured decisions are
+recorded before production code depends on them.
+
+## Slice C0: minimal construction contracts and schemas
+
+### Goal
+
+Create only the immutable contracts and Arrow schemas required to plan and write
+one internal cache generation.
+
+### Expected files
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/schema.py
+src/napari_harpy/core/multi_scale_cache_points/models.py
+src/napari_harpy/core/multi_scale_cache_points/errors.py
+tests/multi_scale_cache_points/test_cache_contracts.py
+```
+
+### Implement
+
+- the minimal build configuration needed by C1 and C2;
+- immutable level and cache-plan records only when their fields are frozen;
+- exact Arrow schemas for level payloads and manifest rows;
+- cache-schema, sampling-policy, and writer-policy version strings where already
+  settled;
+- construction-specific errors rooted in the existing points validation error
+  family only when callers need to distinguish them;
+- narrow package exports; internal planning and writer records remain private.
+
+### Do not
+
+- open source Parquet files;
+- create directories or write cache artifacts;
+- expose speculative runtime-store or renderer models;
+- freeze metadata fields whose semantics are still owned by C6;
+- copy all legacy cache dataclasses merely because they exist.
+
+### Focused tests
+
+Use a few direct tests for construction parameters that affect correctness, such
+as positive budgets, schema field order and types, and incompatible combinations.
+Do not test dataclass or PyArrow behavior itself.
+
+### Exit criteria
+
+- C1 and C2 can accept typed configuration without dictionaries of unrelated
+  options;
+- payload and manifest schemas have explicit version ownership;
+- the public API remains small and independent of Qt, napari, and VisPy.
+
+## Slice C1: pure grid and level build planning
+
+### Goal
+
+Convert `ValidatedPointsSource` facts plus construction configuration into a
+deterministic, IO-free build plan.
+
+### Implement
+
+- freeze `x_origin` and `y_origin` rules;
+- calculate exact tile indices from validated bounds using half-open cells;
+- handle points on tile boundaries, including the source maximum;
+- distinguish tile geometry from sampling capacity;
+- create the exact-only plan when source count fits the overview budget;
+- otherwise create the exact level, sampled finest bridge, required spatial
+  progression, and terminal global-budget level;
+- order serialized level records from coarsest to finest while preserving clear
+  design labels internally;
+- record per-level tile size, capacity or global allocation, exactness, sampling
+  policy, and output directory;
+- reject impossible integer grid shapes or serialized level identifiers before
+  construction starts.
+
+The planner may use conservative count bounds. It does not inspect source rows
+or predict the exact sampled count of every tile.
+
+### Focused tests
+
+Cover a small exact-only source, a large source requiring the bridge and several
+spatial levels, maximum-boundary coordinates, negative coordinates, and the
+terminal overview-budget rule. Avoid combinatorial extent/budget tests.
+
+### Exit criteria
+
+- identical validated facts and configuration produce an identical plan;
+- the plan contains enough information for the exact writer and sampler without
+  consulting a viewport or renderer;
+- no filesystem or point-row IO occurs.
+
+## Slice C2: exact-level performance and physical-layout spike
+
+### Goal
+
+Demonstrate an efficient bounded exact-level construction path on the Xenium
+acceptance source before freezing the production writer layout.
+
+### Spike contract
+
+- consume `ValidatedPointsSource` directly;
+- compare 256- and 512-unit exact tiles while retaining 512 as the parent
+  roadmap's default unless evidence requires an explicit design change;
+- traverse validated source files, row groups, and bounded batches in
+  deterministic order;
+- generate batch-oriented internal `point_id` arrays;
+- normalize and map source values to the validated `value_table` without
+  Python-per-row string handling;
+- assign tiles from `float64` working coordinates and produce tile-local
+  `float32` coordinates;
+- use numeric construction keys;
+- implement partition-local Layout A first;
+- preserve the row-group-per-logical-tile invariant;
+- retain bounded concurrency and memory;
+- write only a unique benchmark/staging artifact, never `COMPLETED` or the final
+  visible cache path.
+
+Measure at least:
+
+- exact build time and peak RSS;
+- written bytes, file count, row-group count, and manifest rows;
+- rows, files, and row groups touched per logical tile;
+- coordinate reconstruction error;
+- membership and point-id coverage;
+- representative cold and warm tile reads from the spike artifact.
+
+Measure deterministic tile buckets, Layout C, only if Layout A shows material
+fragmentation or read-locality problems. Do not implement Layout B or C merely
+to complete a comparison table.
+
+### Exit criteria
+
+- 512-unit exact construction is demonstrated or a measured change is approved;
+- peak memory remains bounded independently of source row count;
+- exact membership, identity, and coordinate reconstruction are correct;
+- one physical-layout strategy is approved for C3;
+- spike artifacts are removed after measurements are recorded.
+
+## Slice C3: production exact-level writer
+
+### Goal
+
+Turn the C2 decisions into a deterministic, focused exact-level writer that can
+populate a caller-owned staging generation.
+
+### Implement
+
+- the approved physical writer layout and deterministic file naming;
+- bounded selected-column reads using the validated physical inventory;
+- vectorized `uint64 point_id` construction from file offsets and row positions;
+- normalized-value to `uint32 value_id` mapping from the validated value table;
+- numeric tile assignment and tile-local `float32` conversion;
+- deterministic ordering within physical shards;
+- dense-tile splitting by `max_rows_per_row_group`;
+- one logical tile per row group and deterministic `tile_shard` numbering;
+- exact-level counts and provisional manifest-row collection;
+- writer accounting sufficient for C6 staged validation.
+
+Unexpected source values, decoding failures, ID overflow, or source facts that
+cannot be mapped to the validated contract fail construction. The writer does
+not silently extend `values.parquet` or repair the canonical source.
+
+### Focused tests
+
+Use tiny multi-file and multi-row-group fixtures to cover file offsets, batch
+boundaries, tile boundaries, dense-tile sharding, dictionary/plain values, exact
+membership, deterministic output, and coordinate reconstruction tolerance. Test
+Harpy's accounting; do not retest Parquet compression internals.
+
+### Exit criteria
+
+- every source point appears exactly once in the exact level;
+- every expected `point_id` appears exactly once;
+- output rows use only canonical value IDs;
+- reconstructed coordinates meet the frozen tolerance;
+- rerunning the writer produces the same logical rows, shards, and manifest
+  records, apart from generation-owned paths not included in logical identity.
+
+## Slice C4: versioned value-aware sampling contract and spike
+
+### Goal
+
+Freeze and demonstrate the deterministic sampling algorithm before building the
+complete sampled pyramid.
+
+### Contract to refine and freeze
+
+The spike starts from the parent-roadmap family:
+
+```text
+finer candidates
+→ current-level tile and spatial stratum
+→ tile target allocated across occupied strata
+→ stratum target allocated across values
+→ stable priority and deterministic winners
+→ deterministic output order
+```
+
+It must settle:
+
+- same-geometry bridge stratification, with a fixed micro-grid evaluated as a
+  candidate rather than assumed;
+- child-tile spatial strata for L1 and later levels;
+- the bounded concave value-frequency transform;
+- any clipped global-rarity modifier and minimum allocation;
+- the versioned stable hash algorithm, seed encoding, and priority payload;
+- deterministic integer allocation and remainder distribution;
+- deterministic collision and final tie-breaking;
+- behavior when strata or values outnumber the target;
+- behavior for coincident coordinates, dominant values, singleton-heavy values,
+  sparse tiles, and tiles split across physical shards.
+
+The spike operates on bounded candidate tables or exact-cache tiles. It does not
+rescan the original canonical source and does not write a completed cache.
+
+### Evaluation
+
+Use small exact fixtures plus value-skewed, spatially skewed, and dense synthetic
+tiles. Include representative Xenium tiles. Measure:
+
+- deterministic and nested membership;
+- spatial coverage;
+- preservation of rare and dominant values;
+- hard capacity compliance;
+- runtime and peak memory;
+- adjacent-level count ratios and transition stability proxies.
+
+### Exit criteria
+
+- the complete sampler has one name and versioned parameter contract;
+- every winner is an actual finer-level candidate with unchanged `point_id`;
+- the same candidates and parameters always produce the same winners;
+- no tile or level target can be exceeded;
+- the bridge and spatial-level stratification rules are approved for C5.
+
+## Slice C5: complete nested sampled pyramid
+
+### Goal
+
+Build every planned sampled level from retained finer-level candidates without
+repeatedly scanning `points.parquet`.
+
+### Implement
+
+- the 512-at-4,096 sampled finest bridge from exact candidates;
+- 1,024-at-8,192, 2,048-at-16,384, and 4,096-at-32,768 spatial levels;
+- later edge/capacity-doubling levels when required by the plan;
+- terminal global allocation satisfying `overview_point_budget`;
+- deterministic parent formation from finer child tiles;
+- the C4 value-aware allocation and stable priorities;
+- unchanged `point_id` and `value_id` propagation;
+- self-contained payloads at every level;
+- the C3 physical sharding and manifest-row contract for sampled levels;
+- bounded candidate memory and bounded writer concurrency.
+
+### Focused tests
+
+Cover exact-only small sources, sparse tiles, four-child parent formation, the
+same-geometry bridge, dense capacity truncation, rare values, terminal global
+allocation, nested membership, and deterministic rebuilds. Do not require one
+test for every possible number of occupied strata or values.
+
+### Exit criteria
+
+- every generated level is a subset of the next finer level;
+- all representatives retain their exact-level identity and value;
+- each non-terminal tile respects its capacity;
+- the coarsest total respects the global overview budget;
+- sampled construction performs no original-source content rescan;
+- all planned levels are written and accounted for.
+
+## Slice C6: metadata, values, manifest, and staged-cache validation
+
+### Goal
+
+Turn writer outputs into a complete but unpublished cache generation whose
+semantics and physical accounting can be validated independently.
+
+### Implement
+
+- freeze the cache schema version before writing publicly consumable artifacts;
+- write `values.parquet` directly from the validated canonical value table;
+- write deterministic `manifest.parquet` rows sorted by
+  `(level, tile_y, tile_x, tile_shard)`;
+- write `metadata.json` with cache identity, source identity, geometry, ordered
+  level records, build parameters, value-normalization method, point-id policy,
+  sampler version, writer layout, and coordinate dtype contract;
+- use cache-root-relative POSIX paths only;
+- validate exact Arrow schemas and absence of unexpected metadata where the
+  format requires it;
+- validate every referenced file and row group;
+- reconcile shard → tile → level → cache row counts;
+- validate exact membership totals, nested sampled counts, capacities, terminal
+  overview budget, level ordering, and path containment;
+- reject an absent or premature artifact without creating `COMPLETED`.
+
+The staged validator checks the cache that was written. It does not rescan the
+canonical source to recompute bounds, values, or row counts.
+
+### Focused tests
+
+Start from one tiny valid staged generation and derive a small set of corruptions:
+missing files, escaped paths, wrong row-group references, count disagreement,
+schema mismatch, budget overflow, and non-nested membership where validated at
+this phase. Avoid one test per metadata field.
+
+### Exit criteria
+
+- one staged generation is self-consistent without consulting a Dask graph;
+- metadata and manifest are sufficient for the future Phase 2 store;
+- every physical row group is represented exactly once in the manifest;
+- validation returns no partial success and writes no completion marker.
+
+## Slice C7: guarded end-to-end builder and local publication
+
+### Goal
+
+Compose planning, exact writing, sampled writing, cache metadata, staged
+validation, source guards, and local publication into the first supported builder.
+
+### Required flow
+
+```text
+fresh source signature == validated signature
+→ create unique sibling staging generation
+→ write exact and sampled levels
+→ write values, metadata, and manifest
+→ validate complete staging generation
+→ fresh source signature == validated signature
+→ write COMPLETED
+→ install completed generation at transcripts_vis/
+```
+
+### Implement
+
+- fail the initial metadata-only source guard before staging is created;
+- generate a fresh cache-generation ID;
+- create and own a unique sibling staging directory;
+- invoke C1, C3, C5, and C6 without rebuilding validation facts;
+- fail the final metadata-only source guard after staged validation and before
+  completion;
+- write `COMPLETED` only after every preceding step succeeds;
+- publish the completed local directory with the approved replacement protocol;
+- preserve an existing completed cache when any build or guard fails;
+- reject and clean incomplete staging according to the frozen recovery policy;
+- expose a small public builder accepting `ValidatedPointsSource`;
+- expose a backed-SpatialData convenience entry point that delegates visibly
+  through resolution, validation, and the primary builder.
+
+Progress, cancellation, overwrite behavior, and the exact returned build result
+must be frozen before C7 implementation. They must not leak temporary paths or
+partially completed metadata into the public contract.
+
+### Focused tests
+
+Cover first publication, successful replacement, failure before staging, failure
+during writing, staged-validation failure, final source-signature mismatch,
+publication failure, preservation of an existing completed cache, cleanup, and
+absence of canonical-source mutation. Inject failures at Harpy boundaries rather
+than testing operating-system rename implementation details exhaustively.
+
+### Exit criteria
+
+- the final path is absent or a complete validated generation, never staging;
+- both source guards use fresh inventories and the original validated signature;
+- no guard repeats the point-content validation scan;
+- failures publish nothing incomplete and preserve the previous generation;
+- the primary builder requires no SpatialData object or Dask graph after it
+  receives `ValidatedPointsSource`.
+
+## Slice C8: Xenium construction benchmark and hardening
+
+### Goal
+
+Demonstrate that the complete Phase 1 builder is correct and operationally
+reasonable on the 136,578,750-row Xenium acceptance source before Phase 2 begins.
+
+### Benchmark tool
+
+Add an explicit, opt-in developer script that receives the SpatialData path,
+points name, build configuration, output location, run label, and JSON result
+path. It must not hardcode private data paths or run in normal CI.
+
+Record:
+
+- source signature and all build parameters;
+- exact, sampled, metadata, validation, guard, and publication times;
+- peak RSS and configured concurrency;
+- rows, bytes, files, row groups, and logical tiles per level;
+- complete cache size and overhead relative to the source;
+- manifest rows and bytes;
+- sampled counts, capacity utilization, nesting, and coarsest total;
+- coordinate reconstruction error;
+- files and row groups touched for representative tiles and viewports;
+- representative cold and warm PyArrow tile-read latency;
+- cleanup and replacement behavior;
+- package, machine, and storage context.
+
+The benchmark output is diagnostic and is not stored in cache metadata. Failed
+or benchmark-only cache generations are removed after their results are recorded.
+
+### Hardening policy
+
+- profile before introducing concurrency or native extensions;
+- optimize only measured bottlenecks;
+- reopen the physical-layout gate if fragmentation or tile-read latency is poor;
+- reopen the sampler gate if value or spatial preservation is unacceptable;
+- record target misses with an explicit accept, optimize, or redesign decision;
+- do not weaken correctness, determinism, bounded memory, or publication safety
+  merely to reduce build time.
+
+### Exit criteria
+
+- all exact and sampled correctness invariants pass on the acceptance cache;
+- build time, memory, disk size, and fragmentation are recorded;
+- the exact writer and sampler decisions remain supported or are explicitly
+  revised;
+- the resulting completed cache is suitable as the Phase 2 runtime-store
+  acceptance artifact;
+- Gate E approves beginning runtime store, planner, and scheduler work.
+
+## Review gates
+
+### Gate A: after C1
+
+Approve:
+
+- minimal construction models and schemas;
+- grid origin, boundary, and serialized-level conventions;
+- exact-only and multilevel planning behavior;
+- build configuration ownership and defaults needed by the writer spike.
+
+### Gate B: after C2
+
+Approve:
+
+- exact tile size;
+- production physical layout;
+- bounded read/write strategy and concurrency envelope;
+- coordinate reconstruction tolerance;
+- exact-writer performance viability.
+
+### Gate C: after C4
+
+Approve:
+
+- sampler name and version;
+- bridge and spatial stratification;
+- value-aware target allocation;
+- hash, seed, tie-breaking, and output ordering;
+- deterministic, nested, spatial, value-preservation, and capacity behavior.
+
+### Gate D: after C6
+
+Approve:
+
+- cache schema version;
+- payload, values, metadata, and manifest contracts;
+- staged-cache validation and accounting;
+- compatibility boundary expected by the future Phase 2 reader.
+
+### Gate E: after C8
+
+Approve:
+
+- complete Xenium build correctness;
+- measured build time, memory, size, and fragmentation;
+- physical-layout and sampler decisions after real-data evidence;
+- publication and cleanup behavior;
+- readiness for the runtime store, planner, and scheduler.
+
+## Phase 1 definition of done
+
+Phase 1 is complete when:
+
+- construction accepts `ValidatedPointsSource` and imports no legacy writer;
+- the canonical SpatialData source remains unchanged;
+- source-signature guards run before staging and before publication;
+- the exact level has complete membership and point identity;
+- tile-local coordinate reconstruction meets the frozen tolerance;
+- sampled levels are deterministic, nested, spatially stratified, and value aware;
+- every tile and level respects its capacity or global budget;
+- `values.parquet`, metadata, manifest, level files, and row groups reconcile;
+- every stored path is cache-root-relative and contained by the cache root;
+- a cache without `COMPLETED` is never accepted as complete;
+- first publication and replacement cannot expose an incomplete generation;
+- failed construction preserves any existing completed cache;
+- construction time, peak memory, disk size, and fragmentation are documented on
+  the Xenium acceptance source;
+- Gate E approves the completed cache as the Phase 2 acceptance artifact;
+- all focused construction tests pass.
+
+## Immediate next slice
+
+Start with **C0: minimal construction contracts and schemas**. Before writing
+code, refine only the decisions C0 genuinely requires: the first cache schema
+version, minimal build configuration fields, payload and manifest Arrow schemas,
+and which construction errors must be public. Do not settle the sampler or
+physical writer layout prematurely.
