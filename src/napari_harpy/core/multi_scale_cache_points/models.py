@@ -4,6 +4,8 @@ import math
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+import pyarrow as pa
+
 from napari_harpy.core.multi_scale_cache_points.errors import (
     ParquetMetadataValidationError,
     PointContentValidationError,
@@ -168,6 +170,58 @@ class ParquetSourceFile:
                 "Source-file row-group counts do not match its file-metadata row count.",
                 code="source_file_row_count_mismatch",
             )
+
+
+@dataclass(frozen=True)
+class ValidatedPointsSource:
+    """Immutable, build-ready description of a validated Parquet points source.
+
+    Parameters
+    ----------
+    source
+        Resolved canonical Parquet source and selected physical column names.
+    files
+        Deterministically ordered source files with dataset-relative paths, row
+        offsets, and physical row-group metadata.
+    selected_schema
+        Arrow schema containing only the selected source ``x``, ``y``, and
+        ``value`` fields in semantic order.
+    row_count
+        Total row count from Parquet metadata, reconciled with the content scan.
+    bounds
+        Finite coordinate bounds observed during the content scan.
+    value_table
+        Canonical Arrow table of normalized ``value_id``, ``value``, and exact
+        source-wide ``n_points`` counts.
+    source_signature
+        Digest of the versioned source inventory verified across the scan.
+    source_signature_method
+        Versioned method used to calculate ``source_signature``.
+    value_normalization_method
+        Versioned method used to normalize and order source values.
+    point_id_policy
+        Versioned rule for deriving internal ``uint64`` point IDs during cache
+        construction.
+
+    Notes
+    -----
+    For instances returned by ``validate_parquet_points_source()``, ``bounds``
+    and ``value_table`` are derived from the same successful content scan. Their
+    shared origin is established while scanning aligned point rows and cannot be
+    reconstructed from these aggregate objects independently. Direct dataclass
+    construction does not perform that validation.
+    """
+
+    source: ParquetPointsSource
+    files: tuple[ParquetSourceFile, ...]
+    selected_schema: pa.Schema
+    row_count: int
+    bounds: PointsBounds
+    value_table: pa.Table
+    source_signature: str
+    source_signature_method: str
+    value_normalization_method: str
+    point_id_policy: str
 
 
 def _require_non_negative_integer(value: object, label: str) -> None:

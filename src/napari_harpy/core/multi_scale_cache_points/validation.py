@@ -11,12 +11,19 @@ import pyarrow.parquet as pq
 from napari_harpy.core.multi_scale_cache_points.errors import (
     ParquetMetadataValidationError,
     PointContentValidationError,
+    PointsSourceValidationError,
 )
 from napari_harpy.core.multi_scale_cache_points.models import (
     ParquetPointsSource,
     ParquetSourceFile,
     ParquetSourceRowGroup,
     PointsBounds,
+    ValidatedPointsSource,
+)
+from napari_harpy.core.multi_scale_cache_points.signature import (
+    POINT_ID_POLICY,
+    SOURCE_SIGNATURE_METHOD,
+    build_source_signature,
 )
 
 _MAX_UINT64 = 2**64 - 1
@@ -97,6 +104,59 @@ class _ScannedPointsContent:
     row_count: int
     bounds: PointsBounds
     value_table: pa.Table
+
+
+def validate_parquet_points_source(
+    source: ParquetPointsSource,
+    *,
+    max_batch_rows: int = 1_048_576,
+) -> ValidatedPointsSource:
+    """Validate a resolved Parquet points source for cache construction."""
+    inventory_before_scan = _read_parquet_source_inventory(source)
+    signature_before_scan = build_source_signature(inventory_before_scan)
+
+    scanned = _scan_points_content(
+        inventory_before_scan,
+        max_batch_rows=max_batch_rows,
+    )
+
+    # Re-read the Parquet inventory after scanning. If its signature changed,
+    # the scan may have combined data from different source versions.
+    inventory_after_scan = _read_parquet_source_inventory(source)
+    signature_after_scan = build_source_signature(inventory_after_scan)
+    if signature_before_scan != signature_after_scan:
+        raise PointsSourceValidationError(
+            "The Parquet points source changed during validation.",
+            code="source_changed_during_validation",
+        )
+
+    if scanned.row_count != inventory_before_scan.row_count:
+        raise PointContentValidationError(
+            "Decoded source row count does not match the Parquet source inventory count "
+            f"({scanned.row_count} observed, {inventory_before_scan.row_count} expected).",
+            code="source_row_count_mismatch",
+        )
+
+    value_count_total = int(pc.sum(scanned.value_table["n_points"]).as_py() or 0)
+    if value_count_total != inventory_before_scan.row_count:
+        raise PointContentValidationError(
+            "Normalized value counts do not match the Parquet source inventory count "
+            f"({value_count_total} counted, {inventory_before_scan.row_count} expected).",
+            code="value_count_mismatch",
+        )
+
+    return ValidatedPointsSource(
+        source=inventory_before_scan.source,
+        files=inventory_before_scan.files,
+        selected_schema=inventory_before_scan.selected_schema,
+        row_count=inventory_before_scan.row_count,
+        bounds=scanned.bounds,
+        value_table=scanned.value_table,
+        source_signature=signature_before_scan,
+        source_signature_method=SOURCE_SIGNATURE_METHOD,
+        value_normalization_method=VALUE_NORMALIZATION_METHOD,
+        point_id_policy=POINT_ID_POLICY,
+    )
 
 
 def _scan_points_content(
