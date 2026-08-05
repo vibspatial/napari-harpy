@@ -1606,6 +1606,9 @@ Gate C decision. Phase 1 does not begin before Gate D.
 
 ### Phase 1: persistent cache construction
 
+The implementation is divided into independently reviewable slices in
+[persistent_cache_construction_5_8_26.md](persistent_cache_construction_5_8_26.md).
+
 Begin with an internal exact-level performance spike:
 
 - benchmark 256- and 512-unit exact tiles on the Xenium acceptance dataset;
