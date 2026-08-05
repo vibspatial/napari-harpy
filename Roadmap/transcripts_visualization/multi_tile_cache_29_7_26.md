@@ -99,10 +99,9 @@ impossible.
 
 ## Current repository state
 
-### Implemented and reusable
+### Historical implementation evidence
 
-`src/napari_harpy/_transcript_tiles.py` already contains tested building blocks
-for:
+`src/napari_harpy/_transcript_tiles.py` contains historical implementations of:
 
 - cache and level dataclasses;
 - validation of backed SpatialData points elements;
@@ -116,12 +115,17 @@ for:
 - manifest-row collection for physical row groups;
 - staged replacement and rollback helpers.
 
-`tests/test_transcript_tiles.py` covers these primitives. At the time this
-roadmap was written, its focused test module passed 103 tests.
+`tests/test_transcript_tiles.py` covers those historical behaviors. At the time
+this roadmap was written, its focused test module passed 103 tests. That result
+shows consistency with the legacy tests; it does not make the legacy models,
+schemas, Dask execution pattern, or writer architecture part of the new
+specification.
 
 These names describe the legacy implementation only. The new package
 generalizes the categorical column to `value` and does not retain its
-caller-supplied transcript-id path.
+caller-supplied transcript-id path. Nothing in the old module is presumed
+reusable. Every retained invariant, algorithm, schema field, or test case needs
+an independent justification from the new cache and runtime requirements.
 
 ### Not implemented
 
@@ -156,14 +160,16 @@ fresh package at:
 src/napari_harpy/core/multi_scale_cache_points/
 ```
 
-The new package may re-express proven contracts and algorithms from
-`_transcript_tiles.py`, but it must not import that private module. This keeps
-the replacement independently testable and makes eventual removal of the old
-module straightforward.
+The new package may inspect `_transcript_tiles.py` as implementation history, but
+it must not import from it or copy its models and schemas by default. A retained
+idea must be expressed independently and justified by the new contracts. This
+keeps the replacement independently testable and makes eventual removal of the
+old module straightforward.
 
 `src/napari_harpy/_transcript_tiles.py` and
-`tests/test_transcript_tiles.py` remain temporarily as implementation history,
-behavioral references, and a source of useful test cases. They are removed only
+`tests/test_transcript_tiles.py` remain temporarily as implementation history
+and a source of possible edge cases, not as an authoritative behavioral
+specification. They are removed only
 after the new builder, reader, and product integration have replaced every
 required use. The removal is a dedicated cleanup change, not part of the first
 implementation slice.
@@ -374,7 +380,9 @@ whole-dataset render budget.
 
 ### Runtime IO
 
-- Dask is appropriate for offline construction.
+- Dask may be used for offline construction when a measured construction design
+  justifies it; it is not required merely because the legacy writer uses it or
+  because it is already a dependency.
 - Runtime tile reads use PyArrow against known Parquet files and row groups.
 - Interactive camera updates do not construct or execute a Dask graph.
 - Runtime payloads are immutable, contiguous arrays suitable for CPU caching
@@ -1165,21 +1173,26 @@ invalid unreferenced physical dictionary entries are ignored. Arrow `string`,
 canonical `string` output field; an unrepresentable normalized label is a
 validation failure rather than a schema change.
 
-### `manifest.parquet`
+### `manifest.parquet`: semantics before schema
 
 One row describes one physical Parquet row group:
 
 ```text
-schema_version: string
 level: int16
 level_file: string
-tile_id: string
 tile_x: uint32
 tile_y: uint32
 n_points: int64
 row_group: int32
 tile_shard: int32
 ```
+
+This is the provisional minimal column set, not a schema frozen from the legacy
+metadata dataframe. `schema_version` belongs to `metadata.json` unless C6 shows
+that a per-row copy has an independent consumer. `tile_id` is derivable from
+`(level, tile_x, tile_y)` and is omitted unless the C2/C6 review identifies a
+measured runtime need that outweighs the repeated storage. Gate D freezes the
+complete manifest Arrow schema.
 
 Requirements:
 
@@ -1196,19 +1209,24 @@ The manifest should be sorted/indexable by `(level, tile_y, tile_x,
 tile_shard)`. Whether the whole compact manifest is loaded into memory or
 queried as an Arrow dataset is decided from benchmarked manifest size.
 
-### Level payload columns
+### Level payload semantics before schema
 
-Required:
+The provisional minimal physical point payload is:
 
 ```text
-tile_id
-tile_x
-tile_y
 x_rel: float32
 y_rel: float32
 value_id: uint32
 point_id: uint64
 ```
+
+Because every row group contains one logical tile and the manifest supplies its
+`level`, `tile_x`, and `tile_y`, the initial design does not presume that
+`tile_id`, `tile_x`, or `tile_y` must be repeated for every point. A reader can
+reconstruct global coordinates from the manifest tile origin plus `x_rel` and
+`y_rel`. C2 must validate this against construction and future Phase 2 reader
+needs before Gate B freezes the exact-level payload schema. Any repeated per-row
+tile field requires a concrete consumer and measured justification.
 
 The first cache format stores tile-local `x_rel` and `y_rel` as `float32`.
 Validation and tile assignment operate from `float64` working coordinates and
@@ -1336,7 +1354,7 @@ The sampler must define behavior when:
 - one value dominates a tile;
 - many singleton values occur in one tile;
 - a hash collision occurs;
-- a tile is split across Dask partitions.
+- a tile is split across arbitrary input partitions or source files.
 
 ### Why not finish the old spatial-only sampler first
 
@@ -1375,16 +1393,16 @@ Layout B:
 
 Deterministic tile buckets, previously described separately as Layout C, are the
 initial bounded implementation of this Layout B requirement rather than a
-competing physical layout. The expected construction flow is:
+competing physical layout. The writer engine used to implement those buckets is
+not yet frozen. The engine-independent construction flow is:
 
 ```text
-construct a Harpy-owned Dask dataframe from the validated physical inventory
-→ read and annotate bounded source partitions
+read and annotate bounded batches from the validated physical inventory
 → calculate tile_x and tile_y
 → generate point_id and map value_id
 → calculate a deterministic integer bucket_id
-→ perform a full local disk-backed shuffle by bucket_id
-→ sort each complete output bucket by (tile_y, tile_x, point_id)
+→ redistribute all rows into local disk-backed bucket storage
+→ group or sort each complete bucket by (tile_y, tile_x, point_id)
 → write one or more row groups per tile
 → record each row group in the manifest
 ```
@@ -1393,11 +1411,13 @@ The bucket mapping must use an explicit stable, versioned hash; Python's built-i
 `hash()` is not suitable. Tiles and rows receive deterministic final ordering,
 with `point_id` as the within-tile tie-breaker.
 
-The initial local implementation uses Dask because it is already a construction
-dependency and provides an on-disk single-machine shuffle. Harpy constructs the
-Dask dataframe itself from `ValidatedPointsSource`; it does not accept or inspect
-an arbitrary caller graph. With `B` integer buckets, the intended partitioning is
-equivalent to:
+### Leading candidate A: Dask disk shuffle plus Arrow finalizer
+
+Dask is a leading implementation candidate because it provides an on-disk
+single-machine shuffle, not merely because the legacy writer uses Dask or it is
+already installed. In this candidate, Harpy constructs the dataframe itself from
+`ValidatedPointsSource`; it does not accept or inspect an arbitrary caller graph.
+With `B` integer buckets, the intended partitioning is equivalent to:
 
 ```python
 bucketed = annotated.set_index(
@@ -1413,7 +1433,7 @@ Explicit divisions avoid a quantile-discovery pass and make output partition
 cache contract; the final `(tile_y, tile_x, point_id)` sort establishes the
 deterministic order before Parquet writing.
 
-### Intermediate Dask contracts
+#### Intermediate Dask contracts
 
 The names `annotated`, `bucketed`, and `bucket file` refer to distinct stages:
 
@@ -1440,9 +1460,9 @@ bucket_id
 ```
 
 Additional source-provenance columns may exist only while constructing
-`point_id`; they are removed before final level writing. The serialized per-row
-`tile_id`, where required by the level schema, is derived during final grouped
-writing rather than created as a Python string in the annotation hot path.
+`point_id`; they are removed before final level writing. If Gate B retains a
+serialized per-row `tile_id`, it is derived during final grouped writing rather
+than created as a Python string in the annotation hot path.
 
 `bucketed` is also not a stored cache artifact. It is the lazy result of the
 disk-shuffle graph. When that graph executes, every annotated input partition is
@@ -1484,6 +1504,30 @@ bucket-007.parquet
 Thus, a Dask shuffle bucket is a temporary logical output partition; a final
 bucket Parquet file is created only by the subsequent grouped writer.
 
+### Leading candidate B: direct PyArrow spill and compaction
+
+The focused alternative uses the Phase 0 physical inventory and PyArrow batches
+directly:
+
+```text
+read bounded PyArrow batch
+→ calculate the numeric exact-level payload and bucket_id
+→ partition the batch indices by bucket_id
+→ append bounded temporary fragments to deterministic bucket spill storage
+→ compact one complete bucket through bounded grouping or sorting
+→ write final Parquet row groups and provisional level-manifest rows
+```
+
+This candidate still performs the required full logical redistribution, but it
+avoids reconstructing the source as a Dask/Pandas execution graph. It must define
+bounded file-handle use, temporary-fragment consolidation, oversized-bucket
+handling, deterministic ordering, concurrency, single-owner bucket output, and
+cleanup.
+
+C2 compares only these two installed-dependency approaches. It does not expand
+the spike to DuckDB, Polars, Spark, or other new execution dependencies unless
+both focused candidates fail the locked correctness or operational requirements.
+
 Bounded source batches alone do not guarantee bounded memory because one bucket
 or tile may be very large. Each bucket is an independent finalization unit: one
 finalizer computes, sorts, writes, and releases one output bucket. This does not
@@ -1501,11 +1545,15 @@ oversized bucket or tile in memory.
 
 The Phase 1 construction spike must select practical values and algorithms for:
 
+- writer engine: Dask disk shuffle plus Arrow finalization, or direct PyArrow
+  spill and compaction;
 - bucket count and deterministic bucket/file names;
-- Dask partition construction and disk-shuffle configuration;
+- engine-specific partition, spill, and shuffle configuration;
 - maximum in-memory finalization bucket size;
 - recursive spill or bounded external-grouping fallback and cleanup;
 - dense-tile row-group and shard creation;
+- deterministic single-owner bucket output under the local no-task-retry
+  execution contract;
 - file rollover, writer concurrency, and memory limits.
 
 Measure:
@@ -1523,12 +1571,12 @@ Measure:
 - viewport latency for small, medium, and large views;
 - behavior on local SSD and, if relevant, networked storage.
 
-The spike optimizes this tile-co-located design; it does not reopen
-partition-local Layout A as a production fallback. Different physical source
-orders may still produce different Harpy `point_id` values under the initial
-source-row identity policy, so canonical here means deterministic tile-local
-organization for one validated source, not byte-identical caches after source
-rows are reordered.
+The spike chooses between the two focused engines while retaining the same
+tile-co-located contract; it does not reopen partition-local Layout A as a
+production fallback. Different physical source orders may still produce
+different Harpy `point_id` values under the initial source-row identity policy,
+so canonical here means deterministic tile-local organization for one validated
+source, not byte-identical caches after source rows are reordered.
 
 ## View planning
 
@@ -1749,18 +1797,33 @@ The implementation is divided into independently reviewable slices in
 
 Begin with an internal exact-level performance spike:
 
-- benchmark 256- and 512-unit exact tiles on the Xenium acceptance dataset;
-- use numeric construction keys rather than per-row Python `tile_id` strings;
+- use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
+- evaluate the provisional minimal numeric payload rather than inheriting
+  per-row tile columns from the legacy schema;
 - implement the tile-co-located Layout B contract through deterministic writer
-  buckets and a full local disk-backed Dask shuffle;
-- sort each completed bucket deterministically before final Parquet writing;
+  buckets;
+- compare only Dask local disk shuffle plus Arrow finalization with direct
+  PyArrow spill and compaction;
+- group or sort each completed bucket deterministically before final Parquet
+  writing;
 - make source partition boundaries irrelevant to final tile locality;
 - preserve bounded concurrency, memory, and temporary disk usage;
+- run only through a Harpy-controlled local threaded or synchronous scheduler,
+  without distributed execution, automatic task retries, or speculation;
+- give exactly one finalizer ownership of each deterministic bucket path and
+  reject the complete staging generation on any finalizer failure;
 - retain the row-group-per-logical-tile manifest invariant.
+
+Attempt-local bucket files, coordinated winner installation, task-retry
+idempotence, and reuse of incomplete staging output are not Phase 1
+requirements. They are deferred until Harpy deliberately supports a distributed
+or resumable builder, automatic retries or speculation, multiple writers for
+one staging generation, or object-store publication. A failed initial build is
+restarted by creating a fresh staging generation.
 
 Then complete the cache builder:
 
-- define the new dataclasses and cache schema in the new package;
+- define new dataclasses and cache schemas only after their owning review gates;
 - accept the returned `ValidatedPointsSource` as the cache-construction input;
 - freshly recompute the metadata-only source signature and require it to match
   the validated signature before creating the staged cache;
@@ -1908,7 +1971,8 @@ Exit criteria:
 Migration cleanup occurs only after those criteria pass:
 
 - switch all required imports and entry points to the new package;
-- migrate or replace useful tests from `tests/test_transcript_tiles.py`;
+- inspect legacy tests for useful edge cases and write independently specified
+  replacement tests where the new contracts require them;
 - verify the direct fallback remains intact;
 - remove `src/napari_harpy/_transcript_tiles.py` in a dedicated cleanup change.
 
@@ -1968,6 +2032,9 @@ Test:
 - global and per-level budgets;
 - dense-tile sharding;
 - cross-partition tile co-location semantics;
+- minimal payload reconstruction without presumed per-row tile columns;
+- local no-task-retry execution, single-owner bucket paths, and whole-staging
+  rejection after a finalizer failure;
 - manifest accounting;
 - metadata-only source-signature guards;
 - first build and rebuild rollback;
@@ -2111,21 +2178,21 @@ make experimental napari progressive-loading internals a required dependency.
 
 ## Immediate next actions
 
-Do not proceed directly to the old coarse-writer slice and do not add the new
-builder to `_transcript_tiles.py`.
+Phase 0 validation and its Gate D are complete. Do not add the new builder to
+`_transcript_tiles.py` or treat its schemas and tests as the Phase 1
+specification.
 
-The next work should be:
+The next work follows the construction companion roadmap:
 
-1. create the empty `core/multi_scale_cache_points/` package boundary;
-2. define unresolved and validated Parquet source models;
-3. implement explicit SpatialData-to-Parquet resolution;
-4. implement source-inventory-first validation and bounded PyArrow content scans;
-5. implement the versioned source signature and internal point-identity policy;
-6. complete V5 and freeze the functional validation contract at Gate C;
-7. run the V6 Xenium benchmark, profiling, and hardening work;
-8. make the Gate D go/no-go decision for the exact-level writer;
-9. only after Gate D, run the exact tile-size/layout benchmark and sampler work
-   in Phase 1.
+1. implement only C0's minimal logical construction contracts;
+2. implement C1's IO-free 512-based level plan;
+3. in C2, compare the focused Dask disk-shuffle and direct-PyArrow spill
+   candidates under the same tile-co-location contract;
+4. minimize and freeze the exact-level payload, writer engine, bucket policy,
+   bounded fallback, and local single-owner output at Gate B;
+5. implement the selected production exact writer in C3;
+6. proceed through value-aware sampling, staged-cache validation, publication,
+   and the complete Xenium benchmark in the remaining Phase 1 slices.
 
-This order addresses the decisions most likely to force a costly rewrite if
-they are deferred.
+This order keeps logical cache requirements stable while deferring physical
+writer and schema choices until focused evidence exists.
