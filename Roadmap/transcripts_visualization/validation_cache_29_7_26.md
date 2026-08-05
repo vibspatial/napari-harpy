@@ -1,6 +1,6 @@
 # Points Cache Source Validation
 
-Status: implementation roadmap for the validation block
+Status: **implemented and accepted as of 2026-08-05**
 
 Roadmap date: 2026-07-29
 
@@ -680,8 +680,8 @@ source-file offsets from local Parquet file metadata without decoding point colu
 The metadata-only acceptance check against
 `sdata_xenium_full_data_core.zarr/points/transcripts_global_ROI1/points.parquet`
 returned 65 source files, 168 row groups, and 136,578,750 rows with one compatible
-selected schema across every file. Timing remains a V6 benchmark concern;
-the manual local check only supports the existing performance hypothesis.
+selected schema across every file. The completed V6 acceptance run provides the
+formal timing and memory measurements.
 
 ### Goal
 
@@ -962,6 +962,10 @@ levels.
 - the same validated inventory produces the same signature across processes.
 
 ## Slice V4: one fused coordinate and value scan
+
+Implementation status: **complete as of 2026-08-04**. The private scanner now
+performs one bounded, fail-fast traversal that derives exact bounds and value
+counts while reconciling every physical row scope with the source inventory.
 
 ### Goal
 
@@ -1636,6 +1640,8 @@ tests must not import its implementation helpers.
 
 ### Gate A: after V1
 
+Status: **approved as of 2026-07-31**.
+
 Approve:
 
 - package and model names;
@@ -1644,6 +1650,8 @@ Approve:
 - unsupported remote-source behavior.
 
 ### Gate B: after V3
+
+Status: **approved as of 2026-08-02**.
 
 Approve:
 
@@ -1699,6 +1707,10 @@ Only after Gate D should exact-level cache construction begin.
 
 ## Phase 0 definition of done
 
+Status: **complete as of 2026-08-05**. Every condition below is satisfied by
+the implemented V0–V6 validation package, focused tests, and recorded Xenium
+acceptance run.
+
 The validation block is complete when:
 
 - the new package is independent of `_transcript_tiles.py`;
@@ -1752,7 +1764,7 @@ V5 now provides:
    source-change rejection, and error propagation.
 
 The implementation also validates the initial Xenium acceptance source with
-136,578,750 rows, 65 files, 168 row groups, and 5,122 normalized values. V6
-remains responsible for formal timing, memory measurement, profiling, and the
-Gate D readiness decision. Cache writing, sampling, rendering, and legacy-module
-migration remain outside V5.
+136,578,750 rows, 65 files, 168 row groups, and 5,122 normalized values. The
+completed V6 acceptance run records formal timing and memory measurements and
+approves Gate D for exact-writer work. Cache writing, sampling, rendering, and
+legacy-module migration remain outside this validation roadmap.
