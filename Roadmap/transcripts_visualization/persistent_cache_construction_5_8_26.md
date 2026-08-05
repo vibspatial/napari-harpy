@@ -134,12 +134,21 @@ through every sampled level. Construction never writes them back to SpatialData.
 ### Point-only, self-contained levels
 
 Every level stores actual source representatives. No level stores invented
-centroids or a raster. Serialized levels are ordered from coarsest to finest:
+centroids or a raster. Serialized levels follow construction from finest to
+coarsest:
 
 ```text
-level_0 ⊆ level_1 ⊆ ... ⊆ level_n
-level_n = exact source membership
+Exact → sampled finest bridge → L1 → L2 → ... → overview
+  0               1             2     3              n
+
+level_n ⊆ ... ⊆ level_2 ⊆ level_1 ⊆ level_0
+level_0 = exact source membership
+level_n = terminal coarsest overview
 ```
+
+`L1`, `L2`, and later `L*` names are spatial design labels rather than
+serialized level numbers. In an exact-only cache, `n == 0`, and level 0 is both
+finest and coarsest.
 
 The runtime will render one self-contained level at a time. Residual or disjoint
 levels are not part of the first format.
@@ -161,7 +170,8 @@ Capacity is a maximum, not a fill target. Sparse tiles retain all candidates.
 The terminal coarsest level is globally allocated so that:
 
 ```text
-sum(manifest.n_points where level == 0) <= overview_point_budget
+coarsest_level = max(level in planned levels)
+sum(manifest.n_points where level == coarsest_level) <= overview_point_budget
 ```
 
 For a source whose exact membership already satisfies the overview budget, one
@@ -361,8 +371,11 @@ deterministic, IO-free build plan.
 - create the exact-only plan when source count fits the overview budget;
 - otherwise create the exact level, sampled finest bridge, required spatial
   progression, and terminal global-budget level;
-- order serialized level records from coarsest to finest while preserving clear
-  design labels internally;
+- assign contiguous serialized levels in construction order: exact is 0, the
+  bridge is 1, the first spatial level is 2, and the terminal coarsest level is
+  `n`;
+- order serialized level records by ascending level from finest to coarsest
+  while preserving clear spatial design labels internally;
 - record per-level tile size, capacity or global allocation, exactness, sampling
   policy, and output directory;
 - reject impossible integer grid shapes or serialized level identifiers before

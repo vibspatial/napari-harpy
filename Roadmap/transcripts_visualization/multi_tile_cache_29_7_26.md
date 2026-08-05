@@ -228,8 +228,9 @@ Private napari registration details remain isolated at that boundary.
 Each level is independently renderable:
 
 ```text
-level_0 ⊆ level_1 ⊆ ... ⊆ level_n
-level_n = exact source membership
+level_n ⊆ ... ⊆ level_2 ⊆ level_1 ⊆ level_0
+level_0 = exact source membership
+level_n = terminal coarsest overview
 ```
 
 The same representative may therefore occur in several levels. This modest
@@ -302,8 +303,17 @@ source geometry toward coarser sampled geometry:
 | L3 | 4,096 | 32,768 |
 | Later spatial levels | double the preceding tile edge | initially double the preceding per-tile capacity |
 
-These labels describe the design progression and do not prescribe serialized
-level numbers. Serialized level records remain ordered from coarsest to finest.
+Serialized level numbers follow construction from finest to coarsest:
+
+```text
+Exact → sampled finest bridge → L1 → L2 → ... → overview
+  0               1             2     3              n
+```
+
+`L1`, `L2`, and later `L*` names remain spatial design labels, so `L1` has
+serialized level number 2 because the same-geometry bridge occupies level 1.
+The exact-only case contains only level 0, which is then both finest and
+coarsest.
 
 The sampled finest bridge is intentional. A dense exact 512-unit tile can
 exceed the runtime render budget while it is still large on screen. The bridge
@@ -372,7 +382,8 @@ These values must not be collapsed into one `coarse_tile_budget`.
 The coarsest-level invariant is:
 
 ```text
-sum(manifest.n_points where level == 0) <= overview_point_budget
+coarsest_level = max(level in planned levels)
+sum(manifest.n_points where level == coarsest_level) <= overview_point_budget
 ```
 
 The cache advertises the actual coarsest count as its minimum supported
@@ -991,7 +1002,8 @@ Required geometry:
 - axis convention;
 - coordinate dtype contract.
 
-Required level records, ordered from coarsest to finest:
+Required level records, ordered by ascending serialized level from finest to
+coarsest:
 
 - `level`;
 - `tile_size`;
