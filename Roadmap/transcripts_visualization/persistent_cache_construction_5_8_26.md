@@ -26,7 +26,8 @@ It does not implement:
 - viewport-to-tile planning or LOD selection;
 - request scheduling or CPU/GPU caches;
 - napari, Qt, VisPy, or GPU rendering;
-- value-selective tile IO;
+- runtime value-selection planning, point filtering, or physically
+  value-selective tile IO;
 - remote/object-store construction or publication;
 - distributed Dask schedulers, automatic task retries, or speculative task
   execution;
@@ -52,6 +53,7 @@ with:
 metadata.json
 manifest.parquet
 values.parquet
+tile_value_counts.parquet
 levels/
   level_0/
   ...
@@ -64,12 +66,12 @@ The completed cache must provide:
 - one exact finest level containing every validated source row exactly once;
 - deterministic Harpy-owned `uint64 point_id` values;
 - tile-local `float32` coordinates with documented reconstruction tolerance;
-- self-contained, nested, value-aware sampled levels;
+- self-contained, nested, spatially stratified, value-neutral sampled levels;
 - the initial 512-all → 512-at-4,096 → 1,024-at-8,192 →
   2,048-at-16,384 → 4,096-at-32,768 progression;
 - further spatial levels when needed to satisfy the global overview budget;
-- deterministic `values.parquet`, metadata, manifest, files, row groups, and
-  shard numbering;
+- deterministic `values.parquet`, sparse per-level tile/value counts, metadata,
+  manifest, files, row groups, and shard numbering;
 - source-signature guards before staging and immediately before publication;
 - staged validation and a completion marker;
 - local publication that never exposes an incomplete cache and preserves an
@@ -245,7 +247,8 @@ named review gates rather than guessed during implementation:
 - engine-specific partition, spill, shuffle, and compaction configuration;
 - maximum in-memory finalization bucket size, recursive spill or external-
   grouping fallback, file rollover, and cleanup;
-- exact value-aware allocation weights and minimum-allocation behavior;
+- proportional spatial-stratum allocation and deterministic integer-remainder
+  behavior;
 - same-geometry bridge stratification;
 - sampler priority-hash algorithm, seed representation, and collision
   tie-breaking;
@@ -296,9 +299,9 @@ retained idea requires independent justification from this roadmap.
 | C1 | Planned | Pure grid and level build planning | No | No |
 | C2 | Planned | Exact-level writer architecture and bucketed-shuffle spike | Yes | No |
 | C3 | Planned | Production exact-level writer | Yes | No |
-| C4 | Planned | Versioned value-aware sampling contract and spike | No original-source rescan | No |
+| C4 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
 | C5 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
-| C6 | Planned | Metadata, values, manifest, and staged-cache validation | No | No |
+| C6 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
 | C7 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
 | C8 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
 
@@ -472,9 +475,11 @@ shuffle state; they are not final bucket Parquet files.
 The finalizer computes one bucket partition, applies the deterministic
 `(tile_y, tile_x, point_id)` sort, groups the resulting contiguous rows by
 logical tile, and writes one Parquet row group per capacity-bounded tile shard.
-Only this finalizer creates `bucket-<id>.parquet` and its provisional
-level-manifest rows. Oversized buckets follow the bounded fallback above before
-final writing.
+Only this finalizer creates `bucket-<id>.parquet`, its provisional
+level-manifest rows, and its provisional nonzero tile/value count records.
+The records are derived while the tile rows are already available; they must
+not require another source or completed-level scan. Oversized buckets follow
+the bounded fallback above before final writing.
 
 The finalizer should consume numeric data and write through PyArrow. It must not
 copy the legacy per-partition Pandas string construction, schema, or direct
@@ -559,6 +564,7 @@ Measure at least:
 - largest logical-tile row count;
 - finalization throughput and peak RSS at each evaluated bounded concurrency;
 - written bytes, bucket/file count, row-group count, and manifest rows;
+- provisional nonzero tile/value count rows and bytes;
 - rows, files, and row groups touched per logical tile;
 - coordinate reconstruction error;
 - membership and point-id coverage;
@@ -611,6 +617,9 @@ populate a caller-owned staging generation.
 - dense-tile splitting by `max_rows_per_row_group`;
 - one logical tile per row group and deterministic `tile_shard` numbering;
 - exact-level counts and provisional level-manifest rows;
+- provisional nonzero `(level, value_id, tile_x, tile_y, n_points)` records
+  emitted while each exact tile is finalized, without an additional source
+  scan;
 - one finalizer owner per deterministic bucket path, with no task retry or
   recomputation inside the staging generation;
 - writer accounting sufficient for C6 staged validation.
@@ -641,7 +650,7 @@ Harpy's accounting; do not retest Parquet compression internals.
 - rerunning the writer produces the same logical rows, shards, and manifest
   records, apart from generation-owned paths not included in logical identity.
 
-## Slice C4: versioned value-aware sampling contract and spike
+## Slice C4: versioned value-neutral sampling contract and spike
 
 ### Goal
 
@@ -656,8 +665,8 @@ The spike starts from the parent-roadmap family:
 finer candidates
 → current-level tile and spatial stratum
 → tile target allocated across occupied strata
-→ stratum target allocated across values
-→ stable priority and deterministic winners
+→ stable value-independent point priority
+→ deterministic winners
 → deterministic output order
 ```
 
@@ -666,14 +675,19 @@ It must settle:
 - same-geometry bridge stratification, with a fixed micro-grid evaluated as a
   candidate rather than assumed;
 - child-tile spatial strata for L1 and later levels;
-- the bounded concave value-frequency transform;
-- any clipped global-rarity modifier and minimum allocation;
+- proportional target allocation across occupied spatial strata, including
+  deterministic integer-remainder distribution;
 - the versioned stable hash algorithm, seed encoding, and priority payload;
-- deterministic integer allocation and remainder distribution;
 - deterministic collision and final tie-breaking;
-- behavior when strata or values outnumber the target;
+- behavior when occupied spatial strata outnumber the target;
 - behavior for coincident coordinates, dominant values, singleton-heavy values,
   sparse tiles, and tiles split across physical shards.
+
+`value_id` must not affect stratum allocation, point priority, or winner
+selection. The sampler intentionally represents local source abundance rather
+than guaranteeing preservation of rare values. Explicit value selections are
+handled later by the per-level tile/value count index and selection-aware LOD
+planner, not by scientifically distorting the sampled membership.
 
 The spike operates on bounded candidate tables or exact-cache tiles. It does not
 rescan the original canonical source and does not write a completed cache.
@@ -685,7 +699,9 @@ tiles. Include representative Xenium tiles. Measure:
 
 - deterministic and nested membership;
 - spatial coverage;
-- preservation of rare and dominant values;
+- sampled value proportions compared with the finer candidates, as a diagnostic
+  for unintended systematic value bias rather than a rare-value preservation
+  target;
 - hard capacity compliance;
 - runtime and peak memory;
 - adjacent-level count ratios and transition stability proxies.
@@ -696,6 +712,7 @@ tiles. Include representative Xenium tiles. Measure:
 - every winner is an actual finer-level candidate with unchanged `point_id`;
 - the same candidates and parameters always produce the same winners;
 - no tile or level target can be exceeded;
+- `value_id` has no influence on allocation, priority, or membership;
 - the bridge and spatial-level stratification rules are approved for C5.
 
 ## Slice C5: complete nested sampled pyramid
@@ -712,18 +729,21 @@ repeatedly scanning `points.parquet`.
 - later edge/capacity-doubling levels when required by the plan;
 - terminal global allocation satisfying `overview_point_budget`;
 - deterministic parent formation from finer child tiles;
-- the C4 value-aware allocation and stable priorities;
+- the C4 value-neutral spatial allocation and stable point priorities;
 - unchanged `point_id` and `value_id` propagation;
 - self-contained payloads at every level;
 - the C3 physical sharding and manifest-row contract for sampled levels;
+- provisional nonzero tile/value count records emitted while every sampled tile
+  is finalized, without an additional level scan;
 - bounded candidate memory and bounded writer concurrency.
 
 ### Focused tests
 
 Cover exact-only small sources, sparse tiles, four-child parent formation, the
-same-geometry bridge, dense capacity truncation, rare values, terminal global
-allocation, nested membership, and deterministic rebuilds. Do not require one
-test for every possible number of occupied strata or values.
+same-geometry bridge, dense capacity truncation, a value-skewed fixture,
+terminal global allocation, nested membership, and deterministic rebuilds.
+Verify that changing only value labels does not change sampled membership. Do
+not require one test for every possible number of occupied strata or values.
 
 ### Exit criteria
 
@@ -734,7 +754,7 @@ test for every possible number of occupied strata or values.
 - sampled construction performs no original-source content rescan;
 - all planned levels are written and accounted for.
 
-## Slice C6: metadata, values, manifest, and staged-cache validation
+## Slice C6: metadata, values, manifest, tile/value counts, and staged-cache validation
 
 ### Goal
 
@@ -747,16 +767,37 @@ semantics and physical accounting can be validated independently.
 - write `values.parquet` directly from the validated canonical value table;
 - write deterministic `manifest.parquet` rows sorted by
   `(level, tile_y, tile_x, tile_shard)`;
+- consolidate the writers' provisional counts into
+  `tile_value_counts.parquet`, with exactly one row per nonzero
+  `(level, value_id, tile_x, tile_y)` tuple and this logical schema:
+
+  ```text
+  level: int16
+  value_id: uint32
+  tile_x: uint32
+  tile_y: uint32
+  n_points: uint64
+  ```
+
+  Sort it by `(level, value_id, tile_y, tile_x)`. It is a planning index, not a
+  physical point locator; `manifest.parquet` remains authoritative for files and
+  row groups. The first physical point layout remains tile-co-located and is not
+  value-sharded;
 - write no manifest `tile_id` or `schema_version` column; derive the former from
   the numeric tile key and store the latter once in `metadata.json`;
 - write `metadata.json` with cache identity, source identity, geometry, ordered
   level records, build parameters, value-normalization method, point-id policy,
-  sampler version, writer layout, and coordinate dtype contract;
+  sampler version, writer layout, coordinate dtype contract, and the tile/value
+  count-index path and method;
 - use cache-root-relative POSIX paths only;
 - validate exact Arrow schemas and absence of unexpected metadata where the
   format requires it;
 - validate every referenced file and row group;
 - reconcile shard → tile → level → cache row counts;
+- validate that every tile/value count is positive, every value ID and tile key
+  exists, and no nonzero tuple is duplicated;
+- reconcile tile/value counts to the manifest total for every logical tile and
+  reconcile exact-level per-value totals to `values.parquet.n_points`;
 - validate exact membership totals, nested sampled counts, capacities, terminal
   overview budget, level ordering, and path containment;
 - reject an absent or premature artifact without creating `COMPLETED`.
@@ -768,14 +809,17 @@ canonical source to recompute bounds, values, or row counts.
 
 Start from one tiny valid staged generation and derive a small set of corruptions:
 missing files, escaped paths, wrong row-group references, count disagreement,
-schema mismatch or an unexpected manifest column such as `tile_id` or
-`schema_version`, budget overflow, and non-nested membership where validated at
-this phase. Avoid one test per metadata field.
+duplicate or invalid tile/value count records, tile/count reconciliation
+failure, exact per-value disagreement, schema mismatch or an unexpected
+manifest column such as `tile_id` or `schema_version`, budget overflow, and
+non-nested membership where validated at this phase. Avoid one test per metadata
+field.
 
 ### Exit criteria
 
 - one staged generation is self-consistent without consulting a Dask graph;
-- metadata and manifest are sufficient for the future Phase 2 store;
+- metadata, manifest, values, and tile/value counts are sufficient for the
+  future Phase 2 store and selection-aware planner;
 - every physical row group is represented exactly once in the manifest;
 - validation returns no partial success and writes no completion marker.
 
@@ -792,7 +836,7 @@ validation, source guards, and local publication into the first supported builde
 fresh source signature == validated signature
 → create unique sibling staging generation
 → write exact and sampled levels
-→ write values, metadata, and manifest
+→ write values, tile/value counts, metadata, and manifest
 → validate complete staging generation
 → fresh source signature == validated signature
 → write COMPLETED
@@ -857,6 +901,8 @@ Record:
 - rows, bytes, files, row groups, and logical tiles per level;
 - complete cache size and overhead relative to the source;
 - manifest rows and bytes;
+- tile/value count rows, bytes, construction overhead, and representative
+  selected-value lookup latency;
 - sampled counts, capacity utilization, nesting, and coarsest total;
 - coordinate reconstruction error;
 - files and row groups touched for representative tiles and viewports;
@@ -873,7 +919,8 @@ or benchmark-only cache generations are removed after their results are recorded
 - optimize only measured bottlenecks;
 - reopen the bucket-count, spill, grouping, or sharding decision if locality,
   build cost, or tile-read latency is poor;
-- reopen the sampler gate if value or spatial preservation is unacceptable;
+- reopen the sampler gate if spatial coverage, nesting, determinism, or measured
+  value neutrality is unacceptable;
 - record target misses with an explicit accept, optimize, or redesign decision;
 - do not weaken correctness, determinism, bounded memory, or publication safety
   merely to reduce build time.
@@ -922,16 +969,16 @@ Approve:
 
 - sampler name and version;
 - bridge and spatial stratification;
-- value-aware target allocation;
+- proportional spatial-stratum target allocation with no `value_id` influence;
 - hash, seed, tie-breaking, and output ordering;
-- deterministic, nested, spatial, value-preservation, and capacity behavior.
+- deterministic, nested, spatial, value-neutral, and capacity behavior.
 
 ### Gate D: after C6
 
 Approve:
 
 - cache schema version;
-- payload, values, metadata, and manifest contracts;
+- payload, values, tile/value counts, metadata, and manifest contracts;
 - staged-cache validation and accounting;
 - compatibility boundary expected by the future Phase 2 reader.
 
@@ -956,9 +1003,11 @@ Phase 1 is complete when:
 - exact tiles are physically co-located independently of source partition
   boundaries;
 - tile-local coordinate reconstruction meets the frozen tolerance;
-- sampled levels are deterministic, nested, spatially stratified, and value aware;
+- sampled levels are deterministic, nested, spatially stratified, and
+  value-neutral;
 - every tile and level respects its capacity or global budget;
-- `values.parquet`, metadata, manifest, level files, and row groups reconcile;
+- `values.parquet`, `tile_value_counts.parquet`, metadata, manifest, level files,
+  and row groups reconcile;
 - every stored path is cache-root-relative and contained by the cache root;
 - a cache without `COMPLETED` is never accepted as complete;
 - first publication and replacement cannot expose an incomplete generation;

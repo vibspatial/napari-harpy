@@ -72,7 +72,8 @@ The completed system must:
   budget;
 - read only the Parquet row groups needed for the viewport;
 - retain overlapping CPU and GPU tiles across pan and zoom;
-- preserve stable value colors and cheap value visibility changes;
+- preserve stable value colors, cheap palette/style changes, and responsive
+  selection-aware replanning when the active value set changes;
 - keep the GUI responsive while disk reads and decoding happen in background
   workers;
 - reject stale asynchronous results and prevent mixed-source or mixed-LOD
@@ -93,9 +94,12 @@ The first production version does not need:
 - Morton ordering as a required part of the format;
 - a second on-disk warm-cache format.
 
-Exact value-selective IO, richer picking, remote stores, and alternative
-rendering backends are later extensions. The initial format must not make them
-impossible.
+Here, exact value-selective Parquet reads means a physical layout that can avoid
+reading mixed-value row groups. The first production path may read complete
+manifest-selected tile row groups, filter their `value_id` rows in CPU/Arrow,
+and upload only the active values. Physical value sharding, richer picking,
+remote stores, and alternative rendering backends are later extensions. The
+initial format must not make them impossible.
 
 ## Current repository state
 
@@ -134,7 +138,7 @@ The repository does not yet contain:
 - a public end-to-end cache builder;
 - sampled coarse-level construction;
 - a Harpy-owned stable internal `uint64 point_id`;
-- final `metadata.json` and `manifest.parquet` writers;
+- final `metadata.json`, `manifest.parquet`, and tile/value count-index writers;
 - a completed-cache marker and complete reader validation;
 - source-staleness inspection;
 - a runtime tile store;
@@ -241,11 +245,13 @@ Harpy will not use Neuroglancer-style residual/disjoint levels in the first
 format. Residual levels require cumulative multi-level reads or mixed-level
 rendering, which conflicts with the initial one-active-LOD contract.
 
-### Value-aware coarse sampling
+### Value-neutral coarse sampling and value-aware planning
 
-The first shippable sampled pyramid must be spatially and value aware. A
-spatial-only version is not an acceptable final milestone because it can erase
-rare values from overviews and would knowingly require later replacement.
+The sampled pyramid is spatially stratified but value-neutral. It must not
+deliberately oversample rare values or use `value_id` to influence membership:
+doing so would distort apparent abundance when all values are displayed.
+Disappearance from a sampled level is an expected consequence of
+representative sampling, not evidence that a value is biologically absent.
 
 The exact sampling algorithm is settled by the Phase 1 construction spike, but it
 must guarantee:
@@ -254,16 +260,21 @@ must guarantee:
 - actual source rows as representatives;
 - stable pseudo-random priority based on a named, versioned hash algorithm;
 - spatial stratification within a tile;
-- value-aware allocation within spatial strata;
+- proportional allocation across occupied spatial strata;
 - monotonically increasing membership from coarse to fine;
 - no level or tile budget overrun;
 - no dependence on Python's randomized `hash()`;
 - deterministic tie-breaking;
-- deterministic use of the Harpy-owned internal `point_id`.
+- deterministic use of the Harpy-owned internal `point_id`;
+- no influence from `value_id` on allocation, priority, or winner selection.
 
-Value-aware sampling does not imply value-selective disk reads. The first runtime
-may still load an unfiltered visible tile and apply value visibility in the GPU
-palette.
+Value awareness belongs in cache indexing and runtime planning. Every level
+therefore publishes sparse per-tile counts by `value_id`. When the user selects
+one or more values, the planner uses those counts to skip zero-count tiles and
+choose the finest level satisfying screen-scale, selected-render-count, and
+physical-row-read budgets. The initial reader may still read a complete
+mixed-value tile row group, filter by `value_id`, and upload only selected rows;
+physically value-sharded point IO is a later measured optimization.
 
 ### Tile geometry and sampling density are different concepts
 
@@ -404,8 +415,10 @@ whole-dataset render budget.
 - A normal napari Points layer is not the production camera-driven hot path.
 - The renderer retains independently addressable GPU tile payloads.
 - Camera movement reuses resident buffers.
-- Palette, value visibility, opacity, and point-size updates do not reupload
+- Palette, color, opacity, and point-size style updates do not reupload
   coordinate buffers.
+- Changing the active selected-value set may trigger a new plan, filtered tile
+  reads, and an atomic coordinate-buffer replacement.
 - Disk and Parquet work never touches VisPy objects.
 - GPU creation, upload, and deletion occur on the GUI/OpenGL thread.
 - The physical GPU representation is private to the rendering backend.
@@ -416,7 +429,8 @@ whole-dataset render budget.
 - A cross-level transition keeps the active level visible until all new core
   tiles are GPU-ready.
 - A new LOD activates as one immutable snapshot.
-- No active snapshot mixes cache generations, source signatures, or levels.
+- No active snapshot mixes cache generations, source signatures, levels, or
+  value selections.
 - Small zoom changes use hysteresis so they do not oscillate between levels.
 
 ## Target architecture
@@ -524,8 +538,8 @@ layer list.
 It owns:
 
 - an immutable transcript dataset reference;
-- selected value ids;
-- value palette and visibility state;
+- active selected value IDs, driven by the napari value-selection/visibility UI;
+- value palette and style/highlight state;
 - point size;
 - render and prefetch settings;
 - user-visible status;
@@ -578,6 +592,7 @@ It owns:
 - parsed and validated cache metadata;
 - the value dictionary;
 - the tile/row-group manifest index;
+- the sparse per-level tile/value count index;
 - PyArrow row-group reads;
 - decoding of tile-local coordinates and features;
 - a byte-bounded CPU LRU, if the cache is shared at store scope.
@@ -601,8 +616,33 @@ class TranscriptTileStore:
         tile_keys: tuple["TileKey", ...],
     ) -> int: ...
 
-    def load_tile(self, key: "TileKey") -> "TilePayload": ...
+    def selected_point_counts(
+        self,
+        *,
+        tile_keys: tuple["TileKey", ...],
+        value_ids: tuple[int, ...],
+    ) -> tuple[int, ...]: ...
+
+    def load_tile(
+        self,
+        key: "TileKey",
+        *,
+        value_ids: tuple[int, ...] | None = None,
+    ) -> "TilePayload": ...
 ```
+
+`value_ids=None` means all values and uses manifest totals directly. An explicit
+selection queries the sparse count index; tiles with a selected count of zero
+need no point-row read. A positive tile is initially loaded from all manifest
+row-group shards, filtered by `value_id` in CPU/Arrow, and returned with only the
+selected rows. A decoded unfiltered CPU tile may be retained and reused when its
+byte cost fits the CPU-cache policy.
+
+The store must not scan all tile/value rows on every camera or selection event.
+It opens an immutable lookup over the sorted sidecar so a query touches only the
+requested level/value ranges and tile keys. Whether that lookup is compactly
+materialized in memory or backed by Arrow row-group pruning is selected from
+Phase 2 measurements; all-values planning bypasses it entirely.
 
 One logical tile may consist of several physical row-group shards. The store
 combines those shards into one immutable `TilePayload`; the renderer does not
@@ -619,16 +659,34 @@ Inputs include:
 - canvas size and data-units-per-screen-pixel;
 - available levels and their sampling metadata;
 - manifest point counts;
+- active selected value IDs and sparse per-level tile/value counts;
 - render budget;
+- physical row-read budget as the initial IO-cost proxy;
 - prefetch margin;
 - previous level for hysteresis.
 
-LOD selection chooses the finest level satisfying both:
+LOD selection chooses the finest level satisfying all of:
 
 1. its sampling density is appropriate for the screen scale;
-2. visible core tiles and the specified budget policy fit the render budget.
+2. selected rows in visible core tiles fit the render budget;
+3. complete mixed-value row groups that must be read fit the physical row-read
+   budget;
+4. every explicitly selected value with a nonzero exact core-view count is not
+   silently represented as absent when a finer affordable level contains it.
 
-The exact level is chosen whenever its visible core tiles fit.
+For all-values rendering, selected-row and physical-row counts are the manifest
+totals and the sparse value index is bypassed. For an explicit selection, the
+planner sums only matching tile/value counts for its render estimate, while its
+initial physical IO estimate sums complete manifest rows for tiles whose
+matching count is nonzero. The exact level is chosen whenever these core-view
+constraints fit.
+
+If exact-level counts show a selected value in the viewport but a sampled level
+contains none, that sampled level cannot be presented as evidence of biological
+absence. The planner chooses a finer level when budgets permit. If no level can
+satisfy scale, render, IO, and selection-coverage constraints, it retains a safe
+bounded representation and reports the limitation explicitly rather than
+silently changing sampling semantics.
 
 The initial implementation may budget core plus prefetch together. If this
 causes unnecessary coarse LOD selection, core tiles must remain hard-bounded
@@ -681,11 +739,18 @@ class RenderSnapshot:
     generation: int
     cache_generation_id: str
     source_signature: str
+    selection_key: str
     level: int
     core_tile_keys: tuple["TileKey", ...]
     prefetch_tile_keys: tuple["TileKey", ...]
     expected_point_count: int
 ```
+
+`selection_key` is a deterministic identity for the normalized active value-ID
+set, with one reserved identity for all values. Logical `TileKey` identifies an
+on-disk tile, but filtered CPU payloads and GPU readiness are keyed by both
+`TileKey` and `selection_key`. This prevents an asynchronous payload for an old
+selection from satisfying or activating a new selection's snapshot.
 
 The renderer activates a pending cross-level snapshot only when all core tiles
 are GPU-ready.
@@ -719,7 +784,7 @@ The first production backend owns:
 - a per-frame upload byte/time budget;
 - tile visibility;
 - a compact point shader;
-- value palette and value-visibility lookup;
+- value palette and style/highlight lookup;
 - point-size and opacity uniforms;
 - context loss and cleanup.
 
@@ -938,6 +1003,7 @@ The logical cache layout is:
         metadata.json
         manifest.parquet
         values.parquet
+        tile_value_counts.parquet
         levels/
           level_0/
             part-00000.parquet
@@ -1025,8 +1091,15 @@ Required build parameters:
 - value-normalization method;
 - internal point-identity policy.
 
+Required auxiliary-index records:
+
+- tile/value count-index path;
+- tile/value count-index method/version.
+
 `metadata.json` is the source of truth for cache semantics. The manifest is the
 source of truth for physical tile/row-group locations and actual stored counts.
+The tile/value count index is the source of truth for selection-aware count
+estimates, but never for locating point row groups.
 
 ### Cache and source identity
 
@@ -1184,6 +1257,42 @@ invalid unreferenced physical dictionary entries are ignored. Arrow `string`,
 `large_string`, and dictionary-string source encodings all produce the same
 canonical `string` output field; an unrepresentable normalized label is a
 validation failure rather than a schema change.
+
+### `tile_value_counts.parquet`
+
+This sparse planning index contains one row for every nonzero
+`(level, value_id, tile_x, tile_y)` combination:
+
+```text
+level: int16
+value_id: uint32
+tile_x: uint32
+tile_y: uint32
+n_points: uint64
+```
+
+Rows are unique, positive-count, and sorted by
+`(level, value_id, tile_y, tile_x)`. Zero-count combinations are omitted. Every
+`value_id` must exist in `values.parquet`, and every tile key must exist in the
+manifest. The file is organized so contiguous value-ID ranges can be read or
+indexed without loading a dense `n_levels × n_tiles × n_values` matrix; exact
+row-group sizing is frozen from C6/C8 measurements rather than hard-coded here.
+
+For each logical tile, summing its value counts must equal the sum of
+`manifest.n_points` over all physical shards for that tile. On exact level 0,
+summing each value over all tiles must equal `values.parquet.n_points`. Sampled
+levels reconcile to their own manifest totals but are not expected to preserve
+exact per-value totals.
+
+Exact and sampled tile writers emit provisional nonzero counts while their tile
+rows are already being finalized. C6 consolidates and validates those records;
+construction must not add another scan of the canonical source or completed
+levels solely to build this index.
+
+The index answers which tiles and levels contain selected values and how many
+selected representatives they contain. It does not locate point rows inside a
+mixed-value row group. The initial point files remain tile-co-located rather
+than value-sharded.
 
 ### `manifest.parquet` contract
 
@@ -1346,12 +1455,12 @@ The expected family is:
 
 1. start from candidates retained by the next finer level;
 2. annotate candidates with the current level's tile and spatial stratum;
-3. allocate the tile target across occupied spatial strata;
-4. allocate each stratum target across values with a bounded rarity-aware rule;
-5. rank candidates using a stable hash of level, spatial stratum, value id,
-   `point_id`, and seed;
-6. keep the deterministic winners;
-7. sort output deterministically before writing.
+3. allocate the tile target proportionally across occupied spatial strata, with
+   deterministic integer-remainder distribution;
+4. rank candidates using a stable hash of level, spatial stratum, `point_id`,
+   and seed;
+5. keep the deterministic winners;
+6. sort output deterministically before writing.
 
 For L1 and later spatial levels, the immediate finer child tiles are the
 required top-level spatial strata. For the same-geometry sampled finest bridge,
@@ -1359,28 +1468,37 @@ the Phase 1 spike must benchmark and specify a deterministic within-tile
 stratification policy. A fixed micro-grid is a candidate for that bridge, not a
 general requirement imposed on every sampled level.
 
-The value-allocation function should start with a bounded concave count transform
-such as `sqrt(n)` or `log1p(n)`, plus a clipped global-rarity modifier. Exact
-weights and minimum-allocation behavior must be benchmarked on skewed synthetic
-and real transcript datasets.
+`value_id` is deliberately excluded from target allocation and the priority
+payload. The sampler must not impose a rarity modifier, minimum per-value
+allocation, or another categorical reweighting. Values remain in the retained
+point payload and are counted per tile and level for runtime planning, but they
+do not influence which representatives win.
 
 The sampler must define behavior when:
 
 - occupied spatial strata exceed the available target;
-- values in one stratum exceed the available target;
 - all points share one coordinate;
 - one value dominates a tile;
 - many singleton values occur in one tile;
 - a hash collision occurs;
 - a tile is split across arbitrary input partitions or source files.
 
-### Why not finish the old spatial-only sampler first
+### Why value neutrality and selection-aware planning are separate
 
-The cache is an offline derived artifact whose quality determines every coarse
-view. Shipping a knowingly value-blind sampler would erase rare categories and
-consume implementation effort that the value-aware sampler would replace. The
-writer should move directly from exact-level primitives to the specified
-value-aware sampled levels.
+Rarity-aware sampling can prevent rare values from disappearing, but it also
+overrepresents them relative to common values. That makes an all-values sampled
+view a poorer qualitative representation of local abundance. The initial cache
+therefore keeps sampling value-neutral and treats every sampled view explicitly
+as an LOD representation rather than an abundance measurement.
+
+The usability problem is handled without changing sample membership. Sparse
+per-level tile/value counts let the runtime detect where selected values exist,
+estimate their selected render count, and choose an appropriate level. A value
+missing from one sampled level can cause a switch to a finer affordable level;
+it is not automatically interpreted as absent. If later measurements show that
+reading mixed-value row groups prevents an acceptable exact or fine selection,
+physical value sharding may be added as a new format optimization without
+replacing the value-neutral sampling contract.
 
 ## Physical Parquet layout: tile-co-located bucketed shuffle
 
@@ -1623,11 +1741,18 @@ Axis order must be explicit at every boundary:
 For every candidate level:
 
 - find intersecting core and prefetch tiles;
-- sum manifest counts;
+- for all values, sum manifest counts;
+- for an explicit value selection, query tile/value counts, skip zero-count
+  tiles, sum selected representative counts for the render estimate, and sum
+  complete manifest rows for the initial physical IO estimate;
 - evaluate sampling spacing against data-units-per-screen-pixel;
-- evaluate the configured budget policy.
+- evaluate render and physical row-read budgets;
+- evaluate explicit-selection coverage against finer and exact counts.
 
-Choose the finest eligible level. Exact wins whenever its core tiles fit.
+Choose the finest eligible level. Exact wins whenever its core selected-render
+count and complete-row-group IO cost fit. A selection change triggers immediate
+replanning with the same hysteresis and atomic-snapshot rules as a camera or LOD
+change.
 
 Do not apply normal query-time random trimming after choosing a level. A level
 is a trusted deterministic representation. If no level satisfies the supported
@@ -1667,15 +1792,19 @@ finish. On completion:
 The CPU LRU is bounded by decoded bytes, not tile count.
 
 It stores immutable renderer-independent `TilePayload`s and never stores VisPy
-objects. Active and pending core tiles are pinned. Prefetch tiles may be evicted
-before core tiles.
+objects. A filtered payload key includes the cache generation, logical tile,
+decode contract, and `selection_key`. An optional unfiltered decoded-tile cache
+uses the same identity without `selection_key` and may be reused to derive
+several filtered payloads. Active and pending core tiles are pinned. Prefetch
+tiles may be evicted before core tiles.
 
 Sharing a CPU cache across multiple canvases is allowed only when keys include
 the full cache generation and decode contract.
 
 ### GPU cache
 
-The GPU cache belongs to one OpenGL context/canvas.
+The GPU cache belongs to one OpenGL context/canvas. Its payload identity includes
+the cache generation, logical tile, level/decode contract, and `selection_key`.
 
 It is byte-bounded and pins:
 
@@ -1691,7 +1820,7 @@ GPU uploads are queued and limited per frame by bytes and/or elapsed time.
 Large bursts must not freeze camera interaction. Upload completion notifies the
 scheduler so pending snapshots can activate.
 
-## Value palette and filtering
+## Value selection, palette, and filtering
 
 The GPU receives a dense value id per resident point and a small lookup resource:
 
@@ -1702,20 +1831,30 @@ value_id -> RGBA + enabled
 Changing:
 
 - value color;
-- value visibility;
 - global opacity;
 - point size;
 - selected-value highlighting
 
 must not reupload point coordinates.
 
-Hidden resident values still consume vertex processing. This is acceptable in
-the first tiled mode because the LOD budget bounds total resident vertices.
+Those are style-only changes over the current active selection. Changing the
+active set of selected value IDs is a data-selection change: it immediately
+replans the level and required tiles, may read and filter point rows, and
+atomically replaces the active coordinate payload when the pending snapshot is
+ready.
 
-The first production version may read all values in a visible tile and filter
-in the renderer. Exact value-selective IO requires a later physical layout/index
-extension; a metadata-only value index is insufficient if row groups still mix
-all values.
+For all-values rendering, the runtime reads the manifest-selected tile shards.
+For an explicit selection, it first uses `tile_value_counts.parquet` to omit
+zero-count tiles and estimate the level. For each positive tile, the first
+production reader may read all values in the tile's mixed-value row-group
+shards, filter `value_id` in CPU/Arrow, and upload only selected rows. This keeps
+the GPU render budget tied to selected rows even though physical IO initially
+depends on complete row groups.
+
+Physically value-selective reads require a later row-group layout or point index;
+the tile/value count index deliberately does not claim to provide that. A
+byte-bounded decoded-tile CPU cache may make repeated selection changes cheap
+without changing the on-disk layout.
 
 ## Picking
 
@@ -1851,9 +1990,10 @@ Then complete the cache builder:
   2,048-at-16,384 → 4,096-at-32,768 construction schedule;
 - construct sampled levels from retained finer-level candidates or normalized
   exact tiles, not by repeatedly rescanning the original source;
-- implement value-aware nested sampled levels;
+- implement value-neutral, spatially stratified nested sampled levels;
 - enforce the global coarsest-level budget;
-- write metadata and manifest;
+- emit nonzero tile/value counts during exact and sampled tile finalization;
+- write metadata, manifest, values, and the sparse tile/value count index;
 - validate the complete staged cache;
 - freshly recompute the metadata-only source signature again and require it to
   match the validated signature immediately before completion and publication;
@@ -1869,6 +2009,8 @@ Exit criteria:
 - every sampled level is deterministic and nested;
 - coarsest total never exceeds the overview budget;
 - manifest accounting matches physical row groups;
+- tile/value counts reconcile to every logical tile, and exact per-value counts
+  reconcile to `values.parquet`;
 - the builder performs no second source-content validation pass and trusts
   `ValidatedPointsSource` while both source-signature guards pass;
 - a source-signature mismatch before or during construction publishes nothing
@@ -1889,12 +2031,15 @@ Implement:
 - validate metadata, manifest, files, row groups, and completion marker;
 - expose cache freshness state;
 - build the manifest lookup;
+- build the sparse per-level tile/value count lookup;
 - load and combine physical row-group shards with PyArrow;
-- return immutable tile payloads;
+- skip zero-count tiles for explicit selections, filter complete mixed-value
+  row-group reads by selected `value_id`, and return immutable selected payloads;
 - perform no Dask computation;
 - viewport transform and conservative bounds;
 - core and prefetch tile selection;
-- screen-scale and budget-aware LOD;
+- screen-scale, selected-render-budget, physical-row-read-budget, and
+  selection-coverage-aware LOD;
 - hysteresis;
 - immutable plans and snapshots;
 - generations and stale-result rejection;
@@ -1911,7 +2056,12 @@ Exit criteria:
 - deterministic planner tests cover boundary-touching viewports and transforms;
 - stale loads cannot activate;
 - snapshots cannot mix cache generations or levels;
+- snapshots cannot mix active value selections;
 - repeated nearby views hit the CPU cache;
+- explicit value selections can select a finer affordable level without reading
+  tiles known to have zero matching rows;
+- a sampled zero is never silently reported as biological absence when exact
+  viewport counts are nonzero;
 - invisible or removed layers stop scheduling work;
 - all scheduler tests run against a fake backend.
 
@@ -1922,7 +2072,8 @@ demonstrate:
 
 - resident tile buffers survive pan;
 - only entering tiles upload;
-- palette and visibility changes do not upload coordinates;
+- palette and other style-only changes do not upload coordinates;
+- active value-selection changes can atomically replace filtered coordinates;
 - cross-level activation is atomic;
 - upload metering keeps interaction responsive;
 - cleanup releases GPU resources.
@@ -1961,6 +2112,7 @@ Implement:
 - dedicated TranscriptLayerModel;
 - private registration adapter;
 - layer controls and status;
+- active value selection wired to immediate selection-aware replanning;
 - viewer widget entry point;
 - cache build/rebuild/status workflow;
 - tiled-mode controller lifecycle;
@@ -1979,6 +2131,9 @@ Exit criteria:
 
 - opening tiled mode does not materialize the full source dataframe;
 - fit-to-view uses the bounded point overview;
+- choosing one or more values immediately replans and displays the finest level
+  satisfying scale, selected-render, physical-row-read, and coverage
+  constraints;
 - zoomed exact views match the direct path for the same rows;
 - pan and zoom reuse resident GPU tiles;
 - layer visibility/removal and SpatialData replacement are safe;
@@ -1992,18 +2147,20 @@ Migration cleanup occurs only after those criteria pass:
 - verify the direct fallback remains intact;
 - remove `src/napari_harpy/_transcript_tiles.py` in a dedicated cleanup change.
 
-### Phase 5: value-selective IO and advanced interaction
+### Phase 5: physically value-selective IO and advanced interaction
 
 Only after measured need:
 
-- add per-tile value counts for subset-aware planning;
 - change physical row-group layout or add value-aware shards;
 - read only selected-value row groups;
-- choose exact LOD for small value selections even in broad spatial views;
 - add efficient picking and metadata lookup;
 - add remote-store publication and reads.
 
-This phase requires a new schema version if physical row-group semantics change.
+Subset-aware planning, fine/exact selection when budgets permit, and full-row-
+group filtering are core Phase 1/2/4 requirements, not deferred here. This phase
+only optimizes the physical read amplification if measurements justify the
+additional layout complexity. It requires a new schema version if physical row-
+group semantics change.
 
 ## Test strategy
 
@@ -2044,7 +2201,10 @@ Test:
 - exact membership;
 - coordinate reconstruction;
 - deterministic nested sampling;
-- rare-value and spatial-stratum preservation;
+- spatial-stratum coverage and absence of deliberate `value_id` influence on
+  sampled membership;
+- sparse tile/value count uniqueness and reconciliation to logical tiles,
+  levels, and exact `values.parquet` totals;
 - global and per-level budgets;
 - dense-tile sharding;
 - cross-partition tile co-location semantics;
@@ -2068,6 +2228,10 @@ Test:
 - rotated/sheared conservative bounds;
 - YX/XY conventions;
 - point-count estimates;
+- selected-value point-count estimates and zero-count tile elimination;
+- distinct selected-render-count and complete-row-group IO estimates;
+- explicit-selection coverage when a value is absent from a sampled level but
+  present at a finer or exact level;
 - core versus prefetch budgeting;
 - exact-level shortcut;
 - hysteresis;
@@ -2098,6 +2262,7 @@ Test or instrument:
 - GUI-thread-only GPU mutation;
 - upload count per tile;
 - coordinate buffers unaffected by palette changes;
+- atomic coordinate replacement after active value-selection changes;
 - point-size and opacity uniforms;
 - GPU LRU byte accounting;
 - active/pending pinning;
@@ -2122,6 +2287,8 @@ Record:
 - build time and peak memory;
 - size per level and total cache overhead;
 - manifest size;
+- tile/value count-index rows, size, build overhead, and selected-value lookup
+  latency;
 - cold and warm tile latency;
 - files and row groups touched per viewport;
 - planner time;
@@ -2130,7 +2297,8 @@ Record:
 - active/resident point counts;
 - same-level pan latency;
 - cold and warm LOD transition latency;
-- palette/value-visibility update latency;
+- palette/style-only update latency;
+- active-value selection replan, filtered-read, and atomic-transition latency;
 - resource cleanup.
 
 Initial runtime targets should be treated as hypotheses until measured:
@@ -2152,9 +2320,12 @@ These invariants are suitable as tests and review gates:
 - camera movement never replaces one monolithic Points layer in tiled mode;
 - camera movement never rebuilds an already resident tile VBO;
 - a tile uploads at most once between GPU insertion and eviction;
-- palette and value visibility changes never reupload coordinates;
+- palette and style-only changes never reupload coordinates;
+- active value-selection changes may replan, read, filter, and atomically replace
+  coordinate payloads;
 - no render snapshot mixes cache generations;
 - no active snapshot mixes LOD levels;
+- no active snapshot mixes value selections;
 - sampled rows always identify real source transcripts;
 - the exact level has full source membership;
 - the complete coarsest level fits the declared overview budget;
@@ -2207,8 +2378,9 @@ The next work follows the construction companion roadmap:
 4. freeze the writer engine, bucket policy, bounded fallback, and local single-
    owner output at Gate B while retaining the locked point payload;
 5. implement the selected production exact writer in C3;
-6. proceed through value-aware sampling, staged-cache validation, publication,
-   and the complete Xenium benchmark in the remaining Phase 1 slices.
+6. proceed through value-neutral sampling, sparse tile/value count indexing,
+   staged-cache validation, publication, and the complete Xenium benchmark in
+   the remaining Phase 1 slices.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused
