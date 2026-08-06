@@ -358,8 +358,9 @@ exceed that budget.
 
 This schedule is the initial implementation and benchmark target, not an
 immutable file-format restriction. Changing it later requires benchmark
-evidence from real viewport traces, screen-space density, value preservation,
-build cost, and LOD transition quality.
+evidence from real viewport traces, screen-space density, value-distribution
+fidelity without deliberate categorical reweighting, build cost, and LOD
+transition quality.
 
 ### Separate budgets
 
@@ -1951,7 +1952,8 @@ Gate C decision. Phase 1 does not begin before Gate D.
 The implementation is divided into independently reviewable slices in
 [persistent_cache_construction_5_8_26.md](persistent_cache_construction_5_8_26.md).
 
-Begin with an internal exact-level performance spike:
+After C0 freezes the minimal logical construction contracts and C1 produces the
+IO-free level plan, begin C2's internal exact-level performance spike:
 
 - use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
 - use the locked four-column numeric point payload without per-row tile columns;
