@@ -305,9 +305,9 @@ Consequently:
 The first implementation targets the following schedule, written from finest
 source geometry toward coarser sampled geometry:
 
-| Design label | Tile geometry | Maximum rows per tile |
+| Design label | Tile geometry | Maximum representatives stored per logical tile |
 |---|---:|---:|
-| Exact | 512 | all source rows |
+| Exact | 512 | uncapped: all source points belonging to the tile |
 | Sampled finest bridge | 512 | 4,096 |
 | L1 | 1,024 | 8,192 |
 | L2 | 2,048 | 16,384 |
