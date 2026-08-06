@@ -378,7 +378,7 @@ and edge-doubling schedule keep child and parent grids aligned.
 
 ### Private plan contracts
 
-C1 defines these private logical records, subject to final naming review:
+C1 defines these private logical records with the following frozen names:
 
 ```python
 class _LevelKind(Enum):
@@ -432,8 +432,9 @@ validated.row_count <= overview_point_budget
 
 C1 emits only exact level 0.
 
-Otherwise it emits exact level 0, the same-geometry sampled bridge, and then the
-edge/capacity-doubling spatial progression. For every regular sampled candidate:
+Otherwise it emits exact level 0 and exactly one same-geometry sampled bridge.
+The bridge is the first sampled candidate and participates in the same
+upper-bound calculation as every later spatial candidate:
 
 ```text
 candidate_upper_bound = min(
@@ -442,14 +443,18 @@ candidate_upper_bound = min(
 )
 ```
 
-The first regular sampled level whose upper bound is at most
-`overview_point_budget` is terminal; no extra overview level is appended. More
-than one terminal tile is allowed in this case because the complete-level upper
-bound already satisfies the global budget.
+If the bridge upper bound is at most `overview_point_budget`, the bridge is
+terminal and C1 emits no spatial levels. Otherwise C1 emits the
+edge/capacity-doubling spatial progression. The first sampled spatial level
+whose upper bound is at most `overview_point_budget` is terminal; no extra
+overview level is appended. More than one terminal tile is allowed in either
+case because the complete-level upper bound already satisfies the whole-dataset
+overview budget.
 
-If no regular level satisfies the budget before the grid reaches one tile, that
-one-tile candidate becomes the terminal level with an effective per-tile
-capacity capped by the overview budget:
+If neither the bridge nor any normally capped spatial candidate satisfies the
+budget before the grid reaches one tile, that one-tile candidate becomes the
+terminal level with an effective per-tile capacity capped by the overview
+budget:
 
 ```text
 effective_max_points_per_tile = min(
@@ -518,12 +523,12 @@ physical writer and publication settings in this slice.
 
 ### Focused tests
 
-Cover focused argument validation, a small exact-only source, a large source
-requiring the bridge and several spatial levels, aligned and non-aligned bounds,
-an observed maximum exactly on a tile boundary, negative coordinates, regular
-upper-bound termination, the one-tile effective-capacity clamp, and one focused
-overflow case. Avoid combinatorial extent/budget tests and do not test
-Python/dataclass behavior.
+Cover focused argument validation, a small exact-only source, a bridge-terminal
+source, a large source requiring the bridge and several spatial levels, aligned
+and non-aligned bounds, an observed maximum exactly on a tile boundary, negative
+coordinates, regular spatial upper-bound termination, the one-tile
+effective-capacity clamp, and one focused overflow case. Avoid combinatorial
+extent/budget tests and do not test Python/dataclass behavior.
 
 ### Exit criteria
 
