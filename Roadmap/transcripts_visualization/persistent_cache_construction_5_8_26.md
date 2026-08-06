@@ -237,8 +237,10 @@ named review gates rather than guessed during implementation:
 
 - whether the first public format redefines `harpy-transcripts-vis-0.1` or uses
   a new `0.2` schema version;
-- the exact public build configuration and result models;
-- the default `overview_point_budget` and `max_rows_per_row_group`;
+- the public build-result model and any later extensions to the minimal C0 build
+  configuration;
+- the default `max_rows_per_row_group`, owned by the C2 spike and Gate B before
+  the production writer;
 - grid-origin normalization and exact maximum-boundary behavior;
 - the remaining Arrow details for the locked manifest column set;
 - writer engine selection between the focused Dask and direct-PyArrow
@@ -320,24 +322,42 @@ planner and the C2 spike without freezing a physical cache schema.
 
 ```text
 src/napari_harpy/core/multi_scale_cache_points/models.py
-src/napari_harpy/core/multi_scale_cache_points/errors.py
+src/napari_harpy/core/multi_scale_cache_points/__init__.py
 tests/multi_scale_cache_points/test_cache_contracts.py
 ```
 
 ### Implement
 
-- the minimal build configuration needed by C1 and C2;
-- immutable level and cache-plan records only when their fields are frozen;
-- ownership placeholders for later cache-schema, sampling-policy, and
-  writer-policy versions without inventing their values or physical fields;
-- construction-specific errors rooted in the existing points validation error
-  family only when callers need to distinguish them;
-- narrow package exports; internal planning and writer records remain private.
+- one public immutable `PointsCacheBuildConfig` with exactly:
+
+  ```python
+  @dataclass(frozen=True)
+  class PointsCacheBuildConfig:
+      leaf_tile_size: int = 512
+      overview_point_budget: int = 100_000
+  ```
+
+- direct validation that both values are positive integers and are not `bool`;
+- ordinary `ValueError` for invalid configuration values;
+- a narrow package export for `PointsCacheBuildConfig`.
+
+`leaf_tile_size` is the exact and bridge tile geometry from which C1 derives
+later spatial levels. `overview_point_budget` is the maximum total membership of
+the terminal whole-dataset level. C0 does not add
+`max_rows_per_row_group`: that is a physical writer parameter whose supported
+default is measured in C2 and frozen at Gate B before the production writer.
 
 ### Do not
 
 - open source Parquet files;
 - create directories or write cache artifacts;
+- define level or complete-cache build-plan records;
+- add `build_plan.py`; C1 owns the private plan records and planning module;
+- add construction-specific exception classes;
+- add schema, sampler, or writer-version placeholder constants or models;
+- add writer buckets, concurrency, compression, sampling seeds, staging,
+  overwrite, progress, cancellation, or result-model fields to the build
+  configuration;
 - expose speculative runtime-store or renderer models;
 - define level-payload, manifest, or metadata Arrow schemas;
 - freeze metadata fields whose semantics are still owned by C6;
@@ -345,15 +365,18 @@ tests/multi_scale_cache_points/test_cache_contracts.py
 
 ### Focused tests
 
-Use a few direct tests for construction parameters that affect correctness, such
-as positive budgets and incompatible combinations. Do not test dataclass or
-PyArrow behavior itself, and do not add schema tests before the schema-owning
-gate.
+Test the agreed defaults, one valid non-default configuration, and focused
+rejection of zero, negative, boolean, and non-integer values. Do not test
+dataclass immutability or Python/PyArrow behavior itself, and do not add schema
+tests before the schema-owning gate.
 
 ### Exit criteria
 
-- C1 and C2 can accept typed configuration without dictionaries of unrelated
-  options;
+- C1 can consume the typed logical configuration without a dictionary of
+  unrelated options;
+- the public configuration contains only `leaf_tile_size` and
+  `overview_point_budget` with the frozen defaults;
+- no plan, result, physical-writer, publication, or runtime contract is exposed;
 - concrete Arrow schema objects remain deferred to their consuming slices even
   though the point-payload columns and types are already locked;
 - the public API remains small and independent of Qt, napari, and VisPy.
@@ -365,8 +388,24 @@ gate.
 Convert `ValidatedPointsSource` facts plus construction configuration into a
 deterministic, IO-free build plan.
 
+C1 is the only construction stage that directly interprets
+`PointsCacheBuildConfig`. Its conceptual entry point is:
+
+```python
+def _plan_points_cache(
+    validated: ValidatedPointsSource,
+    config: PointsCacheBuildConfig,
+) -> _PointsCacheBuildPlan: ...
+```
+
+C2 and every later writer consume immutable records from
+`_PointsCacheBuildPlan`; they do not independently reinterpret the public build
+configuration.
+
 ### Implement
 
+- define the private immutable level and complete-cache build-plan records once
+  their fields and invariants are frozen by this slice;
 - freeze `x_origin` and `y_origin` rules;
 - calculate exact tile indices from validated bounds using half-open cells;
 - handle points on tile boundaries, including the source maximum;
@@ -410,7 +449,10 @@ or its physical schemas are the correct starting point.
 
 ### Spike contract
 
-- consume `ValidatedPointsSource` directly;
+- consume `ValidatedPointsSource` together with the exact-level record from the
+  C1 build plan;
+- do not derive tile geometry, serialized level identity, or overview behavior
+  directly from `PointsCacheBuildConfig`;
 - use the agreed initial 512-unit exact tile geometry; do not spend this spike
   comparing 256-unit tiles unless 512 demonstrates a concrete failure;
 - read only the selected columns through bounded operations driven by the
@@ -833,7 +875,9 @@ validation, source guards, and local publication into the first supported builde
 ### Required flow
 
 ```text
-fresh source signature == validated signature
+ValidatedPointsSource + PointsCacheBuildConfig
+→ fresh source signature == validated signature
+→ C1 immutable build plan
 → create unique sibling staging generation
 → write exact and sampled levels
 → write values, tile/value counts, metadata, and manifest
@@ -846,16 +890,20 @@ fresh source signature == validated signature
 ### Implement
 
 - fail the initial metadata-only source guard before staging is created;
+- use `PointsCacheBuildConfig()` when configuration is omitted and invoke C1
+  exactly once after the initial source guard;
 - generate a fresh cache-generation ID;
 - create and own a unique sibling staging directory;
-- invoke C1, C3, C5, and C6 without rebuilding validation facts;
+- pass the resulting immutable plan records to C3, C5, and C6 without rebuilding
+  validation facts;
 - fail the final metadata-only source guard after staged validation and before
   completion;
 - write `COMPLETED` only after every preceding step succeeds;
 - publish the completed local directory with the approved replacement protocol;
 - preserve an existing completed cache when any build or guard fails;
 - reject and clean incomplete staging according to the frozen recovery policy;
-- expose a small public builder accepting `ValidatedPointsSource`;
+- expose a small public builder accepting `ValidatedPointsSource` and an optional
+  `PointsCacheBuildConfig`;
 - expose a backed-SpatialData convenience entry point that delegates visibly
   through resolution, validation, and the primary builder.
 
@@ -1019,9 +1067,9 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Start with **C0: minimal logical construction contracts**. Before writing code,
-refine only the decisions C0 genuinely requires: minimal build configuration,
-level-plan records, ownership of later version strings, and which construction
-errors must be public. Do not materialize Arrow schema objects before their
-consuming slices, and do not settle the sampler or writer-engine details owned
-by later slices prematurely.
+Start with **C0: minimal logical construction contracts** and implement only the
+frozen two-field `PointsCacheBuildConfig`, its narrow public export, and focused
+semantic tests. Build-plan records belong to C1; physical writer configuration,
+version strings, result models, and construction-specific errors remain deferred
+to their consuming slices. Do not materialize Arrow schema objects before their
+consuming slices or settle sampler and writer-engine details prematurely.
