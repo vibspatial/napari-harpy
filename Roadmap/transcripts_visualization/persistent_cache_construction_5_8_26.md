@@ -169,7 +169,8 @@ The initial target is:
 | Later spatial levels | double preceding edge | initially double preceding capacity |
 
 Capacity is a maximum, not a fill target. Sparse tiles retain all candidates.
-The terminal coarsest level is globally allocated so that:
+Construction stops at the first complete sampled level whose conservative
+point-count upper bound satisfies:
 
 ```text
 coarsest_level = max(level in planned levels)
@@ -394,7 +395,6 @@ class _LevelBuildPlan:
     grid_width: int
     grid_height: int
     max_points_per_tile: int | None
-    max_points_total: int | None
     point_count_upper_bound: int
 
     @property
@@ -416,11 +416,11 @@ not record a C4 sampler name, version, or parameters. The relative level
 directory is derived from the serialized level; no absolute output or staging
 path belongs to either plan record.
 
-For the exact level, `max_points_per_tile` and `max_points_total` are `None`, and
+For the exact level, `max_points_per_tile` is `None`, and
 `point_count_upper_bound` equals `validated.row_count`. A sampled bridge or
-regular spatial level has its scheduled `max_points_per_tile`. Only a terminal
-level that requires explicit global truncation has a non-`None`
-`max_points_total`.
+regular spatial level has its effective `max_points_per_tile`. This normally
+equals the scheduled capacity. The terminal one-tile fallback described below
+instead caps it at `overview_point_budget`.
 
 ### Level progression and termination
 
@@ -448,17 +448,26 @@ than one terminal tile is allowed in this case because the complete-level upper
 bound already satisfies the global budget.
 
 If no regular level satisfies the budget before the grid reaches one tile, that
-one-tile candidate becomes the terminal level with:
+one-tile candidate becomes the terminal level with an effective per-tile
+capacity capped by the overview budget:
 
 ```text
-max_points_total = overview_point_budget
-point_count_upper_bound = overview_point_budget
+effective_max_points_per_tile = min(
+    scheduled_max_points_per_tile,
+    overview_point_budget,
+)
+point_count_upper_bound = min(
+    finer_level.point_count_upper_bound,
+    effective_max_points_per_tile,
+)
 ```
 
-Its scheduled per-tile capacity remains recorded, but the global limit is
-authoritative. This guarantees finite planning without a point-row scan. The
-terminal condition is represented by the final position in `levels` plus an
-optional `max_points_total`; `OVERVIEW` is not a separate `_LevelKind`.
+Because this fallback contains exactly one tile, its per-tile capacity is also
+the complete-level capacity. A separate global allocation field would add no
+information and would require a more complex multi-tile allocation contract
+that the initial builder does not need. This rule guarantees finite planning
+without a point-row scan. The terminal condition is represented by the final
+position in `levels`; `OVERVIEW` is not a separate `_LevelKind`.
 
 ### Expected files
 
@@ -477,14 +486,15 @@ tests/multi_scale_cache_points/test_build_plan.py
 - distinguish tile geometry from sampling capacity;
 - create the exact-only plan when source count fits the overview budget;
 - otherwise create the exact level, sampled finest bridge, required spatial
-  progression, and terminal global-budget level;
+  progression, and terminal level whose complete-level upper bound satisfies
+  the overview budget;
 - assign contiguous serialized levels in construction order: exact is 0, the
   bridge is 1, the first spatial level is 2, and the terminal coarsest level is
   `n`;
 - order serialized level records by ascending level from finest to coarsest
   while preserving clear spatial design labels internally;
-- record only the specified logical level kind, geometry, capacity/global limit,
-  count upper bound, and derived relative directory;
+- record only the specified logical level kind, geometry, effective per-tile
+  capacity, count upper bound, and derived relative directory;
 - reject impossible integer grid shapes or serialized level identifiers before
   construction starts.
 
@@ -511,7 +521,7 @@ physical writer and publication settings in this slice.
 Cover focused argument validation, a small exact-only source, a large source
 requiring the bridge and several spatial levels, aligned and non-aligned bounds,
 an observed maximum exactly on a tile boundary, negative coordinates, regular
-upper-bound termination, one-tile explicit global termination, and one focused
+upper-bound termination, the one-tile effective-capacity clamp, and one focused
 overflow case. Avoid combinatorial extent/budget tests and do not test
 Python/dataclass behavior.
 
@@ -854,7 +864,7 @@ repeatedly scanning `points.parquet`.
 - the 512-at-4,096 sampled finest bridge from exact candidates;
 - 1,024-at-8,192, 2,048-at-16,384, and 4,096-at-32,768 spatial levels;
 - later edge/capacity-doubling levels when required by the plan;
-- terminal global allocation satisfying `overview_point_budget`;
+- the terminal one-tile capacity clamp when required by the plan;
 - deterministic parent formation from finer child tiles;
 - the C4 value-neutral spatial allocation and stable point priorities;
 - unchanged `point_id` and `value_id` propagation;
@@ -868,15 +878,16 @@ repeatedly scanning `points.parquet`.
 
 Cover exact-only small sources, sparse tiles, four-child parent formation, the
 same-geometry bridge, dense capacity truncation, a value-skewed fixture,
-terminal global allocation, nested membership, and deterministic rebuilds.
-Verify that changing only value labels does not change sampled membership. Do
-not require one test for every possible number of occupied strata or values.
+the terminal one-tile capacity clamp, nested membership, and deterministic
+rebuilds. Verify that changing only value labels does not change sampled
+membership. Do not require one test for every possible number of occupied
+strata or values.
 
 ### Exit criteria
 
 - every generated level is a subset of the next finer level;
 - all representatives retain their exact-level identity and value;
-- each non-terminal tile respects its capacity;
+- every sampled tile respects its effective per-tile capacity;
 - the coarsest total respects the global overview budget;
 - sampled construction performs no original-source content rescan;
 - all planned levels are written and accounted for.

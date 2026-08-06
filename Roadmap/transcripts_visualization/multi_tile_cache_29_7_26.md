@@ -352,9 +352,11 @@ next finer level.
 
 The doubling rule is not allowed to violate the global coarsest-level contract.
 Construction continues until a complete whole-dataset level satisfies
-`overview_point_budget`. The terminal coarsest level uses an explicitly
-recorded global allocation when blindly doubling its per-tile capacity would
-exceed that budget.
+`overview_point_budget`. If the grid reaches one tile while its scheduled
+per-tile capacity still exceeds that budget, the terminal level's effective
+per-tile capacity is clamped to `overview_point_budget`. For a one-tile level,
+that capacity is also the complete-level capacity, so no separate global
+allocation field is required.
 
 This schedule is the initial implementation and benchmark target, not an
 immutable file-format restriction. Changing it later requires benchmark
@@ -373,9 +375,10 @@ The following settings have distinct meanings:
 : Physical Parquet IO shard size. It does not control visual sampling.
 
 `level_sampling_target`
-: A level-specific maximum per-tile capacity or terminal global allocation
-  recorded in level metadata. The initial non-terminal sampled targets are
-  4,096, 8,192, 16,384, 32,768, and so on.
+: A level-specific effective maximum per-tile capacity recorded in level
+  metadata. The initial sampled targets are 4,096, 8,192, 16,384, 32,768, and
+  so on; a terminal one-tile target is capped by `overview_point_budget` when
+  necessary.
 
 `render_point_budget`
 : Runtime maximum for visible core tiles plus the configured prefetch policy.
@@ -1078,7 +1081,7 @@ coarsest:
 - `is_exact`;
 - total stored point count;
 - sampling-policy name and version;
-- maximum per-tile capacity or terminal global allocation;
+- effective maximum per-tile capacity;
 - sampling target or density semantics;
 - level directory.
 
@@ -1430,8 +1433,9 @@ Otherwise, the initial builder creates:
    16,384, and 32,768 respectively;
 4. further spatial levels following the same edge-doubling and initial
    capacity-doubling rule;
-5. a terminal globally allocated level as soon as the complete level can
-   satisfy `overview_point_budget`.
+5. termination at the first complete level whose conservative point-count
+   upper bound satisfies `overview_point_budget`; if necessary, a one-tile
+   terminal level whose effective per-tile capacity is capped by that budget.
 
 The format continues to support other density-only levels, but they are not
 part of the initial default schedule and require benchmark evidence before
