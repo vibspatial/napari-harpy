@@ -1952,8 +1952,8 @@ Gate C decision. Phase 1 does not begin before Gate D.
 The implementation is divided into independently reviewable slices in
 [persistent_cache_construction_5_8_26.md](persistent_cache_construction_5_8_26.md).
 
-After C0 freezes the minimal logical construction contracts and C1 produces the
-IO-free level plan, begin C2's internal exact-level performance spike:
+After C1 produces the private immutable IO-free level plan from explicit logical
+planning arguments, begin C2's internal exact-level performance spike:
 
 - use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
 - use the locked four-column numeric point payload without per-row tile columns;
@@ -2373,14 +2373,14 @@ specification.
 
 The next work follows the construction companion roadmap:
 
-1. implement only C0's minimal logical construction contracts;
-2. implement C1's IO-free 512-based level plan;
-3. in C2, compare the focused Dask disk-shuffle and direct-PyArrow spill
+1. implement C1's IO-free 512-based level plan without a public configuration
+   dataclass;
+2. in C2, compare the focused Dask disk-shuffle and direct-PyArrow spill
    candidates under the same tile-co-location contract;
-4. freeze the writer engine, bucket policy, bounded fallback, and local single-
+3. freeze the writer engine, bucket policy, bounded fallback, and local single-
    owner output at Gate B while retaining the locked point payload;
-5. implement the selected production exact writer in C3;
-6. proceed through value-neutral sampling, sparse tile/value count indexing,
+4. implement the selected production exact writer in C3;
+5. proceed through value-neutral sampling, sparse tile/value count indexing,
    staged-cache validation, publication, and the complete Xenium benchmark in
    the remaining Phase 1 slices.
 

@@ -237,8 +237,8 @@ named review gates rather than guessed during implementation:
 
 - whether the first public format redefines `harpy-transcripts-vis-0.1` or uses
   a new `0.2` schema version;
-- the public build-result model and any later extensions to the minimal C0 build
-  configuration;
+- the public build-result model and any later public builder parameters beyond
+  the two logical planning arguments;
 - the default `max_rows_per_row_group`, owned by the C2 spike and Gate B before
   the production writer;
 - grid-origin normalization and exact maximum-boundary behavior;
@@ -276,11 +276,10 @@ src/napari_harpy/core/multi_scale_cache_points/
 
 `schema.py` is added only when C2/C3 needs to materialize the locked point
 payload as an Arrow schema or after Gate D freezes the complete manifest and
-metadata schema; C0 must not create it merely to mirror the legacy module.
+metadata schema; C1 must not create it merely to mirror the legacy module.
 
-A pure planner may justify `build_plan.py`; do not add it before Slice C1 makes
-that boundary concrete. Small helpers should remain in their consuming module
-rather than creating speculative modules.
+C1 owns `build_plan.py` and its private plan records. Small helpers should remain
+in their consuming module rather than creating speculative modules.
 
 Focused tests remain under:
 
@@ -297,8 +296,7 @@ retained idea requires independent justification from this roadmap.
 
 | Slice | Status | Deliverable | Reads source point rows | Publishes cache |
 |---|---|---|---:|---:|
-| C0 | Next | Minimal logical construction contracts | No | No |
-| C1 | Planned | Pure grid and level build planning | No | No |
+| C1 | Next | Pure grid and level build planning | No | No |
 | C2 | Planned | Exact-level writer architecture and bucketed-shuffle spike | Yes | No |
 | C3 | Planned | Production exact-level writer | Yes | No |
 | C4 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
@@ -311,101 +309,49 @@ Each slice must be independently reviewable. C2 and C4 are deliberate spikes;
 their artifacts are internal and disposable, but their measured decisions are
 recorded before production code depends on them.
 
-## Slice C0: minimal logical construction contracts
-
-### Goal
-
-Create only the immutable logical construction contracts required by the pure
-planner and the C2 spike without freezing a physical cache schema.
-
-### Expected files
-
-```text
-src/napari_harpy/core/multi_scale_cache_points/models.py
-src/napari_harpy/core/multi_scale_cache_points/__init__.py
-tests/multi_scale_cache_points/test_cache_contracts.py
-```
-
-### Implement
-
-- one public immutable `PointsCacheBuildConfig` with exactly:
-
-  ```python
-  @dataclass(frozen=True)
-  class PointsCacheBuildConfig:
-      leaf_tile_size: int = 512
-      overview_point_budget: int = 100_000
-  ```
-
-- direct validation that both values are positive integers and are not `bool`;
-- ordinary `ValueError` for invalid configuration values;
-- a narrow package export for `PointsCacheBuildConfig`.
-
-`leaf_tile_size` is the exact and bridge tile geometry from which C1 derives
-later spatial levels. `overview_point_budget` is the maximum total membership of
-the terminal whole-dataset level. C0 does not add
-`max_rows_per_row_group`: that is a physical writer parameter whose supported
-default is measured in C2 and frozen at Gate B before the production writer.
-
-### Do not
-
-- open source Parquet files;
-- create directories or write cache artifacts;
-- define level or complete-cache build-plan records;
-- add `build_plan.py`; C1 owns the private plan records and planning module;
-- add construction-specific exception classes;
-- add schema, sampler, or writer-version placeholder constants or models;
-- add writer buckets, concurrency, compression, sampling seeds, staging,
-  overwrite, progress, cancellation, or result-model fields to the build
-  configuration;
-- expose speculative runtime-store or renderer models;
-- define level-payload, manifest, or metadata Arrow schemas;
-- freeze metadata fields whose semantics are still owned by C6;
-- copy all legacy cache dataclasses merely because they exist.
-
-### Focused tests
-
-Test the agreed defaults, one valid non-default configuration, and focused
-rejection of zero, negative, boolean, and non-integer values. Do not test
-dataclass immutability or Python/PyArrow behavior itself, and do not add schema
-tests before the schema-owning gate.
-
-### Exit criteria
-
-- C1 can consume the typed logical configuration without a dictionary of
-  unrelated options;
-- the public configuration contains only `leaf_tile_size` and
-  `overview_point_budget` with the frozen defaults;
-- no plan, result, physical-writer, publication, or runtime contract is exposed;
-- concrete Arrow schema objects remain deferred to their consuming slices even
-  though the point-payload columns and types are already locked;
-- the public API remains small and independent of Qt, napari, and VisPy.
-
 ## Slice C1: pure grid and level build planning
 
 ### Goal
 
-Convert `ValidatedPointsSource` facts plus construction configuration into a
-deterministic, IO-free build plan.
+Convert `ValidatedPointsSource` facts plus two explicit logical planning
+arguments into a deterministic, IO-free build plan.
 
-C1 is the only construction stage that directly interprets
-`PointsCacheBuildConfig`. Its conceptual entry point is:
+The agreed eventual public defaults are:
+
+```text
+leaf_tile_size = 512
+overview_point_budget = 100_000
+```
+
+They are applied only by the public builder introduced in C7. The private C1
+planner has no defaults and always receives resolved values explicitly:
 
 ```python
 def _plan_points_cache(
     validated: ValidatedPointsSource,
-    config: PointsCacheBuildConfig,
+    *,
+    leaf_tile_size: int,
+    overview_point_budget: int,
 ) -> _PointsCacheBuildPlan: ...
 ```
 
 C2 and every later writer consume immutable records from
-`_PointsCacheBuildPlan`; they do not independently reinterpret the public build
-configuration.
+`_PointsCacheBuildPlan`; they do not independently reinterpret these logical
+arguments or apply their own defaults.
+
+### Expected files
+
+```text
+src/napari_harpy/core/multi_scale_cache_points/build_plan.py
+tests/multi_scale_cache_points/test_build_plan.py
+```
 
 ### Implement
 
 - define the private immutable level and complete-cache build-plan records once
   their fields and invariants are frozen by this slice;
+- validate that `leaf_tile_size` and `overview_point_budget` are positive
+  integers and are not `bool`, raising ordinary `ValueError` otherwise;
 - freeze `x_origin` and `y_origin` rules;
 - calculate exact tile indices from validated bounds using half-open cells;
 - handle points on tile boundaries, including the source maximum;
@@ -426,18 +372,25 @@ configuration.
 The planner may use conservative count bounds. It does not inspect source rows
 or predict the exact sampled count of every tile.
 
+Do not introduce `PointsCacheBuildConfig`, expose the private plan records,
+create directories, read source point rows, define Arrow cache schemas, or add
+physical writer and publication settings in this slice.
+
 ### Focused tests
 
-Cover a small exact-only source, a large source requiring the bridge and several
-spatial levels, maximum-boundary coordinates, negative coordinates, and the
-terminal overview-budget rule. Avoid combinatorial extent/budget tests.
+Cover focused argument validation, a small exact-only source, a large source
+requiring the bridge and several spatial levels, maximum-boundary coordinates,
+negative coordinates, and the terminal overview-budget rule. Avoid
+combinatorial extent/budget tests and do not test Python/dataclass behavior.
 
 ### Exit criteria
 
-- identical validated facts and configuration produce an identical plan;
+- identical validated facts and explicit logical arguments produce an identical
+  plan;
 - the plan contains enough information for the exact writer and sampler without
   consulting a viewport or renderer;
-- no filesystem or point-row IO occurs.
+- no filesystem or point-row IO occurs;
+- no new public package export is introduced.
 
 ## Slice C2: exact-level writer architecture and bucketed-shuffle spike
 
@@ -452,7 +405,7 @@ or its physical schemas are the correct starting point.
 - consume `ValidatedPointsSource` together with the exact-level record from the
   C1 build plan;
 - do not derive tile geometry, serialized level identity, or overview behavior
-  directly from `PointsCacheBuildConfig`;
+  directly from public builder arguments;
 - use the agreed initial 512-unit exact tile geometry; do not spend this spike
   comparing 256-unit tiles unless 512 demonstrates a concrete failure;
 - read only the selected columns through bounded operations driven by the
@@ -875,7 +828,7 @@ validation, source guards, and local publication into the first supported builde
 ### Required flow
 
 ```text
-ValidatedPointsSource + PointsCacheBuildConfig
+ValidatedPointsSource + resolved logical planning arguments
 → fresh source signature == validated signature
 → C1 immutable build plan
 → create unique sibling staging generation
@@ -890,8 +843,9 @@ ValidatedPointsSource + PointsCacheBuildConfig
 ### Implement
 
 - fail the initial metadata-only source guard before staging is created;
-- use `PointsCacheBuildConfig()` when configuration is omitted and invoke C1
-  exactly once after the initial source guard;
+- apply the public defaults `leaf_tile_size=512` and
+  `overview_point_budget=100_000`, validate them through C1, and invoke C1 exactly
+  once after the initial source guard;
 - generate a fresh cache-generation ID;
 - create and own a unique sibling staging directory;
 - pass the resulting immutable plan records to C3, C5, and C6 without rebuilding
@@ -902,8 +856,8 @@ ValidatedPointsSource + PointsCacheBuildConfig
 - publish the completed local directory with the approved replacement protocol;
 - preserve an existing completed cache when any build or guard fails;
 - reject and clean incomplete staging according to the frozen recovery policy;
-- expose a small public builder accepting `ValidatedPointsSource` and an optional
-  `PointsCacheBuildConfig`;
+- expose a small public builder accepting `ValidatedPointsSource` plus keyword-
+  only `leaf_tile_size` and `overview_point_budget` arguments with those defaults;
 - expose a backed-SpatialData convenience entry point that delegates visibly
   through resolution, validation, and the primary builder.
 
@@ -992,7 +946,8 @@ Approve:
 - minimal logical construction models;
 - grid origin, boundary, and serialized-level conventions;
 - exact-only and multilevel planning behavior;
-- build configuration ownership and defaults needed by the writer spike.
+- ownership and suitability of the two logical public defaults needed by the
+  writer spike.
 
 ### Gate B: after C2
 
@@ -1067,9 +1022,11 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Start with **C0: minimal logical construction contracts** and implement only the
-frozen two-field `PointsCacheBuildConfig`, its narrow public export, and focused
-semantic tests. Build-plan records belong to C1; physical writer configuration,
-version strings, result models, and construction-specific errors remain deferred
-to their consuming slices. Do not materialize Arrow schema objects before their
-consuming slices or settle sampler and writer-engine details prematurely.
+Start with **C1: pure grid and level build planning**. Implement the private plan
+records and IO-free planner with explicit keyword-only `leaf_tile_size` and
+`overview_point_budget` arguments. Do not introduce a configuration dataclass or
+public export. The public builder applies the agreed defaults later; physical
+writer configuration, version strings, result models, and construction-specific
+errors remain deferred to their consuming slices. Do not materialize Arrow
+schema objects before their consuming slices or settle sampler and writer-engine
+details prematurely.
