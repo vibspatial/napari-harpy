@@ -241,7 +241,8 @@ named review gates rather than guessed during implementation:
   the two logical planning arguments;
 - the default `max_rows_per_row_group`, owned by the C2 spike and Gate B before
   the production writer;
-- grid-origin normalization and exact maximum-boundary behavior;
+- final approval of C1's proposed grid-origin normalization and exact
+  maximum-boundary behavior before implementation;
 - the remaining Arrow details for the locked manifest column set;
 - writer engine selection between the focused Dask and direct-PyArrow
   candidates;
@@ -316,6 +317,10 @@ recorded before production code depends on them.
 Convert `ValidatedPointsSource` facts plus two explicit logical planning
 arguments into a deterministic, IO-free build plan.
 
+The contract below is the agreed specification candidate. Review it once more
+before implementation; C1 must not invent different geometry, fields, or
+termination behavior in code.
+
 The agreed eventual public defaults are:
 
 ```text
@@ -339,6 +344,122 @@ C2 and every later writer consume immutable records from
 `_PointsCacheBuildPlan`; they do not independently reinterpret these logical
 arguments or apply their own defaults.
 
+### Grid and boundary contract
+
+All levels share one origin aligned to the leaf grid:
+
+```text
+x_origin = floor(validated.bounds.x_min / leaf_tile_size) * leaf_tile_size
+y_origin = floor(validated.bounds.y_min / leaf_tile_size) * leaf_tile_size
+```
+
+The calculations use Python integer arithmetic for `leaf_tile_size` and
+`float64` coordinate/bounds arithmetic. Do not add an epsilon or `nextafter`
+adjustment. For every level:
+
+```text
+tile_x = floor((x - x_origin) / tile_size)
+tile_y = floor((y - y_origin) / tile_size)
+```
+
+Cells are half-open. A point exactly on a boundary belongs to the tile beginning
+at that boundary. The observed maximum therefore determines:
+
+```text
+max_tile_x = floor((x_max - x_origin) / tile_size)
+max_tile_y = floor((y_max - y_origin) / tile_size)
+grid_width = max_tile_x + 1
+grid_height = max_tile_y + 1
+```
+
+This rule applies unchanged to negative source coordinates. The shared origin
+and edge-doubling schedule keep child and parent grids aligned.
+
+### Private plan contracts
+
+C1 defines these private logical records, subject to final naming review:
+
+```python
+class _LevelKind(Enum):
+    EXACT = "exact"
+    BRIDGE = "bridge"
+    SPATIAL = "spatial"
+
+
+@dataclass(frozen=True)
+class _LevelBuildPlan:
+    level: int
+    kind: _LevelKind
+    tile_size: int
+    grid_width: int
+    grid_height: int
+    max_points_per_tile: int | None
+    max_points_total: int | None
+    point_count_upper_bound: int
+
+    @property
+    def relative_directory(self) -> str:
+        return f"levels/level_{self.level}"
+
+
+@dataclass(frozen=True)
+class _PointsCacheBuildPlan:
+    x_origin: float
+    y_origin: float
+    leaf_tile_size: int
+    overview_point_budget: int
+    levels: tuple[_LevelBuildPlan, ...]
+```
+
+`kind` describes only the logical role needed to construct the level. C1 does
+not record a C4 sampler name, version, or parameters. The relative level
+directory is derived from the serialized level; no absolute output or staging
+path belongs to either plan record.
+
+For the exact level, `max_points_per_tile` and `max_points_total` are `None`, and
+`point_count_upper_bound` equals `validated.row_count`. A sampled bridge or
+regular spatial level has its scheduled `max_points_per_tile`. Only a terminal
+level that requires explicit global truncation has a non-`None`
+`max_points_total`.
+
+### Level progression and termination
+
+If:
+
+```text
+validated.row_count <= overview_point_budget
+```
+
+C1 emits only exact level 0.
+
+Otherwise it emits exact level 0, the same-geometry sampled bridge, and then the
+edge/capacity-doubling spatial progression. For every regular sampled candidate:
+
+```text
+candidate_upper_bound = min(
+    finer_level.point_count_upper_bound,
+    grid_width * grid_height * max_points_per_tile,
+)
+```
+
+The first regular sampled level whose upper bound is at most
+`overview_point_budget` is terminal; no extra overview level is appended. More
+than one terminal tile is allowed in this case because the complete-level upper
+bound already satisfies the global budget.
+
+If no regular level satisfies the budget before the grid reaches one tile, that
+one-tile candidate becomes the terminal level with:
+
+```text
+max_points_total = overview_point_budget
+point_count_upper_bound = overview_point_budget
+```
+
+Its scheduled per-tile capacity remains recorded, but the global limit is
+authoritative. This guarantees finite planning without a point-row scan. The
+terminal condition is represented by the final position in `levels` plus an
+optional `max_points_total`; `OVERVIEW` is not a separate `_LevelKind`.
+
 ### Expected files
 
 ```text
@@ -349,12 +470,10 @@ tests/multi_scale_cache_points/test_build_plan.py
 ### Implement
 
 - define the private immutable level and complete-cache build-plan records once
-  their fields and invariants are frozen by this slice;
+  their fields and invariants above pass the pre-implementation review;
 - validate that `leaf_tile_size` and `overview_point_budget` are positive
   integers and are not `bool`, raising ordinary `ValueError` otherwise;
-- freeze `x_origin` and `y_origin` rules;
-- calculate exact tile indices from validated bounds using half-open cells;
-- handle points on tile boundaries, including the source maximum;
+- implement the shared aligned origin and exact half-open maximum-boundary rules;
 - distinguish tile geometry from sampling capacity;
 - create the exact-only plan when source count fits the overview budget;
 - otherwise create the exact level, sampled finest bridge, required spatial
@@ -364,13 +483,24 @@ tests/multi_scale_cache_points/test_build_plan.py
   `n`;
 - order serialized level records by ascending level from finest to coarsest
   while preserving clear spatial design labels internally;
-- record per-level tile size, capacity or global allocation, exactness, sampling
-  policy, and output directory;
+- record only the specified logical level kind, geometry, capacity/global limit,
+  count upper bound, and derived relative directory;
 - reject impossible integer grid shapes or serialized level identifiers before
   construction starts.
 
-The planner may use conservative count bounds. It does not inspect source rows
-or predict the exact sampled count of every tile.
+The planner uses only the specified conservative count recurrence. It does not
+inspect source rows or predict the exact sampled count of every tile.
+
+Reject planning when:
+
+- either argument is not a positive non-boolean integer;
+- a grid width or height exceeds `2**32`, because the largest tile index would
+  not fit the cache's `uint32` tile coordinates;
+- a serialized level exceeds the non-negative `int16` range;
+- a row-count upper bound exceeds the supported non-negative `int64` cache-count
+  range.
+
+Use ordinary `ValueError`; do not add a public planning-error hierarchy.
 
 Do not introduce `PointsCacheBuildConfig`, expose the private plan records,
 create directories, read source point rows, define Arrow cache schemas, or add
@@ -379,9 +509,11 @@ physical writer and publication settings in this slice.
 ### Focused tests
 
 Cover focused argument validation, a small exact-only source, a large source
-requiring the bridge and several spatial levels, maximum-boundary coordinates,
-negative coordinates, and the terminal overview-budget rule. Avoid
-combinatorial extent/budget tests and do not test Python/dataclass behavior.
+requiring the bridge and several spatial levels, aligned and non-aligned bounds,
+an observed maximum exactly on a tile boundary, negative coordinates, regular
+upper-bound termination, one-tile explicit global termination, and one focused
+overflow case. Avoid combinatorial extent/budget tests and do not test
+Python/dataclass behavior.
 
 ### Exit criteria
 
@@ -402,8 +534,8 @@ or its physical schemas are the correct starting point.
 
 ### Spike contract
 
-- consume `ValidatedPointsSource` together with the exact-level record from the
-  C1 build plan;
+- consume `ValidatedPointsSource` together with the complete C1 build plan and
+  operate on its exact-level record and shared origin;
 - do not derive tile geometry, serialized level identity, or overview behavior
   directly from public builder arguments;
 - use the agreed initial 512-unit exact tile geometry; do not spend this spike

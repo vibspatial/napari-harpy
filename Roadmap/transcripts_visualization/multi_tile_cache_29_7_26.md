@@ -1210,6 +1210,17 @@ replace the two construction-time guards.
 
 Coordinates and tile indices use the points element's native data space.
 
+The proposed initial builder aligns one shared origin to the leaf grid:
+
+```text
+x_origin = floor(x_min / leaf_tile_size) * leaf_tile_size
+y_origin = floor(y_min / leaf_tile_size) * leaf_tile_size
+```
+
+All levels reuse this origin. The rule keeps doubled child and parent grids
+aligned and produces non-negative tile indices for finite negative or positive
+source coordinates. C1 reviews this contract once more before implementation.
+
 For one level:
 
 ```text
@@ -1221,7 +1232,9 @@ tile_id = f"{level}/{tile_x}/{tile_y}"
 Tile cells are half-open in each dimension. Grid shape must be computed from
 the maximum assigned tile indices, not assumed solely from the numeric extent.
 This handles points that lie exactly on a tile boundary, including the source
-maximum.
+maximum: such a point belongs to the tile beginning at that boundary. The
+initial implementation uses direct `float64` arithmetic and `floor`, without an
+epsilon or `nextafter` adjustment.
 
 The coarsest grid should normally cover the complete dataset in one tile by
 choosing a tile size strictly greater than the maximum coordinate span. This
