@@ -564,7 +564,7 @@ def _write_exact_level(
     staging_directory: Path,
     temporary_directory_root: Path,
     config: _ExactLevelWriterConfig,
-) -> _ExactLevelWriteResult: ...
+) -> _LevelWriteResult: ...
 ```
 
 C2 does not add an unimplemented function stub. C3 introduces the actual
@@ -610,10 +610,15 @@ class _TileValueCount:
 
 
 @dataclass(frozen=True)
-class _ExactLevelWriteResult:
+class _LevelWriteResult:
     manifest_rows: tuple[_ManifestRow, ...]
     tile_value_counts: tuple[_TileValueCount, ...]
 ```
+
+The result is level-neutral: the Exact writer and every later sampled-level
+writer return the same record type. Exact-specific behavior remains in the
+writer entry point and `_ExactLevelWriterConfig`, while C7 can consolidate a
+homogeneous collection of `_LevelWriteResult` records.
 
 All configuration values are positive integers, excluding `bool`. C2 gives the
 configuration fields no defaults: C3 supplies one explicit initial Dask
@@ -654,7 +659,7 @@ removes the complete staging generation after any construction failure.
 `temporary_directory_root` is a caller-selected location for disposable local
 shuffle storage. The writer creates a unique child beneath it, owns that child
 exclusively, closes all resources, and removes the child after both success and
-failure. Temporary paths never appear in `_ExactLevelWriteResult`. A cleanup
+failure. Temporary paths never appear in `_LevelWriteResult`. A cleanup
 failure must not hide the original construction exception.
 
 These ownership rules describe later C3 behavior. C2 itself creates or removes
