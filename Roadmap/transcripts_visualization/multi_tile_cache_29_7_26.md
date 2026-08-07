@@ -253,8 +253,9 @@ doing so would distort apparent abundance when all values are displayed.
 Disappearance from a sampled level is an expected consequence of
 representative sampling, not evidence that a value is biologically absent.
 
-The exact sampling algorithm is settled by the Phase 1 construction spike, but it
-must guarantee:
+The exact bridge microgrid and concrete priority-hash details are settled by the
+Phase 1 construction spike. The following structural guarantees are already
+fixed:
 
 - deterministic results for the same source identity and build parameters;
 - actual source rows as representatives;
@@ -1222,7 +1223,7 @@ y_origin = floor(y_min / leaf_tile_size) * leaf_tile_size
 
 All levels reuse this origin. The rule keeps doubled child and parent grids
 aligned and produces non-negative tile indices for finite negative or positive
-source coordinates. C1 reviews this contract once more before implementation.
+source coordinates. C1 implements this contract in its IO-free build planner.
 
 For one level:
 
@@ -1468,16 +1469,15 @@ signature and point-identity policy record that scope.
 ### Sampling contract
 
 The Phase 1 construction spike must produce a concrete, versioned sampler
-specification.
-The expected family is:
+specification. It refines, but does not reopen, this fixed algorithm family:
 
 1. start from candidates retained by the next finer level;
 2. annotate candidates with the current level's tile and spatial stratum;
 3. allocate the tile target proportionally across occupied spatial strata, with
    deterministic integer-remainder distribution;
-4. rank candidates using a stable hash of level, spatial stratum, `point_id`,
-   and seed;
-5. keep the deterministic winners;
+4. rank candidates by ascending stable pseudo-random priority derived from
+   level, spatial stratum, `point_id`, and a seed;
+5. keep the first candidates in that ascending order, up to each allocation;
 6. sort output deterministically before writing.
 
 For L1 and later spatial levels, the immediate finer child tiles are the
@@ -1485,6 +1485,12 @@ required top-level spatial strata. For the same-geometry sampled finest bridge,
 the Phase 1 spike must benchmark and specify a deterministic within-tile
 stratification policy. A fixed micro-grid is a candidate for that bridge, not a
 general requirement imposed on every sampled level.
+
+Sampling randomness comes only from the named stable priority hash. A stateful
+random-number generator, input row or partition arrival order, and Python's
+randomized `hash()` must not affect membership. C4 freezes the bridge microgrid
+policy, hash algorithm, seed and payload encoding, integer allocation and
+redistribution mechanics, collision tie-breaking, and final deterministic sort.
 
 `value_id` is deliberately excluded from target allocation and the priority
 payload. The sampler must not impose a rarity modifier, minimum per-value
@@ -1969,8 +1975,8 @@ Gate C decision. Phase 1 does not begin before Gate D.
 The implementation is divided into independently reviewable slices in
 [persistent_cache_construction_5_8_26.md](persistent_cache_construction_5_8_26.md).
 
-After C1 produces the private immutable IO-free level plan from explicit logical
-planning arguments, begin C2's internal exact-level performance spike:
+After Gate A approves C1's implemented private immutable IO-free level plan,
+begin C2's internal exact-level performance spike:
 
 - use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
 - use the locked four-column numeric point payload without per-row tile columns;
@@ -2390,9 +2396,8 @@ specification.
 
 The next work follows the construction companion roadmap:
 
-1. implement C1's IO-free 512-based level plan without a public configuration
-   dataclass;
-2. in C2, compare the focused Dask disk-shuffle and direct-PyArrow spill
+1. review C1's implemented IO-free 512-based level plan at Gate A;
+2. after approval, in C2 compare the focused Dask disk-shuffle and direct-PyArrow spill
    candidates under the same tile-co-location contract;
 3. freeze the writer engine, bucket policy, bounded fallback, and local single-
    owner output at Gate B while retaining the locked point payload;

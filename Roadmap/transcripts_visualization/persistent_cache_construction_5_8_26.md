@@ -242,8 +242,8 @@ named review gates rather than guessed during implementation:
   the two logical planning arguments;
 - the default `max_rows_per_row_group`, owned by the C2 spike and Gate B before
   the production writer;
-- final approval of C1's proposed grid-origin normalization and exact
-  maximum-boundary behavior before implementation;
+- any future change to C1's implemented grid-origin normalization or exact
+  maximum-boundary behavior;
 - the remaining Arrow details for the locked manifest column set;
 - writer engine selection between the focused Dask and direct-PyArrow
   candidates;
@@ -298,7 +298,7 @@ retained idea requires independent justification from this roadmap.
 
 | Slice | Status | Deliverable | Reads source point rows | Publishes cache |
 |---|---|---|---:|---:|
-| C1 | Next | Pure grid and level build planning | No | No |
+| C1 | Implemented; awaiting Gate A | Pure grid and level build planning | No | No |
 | C2 | Planned | Exact-level writer architecture and bucketed-shuffle spike | Yes | No |
 | C3 | Planned | Production exact-level writer | Yes | No |
 | C4 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
@@ -318,9 +318,9 @@ recorded before production code depends on them.
 Convert `ValidatedPointsSource` facts plus two explicit logical planning
 arguments into a deterministic, IO-free build plan.
 
-The contract below is the agreed specification candidate. Review it once more
-before implementation; C1 must not invent different geometry, fields, or
-termination behavior in code.
+The contract below is implemented in `build_plan.py` and covered by the focused
+`test_build_plan.py` module. Gate A reviews the resulting behavior before C2
+depends on it.
 
 The agreed eventual public defaults are:
 
@@ -799,9 +799,9 @@ Harpy's accounting; do not retest Parquet compression internals.
 Freeze and demonstrate the deterministic sampling algorithm before building the
 complete sampled pyramid.
 
-### Contract to refine and freeze
+### Contracts fixed before C4
 
-The spike starts from the parent-roadmap family:
+The sampler uses the following fixed algorithm family:
 
 ```text
 finer candidates
@@ -812,24 +812,35 @@ finer candidates
 → deterministic output order
 ```
 
-It must settle:
-
-- same-geometry bridge stratification, with a fixed micro-grid evaluated as a
-  candidate rather than assumed;
-- child-tile spatial strata for L1 and later levels;
-- proportional target allocation across occupied spatial strata, including
-  deterministic integer-remainder distribution;
-- the versioned stable hash algorithm, seed encoding, and priority payload;
-- deterministic collision and final tie-breaking;
-- behavior when occupied spatial strata outnumber the target;
-- behavior for coincident coordinates, dominant values, singleton-heavy values,
-  sparse tiles, and tiles split across physical shards.
+Every sampled level consumes only representatives retained by its immediate
+finer level, so membership is nested and every winner remains an actual source
+point with its unchanged `point_id` and `value_id`. For L1 and every later
+spatial level, the immediate finer child tiles are the top-level spatial
+strata. The tile capacity is allocated proportionally across occupied strata,
+and candidates are selected within those allocations by ascending stable
+pseudo-random priority. Stateful random-number-generator order, input partition
+order, and Python's randomized `hash()` must not affect membership.
 
 `value_id` must not affect stratum allocation, point priority, or winner
 selection. The sampler intentionally represents local source abundance rather
 than guaranteeing preservation of rare values. Explicit value selections are
 handled later by the per-level tile/value count index and selection-aware LOD
 planner, not by scientifically distorting the sampled membership.
+
+### Details C4 must refine and freeze
+
+C4 must settle:
+
+- same-geometry bridge stratification, with a fixed micro-grid evaluated as a
+  candidate rather than assumed;
+- exact proportional integer allocation, deterministic remainder distribution,
+  and redistribution when a stratum cannot consume its provisional allocation;
+- the versioned stable hash algorithm, seed encoding, and priority payload;
+- deterministic collision and final tie-breaking;
+- the deterministic physical output sort after winner selection;
+- behavior when occupied spatial strata outnumber the target;
+- behavior for coincident coordinates, dominant values, singleton-heavy values,
+  sparse tiles, and tiles split across physical shards.
 
 The spike operates on bounded candidate tables or exact-cache tiles. It does not
 rescan the original canonical source and does not write a completed cache.
@@ -1170,11 +1181,10 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Start with **C1: pure grid and level build planning**. Implement the private plan
-records and IO-free planner with explicit keyword-only `leaf_tile_size` and
-`overview_point_budget` arguments. Do not introduce a configuration dataclass or
-public export. The public builder applies the agreed defaults later; physical
-writer configuration, version strings, result models, and construction-specific
-errors remain deferred to their consuming slices. Do not materialize Arrow
-schema objects before their consuming slices or settle sampler and writer-engine
-details prematurely.
+Review the implemented **C1: pure grid and level build planning** behavior at
+Gate A. After approval, begin **C2: exact-level writer architecture and
+bucketed-shuffle spike**. The public builder still applies the agreed logical
+defaults later; physical writer configuration, version strings, result models,
+and construction-specific errors remain deferred to their consuming slices. Do
+not materialize Arrow schema objects before their consuming slices or settle
+sampler details prematurely.
