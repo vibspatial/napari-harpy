@@ -246,9 +246,8 @@ named review gates rather than guessed during implementation:
 - the remaining Arrow details for the locked manifest column set;
 - whether measured C3 results justify the optional C4 direct-PyArrow
   investigation;
-- the stable bucket hash and deterministic file naming; C3 uses the initial
-  deterministic bucket-count heuristic of one output bucket per target
-  2,000,000 planned level rows;
+- deterministic bucket filename width; the bucket hash and the initial
+  bucket-count heuristic are locked below;
 - Dask partition and shuffle configuration, plus direct-PyArrow spill and
   compaction configuration only if optional C4 is opened;
 - whether measured C3 bucket skew or peak memory justifies a later maximum
@@ -922,6 +921,11 @@ writer.
 
 ### Initial bucket and finalizer configuration
 
+Before adding the reader, C3 removes the obsolete
+`max_source_rows_per_partition` field from `_ExactLevelWriterConfig` and its
+focused tests. The file-aligned source contract has no replacement row-limit
+field.
+
 The initial deterministic heuristic targets at most 2,000,000 points per
 physical output bucket on average:
 
@@ -979,8 +983,44 @@ strict worst-case finalization-memory bound. Its benchmark measures average and
 maximum bucket sizes and peak RSS. Only a demonstrated problem justifies adding
 an oversized-bucket fallback or changing the bucket count or concurrency.
 
+### Stable tile-to-bucket mapping
+
+The physical bucket mapping uses the versioned method identifier:
+
+```python
+BUCKET_HASH_METHOD = "harpy-tile-splitmix64-v1"
+```
+
+For non-negative `uint32` tile coordinates, form one collision-free `uint64`
+tile key and apply the SplitMix64 finalizer with explicit modulo-`2**64`
+arithmetic:
+
+```python
+tile_key = (uint64(tile_y) << uint64(32)) | uint64(tile_x)
+
+z = tile_key + uint64(0x9E3779B97F4A7C15)
+z = (z ^ (z >> uint64(30))) * uint64(0xBF58476D1CE4E5B9)
+z = (z ^ (z >> uint64(27))) * uint64(0x94D049BB133111EB)
+tile_hash = z ^ (z >> uint64(31))
+
+bucket_id = tile_hash % uint64(bucket_count)
+```
+
+Every addition and multiplication wraps as `uint64`. The result is converted to
+the bucket-id integer dtype used by the Dask shuffle. This mapping has no
+runtime-random seed: identical tile coordinates and `bucket_count` always
+produce the same bucket. All points in one tile therefore share one bucket,
+while the mixer avoids coupling neighbouring tile coordinates directly to
+neighbouring or identical modulo buckets.
+
+This hash controls only physical tile-to-bucket placement. It must not be
+silently reused as the later sampling-priority hash, whose payload, seed, and
+version remain separate sampling-contract decisions.
+
 ### Implementation responsibilities
 
+- remove the obsolete `max_source_rows_per_partition` configuration field and
+  its focused test inputs before constructing the file-aligned reader;
 - construct one Harpy-owned Dask input partition per validated physical file,
   requesting only the selected columns and explicitly using
   `split_row_groups=False`;
@@ -995,9 +1035,10 @@ an oversized-bucket fallback or changing the bucket count or concurrency.
 - assign numeric tile coordinates from `float64` working coordinates using the
   Exact record and shared origin in `_PointsCacheBuildPlan`, then convert only
   tile-local coordinates to `float32`;
-- select and document the stable tile-to-bucket hash, initial bucket count,
-  output row-group size, deterministic bucket filename width,
-  finalizer concurrency, and Dask shuffle configuration;
+- implement and test `harpy-tile-splitmix64-v1`, calculate the initial bucket
+  count, and select the deterministic bucket filename width;
+- use the locked output row-group size and finalizer concurrency, and configure
+  the Dask shuffle;
 - measure output-bucket skew and peak finalization memory, without adding a
   speculative recursive-spill or external-sort mechanism;
 - shard dense tiles into deterministic output row groups after the containing
@@ -1127,8 +1168,10 @@ Use small multi-file and multi-row-group fixtures to cover exact membership,
 point identity, tile boundaries, deterministic output, coordinate
 reconstruction, and one dense-tile shard case. Deliberately spread one logical
 tile across source files and verify that the shuffle co-locates it. Include one
-finalizer-failure case proving that incomplete staging output is rejected. Test
-Harpy's accounting and ownership rules; do not retest Dask or Parquet internals.
+small set of fixed SplitMix64 vectors so implementation changes cannot silently
+alter bucket placement. Include one finalizer-failure case proving that
+incomplete staging output is rejected. Test Harpy's accounting and ownership
+rules; do not retest Dask or Parquet internals.
 
 ### Exit criteria
 
@@ -1525,8 +1568,9 @@ Approve:
 - Dask exact-writer correctness and the small acceptance benchmark;
 - whether Dask is accepted or optional C4 is opened for a named limitation and
   measurable success criterion;
-- stable bucket hash, `target_rows_per_output_bucket=2_000_000`, its resulting
-  69-bucket Xenium Exact configuration, and deterministic file naming;
+- correct implementation of `harpy-tile-splitmix64-v1`,
+  `target_rows_per_output_bucket=2_000_000`, its resulting 69-bucket Xenium
+  Exact configuration, and deterministic file naming;
 - `max_rows_per_row_group=1_000_000` as the initial physical tile-shard limit;
 - Dask shuffle configuration, one-at-a-time finalization, observed maximum
   bucket size, and peak RSS;

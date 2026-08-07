@@ -1583,9 +1583,31 @@ read and annotate bounded batches from the validated physical inventory
 → record each row group in the manifest
 ```
 
-The bucket mapping must use an explicit stable, versioned hash; Python's built-in
-`hash()` is not suitable. Tiles and rows receive deterministic final ordering,
-with `point_id` as the within-tile tie-breaker.
+The bucket mapping uses the versioned method
+`harpy-tile-splitmix64-v1`; Python's built-in `hash()` is not suitable. Pack the
+non-negative `uint32` tile coordinates into one collision-free `uint64` key and
+apply the SplitMix64 finalizer:
+
+```python
+tile_key = (uint64(tile_y) << uint64(32)) | uint64(tile_x)
+
+z = tile_key + uint64(0x9E3779B97F4A7C15)
+z = (z ^ (z >> uint64(30))) * uint64(0xBF58476D1CE4E5B9)
+z = (z ^ (z >> uint64(27))) * uint64(0x94D049BB133111EB)
+tile_hash = z ^ (z >> uint64(31))
+
+bucket_id = tile_hash % uint64(bucket_count)
+```
+
+All addition and multiplication use explicit modulo-`2**64` wrapping. The
+mapping has no runtime-random seed, so identical tile coordinates and
+`bucket_count` produce identical placement across processes and platforms. All
+points in one tile receive the same bucket. This method controls only physical
+bucket placement and is not implicitly reused for the separately versioned
+sampling-priority hash.
+
+Tiles and rows receive deterministic final ordering, with `point_id` as the
+within-tile tie-breaker.
 
 ### Initial engine: Dask disk shuffle plus Arrow finalizer
 
@@ -1793,7 +1815,8 @@ the bucket count or concurrency or implementing an oversized-bucket fallback.
 The C3 Dask implementation and its small acceptance benchmark must select
 practical values and algorithms for:
 
-- the stable bucket hash and deterministic bucket/file names;
+- correct implementation of `harpy-tile-splitmix64-v1` and deterministic
+  bucket/file names;
 - `target_rows_per_output_bucket=2_000_000` and its resulting 69-bucket Xenium
   Exact acceptance configuration;
 - `max_rows_per_row_group=1_000_000` as the physical tile-shard limit;
