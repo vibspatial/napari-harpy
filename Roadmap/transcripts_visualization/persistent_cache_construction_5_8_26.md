@@ -220,9 +220,10 @@ tile may use a deterministic sequence of row groups or physical shards in that
 same bucket. A bucket file may contain row groups for several tiles.
 
 This is the tile-shuffled Layout B contract. Deterministic tile buckets are its
-bounded implementation, not a separate competing layout. The construction spike
-selects the bucket, spill, grouping, and sharding parameters; it does not compare
-against partition-local Layout A as a production candidate.
+bounded implementation, not a separate competing layout. The initial Dask
+implementation and its acceptance benchmark select the bucket, shuffle,
+grouping, and sharding parameters; they do not compare against partition-local
+Layout A as a production candidate.
 
 ### Staging and publication
 
@@ -240,13 +241,13 @@ named review gates rather than guessed during implementation:
   a new `0.2` schema version;
 - the public build-result model and any later public builder parameters beyond
   the two logical planning arguments;
-- the default `max_rows_per_row_group`, owned by the C2 spike and Gate B before
-  the production writer;
+- the default `max_rows_per_row_group`, owned by the C3 Dask implementation and
+  Gate B;
 - any future change to C1's implemented grid-origin normalization or exact
   maximum-boundary behavior;
 - the remaining Arrow details for the locked manifest column set;
-- writer engine selection between the focused Dask and direct-PyArrow
-  candidates;
+- whether measured C3 results justify the optional C4 direct-PyArrow
+  investigation;
 - the stable bucket hash, bucket count, and deterministic file naming;
 - engine-specific partition, spill, shuffle, and compaction configuration;
 - maximum in-memory finalization bucket size, recursive spill or external-
@@ -299,17 +300,20 @@ retained idea requires independent justification from this roadmap.
 | Slice | Status | Deliverable | Reads source point rows | Publishes cache |
 |---|---|---|---:|---:|
 | C1 | Implemented; awaiting Gate A | Pure grid and level build planning | No | No |
-| C2 | Planned | Exact-level writer architecture and bucketed-shuffle spike | Yes | No |
-| C3 | Planned | Production exact-level writer | Yes | No |
-| C4 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
-| C5 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
-| C6 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
-| C7 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
-| C8 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
+| C2 | Planned | Minimal exact-level construction contracts | No | No |
+| C3 | Planned | Dask exact-level writer and acceptance benchmark | Yes | No |
+| C4 | Optional | Direct-PyArrow exact-writer investigation, only if C3 justifies it | Yes | No |
+| C5 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
+| C6 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
+| C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
+| C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
+| C9 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
 
-Each slice must be independently reviewable. C2 and C4 are deliberate spikes;
-their artifacts are internal and disposable, but their measured decisions are
-recorded before production code depends on them.
+Each slice must be independently reviewable. C3 implements one credible writer
+rather than two competing engines. C4 is not on the critical path: it is opened
+only when Gate B concludes that the measured Dask writer is insufficient or
+that a direct-PyArrow alternative has a concrete, testable advantage. C5 is a
+deliberate sampler spike whose artifacts are internal and disposable.
 
 ## Slice C1: pure grid and level build planning
 
@@ -329,7 +333,7 @@ leaf_tile_size = 512
 overview_point_budget = 100_000
 ```
 
-They are applied only by the public builder introduced in C7. The private C1
+They are applied only by the public builder introduced in C8. The private C1
 planner has no defaults and always receives resolved values explicitly:
 
 ```python
@@ -341,7 +345,7 @@ def _plan_points_cache(
 ) -> _PointsCacheBuildPlan: ...
 ```
 
-C2 and every later writer consume immutable records from
+The C2 construction contracts and all later writers consume immutable records from
 `_PointsCacheBuildPlan`; they do not independently reinterpret these logical
 arguments or apply their own defaults.
 
@@ -412,7 +416,7 @@ class _PointsCacheBuildPlan:
 ```
 
 `kind` describes only the logical role needed to construct the level. C1 does
-not record a C4 sampler name, version, or parameters. The relative level
+not record a C5 sampler name, version, or parameters. The relative level
 directory is derived from the serialized level; no absolute output or staging
 path belongs to either plan record.
 
@@ -539,22 +543,44 @@ extent/budget tests and do not test Python/dataclass behavior.
 - no filesystem or point-row IO occurs;
 - no new public package export is introduced.
 
-## Slice C2: exact-level writer architecture and bucketed-shuffle spike
+## Slice C2: minimal exact-level construction contracts
 
 ### Goal
 
-Select and demonstrate an efficient bounded writer architecture for the required
-tile-co-located exact level without presuming that the legacy Dask/Pandas writer
-or its physical schemas are the correct starting point.
+Freeze only the private records and engine-independent boundaries required by
+the first exact-level writer. This slice performs no point-row IO and does not
+implement or compare writer engines.
 
-### Spike contract
+### Minimal contracts
+
+C2 defines one private exact-writer entry contract that consumes
+`ValidatedPointsSource` together with the complete C1 build plan. The entry
+contract must obtain the exact-level geometry and shared origin from that plan;
+it must not accept duplicate tile-size, origin, grid, or level arguments that
+could disagree with `_PointsCacheBuildPlan`.
+
+Define only the private immutable records that C3 will immediately consume:
+
+- the Dask writer's internal construction configuration;
+- provisional manifest-row records describing physical row groups;
+- provisional nonzero tile/value-count records;
+- exact-writer accounting returned to later staged-cache validation;
+- explicit caller-owned staging and Harpy-owned shuffle-temporary-directory
+  responsibilities.
+
+Do not add a general writer-engine abstraction or engine-selection enum merely
+to anticipate optional C4. If C4 is opened, its experiment can implement the
+same logical entry and result contracts without making multiple engines part of
+the initial builder API.
+
+The contracts freeze the following behavior for C3:
 
 - consume `ValidatedPointsSource` together with the complete C1 build plan and
   operate on its exact-level record and shared origin;
 - do not derive tile geometry, serialized level identity, or overview behavior
   directly from public builder arguments;
-- use the agreed initial 512-unit exact tile geometry; do not spend this spike
-  comparing 256-unit tiles unless 512 demonstrates a concrete failure;
+- use the agreed initial 512-unit exact tile geometry; do not compare 256-unit
+  tiles unless 512 demonstrates a concrete failure;
 - read only the selected columns through bounded operations driven by the
   validated ordered physical inventory;
 - generate batch-oriented internal `point_id` arrays;
@@ -583,14 +609,32 @@ or its physical schemas are the correct starting point.
 - retain bounded concurrency, memory, and temporary disk usage;
 - give exactly one finalizer ownership of each deterministic bucket path and
   never recompute or retry a finalizer within the same staging generation;
-- write only a unique benchmark/staging artifact, never `COMPLETED` or the final
-  visible cache path.
+- write only to a caller-owned unique staging artifact, never `COMPLETED` or the
+  final visible cache path.
 
-### Focused candidate A: Dask disk shuffle plus Arrow finalizer
+### Exit criteria
+
+- C3 can consume the records without inventing another build plan or duplicating
+  logical geometry arguments;
+- the staging and temporary-directory owner is unambiguous on success and
+  failure;
+- provisional row-group, tile/value-count, and writer-accounting records are
+  sufficient for later staged-cache validation;
+- no source rows are read and no speculative public API is exported.
+
+## Slice C3: Dask exact-level writer and acceptance benchmark
+
+### Goal
+
+Implement one credible exact-level writer using Dask's local disk shuffle plus
+Arrow finalization. Run a small acceptance benchmark after correctness is
+established. Do not implement a second engine in this slice.
+
+### Dask disk shuffle plus Arrow finalizer
 
 Harpy constructs this Dask dataframe only from the validated ordered physical
 inventory, using owned readers that preserve source-file offsets and row
-positions. It never accepts or inspects an arbitrary caller graph. The candidate
+positions. It never accepts or inspects an arbitrary caller graph. The writer
 uses the integer `bucket_id`, explicit divisions, and Dask's local disk shuffle
 so one output partition corresponds to one writer bucket without a
 quantile-discovery scan.
@@ -602,7 +646,7 @@ validated physical source
 → annotated: source-partitioned lazy Dask dataframe
 → bucketed: bucket-partitioned lazy Dask dataframe
 → ordered bucket: one computed and sorted output partition
-→ bucket-<id>.parquet: final level file inside the disposable spike artifact
+→ bucket-<id>.parquet: final level file inside the caller-owned staging artifact
 ```
 
 `annotated` retains the Harpy-owned bounded source partitions and contains at
@@ -627,31 +671,9 @@ The finalizer should consume numeric data and write through PyArrow. It must not
 copy the legacy per-partition Pandas string construction, schema, or direct
 side-effect pattern merely because that code exists.
 
-### Focused candidate B: direct PyArrow spill and compaction
-
-This candidate stays on the validated PyArrow path:
-
-```text
-bounded source batch
-→ numeric exact-level annotation and bucket_id
-→ batch-local partitioning of row indices by bucket_id
-→ deterministic temporary bucket fragments
-→ bounded bucket compaction and grouping
-→ final Parquet row groups and provisional level-manifest rows
-```
-
-It must define bounded file-handle use, temporary-fragment consolidation,
-oversized-bucket handling, deterministic ordering, concurrency, single-owner
-bucket output, and cleanup. It performs the same complete logical redistribution
-as the Dask candidate; it is not a partition-local shortcut.
-
-C2 compares only these two approaches based on installed dependencies. Do not
-introduce DuckDB, Polars, Spark, or another execution dependency unless both
-focused candidates fail the locked requirements.
-
 ### Locked physical point payload
 
-Both writer candidates must emit the locked exact-level payload:
+The Dask writer must emit the locked exact-level payload:
 
 ```text
 x_rel: float32
@@ -668,13 +690,13 @@ format revision; it is not a writer-engine decision at Gate B.
 Use the locked manifest column set from the parent roadmap. Do not copy
 `schema_version` or the derived string `tile_id` from the legacy metadata
 dataframe: `schema_version` belongs once in `metadata.json`, while `tile_id` is
-derived from `(level, tile_x, tile_y)`. C2 records the physical row-group facts
-needed by C6; Gate D owns the remaining manifest Arrow details but does not
+derived from `(level, tile_x, tile_y)`. C3 records the physical row-group facts
+needed by C7; Gate D owns the remaining manifest Arrow details but does not
 reopen these exclusions.
 
 ### Initial local execution and failure contract
 
-Phase 1 is a local, no-task-retry builder. The Dask candidate may use only a
+Phase 1 is a local, no-task-retry builder. The Dask writer may use only a
 Harpy-controlled local threaded or synchronous scheduler and local disk shuffle;
 it must not use `distributed.Client`, automatic retries, or speculative task
 execution. The finalization graph is computed once. Exactly one finalizer owns
@@ -698,26 +720,29 @@ future implementation enables distributed schedulers, automatic retries,
 speculative execution, multiple writers for one staging generation, resumable
 builds, or object-store publication.
 
-Measure at least:
+The one initial acceptance run records at least:
 
 - exact build time and peak RSS;
-- shuffle volume, spill bytes, and peak temporary disk usage;
-- average and maximum output-bucket rows and bytes;
-- largest logical-tile row count;
-- finalization throughput and peak RSS at each evaluated bounded concurrency;
+- peak temporary disk usage and shuffle volume when Dask exposes it cheaply;
 - written bytes, bucket/file count, row-group count, and manifest rows;
-- provisional nonzero tile/value count rows and bytes;
-- rows, files, and row groups touched per logical tile;
 - coordinate reconstruction error;
 - membership and point-id coverage;
-- representative cold and warm tile reads from the spike artifact.
+- one representative tile-read latency from the staged artifact.
 
-Compare the two candidates with the same 512-unit geometry, payload semantics,
-bucket policy, source, and correctness checks. Vary only parameters that
-materially affect selection, such as bucket count, engine-specific spill or
-shuffle configuration, finalization-memory limit, oversized-bucket fallback,
-writer concurrency, and row-group size. Do not implement partition-local Layout
-A or add unrelated writer engines for comparison.
+The initial benchmark is an acceptance check, not an engine tournament. Use the
+512-unit geometry and one documented initial Dask configuration. One
+representative benchmark run is sufficient for the first decision; do not
+require a parameter sweep, concurrency sweep, or repeated statistical benchmark
+before the design has demonstrated a concrete problem.
+
+### Focused tests
+
+Use small multi-file and multi-row-group fixtures to cover exact membership,
+point identity, tile boundaries, deterministic output, coordinate
+reconstruction, and one dense-tile shard case. Deliberately spread one logical
+tile across source files and verify that the shuffle co-locates it. Include one
+finalizer-failure case proving that incomplete staging output is rejected. Test
+Harpy's accounting and ownership rules; do not retest Dask or Parquet internals.
 
 ### Exit criteria
 
@@ -726,80 +751,67 @@ A or add unrelated writer engines for comparison.
 - temporary disk use and cleanup are measured and bounded by a documented
   construction policy;
 - exact membership, identity, and coordinate reconstruction are correct;
-- one writer engine is selected from the two focused candidates with recorded
-  correctness, complexity, performance, and operational reasons;
-- both writer candidates use the locked exact-level payload and reconstruct
+- the Dask writer uses the locked exact-level payload and reconstructs
   coordinates correctly from its manifest tile key;
-- bucket mapping, spill/grouping, single-owner output, file, and dense-tile
-  sharding policies are approved for C3;
-- spike artifacts are removed after measurements are recorded.
+- bucket mapping, shuffle/grouping, single-owner output, file, and dense-tile
+  sharding policies are approved for downstream construction;
+- benchmark artifacts are removed after measurements are recorded.
 
-## Slice C3: production exact-level writer
+Gate B records one of two outcomes:
+
+1. **Dask accepted:** correctness and the small benchmark are sufficient; keep
+   Dask as the Phase 1 exact writer and proceed directly to C5.
+2. **PyArrow investigation justified:** record the concrete Dask limitation and
+   the success criterion that a direct-PyArrow experiment must meet; open
+   optional C4 before proceeding.
+
+## Slice C4: optional direct-PyArrow exact-writer investigation
 
 ### Goal
 
-Turn the C2 decisions into a deterministic, focused exact-level writer that can
-populate a caller-owned staging generation.
+Investigate a direct-PyArrow spill-and-compaction writer only when Gate B records
+a concrete reason that the C3 Dask writer is insufficient. This slice is
+skipped when the Dask result is acceptable.
 
-### Implement
+### Conditional experiment
 
-- the approved bucketed tile-shuffle writer and deterministic file naming;
-- the Gate B-selected Dask or direct-PyArrow construction engine, without
-  importing or wrapping the legacy writer;
-- deterministic per-bucket sorting and finalization;
-- bounded oversized-bucket repartitioning or external grouping;
-- bounded concurrent finalization governed by the approved combined memory and
-  storage-throughput policy;
-- bounded selected-column reads using the validated physical inventory;
-- vectorized `uint64 point_id` construction from file offsets and row positions;
-- normalized-value to `uint32 value_id` mapping from the validated value table;
-- numeric tile assignment and tile-local `float32` conversion;
-- the locked four-column exact-level point payload;
-- deterministic ordering within physical shards;
-- dense-tile splitting by `max_rows_per_row_group`;
-- one logical tile per row group and deterministic `tile_shard` numbering;
-- exact-level counts and provisional level-manifest rows;
-- provisional nonzero `(level, value_id, tile_x, tile_y, n_points)` records
-  emitted while each exact tile is finalized, without an additional source
-  scan;
-- one finalizer owner per deterministic bucket path, with no task retry or
-  recomputation inside the staging generation;
-- writer accounting sufficient for C6 staged validation.
+```text
+bounded source batch
+→ numeric exact-level annotation and bucket_id
+→ batch-local partitioning of row indices by bucket_id
+→ deterministic temporary bucket fragments
+→ bounded bucket compaction and grouping
+→ final Parquet row groups and provisional level-manifest rows
+```
 
-Unexpected source values, decoding failures, ID overflow, or source facts that
-cannot be mapped to the validated contract fail construction. The writer does
-not silently extend `values.parquet` or repair the canonical source.
+The experiment must retain C2's entry/result contracts and C3's exact payload,
+tile co-location, deterministic ordering, bounded-memory, single-owner output,
+and correctness requirements. It must define bounded file-handle use,
+temporary-fragment consolidation, oversized-bucket handling, concurrency, and
+cleanup. It performs the same complete logical redistribution as Dask; it is
+not a partition-local shortcut.
 
-### Focused tests
-
-Use tiny multi-file and multi-row-group fixtures to cover file offsets, batch
-boundaries, tile boundaries, dense-tile sharding, dictionary/plain values, exact
-membership, deterministic output, and coordinate reconstruction tolerance.
-Deliberately spread one logical tile across several source files and verify that
-the exact writer co-locates it in one final bucket file or its documented dense-
-tile shard sequence. Inject a finalizer failure and verify that the incomplete
-staging generation is rejected, no completed cache is replaced, and a subsequent
-user-initiated build uses a fresh staging generation. Verify that duplicate
-ownership or a pre-existing bucket target fails rather than overwriting it. Test
-Harpy's accounting; do not retest Parquet compression internals.
+Compare only against the concrete C3 limitation and the success criterion
+recorded at Gate B. Do not add DuckDB, Polars, Spark, or another engine, and do
+not require feature parity beyond what is needed to make the decision.
 
 ### Exit criteria
 
-- every source point appears exactly once in the exact level;
-- every expected `point_id` appears exactly once;
-- output rows use only canonical value IDs;
-- reconstructed coordinates meet the frozen tolerance;
-- rerunning the writer produces the same logical rows, shards, and manifest
-  records, apart from generation-owned paths not included in logical identity.
+- record whether direct PyArrow materially resolves the named Dask limitation;
+- retain Dask unless the alternative has a meaningful measured advantage that
+  justifies its additional implementation and maintenance cost;
+- if PyArrow is selected, rerun the complete C3 exact-writer correctness checks
+  before downstream construction consumes it;
+- remove all experimental artifacts after recording the decision.
 
-## Slice C4: versioned value-neutral sampling contract and spike
+## Slice C5: versioned value-neutral sampling contract and spike
 
 ### Goal
 
 Freeze and demonstrate the deterministic sampling algorithm before building the
 complete sampled pyramid.
 
-### Contracts fixed before C4
+### Contracts fixed before C5
 
 The sampler uses the following fixed algorithm family:
 
@@ -827,9 +839,9 @@ than guaranteeing preservation of rare values. Explicit value selections are
 handled later by the per-level tile/value count index and selection-aware LOD
 planner, not by scientifically distorting the sampled membership.
 
-### Details C4 must refine and freeze
+### Details C5 must refine and freeze
 
-C4 must settle:
+C5 must settle:
 
 - same-geometry bridge stratification, with a fixed micro-grid evaluated as a
   candidate rather than assumed;
@@ -866,9 +878,9 @@ tiles. Include representative Xenium tiles. Measure:
 - the same candidates and parameters always produce the same winners;
 - no tile or level target can be exceeded;
 - `value_id` has no influence on allocation, priority, or membership;
-- the bridge and spatial-level stratification rules are approved for C5.
+- the bridge and spatial-level stratification rules are approved for C6.
 
-## Slice C5: complete nested sampled pyramid
+## Slice C6: complete nested sampled pyramid
 
 ### Goal
 
@@ -882,7 +894,7 @@ repeatedly scanning `points.parquet`.
 - later edge/capacity-doubling levels when required by the plan;
 - the terminal one-tile capacity clamp when required by the plan;
 - deterministic parent formation from finer child tiles;
-- the C4 value-neutral spatial allocation and stable point priorities;
+- the C5 value-neutral spatial allocation and stable point priorities;
 - unchanged `point_id` and `value_id` propagation;
 - self-contained payloads at every level;
 - the C3 physical sharding and manifest-row contract for sampled levels;
@@ -908,7 +920,7 @@ strata or values.
 - sampled construction performs no original-source content rescan;
 - all planned levels are written and accounted for.
 
-## Slice C6: metadata, values, manifest, tile/value counts, and staged-cache validation
+## Slice C7: metadata, values, manifest, tile/value counts, and staged-cache validation
 
 ### Goal
 
@@ -977,7 +989,7 @@ field.
 - every physical row group is represented exactly once in the manifest;
 - validation returns no partial success and writes no completion marker.
 
-## Slice C7: guarded end-to-end builder and local publication
+## Slice C8: guarded end-to-end builder and local publication
 
 ### Goal
 
@@ -1007,7 +1019,7 @@ ValidatedPointsSource + resolved logical planning arguments
   once after the initial source guard;
 - generate a fresh cache-generation ID;
 - create and own a unique sibling staging directory;
-- pass the resulting immutable plan records to C3, C5, and C6 without rebuilding
+- pass the resulting immutable plan records to C3, C6, and C7 without rebuilding
   validation facts;
 - fail the final metadata-only source guard after staged validation and before
   completion;
@@ -1021,7 +1033,7 @@ ValidatedPointsSource + resolved logical planning arguments
   through resolution, validation, and the primary builder.
 
 Progress, cancellation, overwrite behavior, and the exact returned build result
-must be frozen before C7 implementation. They must not leak temporary paths or
+must be frozen before C8 implementation. They must not leak temporary paths or
 partially completed metadata into the public contract.
 
 ### Focused tests
@@ -1041,7 +1053,7 @@ than testing operating-system rename implementation details exhaustively.
 - the primary builder requires no SpatialData object or Dask graph after it
   receives `ValidatedPointsSource`.
 
-## Slice C8: Xenium construction benchmark and hardening
+## Slice C9: Xenium construction benchmark and hardening
 
 ### Goal
 
@@ -1106,17 +1118,18 @@ Approve:
 - grid origin, boundary, and serialized-level conventions;
 - exact-only and multilevel planning behavior;
 - ownership and suitability of the two logical public defaults needed by the
-  writer spike.
+  Dask writer.
 
-### Gate B: after C2
+### Gate B: after C3
 
 Approve:
 
 - exact tile size;
-- writer-engine selection and the reasons for rejecting the other focused
-  candidate;
+- Dask exact-writer correctness and the small acceptance benchmark;
+- whether Dask is accepted or optional C4 is opened for a named limitation and
+  measurable success criterion;
 - stable bucket hash, bucket count, and deterministic file naming;
-- engine-specific shuffle/spill configuration and finalization-memory limit;
+- Dask shuffle configuration and finalization-memory limit;
 - bounded oversized-bucket fallback, file-rollover, and dense-tile sharding
   policies;
 - the local no-task-retry execution contract and deterministic single-owner
@@ -1125,7 +1138,7 @@ Approve:
 - coordinate reconstruction tolerance;
 - exact-writer performance viability.
 
-### Gate C: after C4
+### Gate C: after C5
 
 Approve:
 
@@ -1135,7 +1148,7 @@ Approve:
 - hash, seed, tie-breaking, and output ordering;
 - deterministic, nested, spatial, value-neutral, and capacity behavior.
 
-### Gate D: after C6
+### Gate D: after C7
 
 Approve:
 
@@ -1144,7 +1157,7 @@ Approve:
 - staged-cache validation and accounting;
 - compatibility boundary expected by the future Phase 2 reader.
 
-### Gate E: after C8
+### Gate E: after C9
 
 Approve:
 
@@ -1182,9 +1195,10 @@ Phase 1 is complete when:
 ## Immediate next slice
 
 Review the implemented **C1: pure grid and level build planning** behavior at
-Gate A. After approval, begin **C2: exact-level writer architecture and
-bucketed-shuffle spike**. The public builder still applies the agreed logical
-defaults later; physical writer configuration, version strings, result models,
-and construction-specific errors remain deferred to their consuming slices. Do
-not materialize Arrow schema objects before their consuming slices or settle
-sampler details prematurely.
+Gate A. After approval, begin **C2: minimal exact-level construction
+contracts**, followed by **C3: Dask exact-level writer and acceptance
+benchmark**. Open optional C4 only if Gate B records a concrete Dask limitation
+and a measurable success criterion for direct PyArrow. The public builder still
+applies the agreed logical defaults later; version strings, public result
+models, and construction-specific errors remain deferred to their consuming
+slices. Do not settle sampler details prematurely.

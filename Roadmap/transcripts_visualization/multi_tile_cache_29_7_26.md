@@ -254,7 +254,7 @@ Disappearance from a sampled level is an expected consequence of
 representative sampling, not evidence that a value is biologically absent.
 
 The exact bridge microgrid and concrete priority-hash details are settled by the
-Phase 1 construction spike. The following structural guarantees are already
+Phase 1 sampling spike. The following structural guarantees are already
 fixed:
 
 - deterministic results for the same source identity and build parameters;
@@ -1468,7 +1468,7 @@ signature and point-identity policy record that scope.
 
 ### Sampling contract
 
-The Phase 1 construction spike must produce a concrete, versioned sampler
+The Phase 1 sampling slice must produce a concrete, versioned sampler
 specification. It refines, but does not reopen, this fixed algorithm family:
 
 1. start from candidates retained by the next finer level;
@@ -1482,13 +1482,13 @@ specification. It refines, but does not reopen, this fixed algorithm family:
 
 For L1 and later spatial levels, the immediate finer child tiles are the
 required top-level spatial strata. For the same-geometry sampled finest bridge,
-the Phase 1 spike must benchmark and specify a deterministic within-tile
+the Phase 1 sampling spike must benchmark and specify a deterministic within-tile
 stratification policy. A fixed micro-grid is a candidate for that bridge, not a
 general requirement imposed on every sampled level.
 
 Sampling randomness comes only from the named stable priority hash. A stateful
 random-number generator, input row or partition arrival order, and Python's
-randomized `hash()` must not affect membership. C4 freezes the bridge microgrid
+randomized `hash()` must not affect membership. C5 freezes the bridge microgrid
 policy, hash algorithm, seed and payload encoding, integer allocation and
 redistribution mechanics, collision tie-breaking, and final deterministic sort.
 
@@ -1553,8 +1553,10 @@ Layout B:
 
 Deterministic tile buckets, previously described separately as Layout C, are the
 initial bounded implementation of this Layout B requirement rather than a
-competing physical layout. The writer engine used to implement those buckets is
-not yet frozen. The engine-independent construction flow is:
+competing physical layout. The initial writer uses Dask's local disk shuffle
+plus Arrow finalization. A direct-PyArrow alternative is investigated only if
+the measured Dask implementation exposes a concrete limitation. The
+engine-independent construction flow is:
 
 ```text
 read and annotate bounded batches from the validated physical inventory
@@ -1571,7 +1573,7 @@ The bucket mapping must use an explicit stable, versioned hash; Python's built-i
 `hash()` is not suitable. Tiles and rows receive deterministic final ordering,
 with `point_id` as the within-tile tie-breaker.
 
-### Leading candidate A: Dask disk shuffle plus Arrow finalizer
+### Initial engine: Dask disk shuffle plus Arrow finalizer
 
 Dask is a leading implementation candidate because it provides an on-disk
 single-machine shuffle, not merely because the legacy writer uses Dask or it is
@@ -1663,7 +1665,7 @@ bucket-007.parquet
 Thus, a Dask shuffle bucket is a temporary logical output partition; a final
 bucket Parquet file is created only by the subsequent grouped writer.
 
-### Leading candidate B: direct PyArrow spill and compaction
+### Optional follow-up: direct PyArrow spill and compaction
 
 The focused alternative uses the Phase 0 physical inventory and PyArrow batches
 directly:
@@ -1677,15 +1679,17 @@ read bounded PyArrow batch
 → write final Parquet row groups and provisional level-manifest rows
 ```
 
-This candidate still performs the required full logical redistribution, but it
+This alternative still performs the required full logical redistribution, but it
 avoids reconstructing the source as a Dask/Pandas execution graph. It must define
 bounded file-handle use, temporary-fragment consolidation, oversized-bucket
 handling, deterministic ordering, concurrency, single-owner bucket output, and
 cleanup.
 
-C2 compares only these two installed-dependency approaches. It does not expand
-the spike to DuckDB, Polars, Spark, or other new execution dependencies unless
-both focused candidates fail the locked correctness or operational requirements.
+Direct PyArrow is not implemented in parallel with the initial Dask writer. It
+is opened as optional C4 only when C3's small acceptance benchmark records a
+specific Dask limitation and a measurable success criterion for the
+alternative. Do not expand the investigation to DuckDB, Polars, Spark, or other
+new execution dependencies.
 
 Bounded source batches alone do not guarantee bounded memory because one bucket
 or tile may be very large. Each bucket is an independent finalization unit: one
@@ -1702,12 +1706,11 @@ external grouping/sort. A pathological single tile is streamed into
 deterministic row-group shards. The production writer must not require a complete
 oversized bucket or tile in memory.
 
-The Phase 1 construction spike must select practical values and algorithms for:
+The C3 Dask implementation and its small acceptance benchmark must select
+practical values and algorithms for:
 
-- writer engine: Dask disk shuffle plus Arrow finalization, or direct PyArrow
-  spill and compaction;
 - bucket count and deterministic bucket/file names;
-- engine-specific partition, spill, and shuffle configuration;
+- Dask partition and shuffle configuration;
 - maximum in-memory finalization bucket size;
 - recursive spill or bounded external-grouping fallback and cleanup;
 - dense-tile row-group and shard creation;
@@ -1730,12 +1733,14 @@ Measure:
 - viewport latency for small, medium, and large views;
 - behavior on local SSD and, if relevant, networked storage.
 
-The spike chooses between the two focused engines while retaining the same
-tile-co-located contract; it does not reopen partition-local Layout A as a
-production fallback. Different physical source orders may still produce
-different Harpy `point_id` values under the initial source-row identity policy,
-so canonical here means deterministic tile-local organization for one validated
-source, not byte-identical caches after source rows are reordered.
+Gate B accepts Dask when its correctness and benchmark results are sufficient.
+Only otherwise does it open optional C4, with the named limitation and success
+criterion recorded before direct-PyArrow work begins. Neither outcome reopens
+partition-local Layout A as a production fallback. Different physical source
+orders may still produce different Harpy `point_id` values under the initial
+source-row identity policy, so canonical here means deterministic tile-local
+organization for one validated source, not byte-identical caches after source
+rows are reordered.
 
 ## View planning
 
@@ -1976,14 +1981,14 @@ The implementation is divided into independently reviewable slices in
 [persistent_cache_construction_5_8_26.md](persistent_cache_construction_5_8_26.md).
 
 After Gate A approves C1's implemented private immutable IO-free level plan,
-begin C2's internal exact-level performance spike:
+freeze the minimal exact-writer contracts in C2 and then implement the C3 Dask
+writer and its small acceptance benchmark:
 
 - use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
 - use the locked four-column numeric point payload without per-row tile columns;
 - implement the tile-co-located Layout B contract through deterministic writer
   buckets;
-- compare only Dask local disk shuffle plus Arrow finalization with direct
-  PyArrow spill and compaction;
+- use Dask local disk shuffle plus Arrow finalization as the initial engine;
 - group or sort each completed bucket deterministically before final Parquet
   writing;
 - make source partition boundaries irrelevant to final tile locality;
@@ -2397,11 +2402,12 @@ specification.
 The next work follows the construction companion roadmap:
 
 1. review C1's implemented IO-free 512-based level plan at Gate A;
-2. after approval, in C2 compare the focused Dask disk-shuffle and direct-PyArrow spill
-   candidates under the same tile-co-location contract;
-3. freeze the writer engine, bucket policy, bounded fallback, and local single-
-   owner output at Gate B while retaining the locked point payload;
-4. implement the selected production exact writer in C3;
+2. after approval, freeze the minimal private exact-writer contracts in C2;
+3. implement the Dask disk-shuffle exact writer in C3 and run a small acceptance
+   benchmark under the tile-co-location contract;
+4. at Gate B, accept Dask and continue when its results are sufficient; open
+   optional C4 only for a named limitation and measurable PyArrow success
+   criterion;
 5. proceed through value-neutral sampling, sparse tile/value count indexing,
    staged-cache validation, publication, and the complete Xenium benchmark in
    the remaining Phase 1 slices.
