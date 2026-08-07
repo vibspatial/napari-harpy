@@ -302,7 +302,7 @@ retained idea requires independent justification from this roadmap.
 | Slice | Status | Deliverable | Reads source point rows | Publishes cache |
 |---|---|---|---:|---:|
 | C1 | Implemented; Gate A approved | Pure grid and level build planning | No | No |
-| C2 | Implemented | Minimal exact-level construction contracts | No | No |
+| C2 | Implemented; obsolete source-partition setting removal pending | Minimal exact-level construction contracts | No | No |
 | C3 | Planned | Dask exact-level writer and acceptance benchmark | Yes | No |
 | C4 | Optional | Direct-PyArrow exact-writer investigation, only if C3 justifies it | Yes | No |
 | C5 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
@@ -555,6 +555,9 @@ implement or compare writer engines.
 
 The contracts below are implemented in `writer_models.py`, covered by the
 focused `test_writer_models.py` module, and remain private package internals.
+The existing `max_source_rows_per_partition` field is removed before C3: the
+file-aligned source contract below deliberately does not expose a nominal row
+limit that the initial reader cannot enforce without splitting physical files.
 
 ### Minimal contracts
 
@@ -591,11 +594,6 @@ class _ExactLevelWriterConfig:
 
     Parameters
     ----------
-    max_source_rows_per_partition
-        Maximum selected source rows materialized in one Harpy-owned Dask input
-        partition. A final partition may contain fewer rows. This bounds the
-        decoded and annotated rows held by one source task; it does not change
-        Exact membership, point identity, or final tile assignment.
     bucket_count
         Number of deterministic logical output buckets used by the local disk
         shuffle. Every logical tile maps to exactly one bucket, while one bucket
@@ -614,7 +612,6 @@ class _ExactLevelWriterConfig:
         finalizers may be active when less work is available.
     """
 
-    max_source_rows_per_partition: int
     bucket_count: int
     max_rows_per_row_group: int
     finalizer_concurrency: int
@@ -873,10 +870,58 @@ Implement one credible exact-level writer using Dask's local disk shuffle plus
 Arrow finalization. Run a small acceptance benchmark after correctness is
 established. Do not implement a second engine in this slice.
 
+### File-aligned Dask source contract
+
+The initial writer relies on Dask's public Parquet reader for physical decoding,
+but constructs its own graph from `ValidatedPointsSource`. It must not consume
+the existing SpatialData points dataframe: that graph may have been filtered,
+repartitioned, or shuffled and therefore is not authoritative for physical-file
+provenance or source row positions.
+
+For each validated source file, in deterministic inventory order, the writer
+creates a separate lazy read equivalent to:
+
+```python
+dd.read_parquet(
+    physical_file_path,
+    columns=[x_column, y_column, value_column],
+    split_row_groups=False,
+)
+```
+
+Each such read has exactly one Dask input partition containing that complete
+physical file. The writer annotates it with the corresponding validated
+`ParquetSourceFile` record and then concatenates the annotated reads. Dask may
+execute these partitions in any order; inventory order remains the source of
+identity, not execution or arrival order.
+
+Dask and PyArrow handle the row groups inside each file. The initial writer does
+not create one partition per row group and does not implement arbitrary
+row-range partitions. It reconciles each decoded partition length with the
+validated file row count and constructs point IDs as:
+
+```text
+source_file.row_offset + physical row position within that file
+```
+
+Consequently, `_ExactLevelWriterConfig` has no source-partition row-limit
+setting. The physical source files determine input-partition size. On the
+initial Xenium dataset this means 65 input partitions for 65 Parquet files;
+although the files contain 168 row groups, row groups are not separate Dask
+partitions in the initial design.
+
+The acceptance benchmark must record the memory behavior of this file-aligned
+contract. Only if one-file partitions prove too memory-intensive do we introduce
+a row-group-aligned fallback using `split_row_groups=True`, together with the
+row-group provenance needed for identical point IDs. That is a targeted reader
+refinement, not a reason by itself to implement the optional direct-PyArrow
+writer.
+
 ### Implementation responsibilities
 
-- traverse the validated ordered files and physical row groups through bounded,
-  Harpy-owned source partitions, requesting only the selected columns;
+- construct one Harpy-owned Dask input partition per validated physical file,
+  requesting only the selected columns and explicitly using
+  `split_row_groups=False`;
 - construct `uint64 point_id` arrays batch-wise from validated source-file row
   offsets and physical row positions;
 - factor the existing private Arrow value-normalization operations into one
@@ -889,7 +934,7 @@ established. Do not implement a second engine in this slice.
   Exact record and shared origin in `_PointsCacheBuildPlan`, then convert only
   tile-local coordinates to `float32`;
 - select and document the stable tile-to-bucket hash, initial bucket count,
-  source partition size, row-group size, deterministic bucket filename width,
+  output row-group size, deterministic bucket filename width,
   finalizer concurrency, and Dask shuffle configuration;
 - implement bounded oversized-bucket and pathological-dense-tile handling;
 - produce the C2 result records and enforce their deterministic ordering,
@@ -909,13 +954,13 @@ It must keep these stages distinct:
 
 ```text
 validated physical source
-→ annotated: source-partitioned lazy Dask dataframe
+→ annotated: file-partitioned lazy Dask dataframe
 → bucketed: bucket-partitioned lazy Dask dataframe
 → ordered bucket: one computed and sorted output partition
 → bucket-<id>.parquet: final level file inside the caller-owned staging artifact
 ```
 
-`annotated` retains the Harpy-owned bounded source partitions and contains at
+`annotated` retains the Harpy-owned one-file source partitions and contains at
 least `tile_x`, `tile_y`, `x_rel`, `y_rel`, `value_id`, `point_id`, and
 `bucket_id`. It is neither shuffled nor persisted as a cache level.
 

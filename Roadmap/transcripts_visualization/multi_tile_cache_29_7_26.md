@@ -1592,6 +1592,28 @@ Dask is a leading implementation candidate because it provides an on-disk
 single-machine shuffle, not merely because the legacy writer uses Dask or it is
 already installed. In this candidate, Harpy constructs the dataframe itself from
 `ValidatedPointsSource`; it does not accept or inspect an arbitrary caller graph.
+The initial source graph contains one partition per validated physical Parquet
+file. For every file, Harpy creates a separate selected-column read with
+`split_row_groups=False`, attaches that file's validated provenance, and then
+concatenates the annotated reads. This uses Dask's public Parquet API for
+decoding while preserving the file row offsets needed for deterministic
+`point_id` construction.
+
+The writer intentionally does not reuse the SpatialData points dataframe even
+when it currently happens to have the same partition count: a caller may have
+filtered, repartitioned, or shuffled that graph. It also does not advertise an
+arbitrary source-row partition limit. Input partition size is initially set by
+the physical source files, and the decoded row count of every partition is
+reconciled with its validated file record.
+
+For the initial Xenium source, the validated 65 Parquet files therefore produce
+65 Dask input partitions. Its 168 physical row groups remain internal to the
+file reads. The acceptance benchmark decides whether these file-aligned
+partitions have acceptable peak memory. If they do not, the first refinement is
+row-group-aligned Dask reads with `split_row_groups=True` and explicit row-group
+provenance for unchanged point IDs—not an arbitrary row-range reader and not an
+automatic reason to replace Dask with direct PyArrow.
+
 With `B` integer buckets, the intended partitioning is equivalent to:
 
 ```python
@@ -1614,15 +1636,15 @@ The names `annotated`, `bucketed`, and `bucket file` refer to distinct stages:
 
 ```text
 validated physical source
-→ annotated: source-partitioned lazy Dask dataframe
+→ annotated: file-partitioned lazy Dask dataframe
 → bucketed: bucket-partitioned lazy Dask dataframe
 → ordered bucket: one computed and deterministically sorted output partition
 → bucket-<id>.parquet: final persistent level file
 ```
 
 `annotated` is not a stored cache artifact. Its partitions still correspond to
-Harpy-owned bounded reads from the validated source inventory. Its minimum hot
-columns are:
+Harpy-owned complete-file reads from the validated source inventory. Its
+minimum hot columns are:
 
 ```text
 tile_x
