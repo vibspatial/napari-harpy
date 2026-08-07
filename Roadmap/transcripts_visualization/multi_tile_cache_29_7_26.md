@@ -1731,17 +1731,28 @@ the shuffle may collect points from every source file into one output bucket.
 Each bucket is an independent finalization unit: one finalizer materializes,
 sorts, writes, and releases one complete output bucket.
 
-The pragmatic first Xenium implementation uses `bucket_count=65` and
-`finalizer_concurrency=1`. For 136,578,750 points this gives about 2.1 million
-points per bucket on average before hash skew and produces at most 65 Exact-level
-bucket files. Empty buckets do not create files. The equal input-file and output-
-bucket counts do not imply a one-to-one mapping: each source file may contribute
-to many output buckets after the shuffle.
+The pragmatic first implementation uses a deterministic target of 2,000,000
+source points per bucket on average:
 
-The value 65 is an explicit acceptance-benchmark configuration, not the general
-rule `bucket_count = number of source files`. Physical source packaging is not a
-logical cache or memory property. A later general default should be based on
-measured row-count and finalization-memory targets.
+```python
+target_rows_per_bucket = 2_000_000
+bucket_count = max(1, math.ceil(validated.row_count / target_rows_per_bucket))
+```
+
+The target is an internal construction default rather than a public builder
+argument. For the 136,578,750-point Xenium source, the calculation produces 69
+buckets, averaging approximately 1.98 million points per bucket before hash
+skew, and at most 69 Exact-level bucket files. Empty buckets do not create
+files. `finalizer_concurrency=1` remains the initial benchmark setting.
+
+The output-bucket count is intentionally independent of the 65 input Parquet
+files. There is no one-to-one mapping after the shuffle: each source file may
+contribute to many output buckets. Physical source packaging is not a logical
+cache or memory property and must not determine cache layout.
+
+Using `ceil` guarantees only that the average does not exceed the two-million-
+row target. It is not a hard per-bucket limit because hash skew or one very
+dense tile may still produce a larger bucket.
 
 This first implementation does not add recursive bucket spilling or an external
 bounded sort and therefore does not claim a strict worst-case finalization-
@@ -1755,8 +1766,8 @@ The C3 Dask implementation and its small acceptance benchmark must select
 practical values and algorithms for:
 
 - the stable bucket hash and deterministic bucket/file names;
-- the explicit 65-bucket Xenium acceptance configuration, clearly separated
-  from any later general bucket-count derivation;
+- the two-million-row bucket-count heuristic and its resulting 69-bucket Xenium
+  acceptance configuration;
 - Dask partition and shuffle configuration;
 - observed average and maximum bucket size and peak finalization memory;
 - dense-tile row-group and shard creation;

@@ -248,9 +248,9 @@ named review gates rather than guessed during implementation:
 - the remaining Arrow details for the locked manifest column set;
 - whether measured C3 results justify the optional C4 direct-PyArrow
   investigation;
-- the stable bucket hash, the eventual general bucket-count derivation, and
-  deterministic file naming; C3 uses an explicit 65-bucket Xenium benchmark
-  configuration rather than deriving a permanent default from source files;
+- the stable bucket hash and deterministic file naming; C3 uses the initial
+  deterministic bucket-count heuristic of one bucket per target 2,000,000
+  source rows;
 - Dask partition and shuffle configuration, plus direct-PyArrow spill and
   compaction configuration only if optional C4 is opened;
 - whether measured C3 bucket skew or peak memory justifies a later maximum
@@ -923,19 +923,29 @@ writer.
 
 ### Initial bucket and finalizer configuration
 
-The first Xenium acceptance build uses `bucket_count=65` and
-`finalizer_concurrency=1`. The 136,578,750 source points therefore average about
-2.1 million points per logical output bucket before accounting for hash skew.
-This creates at most 65 Exact-level bucket Parquet files; an empty bucket does
-not create a file.
+The initial deterministic heuristic targets at most 2,000,000 source points per
+bucket on average:
 
-The matching input-file and output-bucket counts are intentional only for this
-first benchmark configuration. There is no one-to-one relationship after the
-shuffle: every input file may contribute rows to many output buckets. The
-general builder must not derive `bucket_count` from the number of source files,
-because source-file count describes source packaging rather than logical cache
-or memory requirements. A later general default should be based on measured
-row-count and finalization-memory targets.
+```python
+target_rows_per_bucket = 2_000_000
+bucket_count = max(1, math.ceil(validated.row_count / target_rows_per_bucket))
+```
+
+The target is an internal construction default, not a new public builder
+argument. `_ExactLevelWriterConfig` retains the resulting integer
+`bucket_count`; the C3 benchmark and the later end-to-end builder calculate it
+from the validated source row count before invoking the Exact writer.
+
+For the 136,578,750-point Xenium source this produces 69 buckets, averaging
+about 1.98 million points per bucket before hash skew, and at most 69
+Exact-level bucket Parquet files. An empty bucket does not create a file. This
+output count is independent of the 65 physical source files: every input file
+may contribute rows to many output buckets after the shuffle. Source-file count
+describes physical source packaging and must not determine cache layout.
+
+Using `ceil` guarantees only that the arithmetic average is no greater than the
+two-million-row target. It is not a hard per-bucket limit: hash skew or one very
+dense tile may still produce a larger bucket.
 
 For this pragmatic implementation, one finalizer materializes, sorts, writes,
 and releases one complete bucket at a time. C3 does not yet implement recursive
@@ -1077,12 +1087,12 @@ The one initial acceptance run records at least:
 - one representative tile-read latency from the staged artifact.
 
 The initial benchmark is an acceptance check, not an engine tournament. Use the
-512-unit geometry, `bucket_count=65`, and `finalizer_concurrency=1`. This
-configuration produces at most 65 Exact-level bucket files and does not imply a
-permanent source-file-count-based default. One representative benchmark run is
-sufficient for the first decision; do not
-require a parameter sweep, concurrency sweep, or repeated statistical benchmark
-before the design has demonstrated a concrete problem.
+512-unit geometry, derive `bucket_count` using the two-million-row heuristic,
+and use `finalizer_concurrency=1`. For the Xenium target this means 69 buckets
+and at most 69 Exact-level bucket files. One representative benchmark run is
+sufficient for the first decision; do not require a parameter sweep,
+concurrency sweep, or repeated statistical benchmark before the design has
+demonstrated a concrete problem.
 
 ### Focused tests
 
@@ -1485,8 +1495,8 @@ Approve:
 - Dask exact-writer correctness and the small acceptance benchmark;
 - whether Dask is accepted or optional C4 is opened for a named limitation and
   measurable success criterion;
-- stable bucket hash, the explicit 65-bucket Xenium configuration, and
-  deterministic file naming;
+- stable bucket hash, the two-million-row bucket-count heuristic, its resulting
+  69-bucket Xenium configuration, and deterministic file naming;
 - Dask shuffle configuration, one-at-a-time finalization, observed maximum
   bucket size, and peak RSS;
 - whether those measurements justify changing the bucket configuration or
