@@ -248,11 +248,14 @@ named review gates rather than guessed during implementation:
 - the remaining Arrow details for the locked manifest column set;
 - whether measured C3 results justify the optional C4 direct-PyArrow
   investigation;
-- the stable bucket hash, bucket count, and deterministic file naming;
+- the stable bucket hash, the eventual general bucket-count derivation, and
+  deterministic file naming; C3 uses an explicit 65-bucket Xenium benchmark
+  configuration rather than deriving a permanent default from source files;
 - Dask partition and shuffle configuration, plus direct-PyArrow spill and
   compaction configuration only if optional C4 is opened;
-- maximum in-memory finalization bucket size, recursive spill or external-
-  grouping fallback, file rollover, and cleanup;
+- whether measured C3 bucket skew or peak memory justifies a later maximum
+  in-memory bucket size, recursive spill or external-grouping fallback, and
+  file rollover;
 - proportional spatial-stratum allocation and deterministic integer-remainder
   behavior;
 - same-geometry bridge stratification;
@@ -838,9 +841,10 @@ no directories.
   caller-owned staging generation.
 
 Detailed source traversal, annotation, normalization-helper refactoring,
-bucket hashing, Dask shuffle construction, oversized-bucket handling,
-concurrency, and measurements belong to C3. Direct PyArrow belongs only to
-optional C4.
+bucket hashing, Dask shuffle construction, bucket-size measurement,
+concurrency, and measurements belong to C3. Strict oversized-bucket handling is
+added later only if the acceptance benchmark demonstrates the need. Direct
+PyArrow belongs only to optional C4.
 
 ### Focused tests
 
@@ -917,6 +921,29 @@ row-group provenance needed for identical point IDs. That is a targeted reader
 refinement, not a reason by itself to implement the optional direct-PyArrow
 writer.
 
+### Initial bucket and finalizer configuration
+
+The first Xenium acceptance build uses `bucket_count=65` and
+`finalizer_concurrency=1`. The 136,578,750 source points therefore average about
+2.1 million points per logical output bucket before accounting for hash skew.
+This creates at most 65 Exact-level bucket Parquet files; an empty bucket does
+not create a file.
+
+The matching input-file and output-bucket counts are intentional only for this
+first benchmark configuration. There is no one-to-one relationship after the
+shuffle: every input file may contribute rows to many output buckets. The
+general builder must not derive `bucket_count` from the number of source files,
+because source-file count describes source packaging rather than logical cache
+or memory requirements. A later general default should be based on measured
+row-count and finalization-memory targets.
+
+For this pragmatic implementation, one finalizer materializes, sorts, writes,
+and releases one complete bucket at a time. C3 does not yet implement recursive
+bucket spilling or an external bounded sort and therefore does not claim a
+strict worst-case finalization-memory bound. Its benchmark measures average and
+maximum bucket sizes and peak RSS. Only a demonstrated problem justifies adding
+an oversized-bucket fallback or changing the bucket count or concurrency.
+
 ### Implementation responsibilities
 
 - construct one Harpy-owned Dask input partition per validated physical file,
@@ -936,7 +963,11 @@ writer.
 - select and document the stable tile-to-bucket hash, initial bucket count,
   output row-group size, deterministic bucket filename width,
   finalizer concurrency, and Dask shuffle configuration;
-- implement bounded oversized-bucket and pathological-dense-tile handling;
+- measure output-bucket skew and peak finalization memory, without adding a
+  speculative recursive-spill or external-sort mechanism;
+- shard dense tiles into deterministic output row groups after the containing
+  bucket has been sorted, while acknowledging that this output sharding does
+  not itself bound bucket-finalization memory;
 - produce the C2 result records and enforce their deterministic ordering,
   uniqueness, membership, identity, and reconciliation invariants;
 - honor the C2 staging and temporary-directory ownership contract.
@@ -980,8 +1011,7 @@ rows are appended to the bucket fragment, the mapping is released. If the tile
 uses several physical row-group shards, the finalizer aggregates across those
 shards before emitting one row per nonzero logical key. The result returns one
 small fragment descriptor rather than one Python record per nonzero count. No
-additional source or completed-level scan is allowed. Oversized buckets follow
-the bounded fallback above before final writing.
+additional source or completed-level scan is allowed.
 
 The finalizer should consume numeric data and write through PyArrow. It must not
 copy the legacy per-partition Pandas string construction, schema, or direct
@@ -1040,14 +1070,17 @@ The one initial acceptance run records at least:
 
 - exact build time and peak RSS;
 - peak temporary disk usage and shuffle volume when Dask exposes it cheaply;
-- written bytes, bucket/file count, row-group count, and manifest rows;
+- written bytes, average and maximum bucket rows and bytes, bucket/file count,
+  row-group count, and manifest rows;
 - coordinate reconstruction error;
 - membership and point-id coverage;
 - one representative tile-read latency from the staged artifact.
 
 The initial benchmark is an acceptance check, not an engine tournament. Use the
-512-unit geometry and one documented initial Dask configuration. One
-representative benchmark run is sufficient for the first decision; do not
+512-unit geometry, `bucket_count=65`, and `finalizer_concurrency=1`. This
+configuration produces at most 65 Exact-level bucket files and does not imply a
+permanent source-file-count-based default. One representative benchmark run is
+sufficient for the first decision; do not
 require a parameter sweep, concurrency sweep, or repeated statistical benchmark
 before the design has demonstrated a concrete problem.
 
@@ -1063,14 +1096,16 @@ Harpy's accounting and ownership rules; do not retest Dask or Parquet internals.
 ### Exit criteria
 
 - 512-unit exact construction is demonstrated;
-- peak memory remains bounded independently of source row count;
+- observed peak memory and maximum bucket size are acceptable for the initial
+  Xenium target, with no claim yet of a source-size-independent worst-case
+  bound;
 - temporary disk use and cleanup are measured and bounded by a documented
   construction policy;
 - exact membership, identity, and coordinate reconstruction are correct;
 - the Dask writer uses the locked exact-level payload and reconstructs
   coordinates correctly from its manifest tile key;
 - bucket mapping, shuffle/grouping, single-owner output, file, and dense-tile
-  sharding policies are approved for downstream construction;
+  output-sharding policies are approved for downstream construction;
 - benchmark artifacts are removed after measurements are recorded.
 
 Gate B records one of two outcomes:
@@ -1101,11 +1136,13 @@ bounded source batch
 ```
 
 The experiment must retain C2's entry/result contracts and C3's exact payload,
-tile co-location, deterministic ordering, bounded-memory, single-owner output,
-and correctness requirements. It must define bounded file-handle use,
-temporary-fragment consolidation, oversized-bucket handling, concurrency, and
-cleanup. It performs the same complete logical redistribution as Dask; it is
-not a partition-local shortcut.
+tile co-location, deterministic ordering, accepted measured memory envelope,
+single-owner output, and correctness requirements. It must define bounded
+file-handle use, temporary-fragment consolidation, concurrency, and cleanup. If
+the named C3 limitation is oversized-bucket memory, it must additionally define
+and measure the replacement spill or external-grouping policy. It performs the
+same complete logical redistribution as Dask; it is not a partition-local
+shortcut.
 
 Compare only against the concrete C3 limitation and the success criterion
 recorded at Gate B. Do not add DuckDB, Polars, Spark, or another engine, and do
@@ -1415,8 +1452,8 @@ or benchmark-only cache generations are removed after their results are recorded
 - reopen the sampler gate if spatial coverage, nesting, determinism, or measured
   value neutrality is unacceptable;
 - record target misses with an explicit accept, optimize, or redesign decision;
-- do not weaken correctness, determinism, bounded memory, or publication safety
-  merely to reduce build time.
+- do not weaken correctness, determinism, the accepted measured memory envelope,
+  or publication safety merely to reduce build time.
 
 ### Exit criteria
 
@@ -1448,10 +1485,14 @@ Approve:
 - Dask exact-writer correctness and the small acceptance benchmark;
 - whether Dask is accepted or optional C4 is opened for a named limitation and
   measurable success criterion;
-- stable bucket hash, bucket count, and deterministic file naming;
-- Dask shuffle configuration and finalization-memory limit;
-- bounded oversized-bucket fallback, file-rollover, and dense-tile sharding
-  policies;
+- stable bucket hash, the explicit 65-bucket Xenium configuration, and
+  deterministic file naming;
+- Dask shuffle configuration, one-at-a-time finalization, observed maximum
+  bucket size, and peak RSS;
+- whether those measurements justify changing the bucket configuration or
+  implementing a strict oversized-bucket fallback or file rollover;
+- dense-tile output row-group sharding, without treating it as a
+  bucket-finalization memory bound;
 - the local no-task-retry execution contract and deterministic single-owner
   bucket output;
 - bounded read/write strategy and concurrency envelope;

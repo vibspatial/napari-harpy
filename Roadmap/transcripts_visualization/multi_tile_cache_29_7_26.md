@@ -1726,32 +1726,45 @@ specific Dask limitation and a measurable success criterion for the
 alternative. Do not expand the investigation to DuckDB, Polars, Spark, or other
 new execution dependencies.
 
-Bounded source batches alone do not guarantee bounded memory because one bucket
-or tile may be very large. Each bucket is an independent finalization unit: one
-finalizer computes, sorts, writes, and releases one output bucket. This does not
-make the complete build globally sequential. A configured, bounded number of
-bucket finalizers may run concurrently when their combined memory remains within
-the construction envelope and additional writers improve measured storage
-throughput.
+Bounded source reads alone do not guarantee bounded finalization memory because
+the shuffle may collect points from every source file into one output bucket.
+Each bucket is an independent finalization unit: one finalizer materializes,
+sorts, writes, and releases one complete output bucket.
 
-An ordinary bucket is finalized in memory only when it fits the configured
-per-bucket limit. An oversized bucket must be recursively repartitioned on disk
-using further deterministic tile-key bits, or processed by an equivalent bounded
-external grouping/sort. A pathological single tile is streamed into
-deterministic row-group shards. The production writer must not require a complete
-oversized bucket or tile in memory.
+The pragmatic first Xenium implementation uses `bucket_count=65` and
+`finalizer_concurrency=1`. For 136,578,750 points this gives about 2.1 million
+points per bucket on average before hash skew and produces at most 65 Exact-level
+bucket files. Empty buckets do not create files. The equal input-file and output-
+bucket counts do not imply a one-to-one mapping: each source file may contribute
+to many output buckets after the shuffle.
+
+The value 65 is an explicit acceptance-benchmark configuration, not the general
+rule `bucket_count = number of source files`. Physical source packaging is not a
+logical cache or memory property. A later general default should be based on
+measured row-count and finalization-memory targets.
+
+This first implementation does not add recursive bucket spilling or an external
+bounded sort and therefore does not claim a strict worst-case finalization-
+memory guarantee. Dense tiles are still divided into deterministic output row
+groups after sorting, but output row-group sharding does not reduce the memory
+needed to materialize and sort their bucket. The acceptance benchmark records
+bucket-size skew and peak RSS; only a demonstrated problem justifies changing
+the bucket count or concurrency or implementing an oversized-bucket fallback.
 
 The C3 Dask implementation and its small acceptance benchmark must select
 practical values and algorithms for:
 
-- bucket count and deterministic bucket/file names;
+- the stable bucket hash and deterministic bucket/file names;
+- the explicit 65-bucket Xenium acceptance configuration, clearly separated
+  from any later general bucket-count derivation;
 - Dask partition and shuffle configuration;
-- maximum in-memory finalization bucket size;
-- recursive spill or bounded external-grouping fallback and cleanup;
+- observed average and maximum bucket size and peak finalization memory;
 - dense-tile row-group and shard creation;
 - deterministic single-owner bucket output under the local no-task-retry
   execution contract;
-- file rollover, writer concurrency, and memory limits.
+- one-at-a-time bucket finalization for the initial benchmark;
+- whether measured results justify future file rollover, higher concurrency, or
+  a strict oversized-bucket mechanism.
 
 Measure:
 
