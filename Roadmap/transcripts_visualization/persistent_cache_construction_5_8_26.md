@@ -249,7 +249,8 @@ named review gates rather than guessed during implementation:
 - whether measured C3 results justify the optional C4 direct-PyArrow
   investigation;
 - the stable bucket hash, bucket count, and deterministic file naming;
-- engine-specific partition, spill, shuffle, and compaction configuration;
+- Dask partition and shuffle configuration, plus direct-PyArrow spill and
+  compaction configuration only if optional C4 is opened;
 - maximum in-memory finalization bucket size, recursive spill or external-
   grouping fallback, file rollover, and cleanup;
 - proportional spatial-stratum allocation and deterministic integer-remainder
@@ -277,8 +278,8 @@ src/napari_harpy/core/multi_scale_cache_points/
   publication.py
 ```
 
-`schema.py` is added only when C2/C3 needs to materialize the locked point
-payload as an Arrow schema or after Gate D freezes the complete manifest and
+`schema.py` is added only when C3 needs to materialize the locked point payload
+as an Arrow schema or after Gate D freezes the complete manifest and
 metadata schema; C1 must not create it merely to mirror the legacy module.
 
 C1 owns `build_plan.py` and its private plan records. Small helpers should remain
@@ -553,73 +554,148 @@ implement or compare writer engines.
 
 ### Minimal contracts
 
-C2 defines one private exact-writer entry contract that consumes
-`ValidatedPointsSource` together with the complete C1 build plan. The entry
-contract must obtain the exact-level geometry and shared origin from that plan;
-it must not accept duplicate tile-size, origin, grid, or level arguments that
-could disagree with `_PointsCacheBuildPlan`.
+C2 documents the private callable boundary that C3 implements:
 
-Define only the private immutable records that C3 will immediately consume:
+```python
+def _write_exact_level(
+    validated: ValidatedPointsSource,
+    plan: _PointsCacheBuildPlan,
+    *,
+    staging_directory: Path,
+    temporary_directory_root: Path,
+    config: _ExactLevelWriterConfig,
+) -> _ExactLevelWriteResult: ...
+```
 
-- the Dask writer's internal construction configuration;
-- provisional manifest-row records describing physical row groups;
-- provisional nonzero tile/value-count records;
-- exact-writer accounting returned to later staged-cache validation;
-- explicit caller-owned staging and Harpy-owned shuffle-temporary-directory
-  responsibilities.
+C2 does not add an unimplemented function stub. C3 introduces the actual
+function together with its first consumer.
 
-Do not add a general writer-engine abstraction or engine-selection enum merely
-to anticipate optional C4. If C4 is opened, its experiment can implement the
-same logical entry and result contracts without making multiple engines part of
-the initial builder API.
+The complete build plan is authoritative. The writer uses `plan.x_origin`,
+`plan.y_origin`, and `plan.levels[0]`; it requires that record to have
+`level == 0` and `kind is _LevelKind.EXACT`. Tile size, grid dimensions, level
+identity, and relative output directory come from that record. They are not
+duplicated in `config` or supplied as additional function arguments. The
+initial builder and Xenium benchmark create a plan with 512-unit leaf tiles,
+but the writer itself must not hard-code 512.
 
-The contracts freeze the following behavior for C3:
+Define only these private frozen records:
 
-- consume `ValidatedPointsSource` together with the complete C1 build plan and
-  operate on its exact-level record and shared origin;
-- do not derive tile geometry, serialized level identity, or overview behavior
-  directly from public builder arguments;
-- use the agreed initial 512-unit exact tile geometry; do not compare 256-unit
-  tiles unless 512 demonstrates a concrete failure;
-- read only the selected columns through bounded operations driven by the
-  validated ordered physical inventory;
-- generate batch-oriented internal `point_id` arrays;
-- normalize and map source values to the validated `value_table` without
-  Python-per-row string handling;
-- assign tiles from `float64` working coordinates and produce tile-local
-  `float32` coordinates;
-- use numeric construction keys;
-- map each logical tile to a deterministic writer bucket using an explicit
-  stable hash rather than Python's built-in `hash()`;
-- perform the unavoidable full logical redistribution through bounded local
-  disk-backed bucket storage;
-- group or sort every completed bucket by `(tile_y, tile_x, point_id)` so engine
-  arrival order cannot affect final cache ordering;
-- co-locate every ordinary tile in one final bucket file, independently of
-  source partitions;
-- finalize one bucket in memory only when it is within the configured memory
-  envelope;
-- recursively repartition an oversized bucket on disk by further deterministic
-  tile-key bits, or use an equivalent bounded external grouping/sort;
-- stream a pathological single tile into deterministic row groups or physical
-  shards without retaining the complete tile in memory;
-- treat each bucket as an independent compute-sort-write-release unit and run
-  only a configured, bounded number of finalizers concurrently;
-- preserve the row-group-per-logical-tile invariant;
-- retain bounded concurrency, memory, and temporary disk usage;
-- give exactly one finalizer ownership of each deterministic bucket path and
-  never recompute or retry a finalizer within the same staging generation;
-- write only to a caller-owned unique staging artifact, never `COMPLETED` or the
-  final visible cache path.
+```python
+@dataclass(frozen=True)
+class _ExactLevelWriterConfig:
+    source_partition_rows: int
+    bucket_count: int
+    max_rows_per_row_group: int
+    finalizer_concurrency: int
+
+
+@dataclass(frozen=True)
+class _ManifestRow:
+    level: int
+    level_file: str
+    tile_x: int
+    tile_y: int
+    n_points: int
+    row_group: int
+    tile_shard: int
+
+
+@dataclass(frozen=True)
+class _TileValueCount:
+    level: int
+    value_id: int
+    tile_x: int
+    tile_y: int
+    n_points: int
+
+
+@dataclass(frozen=True)
+class _ExactLevelWriteResult:
+    manifest_rows: tuple[_ManifestRow, ...]
+    tile_value_counts: tuple[_TileValueCount, ...]
+```
+
+All configuration values are positive integers, excluding `bool`. C2 gives the
+configuration fields no defaults: C3 supplies one explicit initial Dask
+configuration, and Gate B approves or revises eventual production defaults.
+Do not add a writer-engine enum, performance-metrics model, or separate
+accounting dataclass. Exact row count, file count, and row-group count are
+derivable from the returned manifest rows; C3 benchmark measurements remain
+outside the logical writer result.
+
+`_ManifestRow` follows the parent manifest's logical field meanings and integer
+ranges. `level_file` is a normalized, cache-root-relative POSIX path. Rows are
+returned in deterministic `(level, tile_y, tile_x, tile_shard)` order. Each row
+describes exactly one physical row group containing exactly one logical tile;
+`n_points` is positive, row-group and shard indices are non-negative, and shard
+indices for a tile are contiguous from zero.
+
+`_TileValueCount` represents one nonzero logical
+`(level, value_id, tile_x, tile_y)` count and follows the parent index's integer
+ranges. Records are unique and returned in deterministic
+`(level, value_id, tile_y, tile_x)` order. For every exact logical tile, their
+sum equals the sum of `n_points` across that tile's manifest rows. Across level
+0, counts for each `value_id` reconcile to the corresponding exact count in
+`ValidatedPointsSource.value_table`.
+
+The result contains tuples rather than Arrow tables. C7 owns consolidation into
+the final Arrow manifest and tile/value-count index. C2 does not materialize
+Arrow cache schemas.
+
+### Directory ownership
+
+The caller creates and owns one unique, initially empty
+`staging_directory`. The exact writer may create only the Exact level subtree
+derived from the plan and must fail rather than overwrite an existing target.
+It never removes the caller's staging root, writes `COMPLETED`, publishes the
+generation, or touches an existing completed cache. The caller rejects and
+removes the complete staging generation after any construction failure.
+
+`temporary_directory_root` is a caller-selected location for disposable local
+shuffle storage. The writer creates a unique child beneath it, owns that child
+exclusively, closes all resources, and removes the child after both success and
+failure. Temporary paths never appear in `_ExactLevelWriteResult`. A cleanup
+failure must not hide the original construction exception.
+
+These ownership rules describe later C3 behavior. C2 itself creates or removes
+no directories.
+
+### Output invariants fixed for C3
+
+- every validated source point occurs exactly once in the Exact output;
+- every expected `point_id` occurs exactly once;
+- the physical payload is exactly `x_rel: float32`, `y_rel: float32`,
+  `value_id: uint32`, and `point_id: uint64`, all non-nullable;
+- every ordinary tile is co-located in one deterministic final bucket file,
+  independently of source partitions;
+- every physical row group contains one logical tile, while a dense tile may
+  use several deterministic row-group shards;
+- returned manifest rows and tile/value counts completely describe and
+  reconcile the written Exact level;
+- all output paths are cache-root-relative and all writes remain inside the
+  caller-owned staging generation.
+
+Detailed source traversal, annotation, normalization-helper refactoring,
+bucket hashing, Dask shuffle construction, oversized-bucket handling,
+concurrency, and measurements belong to C3. Direct PyArrow belongs only to
+optional C4.
+
+### Focused tests
+
+Test only semantic record validation: invalid configuration counts, unsafe or
+non-normalized manifest paths, invalid integer ranges, and invalid nonpositive
+counts. Do not test dataclass immutability, Python tuple behavior, Dask, or
+PyArrow. Deterministic ordering, duplicate logical keys, and cross-record
+reconciliation require actual writer output and are tested in C3 and C7.
 
 ### Exit criteria
 
-- C3 can consume the records without inventing another build plan or duplicating
-  logical geometry arguments;
+- C3 can implement the documented entry contract without inventing another
+  build plan or duplicating logical geometry arguments;
 - the staging and temporary-directory owner is unambiguous on success and
   failure;
-- provisional row-group, tile/value-count, and writer-accounting records are
-  sufficient for later staged-cache validation;
+- provisional row-group and tile/value-count records are sufficient for later
+  staged-cache validation;
 - no source rows are read and no speculative public API is exported.
 
 ## Slice C3: Dask exact-level writer and acceptance benchmark
@@ -629,6 +705,29 @@ The contracts freeze the following behavior for C3:
 Implement one credible exact-level writer using Dask's local disk shuffle plus
 Arrow finalization. Run a small acceptance benchmark after correctness is
 established. Do not implement a second engine in this slice.
+
+### Implementation responsibilities
+
+- traverse the validated ordered files and physical row groups through bounded,
+  Harpy-owned source partitions, requesting only the selected columns;
+- construct `uint64 point_id` arrays batch-wise from validated source-file row
+  offsets and physical row positions;
+- factor the existing private Arrow value-normalization operations into one
+  narrow helper shared by validation and construction, rather than reimplement
+  the Unicode trimming policy;
+- map normalized values vectorially against
+  `ValidatedPointsSource.value_table`, including dictionary-encoded batches
+  without Python-per-row string processing;
+- assign numeric tile coordinates from `float64` working coordinates using the
+  Exact record and shared origin in `_PointsCacheBuildPlan`, then convert only
+  tile-local coordinates to `float32`;
+- select and document the stable tile-to-bucket hash, initial bucket count,
+  source partition size, row-group size, deterministic bucket filename width,
+  finalizer concurrency, and Dask shuffle configuration;
+- implement bounded oversized-bucket and pathological-dense-tile handling;
+- produce the C2 result records and enforce their deterministic ordering,
+  uniqueness, membership, identity, and reconciliation invariants;
+- honor the C2 staging and temporary-directory ownership contract.
 
 ### Dask disk shuffle plus Arrow finalizer
 

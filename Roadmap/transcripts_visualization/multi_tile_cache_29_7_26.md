@@ -1294,7 +1294,7 @@ Rows are unique, positive-count, and sorted by
 `value_id` must exist in `values.parquet`, and every tile key must exist in the
 manifest. The file is organized so contiguous value-ID ranges can be read or
 indexed without loading a dense `n_levels × n_tiles × n_values` matrix; exact
-row-group sizing is frozen from C6/C8 measurements rather than hard-coded here.
+row-group sizing is frozen from C7/C9 measurements rather than hard-coded here.
 
 For each logical tile, summing its value counts must equal the sum of
 `manifest.n_points` over all physical shards for that tile. On exact level 0,
@@ -1303,7 +1303,7 @@ levels reconcile to their own manifest totals but are not expected to preserve
 exact per-value totals.
 
 Exact and sampled tile writers emit provisional nonzero counts while their tile
-rows are already being finalized. C6 consolidates and validates those records;
+rows are already being finalized. C7 consolidates and validates those records;
 construction must not add another scan of the canonical source or completed
 levels solely to build this index.
 
