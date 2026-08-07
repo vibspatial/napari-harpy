@@ -26,6 +26,12 @@ class _ExactLevelWriterConfig:
     finalizer_concurrency
         Maximum number of complete shuffle buckets that may be computed,
         sorted, grouped by tile, and written concurrently.
+
+    Notes
+    -----
+    Input partitioning is not configurable. The writer constructs one Dask
+    input partition per validated physical Parquet file, so those source files
+    determine the input-partition sizes.
     """
 
     bucket_count: int
