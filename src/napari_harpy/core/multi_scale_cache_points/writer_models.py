@@ -15,11 +15,6 @@ class _ExactLevelWriterConfig:
 
     Parameters
     ----------
-    max_source_rows_per_partition
-        Maximum selected source rows materialized in one Harpy-owned Dask input
-        partition. A final partition may contain fewer rows. This bounds the
-        decoded and annotated rows held by one source task; it does not change
-        Exact membership, point identity, or final tile assignment.
     bucket_count
         Number of deterministic logical output buckets used by the local disk
         shuffle. Every logical tile maps to exactly one bucket, while one bucket
@@ -33,13 +28,11 @@ class _ExactLevelWriterConfig:
         sorted, grouped by tile, and written concurrently.
     """
 
-    max_source_rows_per_partition: int
     bucket_count: int
     max_rows_per_row_group: int
     finalizer_concurrency: int
 
     def __post_init__(self) -> None:
-        _require_positive_integer(self.max_source_rows_per_partition, "max_source_rows_per_partition")
         _require_positive_integer(self.bucket_count, "bucket_count")
         _require_positive_integer(self.max_rows_per_row_group, "max_rows_per_row_group")
         _require_positive_integer(self.finalizer_concurrency, "finalizer_concurrency")

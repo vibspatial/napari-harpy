@@ -115,6 +115,14 @@ class _PointsCacheBuildPlan:
     overview_point_budget: int
     levels: tuple[_LevelBuildPlan, ...]
 
+    def __post_init__(self) -> None:
+        if not self.levels:
+            raise ValueError("A cache build plan must contain Exact level 0.")
+        if self.levels[0].level != 0 or self.levels[0].kind is not _LevelKind.EXACT:
+            raise ValueError("The first cache level must be serialized Exact level 0.")
+        if any(level.level != expected for expected, level in enumerate(self.levels)):
+            raise ValueError("Cache levels must be consecutively numbered in tuple order.")
+
 
 def _plan_points_cache(
     validated: ValidatedPointsSource,
