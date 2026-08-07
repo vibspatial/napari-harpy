@@ -1312,10 +1312,13 @@ canonical source or completed levels and unsafe concurrent appends from
 independent bucket finalizers into one shared Parquet file. The fragment counts
 are exact but provisional: each covers only one finalization unit and is not yet
 the complete, globally value-ordered and reconciled index. C7 reads the
-fragments in bounded batches, combines duplicate logical keys when necessary,
-sorts and validates the complete index, writes `tile_value_counts.parquet`, and
-then removes the fragments. Dask shuffle files are separate execution scratch
-and may be removed as soon as their bucket is finalized.
+fragments in bounded batches, sorts and validates the complete index, writes
+`tile_value_counts.parquet`, and then removes the fragments. Because every tile
+belongs to exactly one bucket, its finalizer must aggregate across any physical
+tile shards and emit each nonzero `(level, value_id, tile_x, tile_y)` key
+exactly once. C7 rejects duplicate keys rather than silently combining them.
+Dask shuffle files are separate execution scratch and may be removed as soon as
+their bucket is finalized.
 
 The index answers which tiles and levels contain selected values and how many
 selected representatives they contain. It does not locate point rows inside a

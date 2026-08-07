@@ -684,6 +684,13 @@ aggregation, but it must append those counts to a bucket-local flat fragment
 and release the per-tile mapping. It must not retain one Python object or one
 Python dictionary for every nonzero combination across the complete level.
 
+Every logical tile belongs to exactly one writer bucket. That bucket finalizer
+therefore owns the complete value counts for the tile, including points written
+through several dense-tile row-group shards. It must aggregate those shards and
+emit exactly one fragment row for each nonzero
+`(level, value_id, tile_x, tile_y)` key. The same logical key must not occur in
+another fragment.
+
 For example, the repeated values in the point rows for logical tile
 `(tile_x=4, tile_y=8)` are the aggregation input:
 
@@ -739,8 +746,8 @@ level has been written, C7 performs the reduction step:
 ```text
 all bucket-local count fragments
 → read in bounded batches
-→ combine any duplicate logical keys
 → order by (level, value_id, tile_y, tile_x)
+→ validate that every logical key occurs exactly once
 → reconcile with manifest rows and exact value totals
 → write and validate tile_value_counts.parquet
 → remove the provisional fragments
@@ -886,10 +893,12 @@ Only this finalizer creates `bucket-<id>.parquet`, its provisional
 level-manifest rows, and its flat provisional tile/value-count fragment. Counts
 are derived while tile rows are already available. A per-tile value-count
 mapping may exist only transiently while that tile is finalized; after its flat
-rows are appended to the bucket fragment, the mapping is released. The result
-returns one small fragment descriptor rather than one Python record per
-nonzero count. No additional source or completed-level scan is allowed.
-Oversized buckets follow the bounded fallback above before final writing.
+rows are appended to the bucket fragment, the mapping is released. If the tile
+uses several physical row-group shards, the finalizer aggregates across those
+shards before emitting one row per nonzero logical key. The result returns one
+small fragment descriptor rather than one Python record per nonzero count. No
+additional source or completed-level scan is allowed. Oversized buckets follow
+the bounded fallback above before final writing.
 
 The finalizer should consume numeric data and write through PyArrow. It must not
 copy the legacy per-partition Pandas string construction, schema, or direct
@@ -1171,7 +1180,9 @@ semantics and physical accounting can be validated independently.
   n_points: uint64
   ```
 
-  Sort it by `(level, value_id, tile_y, tile_x)`. It is a planning index, not a
+  Reject duplicate logical keys rather than combining or repairing them; a
+  duplicate violates the single-bucket ownership contract. Sort the valid rows
+  by `(level, value_id, tile_y, tile_x)`. It is a planning index, not a
   physical point locator; `manifest.parquet` remains authoritative for files and
   row groups. The first physical point layout remains tile-co-located and is not
   value-sharded;
