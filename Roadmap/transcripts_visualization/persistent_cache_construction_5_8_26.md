@@ -763,6 +763,47 @@ tables in memory. C7 reads the provisional fragments in bounded batches,
 consolidates and sorts them into the final Arrow tile/value-count index, and
 removes them. C2 itself does not materialize Arrow cache schemas.
 
+### Cross-slice construction handoff
+
+The private records connect the later construction slices as follows:
+
+```text
+C8 end-to-end builder
+    │
+    ├── creates staging generation and _ExactLevelWriterConfig
+    │
+    ├── calls C3 Exact writer
+    │       │
+    │       ├── Dask redistributes points into buckets
+    │       │
+    │       ├── each bucket finalizer:
+    │       │       ├── writes the staged persistent Exact point bucket
+    │       │       ├── produces _ManifestRow records
+    │       │       ├── counts values per tile
+    │       │       ├── writes one provisional count fragment
+    │       │       └── produces one _TileValueCountFragment descriptor
+    │       │
+    │       └── returns _LevelWriteResult
+    │               ├── manifest_rows
+    │               └── tile_value_count_fragments
+    │
+    ├── calls C6 sampled-level writers
+    │       └── each level returns another _LevelWriteResult
+    │
+    └── passes all _LevelWriteResult objects to C7
+            ├── writes manifest.parquet from _ManifestRow records
+            ├── streams the provisional count fragments
+            ├── writes tile_value_counts.parquet
+            ├── removes the provisional count fragments
+            └── validates the staged cache
+```
+
+The point bucket files are persistent members of the staged cache generation;
+they are not Dask shuffle scratch. The count fragments are construction-only
+handoff artifacts and disappear after C7 has created and validated the final
+index. After this handoff returns successfully, C8 performs its final source-
+signature guard, completion-marker write, and local publication steps.
+
 ### Directory ownership
 
 The caller creates and owns one unique, initially empty
