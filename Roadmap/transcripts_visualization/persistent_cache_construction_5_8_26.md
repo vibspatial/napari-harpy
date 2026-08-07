@@ -302,7 +302,7 @@ retained idea requires independent justification from this roadmap.
 | Slice | Status | Deliverable | Reads source point rows | Publishes cache |
 |---|---|---|---:|---:|
 | C1 | Implemented; Gate A approved | Pure grid and level build planning | No | No |
-| C2 | Implemented; fragment refactor pending | Minimal exact-level construction contracts | No | No |
+| C2 | Implemented | Minimal exact-level construction contracts | No | No |
 | C3 | Planned | Dask exact-level writer and acceptance benchmark | Yes | No |
 | C4 | Optional | Direct-PyArrow exact-writer investigation, only if C3 justifies it | Yes | No |
 | C5 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
@@ -553,11 +553,8 @@ Freeze only the private records and engine-independent boundaries required by
 the first exact-level writer. This slice performs no point-row IO and does not
 implement or compare writer engines.
 
-The contracts live in `writer_models.py` and remain private package internals.
-The configuration and manifest-row models are implemented and covered by the
-focused `test_writer_models.py` module. The agreed fragment-descriptor refactor
-below must replace the current per-count Python model before C2 is marked fully
-implemented again or C3 begins.
+The contracts below are implemented in `writer_models.py`, covered by the
+focused `test_writer_models.py` module, and remain private package internals.
 
 ### Minimal contracts
 
