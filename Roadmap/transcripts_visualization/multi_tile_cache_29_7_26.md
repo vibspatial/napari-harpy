@@ -373,7 +373,8 @@ The following settings have distinct meanings:
 : Maximum total point count in the complete coarsest level.
 
 `max_rows_per_row_group`
-: Physical Parquet IO shard size. It does not control visual sampling.
+: Maximum physical Parquet IO shard size, initially 1,000,000 rows. It does not
+  control visual sampling.
 
 `level_sampling_target`
 : A level-specific effective maximum per-tile capacity recorded in level
@@ -1090,7 +1091,7 @@ Required build parameters:
 
 - `leaf_tile_size`;
 - `overview_point_budget`;
-- `max_rows_per_row_group`;
+- `max_rows_per_row_group`, initially `1_000_000`;
 - stable hash algorithm and seed;
 - sampler name/version and parameters;
 - value-normalization method;
@@ -1732,18 +1733,24 @@ Each bucket is an independent finalization unit: one finalizer materializes,
 sorts, writes, and releases one complete output bucket.
 
 The pragmatic first implementation uses a deterministic target of 2,000,000
-source points per bucket on average:
+points per physical output bucket on average:
 
 ```python
-target_rows_per_bucket = 2_000_000
-bucket_count = max(1, math.ceil(validated.row_count / target_rows_per_bucket))
+target_rows_per_output_bucket = 2_000_000
+bucket_count = max(
+    1,
+    math.ceil(
+        level.point_count_upper_bound / target_rows_per_output_bucket
+    ),
+)
 ```
 
 The target is an internal construction default rather than a public builder
-argument. For the 136,578,750-point Xenium source, the calculation produces 69
-buckets, averaging approximately 1.98 million points per bucket before hash
-skew, and at most 69 Exact-level bucket files. Empty buckets do not create
-files. `finalizer_concurrency=1` remains the initial benchmark setting.
+argument. For Exact, `level.point_count_upper_bound` equals the validated source
+row count. For the 136,578,750-point Xenium source, the calculation therefore
+produces 69 buckets, averaging approximately 1.98 million points per bucket
+before hash skew, and at most 69 Exact-level bucket files. Empty buckets do not
+create files. `finalizer_concurrency=1` remains the initial benchmark setting.
 
 The output-bucket count is intentionally independent of the 65 input Parquet
 files. There is no one-to-one mapping after the shuffle: each source file may
@@ -1753,6 +1760,27 @@ cache or memory property and must not determine cache layout.
 Using `ceil` guarantees only that the average does not exceed the two-million-
 row target. It is not a hard per-bucket limit because hash skew or one very
 dense tile may still produce a larger bucket.
+
+`target_rows_per_output_bucket` is a physical file-packing and finalization
+target; it is not a logical tile capacity. The bridge and every coarser sampled
+level independently derive their bucket count from their own planned
+`point_count_upper_bound`, while `max_points_per_tile` continues to control the
+representatives retained in each logical tile. Coarser levels therefore use
+fewer output buckets as their complete-level upper bounds decrease, normally
+reaching one bucket for the overview.
+
+The independent physical row-group maximum is initially:
+
+```python
+max_rows_per_row_group = 1_000_000
+```
+
+Every row group contains exactly one logical tile. A tile containing more than
+1,000,000 points is divided into deterministic row-group shards, while one
+bucket file may contain multiple row groups from one or several tiles. This
+does not conflict with `target_rows_per_output_bucket`: the row-group setting
+limits one tile shard, whereas the bucket target describes the average total
+rows packed across the complete output file.
 
 This first implementation does not add recursive bucket spilling or an external
 bounded sort and therefore does not claim a strict worst-case finalization-
@@ -1766,8 +1794,9 @@ The C3 Dask implementation and its small acceptance benchmark must select
 practical values and algorithms for:
 
 - the stable bucket hash and deterministic bucket/file names;
-- the two-million-row bucket-count heuristic and its resulting 69-bucket Xenium
-  acceptance configuration;
+- `target_rows_per_output_bucket=2_000_000` and its resulting 69-bucket Xenium
+  Exact acceptance configuration;
+- `max_rows_per_row_group=1_000_000` as the physical tile-shard limit;
 - Dask partition and shuffle configuration;
 - observed average and maximum bucket size and peak finalization memory;
 - dense-tile row-group and shard creation;
