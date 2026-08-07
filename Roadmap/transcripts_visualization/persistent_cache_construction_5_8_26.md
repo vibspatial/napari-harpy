@@ -583,7 +583,34 @@ Define only these private frozen records:
 ```python
 @dataclass(frozen=True)
 class _ExactLevelWriterConfig:
-    source_partition_rows: int
+    """Private physical execution settings for the Exact-level writer.
+
+    Parameters
+    ----------
+    max_source_rows_per_partition
+        Maximum selected source rows materialized in one Harpy-owned Dask input
+        partition. A final partition may contain fewer rows. This bounds the
+        decoded and annotated rows held by one source task; it does not change
+        Exact membership, point identity, or final tile assignment.
+    bucket_count
+        Number of deterministic logical output buckets used by the local disk
+        shuffle. Every logical tile maps to exactly one bucket, while one bucket
+        may contain several tiles. Empty buckets need not create final files.
+        This controls redistribution granularity and the potential final bucket
+        file count, not the logical tile grid.
+    max_rows_per_row_group
+        Maximum points written to one physical Parquet row group. Because every
+        row group contains exactly one logical tile, a denser tile is split into
+        deterministic row-group shards of at most this size. This is physical
+        sharding only; it never samples or removes Exact points.
+    finalizer_concurrency
+        Maximum number of complete shuffle buckets that may be computed,
+        sorted, grouped by tile, and written concurrently. This bounds local
+        writer parallelism and its combined memory and storage pressure; fewer
+        finalizers may be active when less work is available.
+    """
+
+    max_source_rows_per_partition: int
     bucket_count: int
     max_rows_per_row_group: int
     finalizer_concurrency: int
