@@ -1302,10 +1302,20 @@ summing each value over all tiles must equal `values.parquet.n_points`. Sampled
 levels reconcile to their own manifest totals but are not expected to preserve
 exact per-value totals.
 
-Exact and sampled tile writers emit provisional nonzero counts while their tile
-rows are already being finalized. C7 consolidates and validates those records;
-construction must not add another scan of the canonical source or completed
-levels solely to build this index.
+Exact and sampled bucket finalizers emit flat provisional count fragments while
+their tile rows are already available. A finalizer may use a transient
+per-tile `{value_id: count}` mapping, but it appends those counts to its
+bucket-local fragment and releases the mapping rather than retaining one Python
+object or dictionary per sparse count across the level. Level results retain
+only small fragment descriptors. This avoids both an additional scan of the
+canonical source or completed levels and unsafe concurrent appends from
+independent bucket finalizers into one shared Parquet file. The fragment counts
+are exact but provisional: each covers only one finalization unit and is not yet
+the complete, globally value-ordered and reconciled index. C7 reads the
+fragments in bounded batches, combines duplicate logical keys when necessary,
+sorts and validates the complete index, writes `tile_value_counts.parquet`, and
+then removes the fragments. Dask shuffle files are separate execution scratch
+and may be removed as soon as their bucket is finalized.
 
 The index answers which tiles and levels contain selected values and how many
 selected representatives they contain. It does not locate point rows inside a
@@ -2399,12 +2409,13 @@ Phase 0 validation and its Gate D are complete. Do not add the new builder to
 `_transcript_tiles.py` or treat its schemas and tests as the Phase 1
 specification.
 
-The next work follows the construction companion roadmap:
+The next work follows the construction companion roadmap. C1's IO-free level
+plan and C2's private writer contracts are implemented. Continue with:
 
-1. review C1's implemented IO-free 512-based level plan at Gate A;
-2. after approval, freeze the minimal private exact-writer contracts in C2;
-3. implement the Dask disk-shuffle exact writer in C3 and run a small acceptance
-   benchmark under the tile-co-location contract;
+1. review the implemented C2 records and their ownership boundary;
+2. write the detailed C3 Dask exact-writer specifications;
+3. implement that writer and run a small acceptance benchmark under the
+   tile-co-location contract;
 4. at Gate B, accept Dask and continue when its results are sufficient; open
    optional C4 only for a named limitation and measurable PyArrow success
    criterion;
