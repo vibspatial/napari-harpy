@@ -67,6 +67,8 @@ class _LevelBuildPlan:
     point_count_upper_bound: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.kind, _LevelKind):
+            raise ValueError("`kind` must be a _LevelKind.")
         if self.kind is _LevelKind.EXACT:
             if self.max_points_per_tile is not None:
                 raise ValueError("An exact level must not have a per-tile capacity.")

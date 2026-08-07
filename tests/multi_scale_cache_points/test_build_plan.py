@@ -35,13 +35,14 @@ def _validated(
     [
         (_LevelKind.EXACT, 4_096),
         (_LevelKind.BRIDGE, None),
+        ("bridge", 4_096),
     ],
 )
-def test_level_plan_requires_kind_appropriate_capacity(kind: _LevelKind, capacity: int | None) -> None:
-    with pytest.raises(ValueError, match="capacity|max_points_per_tile"):
+def test_level_plan_requires_kind_appropriate_capacity(kind: object, capacity: int | None) -> None:
+    with pytest.raises(ValueError, match="kind|capacity|max_points_per_tile"):
         _LevelBuildPlan(
             level=0,
-            kind=kind,
+            kind=kind,  # type: ignore[arg-type]
             tile_size=512,
             grid_width=1,
             grid_height=1,
