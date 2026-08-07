@@ -7,7 +7,6 @@ _INT16_MAX = 2**15 - 1
 _INT32_MAX = 2**31 - 1
 _INT64_MAX = 2**63 - 1
 _UINT32_MAX = 2**32 - 1
-_UINT64_MAX = 2**64 - 1
 
 
 @dataclass(frozen=True)
@@ -60,7 +59,10 @@ class _ManifestRow:
 
     def __post_init__(self) -> None:
         _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
-        _require_cache_relative_path(self.level_file, level=self.level)
+        level_file = _require_cache_relative_path(self.level_file, name="level_file")
+        expected_directory = PurePosixPath(f"levels/level_{self.level}")
+        if level_file.parent != expected_directory:
+            raise ValueError(f"`level_file` must be directly inside `{expected_directory.as_posix()}`.")
         _require_integer_in_range(self.tile_x, "tile_x", maximum=_UINT32_MAX)
         _require_integer_in_range(self.tile_y, "tile_y", maximum=_UINT32_MAX)
         _require_integer_in_range(self.n_points, "n_points", minimum=1, maximum=_INT64_MAX)
@@ -69,29 +71,38 @@ class _ManifestRow:
 
 
 @dataclass(frozen=True)
-class _TileValueCount:
-    """Provisional nonzero count for one value in one logical cache tile."""
+class _TileValueCountFragment:
+    """Describe one staged file of flat provisional tile/value counts.
+
+    Parameters
+    ----------
+    level
+        Non-negative serialized level number shared by every count row in the
+        fragment.
+    relative_path
+        Normalized cache-root-relative POSIX path to the staged fragment. The
+        tile writer owns its directory and filename convention.
+    row_count
+        Number of aggregated nonzero tile/value rows in the fragment, not the
+        number of original point rows.
+    """
 
     level: int
-    value_id: int
-    tile_x: int
-    tile_y: int
-    n_points: int
+    relative_path: str
+    row_count: int
 
     def __post_init__(self) -> None:
         _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
-        _require_integer_in_range(self.value_id, "value_id", maximum=_UINT32_MAX)
-        _require_integer_in_range(self.tile_x, "tile_x", maximum=_UINT32_MAX)
-        _require_integer_in_range(self.tile_y, "tile_y", maximum=_UINT32_MAX)
-        _require_integer_in_range(self.n_points, "n_points", minimum=1, maximum=_UINT64_MAX)
+        _require_cache_relative_path(self.relative_path, name="relative_path")
+        _require_integer_in_range(self.row_count, "row_count", minimum=1, maximum=_INT64_MAX)
 
 
 @dataclass(frozen=True)
 class _LevelWriteResult:
-    """Provisional manifest and value-count records emitted for one cache level."""
+    """Manifest rows and provisional count-fragment descriptors for one level."""
 
     manifest_rows: tuple[_ManifestRow, ...]
-    tile_value_counts: tuple[_TileValueCount, ...]
+    tile_value_count_fragments: tuple[_TileValueCountFragment, ...]
 
 
 def _require_positive_integer(value: object, name: str) -> None:
@@ -110,9 +121,9 @@ def _require_integer_in_range(
         raise ValueError(f"`{name}` must be an integer in the range [{minimum}, {maximum}].")
 
 
-def _require_cache_relative_path(value: object, *, level: int) -> None:
+def _require_cache_relative_path(value: object, *, name: str) -> PurePosixPath:
     if not isinstance(value, str) or value == "":
-        raise ValueError("`level_file` must be a non-empty cache-root-relative POSIX path.")
+        raise ValueError(f"`{name}` must be a non-empty cache-root-relative POSIX path.")
 
     relative_path = PurePosixPath(value)
     if (
@@ -121,8 +132,5 @@ def _require_cache_relative_path(value: object, *, level: int) -> None:
         or ".." in relative_path.parts
         or relative_path.as_posix() != value
     ):
-        raise ValueError(f"`level_file` `{value}` is not a normalized cache-root-relative POSIX path.")
-
-    expected_directory = PurePosixPath(f"levels/level_{level}")
-    if relative_path.parent != expected_directory:
-        raise ValueError(f"`level_file` must be directly inside `{expected_directory.as_posix()}`.")
+        raise ValueError(f"`{name}` `{value}` is not a normalized cache-root-relative POSIX path.")
+    return relative_path
