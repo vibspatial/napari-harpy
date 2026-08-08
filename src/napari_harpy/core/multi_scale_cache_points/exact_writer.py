@@ -24,9 +24,9 @@ from napari_harpy.core.multi_scale_cache_points.value_normalization import (
 )
 from napari_harpy.core.multi_scale_cache_points.writer_models import (
     _ExactLevelWriterConfig,
+    _IntermediateTileValueCountFile,
     _LevelWriteResult,
     _ManifestRow,
-    _TileValueCountFragment,
 )
 
 BUCKET_HASH_METHOD = "harpy-tile-splitmix64-v1"
@@ -34,8 +34,8 @@ TARGET_ROWS_PER_OUTPUT_BUCKET = 2_000_000
 DEFAULT_MAX_ROWS_PER_ROW_GROUP = 1_000_000
 DEFAULT_FINALIZER_CONCURRENCY = 1
 
-_TILE_VALUE_COUNT_FRAGMENTS_DIRECTORY = "tile_value_count_fragments"
-_COUNT_FRAGMENT_BUFFER_ROWS = 65_536
+_INTERMEDIATE_TILE_VALUE_COUNTS_DIRECTORY = "intermediate_tile_value_counts"
+_INTERMEDIATE_COUNT_BUFFER_ROWS = 65_536
 _UINT64_32 = np.uint64(32)
 _UINT64_30 = np.uint64(30)
 _UINT64_27 = np.uint64(27)
@@ -65,15 +65,36 @@ _TILE_VALUE_COUNT_SCHEMA = pa.schema(
 
 @dataclass(frozen=True)
 class _BucketWriteResult:
+    """Return the compact output of one bucket finalizer to the coordinator.
+
+    Parameters
+    ----------
+    bucket_id
+        Deterministic identifier used to order independently finalized buckets.
+    point_count
+        Number of point rows consumed and written by this bucket. The
+        coordinator reconciles its level-wide sum with the validated source row
+        count.
+    value_count_total
+        Number of points represented by this bucket's intermediate tile/value
+        counts. Its level-wide sum is independently reconciled with the
+        validated source row count.
+    manifest_rows
+        Descriptors for the physical point row groups written by this bucket.
+    intermediate_value_count_file
+        Descriptor for the bucket's intermediate tile/value-count file, or
+        ``None`` when the bucket is empty and writes no files.
+    """
+
     bucket_id: int
     point_count: int
     value_count_total: int
     manifest_rows: tuple[_ManifestRow, ...]
-    value_count_fragment: _TileValueCountFragment | None
+    intermediate_value_count_file: _IntermediateTileValueCountFile | None
 
 
-class _TileValueCountFragmentWriter:
-    """Write one bucket's flat tile/value counts through a bounded row buffer."""
+class _IntermediateTileValueCountWriter:
+    """Write one bucket's intermediate tile/value counts through a bounded buffer."""
 
     def __init__(self, path: Path, *, level: int) -> None:
         self._path = path
@@ -103,7 +124,7 @@ class _TileValueCountFragmentWriter:
         self._buffered_rows += row_count
         self.row_count += row_count
         self.point_count += int(counts.sum(dtype=np.uint64))
-        if self._buffered_rows >= _COUNT_FRAGMENT_BUFFER_ROWS:
+        if self._buffered_rows >= _INTERMEDIATE_COUNT_BUFFER_ROWS:
             self._flush()
 
     def close(self) -> None:
@@ -123,7 +144,7 @@ class _TileValueCountFragmentWriter:
             ],
             schema=_TILE_VALUE_COUNT_SCHEMA,
         )
-        self._writer.write_table(table, row_group_size=_COUNT_FRAGMENT_BUFFER_ROWS)
+        self._writer.write_table(table, row_group_size=_INTERMEDIATE_COUNT_BUFFER_ROWS)
         self._value_ids.clear()
         self._tile_x.clear()
         self._tile_y.clear()
@@ -179,9 +200,36 @@ def _write_exact_level(
             -> sort each complete bucket by (tile_y, tile_x, point_id)
             -> write contiguous tile runs as Parquet row groups
 
-    A logical tile is the spatial unit used for viewport selection. The
-    deterministic tile hash guarantees that every point from one logical tile
-    is sent to the same bucket.
+    For example, annotated source partitions may initially contain::
+
+        source partition 0:
+            (tile_y=0, tile_x=0, point_id=5, bucket_id=7)
+            (tile_y=0, tile_x=2, point_id=1, bucket_id=3)
+
+        source partition 1:
+            (tile_y=0, tile_x=0, point_id=2, bucket_id=7)
+            (tile_y=1, tile_x=1, point_id=9, bucket_id=7)
+
+    The disk redistribution first co-locates rows by bucket without relying on
+    their arrival order::
+
+        bucket 3:
+            (tile_y=0, tile_x=2, point_id=1)
+
+        bucket 7:
+            (tile_y=0, tile_x=0, point_id=5)
+            (tile_y=0, tile_x=0, point_id=2)
+            (tile_y=1, tile_x=1, point_id=9)
+
+    Each complete bucket is then sorted by ``(tile_y, tile_x, point_id)``::
+
+        bucket 7:
+            (tile_y=0, tile_x=0, point_id=2)
+            (tile_y=0, tile_x=0, point_id=5)
+            (tile_y=1, tile_x=1, point_id=9)
+
+    This makes every logical tile contiguous and gives its points a
+    deterministic order before row-group writing.
 
     ``config.bucket_count`` controls the number of shuffle destinations and
     potential output files. It does not impose a strict row limit on a bucket:
@@ -190,6 +238,18 @@ def _write_exact_level(
     Each physical row group contains points from exactly one logical tile. A
     tile larger than ``config.max_rows_per_row_group`` is split into multiple
     deterministically ordered row-group shards.
+
+    The disk redistribution uses a uniquely named child directory under
+    ``temporary_directory_root`` for Dask scratch data. This directory contains
+    no cache artifacts and is removed when computation exits, including after
+    an ordinary exception. ``temporary_directory_root`` itself remains
+    caller-owned.
+
+    Final point files and intermediate tile/value-count files are written
+    separately under ``staging_directory``. The intermediate files remain until
+    a later construction step creates ``tile_value_counts.parquet``. Neither is
+    removed by the shuffle-directory context; the higher-level builder owns
+    cleanup of an incomplete staging generation.
     """
     exact = plan.levels[0]
     expected_bucket_count = _bucket_count_for_level(exact)
@@ -205,8 +265,10 @@ def _write_exact_level(
     temporary_directory_root.mkdir(parents=True, exist_ok=True)
 
     level_directory = staging_directory / exact.relative_directory
-    count_directory = staging_directory / _TILE_VALUE_COUNT_FRAGMENTS_DIRECTORY / f"level_{exact.level}"
-    for path in (level_directory, count_directory):
+    intermediate_count_directory = (
+        staging_directory / _INTERMEDIATE_TILE_VALUE_COUNTS_DIRECTORY / f"level_{exact.level}"
+    )
+    for path in (level_directory, intermediate_count_directory):
         if path.exists():
             raise FileExistsError(f"Exact-level output path already exists: `{path}`.")
         path.mkdir(parents=True)
@@ -230,18 +292,22 @@ def _write_exact_level(
     )
 
     filename_width = max(3, len(str(config.bucket_count - 1)))
+    # Isolate disposable Dask shuffle scratch from the staged cache output.
     with tempfile.TemporaryDirectory(
         prefix="napari-harpy-points-shuffle-",
         dir=temporary_directory_root,
     ) as shuffle_directory:
         finalizers = [
-            dask.delayed(_finalize_bucket)(
+            # Each finalizer writes a point file and an intermediate count file.
+            # Mark it impure so Dask does not treat this side-effecting call as
+            # a reusable or deduplicatable computation.
+            dask.delayed(_finalize_bucket, pure=False)(
                 partition,
                 bucket_id=bucket_id,
                 filename_width=filename_width,
                 level=exact.level,
                 level_directory=level_directory,
-                count_directory=count_directory,
+                intermediate_count_directory=intermediate_count_directory,
                 staging_directory=staging_directory,
                 max_rows_per_row_group=config.max_rows_per_row_group,
             )
@@ -421,7 +487,7 @@ def _finalize_bucket(
     filename_width: int,
     level: int,
     level_directory: Path,
-    count_directory: Path,
+    intermediate_count_directory: Path,
     staging_directory: Path,
     max_rows_per_row_group: int,
 ) -> _BucketWriteResult:
@@ -431,7 +497,7 @@ def _finalize_bucket(
             point_count=0,
             value_count_total=0,
             manifest_rows=(),
-            value_count_fragment=None,
+            intermediate_value_count_file=None,
         )
     observed_bucket_ids = partition["bucket_id"].to_numpy(dtype=np.uint64, copy=False)
     if not bool((observed_bucket_ids == np.uint64(bucket_id)).all()):
@@ -444,15 +510,15 @@ def _finalize_bucket(
     )
     filename = f"bucket-{bucket_id:0{filename_width}d}.parquet"
     point_path = level_directory / filename
-    count_path = count_directory / filename
-    if point_path.exists() or count_path.exists():
+    intermediate_count_path = intermediate_count_directory / filename
+    if point_path.exists() or intermediate_count_path.exists():
         raise FileExistsError(f"Bucket output already exists for bucket {bucket_id}.")
 
     relative_point_path = point_path.relative_to(staging_directory).as_posix()
-    relative_count_path = count_path.relative_to(staging_directory).as_posix()
+    relative_intermediate_count_path = intermediate_count_path.relative_to(staging_directory).as_posix()
     manifest_rows: list[_ManifestRow] = []
     physical_row_group = 0
-    count_writer = _TileValueCountFragmentWriter(count_path, level=level)
+    intermediate_count_writer = _IntermediateTileValueCountWriter(intermediate_count_path, level=level)
     try:
         with pq.ParquetWriter(
             point_path,
@@ -472,7 +538,7 @@ def _finalize_bucket(
                 value_ids = tile_rows["value_id"].to_numpy(dtype=np.uint32, copy=False)
                 point_ids = tile_rows["point_id"].to_numpy(dtype=np.uint64, copy=False)
                 unique_value_ids, value_counts = np.unique(value_ids, return_counts=True)
-                count_writer.append(
+                intermediate_count_writer.append(
                     tile_x=tile_x_int,
                     tile_y=tile_y_int,
                     value_ids=unique_value_ids,
@@ -504,34 +570,34 @@ def _finalize_bucket(
                     )
                     physical_row_group += 1
     finally:
-        count_writer.close()
+        intermediate_count_writer.close()
 
-    fragment = _TileValueCountFragment(
+    intermediate_count_file = _IntermediateTileValueCountFile(
         level=level,
-        relative_path=relative_count_path,
-        row_count=count_writer.row_count,
+        relative_path=relative_intermediate_count_path,
+        row_count=intermediate_count_writer.row_count,
     )
     _validate_bucket_files(
         point_path,
-        count_path,
+        intermediate_count_path,
         manifest_rows=manifest_rows,
-        count_fragment=fragment,
+        intermediate_count_file=intermediate_count_file,
     )
     return _BucketWriteResult(
         bucket_id=bucket_id,
         point_count=len(ordered),
-        value_count_total=count_writer.point_count,
+        value_count_total=intermediate_count_writer.point_count,
         manifest_rows=tuple(manifest_rows),
-        value_count_fragment=fragment,
+        intermediate_value_count_file=intermediate_count_file,
     )
 
 
 def _validate_bucket_files(
     point_path: Path,
-    count_path: Path,
+    intermediate_count_path: Path,
     *,
     manifest_rows: list[_ManifestRow],
-    count_fragment: _TileValueCountFragment,
+    intermediate_count_file: _IntermediateTileValueCountFile,
 ) -> None:
     point_file = pq.ParquetFile(point_path)
     if not point_file.schema_arrow.equals(_EXACT_PAYLOAD_SCHEMA, check_metadata=False):
@@ -542,11 +608,13 @@ def _validate_bucket_files(
         if point_file.metadata.row_group(row_group_index).num_rows != manifest_row.n_points:
             raise ValueError(f"Exact bucket `{point_path}` row-group rows do not match its manifest row.")
 
-    count_file = pq.ParquetFile(count_path)
-    if not count_file.schema_arrow.equals(_TILE_VALUE_COUNT_SCHEMA, check_metadata=False):
-        raise ValueError(f"Tile/value-count fragment `{count_path}` has an incompatible schema.")
-    if count_file.metadata.num_rows != count_fragment.row_count:
-        raise ValueError(f"Tile/value-count fragment `{count_path}` does not match its descriptor.")
+    intermediate_count_parquet = pq.ParquetFile(intermediate_count_path)
+    if not intermediate_count_parquet.schema_arrow.equals(_TILE_VALUE_COUNT_SCHEMA, check_metadata=False):
+        raise ValueError(f"Intermediate tile/value-count file `{intermediate_count_path}` has an incompatible schema.")
+    if intermediate_count_parquet.metadata.num_rows != intermediate_count_file.row_count:
+        raise ValueError(
+            f"Intermediate tile/value-count file `{intermediate_count_path}` does not match its descriptor."
+        )
 
 
 def _reconcile_level_results(
@@ -570,12 +638,14 @@ def _reconcile_level_results(
     if len(physical_keys) != len(manifest_rows):
         raise ValueError("Exact manifest contains duplicate physical row-group keys.")
 
-    fragments = tuple(
-        result.value_count_fragment for result in ordered_results if result.value_count_fragment is not None
+    intermediate_files = tuple(
+        result.intermediate_value_count_file
+        for result in ordered_results
+        if result.intermediate_value_count_file is not None
     )
-    if len({fragment.relative_path for fragment in fragments}) != len(fragments):
-        raise ValueError("Exact level contains duplicate tile/value-count fragment paths.")
+    if len({file.relative_path for file in intermediate_files}) != len(intermediate_files):
+        raise ValueError("Exact level contains duplicate intermediate tile/value-count file paths.")
     return _LevelWriteResult(
         manifest_rows=manifest_rows,
-        tile_value_count_fragments=fragments,
+        intermediate_tile_value_count_files=intermediate_files,
     )

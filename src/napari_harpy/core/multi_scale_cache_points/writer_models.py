@@ -70,20 +70,26 @@ class _ManifestRow:
 
 
 @dataclass(frozen=True)
-class _TileValueCountFragment:
-    """Describe one staged file of flat provisional tile/value counts.
+class _IntermediateTileValueCountFile:
+    """Describe one construction-only file of flat tile/value counts.
 
     Parameters
     ----------
     level
         Non-negative serialized level number shared by every count row in the
-        fragment.
+        intermediate file.
     relative_path
-        Normalized cache-root-relative POSIX path to the staged fragment. The
-        tile writer owns its directory and filename convention.
+        Normalized cache-root-relative POSIX path to the staged intermediate
+        file. The tile writer owns its directory and filename convention.
     row_count
-        Number of aggregated nonzero tile/value rows in the fragment, not the
-        number of original point rows.
+        Number of aggregated nonzero tile/value rows in the intermediate file,
+        not the number of original point rows.
+
+    Notes
+    -----
+    The counts are exact for one finalized bucket. A later construction step
+    consumes this file into the global ``tile_value_counts.parquet`` index and
+    removes it before publishing the completed cache.
     """
 
     level: int
@@ -98,10 +104,10 @@ class _TileValueCountFragment:
 
 @dataclass(frozen=True)
 class _LevelWriteResult:
-    """Manifest rows and provisional count-fragment descriptors for one level."""
+    """Manifest rows and intermediate count-file descriptors for one level."""
 
     manifest_rows: tuple[_ManifestRow, ...]
-    tile_value_count_fragments: tuple[_TileValueCountFragment, ...]
+    intermediate_tile_value_count_files: tuple[_IntermediateTileValueCountFile, ...]
 
 
 def _require_positive_integer(value: object, name: str) -> None:
