@@ -4,8 +4,8 @@ import pytest
 
 from napari_harpy.core.multi_scale_cache_points.writer_models import (
     _ExactLevelWriterConfig,
+    _IntermediateTileValueCountFile,
     _ManifestRow,
-    _TileValueCountFragment,
 )
 
 
@@ -23,31 +23,29 @@ def _manifest_row(**overrides: object) -> _ManifestRow:
     return _ManifestRow(**values)  # type: ignore[arg-type]
 
 
-def _tile_value_count_fragment(**overrides: object) -> _TileValueCountFragment:
+def _intermediate_tile_value_count_file(**overrides: object) -> _IntermediateTileValueCountFile:
     values: dict[str, object] = {
         "level": 0,
-        "relative_path": "provisional_tile_value_counts/level_0/bucket-000.parquet",
+        "relative_path": "intermediate_tile_value_counts/level_0/bucket-000.parquet",
         "row_count": 4,
     }
     values.update(overrides)
-    return _TileValueCountFragment(**values)  # type: ignore[arg-type]
+    return _IntermediateTileValueCountFile(**values)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
-        ("max_source_rows_per_partition", 0),
         ("bucket_count", True),
         ("max_rows_per_row_group", -1),
-        ("finalizer_concurrency", 1.5),
+        ("dask_worker_count", 1.5),
     ],
 )
 def test_exact_writer_config_requires_positive_integer_values(field_name: str, value: object) -> None:
     values: dict[str, object] = {
-        "max_source_rows_per_partition": 1_000_000,
         "bucket_count": 128,
         "max_rows_per_row_group": 1_000_000,
-        "finalizer_concurrency": 2,
+        "dask_worker_count": 2,
     }
     values[field_name] = value
 
@@ -94,15 +92,23 @@ def test_manifest_row_enforces_serialized_integer_ranges(field_name: str, value:
         ("row_count", 2**63),
     ],
 )
-def test_tile_value_count_fragment_enforces_serialized_integer_ranges(field_name: str, value: object) -> None:
+def test_intermediate_tile_value_count_file_enforces_serialized_integer_ranges(
+    field_name: str,
+    value: object,
+) -> None:
     with pytest.raises(ValueError, match=field_name):
-        _tile_value_count_fragment(**{field_name: value})
+        _intermediate_tile_value_count_file(**{field_name: value})
 
 
 @pytest.mark.parametrize(
     "relative_path",
-    ["", "/provisional/counts.parquet", "../counts.parquet", "provisional/../counts.parquet"],
+    [
+        "",
+        "/intermediate_tile_value_counts/counts.parquet",
+        "../counts.parquet",
+        "intermediate_tile_value_counts/../counts.parquet",
+    ],
 )
-def test_tile_value_count_fragment_requires_cache_relative_normalized_path(relative_path: str) -> None:
+def test_intermediate_tile_value_count_file_requires_cache_relative_normalized_path(relative_path: str) -> None:
     with pytest.raises(ValueError, match="relative_path"):
-        _tile_value_count_fragment(relative_path=relative_path)
+        _intermediate_tile_value_count_file(relative_path=relative_path)

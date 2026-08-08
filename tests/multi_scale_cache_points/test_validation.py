@@ -100,6 +100,20 @@ def test_validate_returns_deterministic_build_ready_source(
     assert repeated.point_id_policy == validated.point_id_policy
 
 
+def test_validated_source_rejects_value_ids_that_do_not_match_row_order(tmp_path: Path) -> None:
+    validated = validate_parquet_points_source(_source(tmp_path), max_batch_rows=2)
+    reordered_ids = validated.value_table.set_column(
+        0,
+        pa.field("value_id", pa.uint32(), nullable=False),
+        pa.array([1, 0], type=pa.uint32()),
+    )
+
+    with pytest.raises(PointContentValidationError, match="match table row order") as error:
+        replace(validated, value_table=reordered_ids)
+
+    assert error.value.code == "invalid_value_content"
+
+
 def test_validate_rejects_source_signature_change(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
