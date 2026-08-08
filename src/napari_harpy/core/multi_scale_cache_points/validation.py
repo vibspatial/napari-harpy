@@ -14,6 +14,7 @@ from napari_harpy.core.multi_scale_cache_points.errors import (
     PointsSourceValidationError,
 )
 from napari_harpy.core.multi_scale_cache_points.models import (
+    _VALUE_TABLE_SCHEMA,
     ParquetPointsSource,
     ParquetSourceFile,
     ParquetSourceRowGroup,
@@ -25,36 +26,14 @@ from napari_harpy.core.multi_scale_cache_points.signature import (
     SOURCE_SIGNATURE_METHOD,
     build_source_signature,
 )
+from napari_harpy.core.multi_scale_cache_points.value_normalization import (
+    VALUE_NORMALIZATION_METHOD,
+    _trim_utf8,
+)
 
 _MAX_UINT64 = 2**64 - 1
 _MAX_VALUE_CARDINALITY = 2**32
 _PARQUET_METADATA_FILES = {"_metadata", "_common_metadata"}
-VALUE_NORMALIZATION_METHOD = "harpy-string-trim-unicode-white-space-case-sensitive-v1"
-_UNICODE_WHITE_SPACE = "".join(
-    chr(code_point)
-    for start, stop in (
-        (0x0009, 0x000D),
-        (0x0020, 0x0020),
-        (0x0085, 0x0085),
-        (0x00A0, 0x00A0),
-        (0x1680, 0x1680),
-        (0x2000, 0x200A),
-        (0x2028, 0x2029),
-        (0x202F, 0x202F),
-        (0x205F, 0x205F),
-        (0x3000, 0x3000),
-    )
-    for code_point in range(start, stop + 1)
-)
-_VALUE_TABLE_SCHEMA = pa.schema(
-    [
-        pa.field("value_id", pa.uint32(), nullable=False),
-        pa.field("value", pa.string(), nullable=False),
-        pa.field("n_points", pa.uint64(), nullable=False),
-    ]
-)
-
-
 @dataclass(frozen=True)
 class _ParquetSourceInventory:
     """Record the Parquet metadata observed for a resolved points source.
@@ -391,7 +370,7 @@ def _normalized_plain_value_counts(
             column_name=column_name,
         )
 
-    normalized = pc.utf8_trim(values, characters=_UNICODE_WHITE_SPACE)
+    normalized = _trim_utf8(values)
     empty_count = int(pc.sum(pc.cast(pc.equal(normalized, ""), pa.int64())).as_py() or 0)
     if empty_count:
         raise _content_error(
@@ -422,7 +401,7 @@ def _normalized_dictionary_value_counts(
             column_name=column_name,
         )
 
-    normalized_dictionary = pc.utf8_trim(values.dictionary, characters=_UNICODE_WHITE_SPACE)
+    normalized_dictionary = _trim_utf8(values.dictionary)
     index_counts = pc.value_counts(values.indices)
     local_counts: dict[str, int] = {}
     for index_scalar, count_scalar in zip(index_counts.field("values"), index_counts.field("counts"), strict=True):
@@ -550,8 +529,7 @@ def _read_parquet_source_inventory(source: ParquetPointsSource) -> _ParquetSourc
             )
 
         row_groups = tuple(
-            _read_row_group(metadata.row_group(index), relative_path, index)
-            for index in range(metadata.num_row_groups)
+            _read_row_group(metadata.row_group(index), relative_path, index) for index in range(metadata.num_row_groups)
         )
         row_count = metadata.num_rows
         _check_row_total(row_offset, row_count, relative_path)
