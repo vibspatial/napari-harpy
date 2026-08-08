@@ -12,6 +12,14 @@ from napari_harpy.core.multi_scale_cache_points.errors import (
     PointsSourceValidationError,
 )
 
+_VALUE_TABLE_SCHEMA = pa.schema(
+    [
+        pa.field("value_id", pa.uint32(), nullable=False),
+        pa.field("value", pa.string(), nullable=False),
+        pa.field("n_points", pa.uint64(), nullable=False),
+    ]
+)
+
 
 @dataclass(frozen=True)
 class PointColumnSelection:
@@ -205,11 +213,11 @@ class ValidatedPointsSource:
 
     Notes
     -----
-    For instances returned by ``validate_parquet_points_source()``, ``bounds``
-    and ``value_table`` are derived from the same successful content scan. Their
-    shared origin is established while scanning aligned point rows and cannot be
-    reconstructed from these aggregate objects independently. Direct dataclass
-    construction does not perform that validation.
+    Direct construction checks the structural consistency of ``value_table``.
+    Only instances returned by ``validate_parquet_points_source()`` additionally
+    establish that ``bounds`` and ``value_table`` came from the same successful
+    scan of aligned source rows; that provenance cannot be reconstructed from
+    these aggregate objects independently.
     """
 
     source: ParquetPointsSource
@@ -222,6 +230,60 @@ class ValidatedPointsSource:
     source_signature_method: str
     value_normalization_method: str
     point_id_policy: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value_table, pa.Table) or not self.value_table.schema.equals(
+            _VALUE_TABLE_SCHEMA,
+            check_metadata=False,
+        ):
+            raise PointContentValidationError(
+                "The canonical value table has an incompatible schema.",
+                code="invalid_value_content",
+            )
+        if self.value_table.num_rows == 0:
+            raise PointContentValidationError(
+                "The canonical value table must contain at least one value.",
+                code="invalid_value_content",
+            )
+
+        value_ids = self.value_table["value_id"].combine_chunks()
+        values = self.value_table["value"].combine_chunks()
+        counts = self.value_table["n_points"].combine_chunks()
+        if value_ids.null_count or values.null_count or counts.null_count:
+            raise PointContentValidationError(
+                "The canonical value table must not contain nulls.",
+                code="invalid_value_content",
+            )
+
+        expected_ids = pa.array(range(self.value_table.num_rows), type=pa.uint32())
+        if not value_ids.equals(expected_ids):
+            raise PointContentValidationError(
+                "Canonical value IDs must be contiguous and match table row order.",
+                code="invalid_value_content",
+            )
+
+        labels = values.to_pylist()
+        if (
+            any(label == "" for label in labels)
+            or len(set(labels)) != len(labels)
+            or labels != sorted(labels, key=lambda label: label.encode("utf-8"))
+        ):
+            raise PointContentValidationError(
+                "Canonical values must be unique, non-empty, and sorted by UTF-8 bytes.",
+                code="invalid_value_content",
+            )
+
+        point_counts = counts.to_pylist()
+        if any(count <= 0 for count in point_counts):
+            raise PointContentValidationError(
+                "Canonical value counts must be positive.",
+                code="invalid_value_content",
+            )
+        if sum(point_counts) != self.row_count:
+            raise PointContentValidationError(
+                "Canonical value counts must sum to the validated source row count.",
+                code="invalid_value_content",
+            )
 
 
 def _require_non_negative_integer(value: object, label: str) -> None:
