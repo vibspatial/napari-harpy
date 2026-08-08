@@ -9,6 +9,7 @@ from napari_harpy.core.multi_scale_cache_points.build_plan import (
     _LevelBuildPlan,
     _LevelKind,
     _plan_points_cache,
+    _PointsCacheBuildPlan,
 )
 from napari_harpy.core.multi_scale_cache_points.models import PointsBounds, ValidatedPointsSource
 
@@ -48,6 +49,61 @@ def test_level_plan_requires_kind_appropriate_capacity(kind: object, capacity: i
             grid_height=1,
             max_points_per_tile=capacity,
             point_count_upper_bound=1,
+        )
+
+
+def test_complete_plan_requires_ordered_exact_level_zero() -> None:
+    exact = _LevelBuildPlan(
+        level=0,
+        kind=_LevelKind.EXACT,
+        tile_size=512,
+        grid_width=1,
+        grid_height=1,
+        max_points_per_tile=None,
+        point_count_upper_bound=10,
+    )
+    bridge_at_zero = _LevelBuildPlan(
+        level=0,
+        kind=_LevelKind.BRIDGE,
+        tile_size=512,
+        grid_width=1,
+        grid_height=1,
+        max_points_per_tile=4_096,
+        point_count_upper_bound=10,
+    )
+    bridge_with_gap = _LevelBuildPlan(
+        level=2,
+        kind=_LevelKind.BRIDGE,
+        tile_size=512,
+        grid_width=1,
+        grid_height=1,
+        max_points_per_tile=4_096,
+        point_count_upper_bound=10,
+    )
+
+    with pytest.raises(ValueError, match="Exact level 0"):
+        _PointsCacheBuildPlan(
+            x_origin=0.0,
+            y_origin=0.0,
+            leaf_tile_size=512,
+            overview_point_budget=100_000,
+            levels=(),
+        )
+    with pytest.raises(ValueError, match="Exact level 0"):
+        _PointsCacheBuildPlan(
+            x_origin=0.0,
+            y_origin=0.0,
+            leaf_tile_size=512,
+            overview_point_budget=100_000,
+            levels=(bridge_at_zero,),
+        )
+    with pytest.raises(ValueError, match="consecutively numbered"):
+        _PointsCacheBuildPlan(
+            x_origin=0.0,
+            y_origin=0.0,
+            leaf_tile_size=512,
+            overview_point_budget=100_000,
+            levels=(exact, bridge_with_gap),
         )
 
 
