@@ -304,7 +304,7 @@ retained idea requires independent justification from this roadmap.
 | C1 | Implemented; Gate A approved | Pure grid and level build planning | No | No |
 | C2 | Implemented | Minimal exact-level construction contracts | No | No |
 | C3 | Implemented; Gate B approved Dask | Dask exact-level writer and acceptance benchmark | Yes | No |
-| C4 | Skipped; not justified by Gate B | Direct-PyArrow exact-writer investigation, only if C3 justifies it | Yes | No |
+| C4 | Deferred indefinitely; not justified by Gate B | Direct-PyArrow exact-writer investigation, reopened only for a concrete Dask limitation | Yes | No |
 | C5 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
 | C6 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
@@ -313,8 +313,10 @@ retained idea requires independent justification from this roadmap.
 
 Each slice must be independently reviewable. C3 implements one credible writer
 rather than two competing engines. Gate B accepted its measured Dask writer, so
-C4 is skipped unless new evidence later reopens that decision. C5 is a deliberate
-sampler spike whose artifacts are internal and disposable.
+C4 is deferred indefinitely unless new evidence identifies a concrete Dask
+limitation and measurable PyArrow success criterion. It does not block C5 or
+later work. C5 is a deliberate sampler spike whose artifacts are internal and
+disposable.
 
 ## Slice C1: pure grid and level build planning
 
@@ -1267,9 +1269,10 @@ Gate B records one of two outcomes:
 
 ### Goal
 
-Investigate a direct-PyArrow spill-and-compaction writer only when Gate B records
-a concrete reason that the C3 Dask writer is insufficient. This slice is
-skipped when the Dask result is acceptable.
+Investigate a direct-PyArrow spill-and-compaction writer only when Gate B or
+later evidence records a concrete Dask limitation and a measurable PyArrow
+success criterion. This slice remains deferred indefinitely while the Dask
+result is acceptable and does not block subsequent construction work.
 
 ### Conditional experiment
 
@@ -1638,9 +1641,9 @@ Approve:
 ### Gate B: after C3
 
 Decision on 2026-08-07: approved. The Dask writer satisfies the initial Xenium
-acceptance target; keep Dask, skip optional C4, and proceed to C5. The measured
-bucket skew and peak RSS do not justify a strict oversized-bucket fallback or
-file rollover in the first implementation.
+acceptance target; keep Dask, defer optional C4 indefinitely, and proceed to C5.
+The measured bucket skew and peak RSS do not justify a strict oversized-bucket
+fallback or file rollover in the first implementation.
 
 Approve:
 

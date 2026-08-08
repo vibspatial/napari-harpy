@@ -2543,7 +2543,8 @@ Phase 0 validation and its Gate D are complete. Do not add the new builder to
 specification.
 
 The next work follows the construction companion roadmap. C1 through C3 are
-implemented, Gate B accepted Dask, and optional C4 is skipped. Continue with:
+implemented, Gate B accepted Dask, and optional C4 is deferred indefinitely
+unless new evidence identifies a concrete Dask limitation. Continue with:
 
 1. specify and implement the C5 value-neutral sampling contract and spike;
 2. build the complete nested sampled pyramid in C6;
