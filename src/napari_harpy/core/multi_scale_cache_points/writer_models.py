@@ -23,9 +23,10 @@ class _ExactLevelWriterConfig:
         Maximum points written to one physical Parquet row group. A denser tile
         is split into deterministic row-group shards of at most this size. This
         is physical sharding only; it never samples or removes Exact points.
-    finalizer_concurrency
-        Maximum number of complete shuffle buckets that may be computed,
-        sorted, grouped by tile, and written concurrently.
+    dask_worker_count
+        Number of local threads available to the Dask scheduler for the complete
+        read, annotation, disk-redistribution, sorting, and writing graph. These
+        are local threaded-scheduler workers, not distributed processes.
 
     Notes
     -----
@@ -36,12 +37,12 @@ class _ExactLevelWriterConfig:
 
     bucket_count: int
     max_rows_per_row_group: int
-    finalizer_concurrency: int
+    dask_worker_count: int
 
     def __post_init__(self) -> None:
         _require_positive_integer(self.bucket_count, "bucket_count")
         _require_positive_integer(self.max_rows_per_row_group, "max_rows_per_row_group")
-        _require_positive_integer(self.finalizer_concurrency, "finalizer_concurrency")
+        _require_positive_integer(self.dask_worker_count, "dask_worker_count")
 
 
 @dataclass(frozen=True)
