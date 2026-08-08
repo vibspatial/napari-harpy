@@ -537,6 +537,9 @@ def _finalize_bucket(
                 y_rel = tile_rows["y_rel"].to_numpy(dtype=np.float32, copy=False)
                 value_ids = tile_rows["value_id"].to_numpy(dtype=np.uint32, copy=False)
                 point_ids = tile_rows["point_id"].to_numpy(dtype=np.uint64, copy=False)
+                # Count values over the complete logical tile before physical
+                # row-group sharding. This emits each nonzero tile/value key
+                # once even when an oversized tile spans several row groups.
                 unique_value_ids, value_counts = np.unique(value_ids, return_counts=True)
                 intermediate_count_writer.append(
                     tile_x=tile_x_int,
@@ -545,6 +548,9 @@ def _finalize_bucket(
                     counts=value_counts,
                 )
 
+                # Store one logical tile in one Parquet row group when it fits.
+                # Split only an oversized tile into consecutive row-group shards;
+                # a row group never contains points from different tiles.
                 for tile_shard, start in enumerate(range(0, len(tile_rows), max_rows_per_row_group)):
                     stop = min(start + max_rows_per_row_group, len(tile_rows))
                     table = pa.Table.from_arrays(
