@@ -94,7 +94,32 @@ class _BucketWriteResult:
 
 
 class _IntermediateTileValueCountWriter:
-    """Write one bucket's intermediate tile/value counts through a bounded buffer."""
+    """Write one bucket-local intermediate tile/value-count Parquet file.
+
+    Each instance exclusively writes the intermediate tile/value-count
+    companion to one staged point-payload file. Both files cover the same cache
+    level and logical tiles; this writer owns only the intermediate count file.
+    For every complete logical tile, ``append`` receives the distinct value IDs
+    present in that tile and their corresponding point counts. It emits one flat
+    row per nonzero ``(level, value_id, tile_x, tile_y)`` key.
+
+    Rows are buffered and periodically flushed using
+    ``_TILE_VALUE_COUNT_SCHEMA``. ``row_count`` tracks the number of emitted
+    tile/value rows, while ``point_count`` tracks the sum of their ``n_points``
+    values.
+
+    ``close`` flushes the remaining rows and closes the Parquet writer. The
+    resulting file is a construction-only handoff artifact; a later step
+    consolidates it with the other bucket-local files into
+    ``tile_value_counts.parquet`` and removes it before cache publication.
+
+    Parameters
+    ----------
+    path
+        Filesystem path of the bucket-local intermediate Parquet file.
+    level
+        Cache level recorded on every intermediate count row.
+    """
 
     def __init__(self, path: Path, *, level: int) -> None:
         self._path = path
