@@ -32,7 +32,7 @@ from napari_harpy.core.multi_scale_cache_points.writer_models import (
 BUCKET_HASH_METHOD = "harpy-tile-splitmix64-v1"
 TARGET_ROWS_PER_OUTPUT_BUCKET = 2_000_000
 DEFAULT_MAX_ROWS_PER_ROW_GROUP = 1_000_000
-DEFAULT_FINALIZER_CONCURRENCY = 1
+DEFAULT_DASK_WORKER_COUNT = 1
 
 _INTERMEDIATE_TILE_VALUE_COUNTS_DIRECTORY = "intermediate_tile_value_counts"
 _INTERMEDIATE_COUNT_BUFFER_ROWS = 65_536
@@ -317,7 +317,7 @@ def _write_exact_level(
             bucket_results = dask.compute(
                 *finalizers,
                 scheduler="threads",
-                num_workers=config.finalizer_concurrency,
+                num_workers=config.dask_worker_count,
             )
 
     return _reconcile_level_results(bucket_results, expected_point_count=validated.row_count)
