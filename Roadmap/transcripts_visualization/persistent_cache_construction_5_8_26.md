@@ -302,9 +302,9 @@ retained idea requires independent justification from this roadmap.
 | Slice | Status | Deliverable | Reads source point rows | Publishes cache |
 |---|---|---|---:|---:|
 | C1 | Implemented; Gate A approved | Pure grid and level build planning | No | No |
-| C2 | Implemented; obsolete source-partition setting removal pending | Minimal exact-level construction contracts | No | No |
-| C3 | Planned | Dask exact-level writer and acceptance benchmark | Yes | No |
-| C4 | Optional | Direct-PyArrow exact-writer investigation, only if C3 justifies it | Yes | No |
+| C2 | Implemented | Minimal exact-level construction contracts | No | No |
+| C3 | Implemented; Gate B approved Dask | Dask exact-level writer and acceptance benchmark | Yes | No |
+| C4 | Skipped; not justified by Gate B | Direct-PyArrow exact-writer investigation, only if C3 justifies it | Yes | No |
 | C5 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
 | C6 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
@@ -312,10 +312,9 @@ retained idea requires independent justification from this roadmap.
 | C9 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
 
 Each slice must be independently reviewable. C3 implements one credible writer
-rather than two competing engines. C4 is not on the critical path: it is opened
-only when Gate B concludes that the measured Dask writer is insufficient or
-that a direct-PyArrow alternative has a concrete, testable advantage. C5 is a
-deliberate sampler spike whose artifacts are internal and disposable.
+rather than two competing engines. Gate B accepted its measured Dask writer, so
+C4 is skipped unless new evidence later reopens that decision. C5 is a deliberate
+sampler spike whose artifacts are internal and disposable.
 
 ## Slice C1: pure grid and level build planning
 
@@ -606,16 +605,16 @@ class _ExactLevelWriterConfig:
         deterministic row-group shards of at most this size. This is physical
         sharding only; it never samples or removes Exact points. The initial
         construction default is 1,000,000 rows.
-    finalizer_concurrency
-        Maximum number of complete shuffle buckets that may be computed,
-        sorted, grouped by tile, and written concurrently. This bounds local
-        writer parallelism and its combined memory and storage pressure; fewer
-        finalizers may be active when less work is available.
+    dask_worker_count
+        Number of local threads available to the Dask scheduler for the complete
+        read, annotation, disk-redistribution, sorting, and writing graph. These
+        are local threaded-scheduler workers, not distributed processes. This
+        bounds graph parallelism and its combined memory and storage pressure.
     """
 
     bucket_count: int
     max_rows_per_row_group: int
-    finalizer_concurrency: int
+    dask_worker_count: int
 
 
 @dataclass(frozen=True)
@@ -630,7 +629,7 @@ class _ManifestRow:
 
 
 @dataclass(frozen=True)
-class _TileValueCountFragment:
+class _IntermediateTileValueCountFile:
     level: int
     relative_path: str
     row_count: int
@@ -639,7 +638,7 @@ class _TileValueCountFragment:
 @dataclass(frozen=True)
 class _LevelWriteResult:
     manifest_rows: tuple[_ManifestRow, ...]
-    tile_value_count_fragments: tuple[_TileValueCountFragment, ...]
+    intermediate_tile_value_count_files: tuple[_IntermediateTileValueCountFile, ...]
 ```
 
 The result is level-neutral: the Exact writer and every later sampled-level
@@ -664,27 +663,27 @@ describes exactly one physical row group containing exactly one logical tile;
 `n_points` is positive, row-group and shard indices are non-negative, and shard
 indices for a tile are contiguous from zero.
 
-`_TileValueCountFragment` describes one staged, flat, provisional count file
-emitted by one level-writer finalization unit. `level` follows the parent
+`_IntermediateTileValueCountFile` describes one flat, construction-only count
+file emitted by one level-writer finalization unit. `level` follows the parent
 manifest's non-negative `int16` range, `relative_path` is a normalized
 cache-root-relative POSIX path, and `row_count` is positive. Descriptors are
 unique and returned in deterministic `(level, relative_path)` order. C3 freezes
-the provisional fragment directory and filename convention.
+the intermediate-file directory and filename convention.
 
-Each fragment contains flat nonzero
+Each intermediate file contains flat nonzero
 `(level, value_id, tile_x, tile_y, n_points)` rows with the logical field types
 required by the final tile/value-count index. A tile finalizer may temporarily
 aggregate `{value_id: count}` for its current tile, or use an equivalent Arrow
-aggregation, but it must append those counts to a bucket-local flat fragment
+aggregation, but it must append those counts to a bucket-local intermediate file
 and release the per-tile mapping. It must not retain one Python object or one
 Python dictionary for every nonzero combination across the complete level.
 
 Every logical tile belongs to exactly one writer bucket. That bucket finalizer
 therefore owns the complete value counts for the tile, including points written
 through several dense-tile row-group shards. It must aggregate those shards and
-emit exactly one fragment row for each nonzero
+emit exactly one intermediate-file row for each nonzero
 `(level, value_id, tile_x, tile_y)` key. The same logical key must not occur in
-another fragment.
+another intermediate file.
 
 For example, the repeated values in the point rows for logical tile
 `(tile_x=4, tile_y=8)` are the aggregation input:
@@ -698,8 +697,8 @@ value_id
 3
 ```
 
-The finalizer may transiently represent them as `{3: 3, 8: 1}`, but the flat
-provisional fragment stores:
+The finalizer may transiently represent them as `{3: 3, 8: 1}`, but its flat
+intermediate file stores:
 
 ```text
 level  value_id  tile_x  tile_y  n_points
@@ -708,18 +707,19 @@ level  value_id  tile_x  tile_y  n_points
 0      8         4       8       1
 ```
 
-One bucket-local fragment normally contains such rows for several logical
-tiles. `_TileValueCountFragment.row_count` is the number of aggregated nonzero
-`(level, value_id, tile_x, tile_y)` rows in that fragment; it is not the number
-of original point rows. The example fragment therefore contributes
+One bucket-local intermediate file normally contains such rows for several
+logical tiles. `_IntermediateTileValueCountFile.row_count` is the number of
+aggregated nonzero `(level, value_id, tile_x, tile_y)` rows in that file; it is
+not the number of original point rows. The example file therefore contributes
 `row_count=2` for the displayed tile.
 
-Taken together, a level's fragments contain every nonzero tile/value count. For
-every exact logical tile, those counts sum to the `n_points` total across the
-tile's manifest rows. Across Exact level 0, each `value_id` total reconciles to
-the corresponding exact count in `ValidatedPointsSource.value_table`.
+Taken together, a level's intermediate files contain every nonzero tile/value
+count. For every exact logical tile, those counts sum to the `n_points` total
+across the tile's manifest rows. Across Exact level 0, each `value_id` total
+reconciles to the corresponding exact count in
+`ValidatedPointsSource.value_table`.
 
-#### Why the count fragments are provisional
+#### Why the count files are intermediate
 
 Counts are derived while a bucket finalizer already has the tile rows needed to
 write the point payload. Persisting them at that moment prevents C7 from
@@ -731,30 +731,30 @@ Independent bucket finalizers must not append concurrently to one shared
 `tile_value_counts.parquet`. Parquet has one writer-owned footer, and routing
 all counts through a central in-memory writer would add coordination, buffering,
 and failure-handling complexity. Each finalizer therefore writes one
-bucket-local flat fragment that it owns exclusively.
+bucket-local flat intermediate file that it owns exclusively.
 
-The counts in a fragment are exact, not approximate, but the fragment is
-provisional because it covers only one finalization unit. It is not yet the
-complete, globally value-ordered, reconciled runtime index. After every required
-level has been written, C7 performs the reduction step:
+The counts in an intermediate file are exact, not approximate, but the file
+covers only one finalization unit. It is not yet the complete, globally
+value-ordered, reconciled runtime index. After every required level has been
+written, C7 performs the reduction step:
 
 ```text
-all bucket-local count fragments
+all bucket-local intermediate count files
 → read in bounded batches
 → order by (level, value_id, tile_y, tile_x)
 → validate that every logical key occurs exactly once
 → reconcile with manifest rows and exact value totals
 → write and validate tile_value_counts.parquet
-→ remove the provisional fragments
+→ remove the intermediate files
 ```
 
-Provisional count fragments are distinct from Dask shuffle-temporary files.
+Intermediate count files are distinct from Dask shuffle-temporary files.
 Shuffle files are execution scratch and are removed once their bucket has been
-finalized. Count fragments contain semantic construction results and must
-survive until C7 has successfully written and validated the final index.
+finalized. Intermediate count files contain semantic construction results and
+must survive until C7 has successfully written and validated the final index.
 
 The result retains tuples of small descriptors, not all count rows or Arrow
-tables in memory. C7 reads the provisional fragments in bounded batches,
+tables in memory. C7 reads the intermediate files in bounded batches,
 consolidates and sorts them into the final Arrow tile/value-count index, and
 removes them. C2 itself does not materialize Arrow cache schemas.
 
@@ -775,29 +775,30 @@ C8 end-to-end builder
     │       │       ├── writes the staged persistent Exact point bucket
     │       │       ├── produces _ManifestRow records
     │       │       ├── counts values per tile
-    │       │       ├── writes one provisional count fragment
-    │       │       └── produces one _TileValueCountFragment descriptor
+    │       │       ├── writes one intermediate count file
+    │       │       └── produces one _IntermediateTileValueCountFile descriptor
     │       │
     │       └── returns _LevelWriteResult
     │               ├── manifest_rows
-    │               └── tile_value_count_fragments
+    │               └── intermediate_tile_value_count_files
     │
     ├── calls C6 sampled-level writers
     │       └── each level returns another _LevelWriteResult
     │
     └── passes all _LevelWriteResult objects to C7
             ├── writes manifest.parquet from _ManifestRow records
-            ├── streams the provisional count fragments
+            ├── streams the intermediate count files
             ├── writes tile_value_counts.parquet
-            ├── removes the provisional count fragments
+            ├── removes the intermediate count files
             └── validates the staged cache
 ```
 
 The point bucket files are persistent members of the staged cache generation;
-they are not Dask shuffle scratch. The count fragments are construction-only
-handoff artifacts and disappear after C7 has created and validated the final
-index. After this handoff returns successfully, C8 performs its final source-
-signature guard, completion-marker write, and local publication steps.
+they are not Dask shuffle scratch. The intermediate count files are
+construction-only handoff artifacts and disappear after C7 has created and
+validated the final index. After this handoff returns successfully, C8 performs
+its final source-signature guard, completion-marker write, and local publication
+steps.
 
 ### Directory ownership
 
@@ -808,11 +809,11 @@ It never removes the caller's staging root, writes `COMPLETED`, publishes the
 generation, or touches an existing completed cache. The caller rejects and
 removes the complete staging generation after any construction failure.
 
-Provisional tile/value-count fragments are staged construction artifacts, not
+Intermediate tile/value-count files are staged construction artifacts, not
 shuffle-temporary files. They remain inside `staging_directory` after a level
 writer returns, appear in `_LevelWriteResult` only through cache-root-relative
 descriptors, and survive until C7 has written and validated the consolidated
-index. C7 then removes the provisional fragments before publication.
+index. C7 then removes the intermediate files before publication.
 
 `temporary_directory_root` is a caller-selected location for disposable local
 shuffle storage. The writer creates a unique child beneath it, owns that child
@@ -833,8 +834,8 @@ no directories.
   independently of source partitions;
 - every physical row group contains one logical tile, while a dense tile may
   use several deterministic row-group shards;
-- returned manifest rows and tile/value-count fragment descriptors completely
-  describe the written Exact level and its provisional planning counts;
+- returned manifest rows and intermediate tile/value-count file descriptors
+  completely describe the written Exact level and its construction counts;
 - all output paths are cache-root-relative and all writes remain inside the
   caller-owned staging generation.
 
@@ -847,11 +848,11 @@ PyArrow belongs only to optional C4.
 ### Focused tests
 
 Test only semantic record validation: invalid configuration counts, unsafe or
-non-normalized manifest and fragment paths, invalid integer ranges, and invalid
-nonpositive counts. Do not test dataclass immutability, Python tuple behavior,
-Dask, or PyArrow. Fragment contents, deterministic ordering, duplicate logical
-keys, and cross-record reconciliation require actual writer output and are
-tested in C3 and C7.
+non-normalized manifest and intermediate-file paths, invalid integer ranges,
+and invalid nonpositive counts. Do not test dataclass immutability, Python tuple
+behavior, Dask, or PyArrow. Intermediate-file contents, deterministic ordering,
+duplicate logical keys, and cross-record reconciliation require actual writer
+output and are tested in C3 and C7.
 
 ### Exit criteria
 
@@ -859,9 +860,9 @@ tested in C3 and C7.
   build plan or duplicating logical geometry arguments;
 - the staging and temporary-directory owner is unambiguous on success and
   failure;
-- provisional row-group records and tile/value-count fragment descriptors are
-  sufficient for later staged-cache validation without retaining every sparse
-  count as a Python object;
+- provisional row-group records and intermediate tile/value-count file
+  descriptors are sufficient for later staged-cache validation without
+  retaining every sparse count as a Python object;
 - no source rows are read and no speculative public API is exported.
 
 ## Slice C3: Dask exact-level writer and acceptance benchmark
@@ -1017,6 +1018,20 @@ This hash controls only physical tile-to-bucket placement. It must not be
 silently reused as the later sampling-priority hash, whose payload, seed, and
 version remain separate sampling-contract decisions.
 
+Bucket filenames use:
+
+```python
+filename_width = max(3, len(str(bucket_count - 1)))
+filename = f"bucket-{bucket_id:0{filename_width}d}.parquet"
+```
+
+The persistent point file is `levels/level_<level>/<filename>`. Its intermediate
+count file is
+`intermediate_tile_value_counts/level_<level>/<filename>`. Empty buckets create
+neither file. Point buckets use Snappy compression and dictionary encoding only
+for `value_id`; intermediate count files use Snappy without dictionary
+encoding.
+
 ### Implementation responsibilities
 
 - remove the obsolete `max_source_rows_per_partition` configuration field and
@@ -1036,8 +1051,8 @@ version remain separate sampling-contract decisions.
   Exact record and shared origin in `_PointsCacheBuildPlan`, then convert only
   tile-local coordinates to `float32`;
 - implement and test `harpy-tile-splitmix64-v1`, calculate the initial bucket
-  count, and select the deterministic bucket filename width;
-- use the locked output row-group size and finalizer concurrency, and configure
+  count, and use the locked deterministic bucket filename width;
+- use the locked output row-group size and Dask worker count, and configure
   the Dask shuffle;
 - measure output-bucket skew and peak finalization memory, without adding a
   speculative recursive-spill or external-sort mechanism;
@@ -1080,18 +1095,35 @@ The finalizer computes one bucket partition, applies the deterministic
 `(tile_y, tile_x, point_id)` sort, groups the resulting contiguous rows by
 logical tile, and writes one Parquet row group per capacity-bounded tile shard.
 Only this finalizer creates `bucket-<id>.parquet`, its provisional
-level-manifest rows, and its flat provisional tile/value-count fragment. Counts
+level-manifest rows, and its flat intermediate tile/value-count file. Counts
 are derived while tile rows are already available. A per-tile value-count
 mapping may exist only transiently while that tile is finalized; after its flat
-rows are appended to the bucket fragment, the mapping is released. If the tile
-uses several physical row-group shards, the finalizer aggregates across those
-shards before emitting one row per nonzero logical key. The result returns one
-small fragment descriptor rather than one Python record per nonzero count. No
-additional source or completed-level scan is allowed.
+rows are appended to the bucket's intermediate file, the mapping is released.
+If the tile uses several physical row-group shards, the finalizer aggregates
+across those shards before emitting one row per nonzero logical key. The result
+returns one small intermediate-file descriptor rather than one Python record
+per nonzero count. No additional source or completed-level scan is allowed.
 
 The finalizer should consume numeric data and write through PyArrow. It must not
 copy the legacy per-partition Pandas string construction, schema, or direct
 side-effect pattern merely because that code exists.
+
+After all bucket finalizers complete, the Exact writer performs only the cheap
+level-wide conservation checks available from their compact results:
+
+```text
+sum(bucket point_count)       == ValidatedPointsSource.row_count
+sum(bucket value_count_total) == ValidatedPointsSource.row_count
+```
+
+This proves that the completed buckets and their intermediate counts account
+for the expected total number of points. It does not prove that every
+individual `value_id` has the canonical `n_points` recorded during source
+validation. Do not add a potentially large per-value mapping to every bucket
+result or reread all intermediate count files inside the Exact writer merely to
+perform that later reduction twice. Exact per-value reconciliation belongs to
+C7, which consumes the actual intermediate files. A cache cannot be completed
+or published before that check succeeds.
 
 ### Locked physical point payload
 
@@ -1155,10 +1187,10 @@ The one initial acceptance run records at least:
 The initial benchmark is an acceptance check, not an engine tournament. Use the
 512-unit geometry, derive `bucket_count` using
 `target_rows_per_output_bucket=2_000_000`, and use
-`max_rows_per_row_group=1_000_000` and `finalizer_concurrency=1`. For the Xenium
+`max_rows_per_row_group=1_000_000` and `dask_worker_count=1`. For the Xenium
 target this means 69 buckets and at most 69 Exact-level bucket files. One
-representative benchmark run is
-sufficient for the first decision; do not require a parameter sweep,
+representative benchmark run is sufficient for the first decision; do not
+require a parameter sweep,
 concurrency sweep, or repeated statistical benchmark before the design has
 demonstrated a concrete problem.
 
@@ -1188,10 +1220,45 @@ rules; do not retest Dask or Parquet internals.
   output-sharding policies are approved for downstream construction;
 - benchmark artifacts are removed after measurements are recorded.
 
+### Implemented C3 acceptance result
+
+One acceptance run completed on 2026-08-07 against the validated Xenium source
+with 136,578,750 points, 65 source files, 168 source row groups, and 5,122
+normalized values. It used 512-unit Exact tiles,
+`harpy-tile-splitmix64-v1`, 69 output buckets,
+`max_rows_per_row_group=1_000_000`, and `dask_worker_count=1`.
+
+Measured construction results were:
+
+- 57.92 seconds for Exact construction, excluding the separately measured
+  2.00-second validation;
+- 3.69 GiB peak process RSS, 3.36 GiB above the pre-build baseline;
+- 1.74 GiB peak benchmark workspace usage;
+- 69 nonempty Exact bucket files containing 136,578,750 points in 7,294 row
+  groups;
+- 1.65 GiB of Exact point Parquet files plus 0.08 GiB of intermediate
+  tile/value-count files;
+- 1,979,402 average rows and 2,547,160 maximum rows per bucket;
+- 25.70 MB average and 32.97 MB maximum bucket-file size;
+- exact point-ID verification of all 136,578,750 unique contiguous IDs in 12.69
+  seconds;
+- one representative 108,598-point tile read from one row group in 1.15 ms;
+- every source partition passed the locked float32 tile-relative reconstruction
+  tolerance of `6.103515625e-05` intrinsic coordinate units.
+
+The representative tile read followed the complete point-ID verification scan
+and is therefore a warm-cache measurement, not a cold-storage latency claim.
+The bucket maximum exceeded the two-million-row average target as expected from
+hash skew, but remained small enough for the measured memory envelope. No
+recursive spill, external sort, file rollover, larger bucket count, or direct-
+PyArrow investigation is justified by this run. All benchmark staging, shuffle,
+and JSON result artifacts were removed after the measurements were recorded.
+
 Gate B records one of two outcomes:
 
 1. **Dask accepted:** correctness and the small benchmark are sufficient; keep
-   Dask as the Phase 1 exact writer and proceed directly to C5.
+   Dask as the Phase 1 exact writer and proceed directly to C5. **Selected on
+   2026-08-07.**
 2. **PyArrow investigation justified:** record the concrete Dask limitation and
    the success criterion that a direct-PyArrow experiment must meet; open
    optional C4 before proceeding.
@@ -1334,8 +1401,8 @@ repeatedly scanning `points.parquet`.
 - derive each sampled level's physical `bucket_count` independently as
   `ceil(level.point_count_upper_bound / target_rows_per_output_bucket)`, with a
   minimum of one, rather than reusing the Exact bucket count;
-- flat provisional tile/value-count fragments emitted while sampled tiles are
-  finalized, with only fragment descriptors retained and no additional level
+- flat intermediate tile/value-count files emitted while sampled tiles are
+  finalized, with only file descriptors retained and no additional level
   scan;
 - bounded candidate memory and bounded writer concurrency.
 
@@ -1370,7 +1437,7 @@ semantics and physical accounting can be validated independently.
 - write `values.parquet` directly from the validated canonical value table;
 - write deterministic `manifest.parquet` rows sorted by
   `(level, tile_y, tile_x, tile_shard)`;
-- read the writers' provisional count fragments in bounded batches and
+- read the writers' intermediate count files in bounded batches and
   consolidate them into
   `tile_value_counts.parquet`, with exactly one row per nonzero
   `(level, value_id, tile_x, tile_y)` tuple and this logical schema:
@@ -1403,13 +1470,21 @@ semantics and physical accounting can be validated independently.
 - validate that every tile/value count is positive, every value ID and tile key
   exists, and no nonzero tuple is duplicated;
 - reconcile tile/value counts to the manifest total for every logical tile and
-  reconcile exact-level per-value totals to `values.parquet.n_points`;
+  aggregate exact-level counts by `value_id`, then require every resulting
+  count to equal the corresponding canonical `n_points` copied from
+  `ValidatedPointsSource.value_table` into `values.parquet`;
 - validate exact membership totals, nested sampled counts, capacities, terminal
   overview budget, level ordering, and path containment;
 - reject an absent or premature artifact without creating `COMPLETED`.
 
 The staged validator checks the cache that was written. It does not rescan the
 canonical source to recompute bounds, values, or row counts.
+
+This is deliberately stronger than the Exact writer's earlier total-only
+conservation check. It detects a wrong distribution between value IDs even when
+the complete point total remains correct. For example, canonical counts
+`{0: 100, 1: 50}` must not validate as `{0: 90, 1: 60}` merely because both
+distributions sum to 150.
 
 ### Focused tests
 
@@ -1561,6 +1636,11 @@ Approve:
   Dask writer.
 
 ### Gate B: after C3
+
+Decision on 2026-08-07: approved. The Dask writer satisfies the initial Xenium
+acceptance target; keep Dask, skip optional C4, and proceed to C5. The measured
+bucket skew and peak RSS do not justify a strict oversized-bucket fallback or
+file rollover in the first implementation.
 
 Approve:
 

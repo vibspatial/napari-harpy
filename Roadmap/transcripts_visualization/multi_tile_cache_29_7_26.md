@@ -1303,21 +1303,22 @@ summing each value over all tiles must equal `values.parquet.n_points`. Sampled
 levels reconcile to their own manifest totals but are not expected to preserve
 exact per-value totals.
 
-Exact and sampled bucket finalizers emit flat provisional count fragments while
+Exact and sampled bucket finalizers emit flat intermediate count files while
 their tile rows are already available. A finalizer may use a transient
 per-tile `{value_id: count}` mapping, but it appends those counts to its
-bucket-local fragment and releases the mapping rather than retaining one Python
-object or dictionary per sparse count across the level. Level results retain
-only small fragment descriptors. This avoids both an additional scan of the
-canonical source or completed levels and unsafe concurrent appends from
-independent bucket finalizers into one shared Parquet file. The fragment counts
-are exact but provisional: each covers only one finalization unit and is not yet
-the complete, globally value-ordered and reconciled index. C7 reads the
-fragments in bounded batches, sorts and validates the complete index, writes
-`tile_value_counts.parquet`, and then removes the fragments. Because every tile
-belongs to exactly one bucket, its finalizer must aggregate across any physical
-tile shards and emit each nonzero `(level, value_id, tile_x, tile_y)` key
-exactly once. C7 rejects duplicate keys rather than silently combining them.
+bucket-local intermediate file and releases the mapping rather than retaining
+one Python object or dictionary per sparse count across the level. Level results
+retain only small intermediate-file descriptors. This avoids both an additional
+scan of the canonical source or completed levels and unsafe concurrent appends
+from independent bucket finalizers into one shared Parquet file. The
+intermediate counts are exact, but each file covers only one finalization unit
+and is not the complete, globally value-ordered and reconciled index. C7 reads
+the intermediate files in bounded batches, sorts and validates the complete
+index, writes `tile_value_counts.parquet`, and then removes the intermediate
+files. Because every tile belongs to exactly one bucket, its finalizer must
+aggregate across any physical tile shards and emit each nonzero
+`(level, value_id, tile_x, tile_y)` key exactly once. C7 rejects duplicate keys
+rather than silently combining them.
 Dask shuffle files are separate execution scratch and may be removed as soon as
 their bucket is finalized.
 
@@ -1609,6 +1610,19 @@ sampling-priority hash.
 Tiles and rows receive deterministic final ordering, with `point_id` as the
 within-tile tie-breaker.
 
+Bucket filenames use a minimum three-digit width, expanding only when required:
+
+```python
+filename_width = max(3, len(str(bucket_count - 1)))
+filename = f"bucket-{bucket_id:0{filename_width}d}.parquet"
+```
+
+The point bucket is stored below `levels/level_<level>/`; its intermediate
+tile/value-count file uses the same filename below
+`intermediate_tile_value_counts/level_<level>/`. Empty buckets create neither
+file. Point buckets use Snappy compression and dictionary encoding only for
+`value_id`; intermediate count files use Snappy without dictionary encoding.
+
 ### Initial engine: Dask disk shuffle plus Arrow finalizer
 
 Dask is a leading implementation candidate because it provides an on-disk
@@ -1772,7 +1786,7 @@ argument. For Exact, `level.point_count_upper_bound` equals the validated source
 row count. For the 136,578,750-point Xenium source, the calculation therefore
 produces 69 buckets, averaging approximately 1.98 million points per bucket
 before hash skew, and at most 69 Exact-level bucket files. Empty buckets do not
-create files. `finalizer_concurrency=1` remains the initial benchmark setting.
+create files. `dask_worker_count=1` remains the initial benchmark setting.
 
 The output-bucket count is intentionally independent of the 65 input Parquet
 files. There is no one-to-one mapping after the shuffle: each source file may
@@ -1852,6 +1866,24 @@ orders may still produce different Harpy `point_id` values under the initial
 source-row identity policy, so canonical here means deterministic tile-local
 organization for one validated source, not byte-identical caches after source
 rows are reordered.
+
+Gate B accepted Dask on 2026-08-07 after one complete Xenium Exact build. The
+writer processed all 136,578,750 points into 69 nonempty bucket files and 7,294
+tile-owned row groups in 57.92 seconds. Peak process RSS was 3.69 GiB, with 3.36
+GiB incremental RSS above baseline; peak benchmark workspace usage was 1.74
+GiB. Exact point files occupied 1.65 GiB and intermediate tile/value-count
+files occupied 0.08 GiB. Buckets averaged 1,979,402 points and the largest
+contained 2,547,160 points, which remained acceptable for the measured memory
+envelope despite exceeding the average two-million-row target through ordinary
+hash skew.
+
+An independent output pass verified all 136,578,750 point IDs as unique and
+complete in 12.69 seconds. A warm representative read loaded a 108,598-point
+tile from one row group in 1.15 ms. Every source partition satisfied the
+float32 tile-relative coordinate tolerance of `6.103515625e-05` intrinsic
+units. The run does not justify recursive spilling, external sorting, file
+rollover, a different bucket heuristic, or optional C4. All generated benchmark
+artifacts were removed after recording these measurements.
 
 ## View planning
 
@@ -2091,9 +2123,8 @@ Gate C decision. Phase 1 does not begin before Gate D.
 The implementation is divided into independently reviewable slices in
 [persistent_cache_construction_5_8_26.md](persistent_cache_construction_5_8_26.md).
 
-After Gate A approves C1's implemented private immutable IO-free level plan,
-freeze the minimal exact-writer contracts in C2 and then implement the C3 Dask
-writer and its small acceptance benchmark:
+Gate A approved C1's private immutable IO-free level plan. C2 froze the minimal
+exact-writer contracts, and C3 implemented and benchmarked the Dask Exact writer:
 
 - use the agreed initial 512-unit exact tiles on the Xenium acceptance dataset;
 - use the locked four-column numeric point payload without per-row tile columns;
@@ -2103,7 +2134,8 @@ writer and its small acceptance benchmark:
 - group or sort each completed bucket deterministically before final Parquet
   writing;
 - make source partition boundaries irrelevant to final tile locality;
-- preserve bounded concurrency, memory, and temporary disk usage;
+- use one-at-a-time finalization and verify the resulting measured memory and
+  temporary-disk envelope;
 - run only through a Harpy-controlled local threaded or synchronous scheduler,
   without distributed execution, automatic task retries, or speculation;
 - give exactly one finalizer ownership of each deterministic bucket path and
@@ -2510,19 +2542,14 @@ Phase 0 validation and its Gate D are complete. Do not add the new builder to
 `_transcript_tiles.py` or treat its schemas and tests as the Phase 1
 specification.
 
-The next work follows the construction companion roadmap. C1's IO-free level
-plan and C2's private writer contracts are implemented. Continue with:
+The next work follows the construction companion roadmap. C1 through C3 are
+implemented, Gate B accepted Dask, and optional C4 is skipped. Continue with:
 
-1. review the implemented C2 records and their ownership boundary;
-2. write the detailed C3 Dask exact-writer specifications;
-3. implement that writer and run a small acceptance benchmark under the
-   tile-co-location contract;
-4. at Gate B, accept Dask and continue when its results are sufficient; open
-   optional C4 only for a named limitation and measurable PyArrow success
-   criterion;
-5. proceed through value-neutral sampling, sparse tile/value count indexing,
-   staged-cache validation, publication, and the complete Xenium benchmark in
-   the remaining Phase 1 slices.
+1. specify and implement the C5 value-neutral sampling contract and spike;
+2. build the complete nested sampled pyramid in C6;
+3. consolidate sparse tile/value counts and validate the staged cache in C7;
+4. implement guarded publication in C8;
+5. run the complete multilevel Xenium benchmark and hardening in C9.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused
