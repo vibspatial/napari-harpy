@@ -125,6 +125,8 @@ def _select_sampled_tile_indices(
     # Empty microgrid cells remain present with count zero.
     candidate_cell_ids = _microgrid_cell_ids(x_float64, y_float64, tile_size=tile_size)
     cell_counts = np.bincount(candidate_cell_ids, minlength=_MICROGRID_CELL_COUNT)
+    # `cell_targets[cell_id]` is the representative quota allocated to that
+    # microgrid cell.
     cell_targets = _allocate_cell_targets(
         cell_counts,
         target=target,
@@ -132,7 +134,10 @@ def _select_sampled_tile_indices(
         tile_x=tile_x,
         tile_y=tile_y,
     )
-    priorities = _point_priorities(
+    # `ids` and `candidate_cell_ids` are parallel point-level arrays, so hash
+    # one deterministic priority per candidate for ranking within its assigned
+    # cell.
+    candidate_priorities = _point_priorities(
         ids,
         candidate_cell_ids,
         level=level,
@@ -140,8 +145,20 @@ def _select_sampled_tile_indices(
         tile_y=tile_y,
     )
 
-    ordered = np.lexsort((ids, priorities, candidate_cell_ids))
+    # `np.lexsort` treats the last key as primary.
+    ordered = np.lexsort(
+        (
+            ids,  # tertiary: deterministic tie-break for priority collisions
+            candidate_priorities,  # secondary: rank candidates within each cell
+            candidate_cell_ids,  # primary: make every cell's candidates contiguous
+        )
+    )
+    # Because cell ID was the primary sort key, applying `ordered` groups all
+    # candidates from the same cell together, for example [0, 0, 2, 2, 2].
     ordered_candidate_cell_ids = candidate_cell_ids[ordered]
+    # Find the first position of each cell group by comparing adjacent IDs.
+    # For [0, 0, 2, 2, 2], the group-start mask is
+    # [True, False, True, False, False], which gives positions [0, 2].
     group_starts = np.flatnonzero(
         np.concatenate((np.array([True]), ordered_candidate_cell_ids[1:] != ordered_candidate_cell_ids[:-1]))
     )
@@ -150,8 +167,14 @@ def _select_sampled_tile_indices(
         target_for_cell = int(cell_targets[ordered_candidate_cell_ids[start]])
         if target_for_cell > 0:
             selected_parts.append(ordered[start : start + target_for_cell])
+    # `selected` contains positions into the original candidate arrays for all
+    # retained points. At this stage they are grouped by microgrid cell and
+    # ranked within each cell by their deterministic sampling priority.
     selected = np.concatenate(selected_parts).astype(np.intp, copy=False)
-    return selected[np.argsort(ids[selected], kind="stable")]
+    # Order the selected original row positions by point_id before returning them.
+    selected_point_ids = ids[selected]
+    point_id_order = np.argsort(selected_point_ids, kind="stable")
+    return selected[point_id_order]
 
 
 def _microgrid_cell_ids(x_rel: np.ndarray, y_rel: np.ndarray, *, tile_size: int) -> np.ndarray:
