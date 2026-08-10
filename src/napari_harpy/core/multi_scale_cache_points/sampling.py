@@ -203,9 +203,10 @@ def _allocate_cell_targets(
     Notes
     -----
     Allocation uses integer largest remainders. For candidate counts
-    ``[50, 30, 15, 5]`` and target ``17``, floor division first gives
-    ``[8, 5, 2, 0]`` with remainders ``[50, 10, 55, 85]``. The two unallocated
-    slots go to the largest remainders, producing ``[8, 5, 3, 1]``.
+    ``[5, 4, 2, 1]`` (total 12) and target 7, applying
+    ``divmod(target * count, total)`` gives base allocations ``[2, 2, 1, 0]``
+    and remainders ``[11, 4, 2, 7]``. The two unallocated slots go to the
+    largest remainders, producing ``[3, 2, 1, 1]``.
     """
     total = int(cell_counts.sum())
     # Split each ideal allocation (`target * count / total`) into its integer
@@ -234,11 +235,12 @@ def _allocate_cell_targets(
         tile_x=tile_x,
         tile_y=tile_y,
     )
+    # `np.lexsort` treats the last key as primary.
     order = np.lexsort(
         (
-            occupied_cell_ids,
-            cell_tie_break_priorities,
-            -remainders[occupied_cell_ids.astype(np.intp)],
+            occupied_cell_ids,  # third and final tie-breaker
+            cell_tie_break_priorities,  # second tie-breaker
+            -remainders[occupied_cell_ids.astype(np.intp)],  # primary: largest remainder first
         )
     )
     base[occupied_cell_ids[order[:remaining]].astype(np.intp)] += 1
