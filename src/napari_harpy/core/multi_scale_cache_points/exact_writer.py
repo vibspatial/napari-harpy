@@ -17,6 +17,7 @@ from napari_harpy.core.multi_scale_cache_points.build_plan import (
     _LevelBuildPlan,
     _PointsCacheBuildPlan,
 )
+from napari_harpy.core.multi_scale_cache_points.hashing import _splitmix64
 from napari_harpy.core.multi_scale_cache_points.models import ParquetSourceFile, ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points.value_normalization import (
     VALUE_NORMALIZATION_METHOD,
@@ -37,12 +38,6 @@ DEFAULT_DASK_WORKER_COUNT = 1
 _INTERMEDIATE_TILE_VALUE_COUNTS_DIRECTORY = "intermediate_tile_value_counts"
 _INTERMEDIATE_COUNT_BUFFER_ROWS = 65_536
 _UINT64_32 = np.uint64(32)
-_UINT64_30 = np.uint64(30)
-_UINT64_27 = np.uint64(27)
-_UINT64_31 = np.uint64(31)
-_SPLITMIX64_INCREMENT = np.uint64(0x9E3779B97F4A7C15)
-_SPLITMIX64_MULTIPLIER_1 = np.uint64(0xBF58476D1CE4E5B9)
-_SPLITMIX64_MULTIPLIER_2 = np.uint64(0x94D049BB133111EB)
 
 _EXACT_PAYLOAD_SCHEMA = pa.schema(
     [
@@ -192,10 +187,7 @@ def _tile_bucket_ids(tile_x: np.ndarray, tile_y: np.ndarray, *, bucket_count: in
         raise ValueError("`tile_x` and `tile_y` must have matching shapes.")
 
     tile_key = (y << _UINT64_32) | x
-    mixed = tile_key + _SPLITMIX64_INCREMENT
-    mixed = (mixed ^ (mixed >> _UINT64_30)) * _SPLITMIX64_MULTIPLIER_1
-    mixed = (mixed ^ (mixed >> _UINT64_27)) * _SPLITMIX64_MULTIPLIER_2
-    tile_hash = mixed ^ (mixed >> _UINT64_31)
+    tile_hash = _splitmix64(tile_key)
     return tile_hash % np.uint64(bucket_count)
 
 
