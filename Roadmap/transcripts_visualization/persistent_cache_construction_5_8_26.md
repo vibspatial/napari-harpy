@@ -1348,12 +1348,41 @@ SAMPLED_TILE_MICROGRID_EDGE = 16
 The grid is fixed relative to the **current output tile**, not at one fixed
 intrinsic cell size. Its cells therefore scale with the level:
 
-| Design label | Current tile edge | Microgrid cell edge | Tile capacity | Uniform average per cell at capacity |
-|---|---:|---:|---:|---:|
-| Bridge | 512 | 32 | 4,096 | 16 |
-| L1 | 1,024 | 64 | 8,192 | 32 |
-| L2 | 2,048 | 128 | 16,384 | 64 |
-| L3 | 4,096 | 256 | 32,768 | 128 |
+| Level | Tile edge | Microgrid | Cell edge |
+|---|---:|---:|---:|
+| Bridge | 512 | 16 × 16 | 32 |
+| L1 | 1,024 | 16 × 16 | 64 |
+| L2 | 2,048 | 16 × 16 | 128 |
+| L3 | 4,096 | 16 × 16 | 256 |
+
+The logical tile hierarchy becomes progressively coarser:
+
+```text
+Bridge: many small tiles
+L1:     fewer, larger tiles
+L2:     fewer again
+...
+Overview: very few tiles, eventually one
+```
+
+Four 512-unit bridge tiles form one 1,024-unit L1 parent. Each bridge child
+therefore covers an 8 × 8 quadrant of the parent's 16 × 16 microgrid:
+
+```text
+L1 microgrid: 16 × 16
+
+┌──────────┬──────────┐
+│ 8 × 8    │ 8 × 8    │
+│ cells    │ cells    │
+├──────────┼──────────┤
+│ 8 × 8    │ 8 × 8    │
+│ cells    │ cells    │
+└──────────┴──────────┘
+```
+
+The logical tiles are persistent storage, manifest, and loading units. The
+microgrid is only a transient sampling structure within one output tile; its
+cells are not stored as cache tiles or loaded independently.
 
 Later levels follow the same 16 × 16 current-tile-relative grid. This is an
 internal initial policy, not a public builder option. The spike may reject it
@@ -1375,6 +1404,12 @@ def _select_sampled_tile_indices(
     target: int,
 ) -> np.ndarray: ...
 ```
+
+The implementation docstring must preserve this distinction between the
+logical tile hierarchy and the transient microgrid. It should include the
+Bridge/L1/L2 tile-and-cell-size table and the four-child L1 schematic above, or
+an equivalently clear compact explanation, so callers do not mistake microgrid
+cells for cache tiles.
 
 `x_rel` and `y_rel` are relative to the current output tile. For the bridge,
 Exact and output tile geometry match. For a later spatial level, its writer
