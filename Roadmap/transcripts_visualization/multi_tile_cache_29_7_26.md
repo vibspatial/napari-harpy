@@ -2572,18 +2572,17 @@ Phase 0 validation and its Gate D are complete. Do not add the new builder to
 `_transcript_tiles.py` or treat its schemas and tests as the Phase 1
 specification.
 
-The next work follows the construction companion roadmap. C1 through C3 are
-implemented, Gate B accepted Dask, and optional C4 is deferred indefinitely
-unless new evidence identifies a concrete Dask limitation. Continue with:
+The next work follows the construction companion roadmap. C1 through C3 and the
+pure C5a sampler are implemented, Gate B accepted Dask, and optional C4 is
+deferred indefinitely unless new evidence identifies a concrete Dask
+limitation. Continue with:
 
-1. specify and implement the generic C5a 16 × 16 current-tile selection kernel,
-   demonstrated first on the bridge;
-2. construct and measure the persistent bridge level in C5b;
-3. approve four-child parent assembly and coordinate rebasing in C5c;
-4. build the remaining spatial pyramid in C6;
-5. consolidate sparse tile/value counts and validate the staged cache in C7;
-6. implement guarded publication in C8;
-7. run the complete multilevel Xenium benchmark and hardening in C9.
+1. construct and measure the persistent bridge level in C5b;
+2. approve four-child parent assembly and coordinate rebasing in C5c;
+3. build the remaining spatial pyramid in C6;
+4. consolidate sparse tile/value counts and validate the staged cache in C7;
+5. implement guarded publication in C8;
+6. run the complete multilevel Xenium benchmark and hardening in C9.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused

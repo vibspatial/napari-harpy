@@ -311,7 +311,7 @@ retained idea requires independent justification from this roadmap.
 | C2 | Implemented | Minimal exact-level construction contracts | No | No |
 | C3 | Implemented; Gate B approved Dask | Dask exact-level writer and acceptance benchmark | Yes | No |
 | C4 | Deferred indefinitely; not justified by Gate B | Direct-PyArrow exact-writer investigation, reopened only for a concrete Dask limitation | Yes | No |
-| C5a | Planned | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
+| C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
 | C5b | Planned | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
 | C5c | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
@@ -323,8 +323,9 @@ Each slice must be independently reviewable. C3 implements one credible writer
 rather than two competing engines. Gate B accepted its measured Dask writer, so
 C4 is deferred indefinitely unless new evidence identifies a concrete Dask
 limitation and measurable PyArrow success criterion. It does not block C5a or
-later work. C5a and C5c are deliberate pure sampler spikes; C5b is the first
-persistent sampled-level integration.
+later work. C5a is the implemented pure sampled-tile selector, C5c remains a
+pure parent-assembly spike, and C5b is the first persistent sampled-level
+integration.
 
 ## Slice C1: pure grid and level build planning
 
@@ -1475,20 +1476,20 @@ formulas allocate **sample slots**, not points, to those cells. A cell containin
 representatives. Allocation is proportional to observed cell population; it is
 not an equal number per occupied cell.
 
-For example, consider four occupied cells with candidate counts
-`(50, 30, 15, 5)`, so `N=100`, and a simplified target `K=17`. Their ideal
-fractional allocations are `(8.50, 5.10, 2.55, 0.85)`. Flooring first gives
-`(8, 5, 2, 0)`, accounting for 15 representatives. The two largest fractional
-remainders belong to the fourth and third cells, so the final integer allocation
-is:
+For example, consider four occupied cells with candidate counts `(5, 4, 2, 1)`,
+so `N=12`, and a simplified target `K=7`. Applying
+`divmod(K * n_i, N)` gives quotient/remainder pairs `(2, 11)`, `(2, 4)`,
+`(1, 2)`, and `(0, 7)`. The base allocation `(2, 2, 1, 0)` accounts for five
+representatives. The two remaining slots go to the first and fourth cells,
+which have the largest remainders, producing:
 
 ```text
-cell candidate counts:  50  30  15   5
-retained allocations:    8   5   3   1
+cell candidate counts:  5  4  2  1
+retained allocations:   3  2  1  1
 ```
 
-After allocation, stable point priorities decide which eight, five, three, and
-one actual candidates win inside their respective cells.
+After allocation, stable point priorities decide which three, two, one, and one
+actual candidates win inside their respective cells.
 
 Assign the `K - sum(base_i)` remaining slots to the largest remainders. Resolve
 equal remainders with a stable pseudo-random stratum priority derived from the
@@ -1605,6 +1606,22 @@ check.
 - input order does not affect membership;
 - `value_id` is absent from the selection API and has no influence on winners;
 - the one-complete-current-tile memory assumption is accepted for C5b and C5c.
+
+### Implemented C5a result
+
+Implemented on 2026-08-10 in the new internal `sampling.py` and `hashing.py`
+modules. The Exact bucket mapper now imports the shared vectorized SplitMix64
+transform without changing `harpy-tile-splitmix64-v1` output. The pure selector
+implements the fixed 16 × 16 current-tile microgrid, proportional
+largest-remainder allocation, separate versioned point and cell priority
+domains, deterministic point-ID collision handling, and ascending-point-ID
+output indices. It performs no Parquet IO, Dask work, or cache writing.
+
+Focused synthetic tests cover fixed priority vectors, sparse and exact-capacity
+pass-through, proportional allocations, equal-remainder cell ordering,
+microgrid boundary scaling, input-order invariance, controlled priority
+collisions, and representative invalid inputs. The existing Exact bucket fixed
+vector remains unchanged after extracting the shared SplitMix64 transform.
 
 ## Slice C5b: persistent bridge-level construction and acceptance check
 
@@ -2040,12 +2057,11 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C5a: generic 16 × 16 sampled-tile contract and pure
-in-memory sampler**. Freeze the pure value-independent selection API,
-proportional integer allocation, shared current-tile-relative microgrid,
-versioned SplitMix64 priority payload, deterministic ties and output order, and
-the initial one-complete-current-tile memory contract. Demonstrate it first on
-the same-geometry bridge before integrating Parquet IO in C5b; C5c then owns
-four-child assembly and rebasing into parent-relative coordinates.
+Specify and implement **C5b: persistent bridge-level construction and acceptance
+check**. Consume staged Exact tile shards, apply the implemented C5a selector,
+write the self-contained bridge payload and intermediate tile/value counts, and
+perform the focused Xenium acceptance check without rescanning the original
+Parquet source. C5c then owns four-child assembly and rebasing into
+parent-relative coordinates.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
