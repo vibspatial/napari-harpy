@@ -253,9 +253,12 @@ doing so would distort apparent abundance when all values are displayed.
 Disappearance from a sampled level is an expected consequence of
 representative sampling, not evidence that a value is biologically absent.
 
-The exact bridge microgrid and concrete priority-hash details are settled by the
-Phase 1 sampling spike. The following structural guarantees are already
-fixed:
+Every sampled level uses a 16 × 16 microgrid relative to its current logical
+tile, subject to the focused C5a pure-sampler spike and Gate C approval. The
+bridge is the first concrete demonstration; later spatial levels use the same
+sampler after child coordinates have been rebased into their parent tile. C5a
+also freezes the concrete priority-hash payload. The following structural
+guarantees are already fixed:
 
 - deterministic results for the same source identity and build parameters;
 - actual source rows as representatives;
@@ -1483,29 +1486,49 @@ signature and point-identity policy record that scope.
 
 ### Sampling contract
 
-The Phase 1 sampling slice must produce a concrete, versioned sampler
-specification. It refines, but does not reopen, this fixed algorithm family:
+The C5a and C5c sampling slices produce one concrete, versioned sampler
+specification. They refine, but do not reopen, this fixed algorithm family:
 
 1. start from candidates retained by the next finer level;
 2. annotate candidates with the current level's tile and spatial stratum;
-3. allocate the tile target proportionally across occupied spatial strata, with
-   deterministic integer-remainder distribution;
+3. allocate the tile target proportionally across occupied spatial strata using
+   integer largest-remainder allocation with deterministic remainder ties;
 4. rank candidates by ascending stable pseudo-random priority derived from
    level, spatial stratum, `point_id`, and a seed;
 5. keep the first candidates in that ascending order, up to each allocation;
 6. sort output deterministically before writing.
 
-For L1 and later spatial levels, the immediate finer child tiles are the
-required top-level spatial strata. For the same-geometry sampled finest bridge,
-the Phase 1 sampling spike must benchmark and specify a deterministic within-tile
-stratification policy. A fixed micro-grid is a candidate for that bridge, not a
-general requirement imposed on every sampled level.
+Every sampled logical tile uses a fixed 16 × 16 microgrid relative to that
+current output tile. The intrinsic cell edge therefore scales with tile
+geometry: 32 for the 512-unit bridge, 64 for L1, 128 for L2, and 256 for L3.
+Immediate-finer child tiles remain the manifest and IO units used to assemble a
+spatial parent's candidates, but they are not sampling strata. Their retained
+coordinates are rebased into the parent tile, and the combined candidates are
+assigned directly to the parent's 16 × 16 microgrid.
 
-Sampling randomness comes only from the named stable priority hash. A stateful
-random-number generator, input row or partition arrival order, and Python's
-randomized `hash()` must not affect membership. C5 freezes the bridge microgrid
-policy, hash algorithm, seed and payload encoding, integer allocation and
-redistribution mechanics, collision tie-breaking, and final deterministic sort.
+Sampling randomness comes only from
+`harpy-value-neutral-stratified-splitmix64-v1` with the initial fixed uint64 seed
+zero. Sequentially mix a sampling-domain constant, seed, serialized level,
+current tile key, stable stratum key, and `point_id`. A stateful random-number
+generator, input row or partition arrival order, and Python's randomized
+`hash()` must not affect membership. C5a freezes the shared current-tile
+microgrid, priority payload encoding, integer allocation, collision
+tie-breaking, and final deterministic sort. C5c approves immediate-finer child
+assembly and coordinate rebasing into the parent before the same sampler is
+invoked.
+
+For stratum count `n_i`, total candidate count `N`, and target `K`, allocate
+`(K * n_i) // N` representatives first, then assign remaining slots by descending
+`(K * n_i) % N` with deterministic stratum-priority and numeric-key ties. Since
+`K <= N`, this allocation cannot exceed an observed stratum count and requires
+no unconsumed-allocation redistribution phase.
+
+Coordinates assign points to strata before this calculation; the calculation
+then allocates sample slots in proportion to each stratum's observed point
+count. It does not allocate an equal number to every occupied stratum. The
+microgrid consequently preserves approximate local spatial abundance while
+reducing random within-tile clumping; it is not intended to flatten spatial
+density or guarantee representation of every occupied cell.
 
 `value_id` is deliberately excluded from target allocation and the priority
 payload. The sampler must not impose a rarity modifier, minimum per-value
@@ -1520,7 +1543,14 @@ The sampler must define behavior when:
 - one value dominates a tile;
 - many singleton values occur in one tile;
 - a hash collision occurs;
-- a tile is split across arbitrary input partitions or source files.
+- one logical Exact tile is split across several physical row groups.
+
+The initial bridge builder may load and concatenate every physical shard of one
+logical Exact tile before sampling. It processes one complete logical tile at a
+time and does not promise a source-size-independent bound for a pathological
+tile. C5b measures the densest Xenium tile before Gate C; a two-pass or streaming
+top-k sampler is deferred unless that evidence shows the initial assumption is
+insufficient.
 
 ### Why value neutrality and selection-aware planning are separate
 
@@ -2546,11 +2576,14 @@ The next work follows the construction companion roadmap. C1 through C3 are
 implemented, Gate B accepted Dask, and optional C4 is deferred indefinitely
 unless new evidence identifies a concrete Dask limitation. Continue with:
 
-1. specify and implement the C5 value-neutral sampling contract and spike;
-2. build the complete nested sampled pyramid in C6;
-3. consolidate sparse tile/value counts and validate the staged cache in C7;
-4. implement guarded publication in C8;
-5. run the complete multilevel Xenium benchmark and hardening in C9.
+1. specify and implement the generic C5a 16 × 16 current-tile selection kernel,
+   demonstrated first on the bridge;
+2. construct and measure the persistent bridge level in C5b;
+3. approve four-child parent assembly and coordinate rebasing in C5c;
+4. build the remaining spatial pyramid in C6;
+5. consolidate sparse tile/value counts and validate the staged cache in C7;
+6. implement guarded publication in C8;
+7. run the complete multilevel Xenium benchmark and hardening in C9.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused

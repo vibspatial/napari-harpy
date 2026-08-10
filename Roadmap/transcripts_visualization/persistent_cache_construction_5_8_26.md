@@ -253,11 +253,13 @@ named review gates rather than guessed during implementation:
 - whether measured C3 bucket skew or peak memory justifies a later maximum
   in-memory bucket size, recursive spill or external-grouping fallback, and
   file rollover;
-- proportional spatial-stratum allocation and deterministic integer-remainder
-  behavior;
-- same-geometry bridge stratification;
-- sampler priority-hash algorithm, seed representation, and collision
-  tie-breaking;
+- C5a approval of proportional allocation, deterministic integer-remainder
+  behavior, the shared 16 × 16 sampled-tile microgrid, sampling priority
+  payload, seed representation, and collision tie-breaking;
+- C5b evidence that one complete logical Exact tile is a viable initial memory
+  unit on Xenium;
+- C5c approval of immediate-finer child assembly and coordinate rebasing into
+  the parent's shared microgrid;
 - bounded worker concurrency and memory limits;
 - whether the first public builder exposes progress and cancellation or remains
   a synchronous core API wrapped later by product integration;
@@ -305,8 +307,10 @@ retained idea requires independent justification from this roadmap.
 | C2 | Implemented | Minimal exact-level construction contracts | No | No |
 | C3 | Implemented; Gate B approved Dask | Dask exact-level writer and acceptance benchmark | Yes | No |
 | C4 | Deferred indefinitely; not justified by Gate B | Direct-PyArrow exact-writer investigation, reopened only for a concrete Dask limitation | Yes | No |
-| C5 | Planned | Versioned value-neutral sampling contract and spike | No original-source rescan | No |
-| C6 | Planned | Complete nested sampled pyramid | No original-source rescan | No |
+| C5a | Planned | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
+| C5b | Planned | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
+| C5c | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
+| C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
 | C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
 | C9 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
@@ -314,9 +318,9 @@ retained idea requires independent justification from this roadmap.
 Each slice must be independently reviewable. C3 implements one credible writer
 rather than two competing engines. Gate B accepted its measured Dask writer, so
 C4 is deferred indefinitely unless new evidence identifies a concrete Dask
-limitation and measurable PyArrow success criterion. It does not block C5 or
-later work. C5 is a deliberate sampler spike whose artifacts are internal and
-disposable.
+limitation and measurable PyArrow success criterion. It does not block C5a or
+later work. C5a and C5c are deliberate pure sampler spikes; C5b is the first
+persistent sampled-level integration.
 
 ## Slice C1: pure grid and level build planning
 
@@ -419,7 +423,7 @@ class _PointsCacheBuildPlan:
 ```
 
 `kind` describes only the logical role needed to construct the level. C1 does
-not record a C5 sampler name, version, or parameters. The relative level
+not record a C5a sampler name, version, or parameters. The relative level
 directory is derived from the serialized level; no absolute output or staging
 path belongs to either plan record.
 
@@ -784,8 +788,11 @@ C8 end-to-end builder
     │               ├── manifest_rows
     │               └── intermediate_tile_value_count_files
     │
-    ├── calls C6 sampled-level writers
-    │       └── each level returns another _LevelWriteResult
+    ├── calls C5b Bridge writer
+    │       └── returns the Bridge _LevelWriteResult
+    │
+    ├── calls C6 spatial-level writers
+    │       └── each spatial level returns another _LevelWriteResult
     │
     └── passes all _LevelWriteResult objects to C7
             ├── writes manifest.parquet from _ManifestRow records
@@ -1259,7 +1266,7 @@ and JSON result artifacts were removed after the measurements were recorded.
 Gate B records one of two outcomes:
 
 1. **Dask accepted:** correctness and the small benchmark are sufficient; keep
-   Dask as the Phase 1 exact writer and proceed directly to C5. **Selected on
+   Dask as the Phase 1 exact writer and proceed directly to C5a. **Selected on
    2026-08-07.**
 2. **PyArrow investigation justified:** record the concrete Dask limitation and
    the success criterion that a direct-PyArrow experiment must meet; open
@@ -1307,120 +1314,307 @@ not require feature parity beyond what is needed to make the decision.
   before downstream construction consumes it;
 - remove all experimental artifacts after recording the decision.
 
-## Slice C5: versioned value-neutral sampling contract and spike
+## Slice C5a: generic 16 × 16 sampled-tile contract and pure in-memory sampler
 
 ### Goal
 
-Freeze and demonstrate the deterministic sampling algorithm before building the
-complete sampled pyramid.
+Freeze and implement one deterministic membership rule for any sampled logical
+tile. The first concrete case is one 512-unit Exact tile becoming one 512-unit
+bridge tile capped at 4,096 representatives. This slice is a pure selection
+spike: it does not read Parquet, use Dask, or write a cache level.
 
-### Contracts fixed before C5
+### Fixed first implementation
 
-The sampler uses the following fixed algorithm family:
+For one complete current-level candidate tile:
 
 ```text
-finer candidates
-→ current-level tile and spatial stratum
-→ tile target allocated across occupied strata
-→ stable value-independent point priority
-→ deterministic winners
-→ deterministic output order
+all candidate rows contributing to the output tile
+→ assign each point to one cell in a 16 × 16 within-tile microgrid
+→ count candidates in every occupied cell
+→ allocate the tile target proportionally across occupied cells
+→ calculate a stable value-independent uint64 priority per point
+→ retain the lowest-priority points within every cell allocation
+→ sort retained indices by point_id
 ```
 
-Every sampled level consumes only representatives retained by its immediate
-finer level, so membership is nested and every winner remains an actual source
-point with its unchanged `point_id` and `value_id`. For L1 and every later
-spatial level, the immediate finer child tiles are the top-level spatial
-strata. The tile capacity is allocated proportionally across occupied strata,
-and candidates are selected within those allocations by ascending stable
-pseudo-random priority. Stateful random-number-generator order, input partition
-order, and Python's randomized `hash()` must not affect membership.
+Use these initial versioned constants:
 
-`value_id` must not affect stratum allocation, point priority, or winner
-selection. The sampler intentionally represents local source abundance rather
-than guaranteeing preservation of rare values. Explicit value selections are
-handled later by the per-level tile/value count index and selection-aware LOD
-planner, not by scientifically distorting the sampled membership.
+```python
+SAMPLING_METHOD = "harpy-value-neutral-stratified-splitmix64-v1"
+SAMPLING_SEED = 0
+SAMPLED_TILE_MICROGRID_EDGE = 16
+```
 
-### Details C5 must refine and freeze
+The grid is fixed relative to the **current output tile**, not at one fixed
+intrinsic cell size. Its cells therefore scale with the level:
 
-C5 must settle:
+| Design label | Current tile edge | Microgrid cell edge | Tile capacity | Uniform average per cell at capacity |
+|---|---:|---:|---:|---:|
+| Bridge | 512 | 32 | 4,096 | 16 |
+| L1 | 1,024 | 64 | 8,192 | 32 |
+| L2 | 2,048 | 128 | 16,384 | 64 |
+| L3 | 4,096 | 256 | 32,768 | 128 |
 
-- same-geometry bridge stratification, with a fixed micro-grid evaluated as a
-  candidate rather than assumed;
-- exact proportional integer allocation, deterministic remainder distribution,
-  and redistribution when a stratum cannot consume its provisional allocation;
-- the versioned stable hash algorithm, seed encoding, and priority payload;
-- deterministic collision and final tie-breaking;
-- the deterministic physical output sort after winner selection;
-- behavior when occupied spatial strata outnumber the target;
-- behavior for coincident coordinates, dominant values, singleton-heavy values,
-  sparse tiles, and tiles split across physical shards.
+Later levels follow the same 16 × 16 current-tile-relative grid. This is an
+internal initial policy, not a public builder option. The spike may reject it
+only with a named correctness or clearly demonstrated spatial-representation
+problem.
 
-The spike operates on bounded candidate tables or exact-cache tiles. It does not
-rescan the original canonical source and does not write a completed cache.
+The pure entry point has this architectural shape:
 
-### Evaluation
+```python
+def _select_sampled_tile_indices(
+    x_rel: np.ndarray,
+    y_rel: np.ndarray,
+    point_ids: np.ndarray,
+    *,
+    level: int,
+    tile_x: int,
+    tile_y: int,
+    tile_size: int,
+    target: int,
+) -> np.ndarray: ...
+```
 
-Use small exact fixtures plus value-skewed, spatially skewed, and dense synthetic
-tiles. Include representative Xenium tiles. Measure:
+`x_rel` and `y_rel` are relative to the current output tile. For the bridge,
+Exact and output tile geometry match. For a later spatial level, its writer
+first rebases immediate-finer child coordinates into the parent tile before
+calling this same function.
 
-- deterministic and nested membership;
-- spatial coverage;
-- sampled value proportions compared with the finer candidates, as a diagnostic
-  for unintended systematic value bias rather than a rare-value preservation
-  target;
-- hard capacity compliance;
-- runtime and peak memory;
-- adjacent-level count ratios and transition stability proxies.
+The function deliberately does not accept `value_id`. The caller applies the
+returned indices to the complete payload, thereby propagating `value_id`
+unchanged while making it impossible for the selection kernel to use values
+during allocation or ranking.
+
+If a tile contains at most `target` candidates, retain every candidate and
+return its indices in ascending `point_id` order. Otherwise, derive microgrid
+coordinates from `x_rel` and `y_rel`; clamp a coordinate rounded onto the upper
+tile edge into the last cell.
+
+### Exact proportional allocation
+
+For occupied-stratum count `n_i`, total candidate count `N`, and target `K`:
+
+```text
+base_i      = (K * n_i) // N
+remainder_i = (K * n_i) % N
+```
+
+The coordinates have already assigned every point to one microgrid cell. These
+formulas allocate **sample slots**, not points, to those cells. A cell containing
+10% of the tile's candidates should receive approximately 10% of the retained
+representatives. Allocation is proportional to observed cell population; it is
+not an equal number per occupied cell.
+
+For example, consider four occupied cells with candidate counts
+`(50, 30, 15, 5)`, so `N=100`, and a simplified target `K=17`. Their ideal
+fractional allocations are `(8.50, 5.10, 2.55, 0.85)`. Flooring first gives
+`(8, 5, 2, 0)`, accounting for 15 representatives. The two largest fractional
+remainders belong to the fourth and third cells, so the final integer allocation
+is:
+
+```text
+cell candidate counts:  50  30  15   5
+retained allocations:    8   5   3   1
+```
+
+After allocation, stable point priorities decide which eight, five, three, and
+one actual candidates win inside their respective cells.
+
+Assign the `K - sum(base_i)` remaining slots to the largest remainders. Resolve
+equal remainders with a stable pseudo-random stratum priority derived from the
+versioned method, fixed seed, level, tile key, and microgrid-cell ID, followed
+by the numeric cell ID as a final collision tie-breaker. Do not use iteration
+order or always favor the numerically first cells.
+
+Because `K <= N` and the allocation is proportional to observed candidate
+counts, no allocation can exceed its stratum's available candidates. The first
+implementation therefore has no redistribution phase for unconsumed
+allocations. When occupied strata outnumber `K`, the same largest-remainder rule
+deterministically assigns positive allocations to at most `K` strata.
+
+The microgrid is therefore not an equal-coverage mechanism and must not flatten
+real spatial density. Dense cells retain proportionally more representatives;
+sparse cells retain proportionally fewer. Compared with ranking the complete
+tile as one unstratified population, the grid constrains every local cell to
+remain close to its observed share and reduces random local clumping or holes.
+
+### Stable point priority
+
+Sampling randomness is a deterministic random-looking `uint64`, not a stateful
+random-number-generator sequence. Sequentially mix a sampling-domain constant,
+`SAMPLING_SEED`, serialized level, current tile key, microgrid-cell ID, and
+`point_id` through the vectorized SplitMix64 primitive. This sampling method is
+versioned separately from bucket placement even if both reuse the same mixing
+primitive.
+
+Within each allocated cell, rank by `(priority, point_id)` and retain the first
+allocated number. The globally unique `point_id` supplies deterministic
+collision handling. Sort the selected indices by `point_id` before returning
+them. Input row order, physical shard boundaries, Python's randomized `hash()`,
+and Dask partitioning must not influence membership.
+
+### Initial memory contract
+
+The first implementation may load and concatenate every candidate contributing
+to one current output tile before sampling. For the bridge this means all
+physical row-group shards belonging to one logical Exact tile. For a later
+spatial level it means candidates from up to four immediate-finer child tiles.
+It does not promise a source-size-independent bound for a pathological tile.
+Peak candidate memory is therefore bounded by the densest current-level
+candidate tile encountered, not by the complete dataset and not by
+`max_rows_per_row_group`. A future two-pass or streaming top-k sampler requires
+measured evidence that this assumption is insufficient.
+
+### Focused tests and spike
+
+Use small uniform, spatially skewed, coincident-coordinate, and value-skewed
+candidate tables. Cover sparse retention, exact capacity, proportional integer
+allocation, equal-remainder ties, priority collisions, input-order invariance,
+different current tile sizes, and one logical tile assembled from differently
+divided physical shards. Verify that changing or permuting only value labels
+cannot affect the returned indices. Inspect a small selection of representative
+Xenium Exact tiles without running a broad microgrid parameter tournament.
 
 ### Exit criteria
 
-- the complete sampler has one name and versioned parameter contract;
-- every winner is an actual finer-level candidate with unchanged `point_id`;
-- the same candidates and parameters always produce the same winners;
-- no tile or level target can be exceeded;
-- `value_id` has no influence on allocation, priority, or membership;
-- the bridge and spatial-level stratification rules are approved for C6.
+- the method name, seed, shared 16 × 16 current-tile microgrid, payload
+  encoding, and SplitMix64 priority are frozen;
+- the same logical candidates and parameters always produce the same winners;
+- every winner is an unchanged input candidate and capacity is never exceeded;
+- shard division and input order do not affect membership;
+- `value_id` is absent from the selection API and has no influence on winners;
+- the one-complete-current-tile memory assumption is accepted for C5b and C5c.
 
-## Slice C6: complete nested sampled pyramid
+## Slice C5b: persistent bridge-level construction and acceptance check
 
 ### Goal
 
-Build every planned sampled level from retained finer-level candidates without
-repeatedly scanning `points.parquet`.
+Use the C5a sampler to construct the real 512-at-4,096 bridge from the staged
+Exact level, without rescanning the original Parquet source.
 
 ### Implement
 
-- the 512-at-4,096 sampled finest bridge from exact candidates;
-- 1,024-at-8,192, 2,048-at-16,384, and 4,096-at-32,768 spatial levels;
-- later edge/capacity-doubling levels when required by the plan;
-- the terminal one-tile capacity clamp when required by the plan;
-- deterministic parent formation from finer child tiles;
-- the C5 value-neutral spatial allocation and stable point priorities;
-- unchanged `point_id` and `value_id` propagation;
-- self-contained payloads at every level;
-- the C3 physical sharding and manifest-row contract for sampled levels;
-- derive each sampled level's physical `bucket_count` independently as
-  `ceil(level.point_count_upper_bound / target_rows_per_output_bucket)`, with a
-  minimum of one, rather than reusing the Exact bucket count;
-- flat intermediate tile/value-count files emitted while sampled tiles are
-  finalized, with only file descriptors retained and no additional level
-  scan;
-- bounded candidate memory and bounded writer concurrency.
+- consume the Exact `_LevelWriteResult` and staged Exact point files;
+- group Exact manifest rows by logical `(tile_y, tile_x)` and read every shard
+  belonging to one tile before sampling it;
+- process logical tiles in deterministic order and keep only one complete
+  candidate tile in memory at a time;
+- apply the C5a indices to the complete four-column point payload, preserving
+  `point_id` and `value_id` unchanged;
+- derive the bridge output `bucket_count` independently from the bridge
+  `point_count_upper_bound` and the accepted target rows per output bucket;
+- group complete sampled tiles by their deterministic destination bucket using
+  manifest metadata rather than performing another point-level shuffle;
+- write self-contained bridge point files with the C3 payload and tile-owned
+  row-group contract;
+- emit bridge `_ManifestRow` records and intermediate tile/value-count files and
+  return one `_LevelWriteResult`;
+- perform level-total reconciliation without yet duplicating C7's exact
+  per-value consolidation.
 
-### Focused tests
+The source manifest already identifies complete logical tiles independently of
+their physical shards. C5b therefore routes tile descriptors to bridge output
+buckets and reads the referenced rows; it does not redistribute individual
+points merely because C3 required a source-to-Exact shuffle.
 
-Cover exact-only small sources, sparse tiles, four-child parent formation, the
-same-geometry bridge, dense capacity truncation, a value-skewed fixture,
-the terminal one-tile capacity clamp, nested membership, and deterministic
-rebuilds. Verify that changing only value labels does not change sampled
-membership. Do not require one test for every possible number of occupied
-strata or values.
+### Focused tests and acceptance check
+
+Cover a sparse tile, a dense tile, one Exact tile split across several row
+groups, several tiles routed into one bridge output file, deterministic rebuilds,
+and value-neutral membership. On Xenium, record bridge build time, peak RSS,
+largest logical Exact tile rows and decoded bytes, bridge point count, bucket
+skew, and output size. Build any required Exact staging generation once and
+remove all acceptance artifacts afterward.
 
 ### Exit criteria
 
-- every generated level is a subset of the next finer level;
+- every bridge tile is a deterministic subset of its matching Exact tile;
+- every bridge tile contains at most 4,096 representatives;
+- bridge files, manifest rows, and intermediate counts reconcile at level-total
+  scope;
+- no original-source content scan or point-level reshuffle occurs;
+- the measured densest-tile memory cost supports the initial in-memory policy.
+
+## Slice C5c: four-child parent assembly and coordinate-rebasing spike
+
+### Goal
+
+Demonstrate that retained immediate-finer children can be assembled into one
+parent-coordinate candidate table and passed to the same C5a sampler before the
+complete spatial pyramid writer is implemented.
+
+### Contract
+
+Immediate-finer child tiles are manifest and IO units used to assemble the
+parent candidate set; they are **not** sampling strata. A parent has twice the
+child tile edge and receives candidates from up to four children. Rebase each
+child's coordinates into the parent before sampling:
+
+```text
+parent_x_rel = child_offset_x * child_tile_size + child_x_rel
+parent_y_rel = child_offset_y * child_tile_size + child_y_rel
+```
+
+where each child offset is zero or one and follows deterministically from the
+parent and child tile indices. Assign the combined candidates to the parent's
+own 16 × 16 microgrid and invoke `_select_sampled_tile_indices` with the parent
+level, tile key, tile size, and target. Each child geometrically covers an 8 × 8
+region of that parent grid, but allocation is performed over the complete set
+of occupied parent microgrid cells. There is no separate child-level allocation
+stage and no `value_id` influence.
+
+The pure spike consumes bounded in-memory child candidate tables and returns
+selected indices or rows only. It writes no persistent level. Every parent
+winner must already belong to the immediate finer level, establishing nested
+membership by construction.
+
+### Focused tests and exit criteria
+
+Cover one through four occupied children, coordinate rebasing for all four child
+quadrants, parent boundaries and upper-edge clamping, unequal child counts,
+coincident coordinates, deterministic ties, value-label changes, and input-child
+ordering. Approve the rebasing rule and prove that the generic sampler gives
+deterministic, value-neutral, nested membership with hard target compliance
+before C6.
+
+## Slice C6: complete nested spatial pyramid from the bridge
+
+### Goal
+
+Starting from the completed bridge, build every planned spatial level from
+retained immediate-finer candidates without rescanning `points.parquet`.
+
+### Implement
+
+- 1,024-at-8,192, 2,048-at-16,384, and 4,096-at-32,768 spatial levels;
+- later edge/capacity-doubling levels when required by the plan;
+- the terminal one-tile capacity clamp when required by the plan;
+- manifest-driven parent formation from up to four immediate-finer child tiles;
+- C5c parent assembly and coordinate rebasing followed by the C5a generic
+  16 × 16 current-tile sampler;
+- unchanged `point_id` and `value_id` propagation;
+- self-contained payloads at every level;
+- the C3 physical sharding and manifest-row contract for sampled levels;
+- derive every spatial level's physical `bucket_count` independently as
+  `ceil(level.point_count_upper_bound / target_rows_per_output_bucket)`, with a
+  minimum of one;
+- flat intermediate tile/value-count files emitted while sampled tiles are
+  written, with only file descriptors retained and no additional level scan;
+- process one complete parent candidate set at a time, accepting the documented
+  in-memory logical-tile policy rather than adding speculative streaming.
+
+### Focused tests
+
+Cover exact-only and bridge-terminal plans, sparse parents, one through four
+occupied children, dense capacity truncation, a value-skewed fixture, the
+terminal one-tile capacity clamp, nested membership, and deterministic rebuilds.
+Verify that changing only value labels does not change sampled membership. Do
+not require one test for every possible number of occupied strata or values.
+
+### Exit criteria
+
+- every generated spatial level is a subset of the next finer level;
 - all representatives retain their exact-level identity and value;
 - every sampled tile respects its effective per-tile capacity;
 - the coarsest total respects the global overview budget;
@@ -1537,8 +1731,8 @@ ValidatedPointsSource + resolved logical planning arguments
   once after the initial source guard;
 - generate a fresh cache-generation ID;
 - create and own a unique sibling staging directory;
-- pass the resulting immutable plan records to C3, C6, and C7 without rebuilding
-  validation facts;
+- pass the resulting immutable plan records to C3, C5b, C6, and C7 without
+  rebuilding validation facts;
 - fail the final metadata-only source guard after staged validation and before
   completion;
 - write `COMPLETED` only after every preceding step succeeds;
@@ -1641,7 +1835,7 @@ Approve:
 ### Gate B: after C3
 
 Decision on 2026-08-07: approved. The Dask writer satisfies the initial Xenium
-acceptance target; keep Dask, defer optional C4 indefinitely, and proceed to C5.
+acceptance target; keep Dask, defer optional C4 indefinitely, and proceed to C5a.
 The measured bucket skew and peak RSS do not justify a strict oversized-bucket
 fallback or file rollover in the first implementation.
 
@@ -1667,13 +1861,16 @@ Approve:
 - coordinate reconstruction tolerance;
 - exact-writer performance viability.
 
-### Gate C: after C5
+### Gate C: after C5c
 
 Approve:
 
 - sampler name and version;
-- bridge and spatial stratification;
-- proportional spatial-stratum target allocation with no `value_id` influence;
+- the shared C5a 16 × 16 current-tile microgrid at every sampled level;
+- C5c child assembly, parent-coordinate rebasing, and boundary behavior;
+- the initial one-complete-current-tile in-memory policy and C5b Xenium memory
+  evidence;
+- proportional microgrid-cell target allocation with no `value_id` influence;
 - hash, seed, tie-breaking, and output ordering;
 - deterministic, nested, spatial, value-neutral, and capacity behavior.
 
@@ -1723,10 +1920,12 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Review the implemented **C2: minimal exact-level construction contracts**, then
-write the detailed specifications for **C3: Dask exact-level writer and
-acceptance benchmark**. Open optional C4 only if Gate B records a concrete Dask
-limitation and a measurable success criterion for direct PyArrow. The public
-builder still applies the agreed logical defaults later; version strings,
-public result models, and construction-specific errors remain deferred to their
-consuming slices. Do not settle sampler details prematurely.
+Specify and implement **C5a: generic 16 × 16 sampled-tile contract and pure
+in-memory sampler**. Freeze the pure value-independent selection API,
+proportional integer allocation, shared current-tile-relative microgrid,
+versioned SplitMix64 priority payload, deterministic ties and output order, and
+the initial one-complete-current-tile memory contract. Demonstrate it first on
+the same-geometry bridge before integrating Parquet IO in C5b; C5c then owns
+four-child assembly and rebasing into parent-relative coordinates.
+Optional C4 remains deferred indefinitely unless new evidence identifies a
+concrete Dask limitation and measurable PyArrow success criterion.
