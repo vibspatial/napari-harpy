@@ -274,7 +274,8 @@ concrete:
 src/napari_harpy/core/multi_scale_cache_points/
   builder.py
   writer_models.py
-  exact_level.py
+  exact_writer.py
+  hashing.py
   sampling.py
   parquet_writer.py
   manifest.py
@@ -286,7 +287,10 @@ as an Arrow schema or after Gate D freezes the complete manifest and
 metadata schema; C1 must not create it merely to mirror the legacy module.
 
 C1 owns `build_plan.py` and its private plan records. Small helpers should remain
-in their consuming module rather than creating speculative modules.
+in their consuming module rather than creating speculative modules. `hashing.py`
+becomes concrete in C5a because the Exact bucket mapping and sampling priority
+share the same vectorized SplitMix64 transform while retaining separate
+versioned method names and payload contracts.
 
 Focused tests remain under:
 
@@ -1421,10 +1425,40 @@ returned indices to the complete payload, thereby propagating `value_id`
 unchanged while making it impossible for the selection kernel to use values
 during allocation or ranking.
 
+The selector contract is:
+
+- `x_rel`, `y_rel`, and `point_ids` are one-dimensional NumPy arrays with the
+  same length;
+- coordinate arrays are numeric and finite, and `point_ids` has dtype
+  `uint64`;
+- `level` is an integer in the supported non-negative serialized `int16` range,
+  `tile_x` and `tile_y` are integers in the `uint32` range, and `tile_size` and
+  `target` are positive integers;
+- coordinates must lie in the closed interval `[0, tile_size]`; the inclusive
+  upper edge exists only to accept a source coordinate just below the boundary
+  that rounded to `tile_size` in the stored `float32` payload;
+- globally unique `point_id` values are an upstream cache invariant and are not
+  rescanned for uniqueness inside every sampler call;
+- empty input returns an empty `np.intp` array;
+- nonempty input returns exactly `min(candidate_count, target)` original row
+  indices, ordered by the corresponding ascending `point_id` values.
+
+Assign coordinates to the fixed microgrid as:
+
+```text
+cell_x = min(floor(float64(x_rel) * 16 / tile_size), 15)
+cell_y = min(floor(float64(y_rel) * 16 / tile_size), 15)
+cell_id = cell_y * 16 + cell_x
+```
+
+Reject negative coordinates and coordinates greater than `tile_size`; do not
+silently clamp general out-of-range input. Only an exact upper-edge value maps
+to cell 15. Calculate the cell coordinate in `float64` so the classification is
+not changed by another intermediate `float32` rounding.
+
 If a tile contains at most `target` candidates, retain every candidate and
-return its indices in ascending `point_id` order. Otherwise, derive microgrid
-coordinates from `x_rel` and `y_rel`; clamp a coordinate rounded onto the upper
-tile edge into the last cell.
+return its indices in ascending `point_id` order. Otherwise, use these cell IDs
+for proportional allocation and selection.
 
 ### Exact proportional allocation
 
@@ -1477,11 +1511,57 @@ remain close to its observed share and reduces random local clumping or holes.
 ### Stable point priority
 
 Sampling randomness is a deterministic random-looking `uint64`, not a stateful
-random-number-generator sequence. Sequentially mix a sampling-domain constant,
-`SAMPLING_SEED`, serialized level, current tile key, microgrid-cell ID, and
-`point_id` through the vectorized SplitMix64 primitive. This sampling method is
-versioned separately from bucket placement even if both reuse the same mixing
-primitive.
+random-number-generator sequence. Extract the existing SplitMix64 transform
+from the Exact writer into the internal `hashing.py` module and use that shared
+primitive for both bucket placement and sampling. Its arithmetic remains the
+standard wraparound `uint64` transform already protected by the Exact bucket
+fixed vectors:
+
+```text
+z = value + 0x9E3779B97F4A7C15
+z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+splitmix64(value) = z ^ (z >> 31)
+```
+
+Freeze separate domains for candidate-point priorities and the cell priorities
+used to resolve equal allocation remainders:
+
+```python
+_POINT_PRIORITY_DOMAIN = np.uint64(0x48504F494E543031)  # "HPOINT01"
+_CELL_PRIORITY_DOMAIN = np.uint64(0x4843454C4C303031)   # "HCELL001"
+```
+
+The current tile and microgrid cell keys are:
+
+```text
+tile_key = (uint64(tile_y) << 32) | uint64(tile_x)
+cell_id = uint64(cell_y * 16 + cell_x)
+```
+
+For every candidate point, calculate its priority by this exact sequence:
+
+```text
+state = splitmix64(_POINT_PRIORITY_DOMAIN ^ uint64(SAMPLING_SEED))
+state = splitmix64(state ^ uint64(level))
+state = splitmix64(state ^ tile_key)
+state = splitmix64(state ^ cell_id)
+point_priority = splitmix64(state ^ point_id)
+```
+
+For deterministic ordering of cells with equal allocation remainders, calculate:
+
+```text
+state = splitmix64(_CELL_PRIORITY_DOMAIN ^ uint64(SAMPLING_SEED))
+state = splitmix64(state ^ uint64(level))
+state = splitmix64(state ^ tile_key)
+cell_priority = splitmix64(state ^ cell_id)
+```
+
+Sort equal-remainder cells by `(cell_priority, cell_id)`. The separate domains
+prevent the point and cell priorities from sharing one hash namespace. This
+sampling method is versioned separately from bucket placement even though both
+reuse the same SplitMix64 primitive.
 
 Within each allocated cell, rank by `(priority, point_id)` and retain the first
 allocated number. The globally unique `point_id` supplies deterministic
@@ -1503,13 +1583,18 @@ measured evidence that this assumption is insufficient.
 
 ### Focused tests and spike
 
-Use small uniform, spatially skewed, coincident-coordinate, and value-skewed
-candidate tables. Cover sparse retention, exact capacity, proportional integer
-allocation, equal-remainder ties, priority collisions, input-order invariance,
-different current tile sizes, and one logical tile assembled from differently
-divided physical shards. Verify that changing or permuting only value labels
-cannot affect the returned indices. Inspect a small selection of representative
-Xenium Exact tiles without running a broad microgrid parameter tournament.
+Keep C5a synthetic and pure. Cover sparse pass-through and exact capacity,
+proportional integer allocation, equal-remainder ties, controlled priority
+collisions, microgrid boundaries and scaling, coincident coordinates, and
+input-order invariance. Add fixed vectors for point and cell priorities so the
+versioned method cannot change accidentally. Compare selected `point_id` values,
+not raw returned index numbers, when candidate input order changes.
+
+Do not add value-label permutation tests: `value_id` is absent from the API, so
+value neutrality is enforced structurally. Do not test physical row-group shard
+division or perform a Xenium inspection in this pure slice. C5b already owns one
+Exact tile split across several row groups and its focused Xenium acceptance
+check.
 
 ### Exit criteria
 
@@ -1517,7 +1602,7 @@ Xenium Exact tiles without running a broad microgrid parameter tournament.
   encoding, and SplitMix64 priority are frozen;
 - the same logical candidates and parameters always produce the same winners;
 - every winner is an unchanged input candidate and capacity is never exceeded;
-- shard division and input order do not affect membership;
+- input order does not affect membership;
 - `value_id` is absent from the selection API and has no influence on winners;
 - the one-complete-current-tile memory assumption is accepted for C5b and C5c.
 
