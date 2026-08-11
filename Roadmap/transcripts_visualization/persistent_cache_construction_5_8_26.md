@@ -1862,6 +1862,42 @@ The selector therefore determines membership from the complete Exact tile,
 while applying its returned positions to `candidate_table` carries the matching
 `value_id` values into the Bridge payload unchanged.
 
+#### Bridge output contract
+
+For every reconstructed Exact tile, the persistent Bridge tile contains
+exactly:
+
+```python
+bridge_tile_count = min(
+    exact_tile_count,
+    bridge.max_points_per_tile,
+)
+```
+
+The initial Bridge plan sets `bridge.max_points_per_tile = 4_096`. Sparse Exact
+tiles therefore pass through with all their points, while denser tiles retain
+exactly 4,096 representatives. In both cases, write the selected rows with the
+unchanged shared point payload:
+
+```text
+x_rel:    float32
+y_rel:    float32
+value_id: uint32
+point_id: uint64
+```
+
+Because one Bridge tile contains at most 4,096 rows and the accepted physical
+row-group limit is 1,000,000 rows, every Bridge tile fits in exactly one
+physical Parquet row group. Every Bridge `_ManifestRow` consequently has
+`tile_shard = 0`. Its `row_group` remains the physical index within the current
+Bridge bucket file and advances across tiles, for example:
+
+```text
+row_group 0 -> tile A, tile_shard 0
+row_group 1 -> tile B, tile_shard 0
+row_group 2 -> tile C, tile_shard 0
+```
+
 Open one Bridge point writer and its companion intermediate tile/value-count
 writer for the current nonempty output bucket. Close both before advancing to
 the next bucket. This keeps only one output-writer pair and one complete
