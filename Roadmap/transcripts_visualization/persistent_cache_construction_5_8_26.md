@@ -1632,6 +1632,31 @@ Exact level, without rescanning the original Parquet source.
 
 ### Implement
 
+The minimal private entry point is:
+
+```python
+def _write_bridge_level(
+    exact_result: _LevelWriteResult,
+    plan: _PointsCacheBuildPlan,
+    *,
+    staging_directory: Path,
+) -> _LevelWriteResult:
+    ...
+```
+
+The bridge writer consumes only the staged Exact-level result, the immutable
+logical build plan, and the caller-owned staging directory. It does not receive
+`ValidatedPointsSource`: constructing the bridge reads the staged Exact point
+payload and must not revisit the original physical source. It also receives no
+shuffle-temporary directory or Dask worker setting because this first bridge
+implementation performs no shuffle and processes tiles sequentially. The
+sampling target is not a separate argument; it is the bridge level's
+`max_points_per_tile` in `_PointsCacheBuildPlan`.
+
+`exact_result.intermediate_tile_value_count_files` are not bridge inputs. They
+remain staged and unchanged for later consolidation with the intermediate
+count files produced by the bridge and subsequent sampled levels.
+
 - consume the Exact `_LevelWriteResult` and staged Exact point files;
 - group Exact manifest rows by logical `(tile_y, tile_x)` and read every shard
   belonging to one tile before sampling it;
