@@ -256,9 +256,9 @@ named review gates rather than guessed during implementation:
 - C5a approval of proportional allocation, deterministic integer-remainder
   behavior, the shared 16 × 16 sampled-tile microgrid, sampling priority
   payload, seed representation, and collision tie-breaking;
-- C5b evidence that one complete logical Exact tile is a viable initial memory
+- C5c evidence that one complete logical Exact tile is a viable initial memory
   unit on Xenium;
-- C5c approval of immediate-finer child assembly and coordinate rebasing into
+- C5d approval of immediate-finer child assembly and coordinate rebasing into
   the parent's shared microgrid;
 - bounded worker concurrency and memory limits;
 - whether the first public builder exposes progress and cancellation or remains
@@ -273,18 +273,21 @@ concrete:
 ```text
 src/napari_harpy/core/multi_scale_cache_points/
   builder.py
+  build_plan.py
   writer_models.py
+  writer_support.py
   exact_writer.py
+  bridge_writer.py
   hashing.py
   sampling.py
-  parquet_writer.py
   manifest.py
   publication.py
 ```
 
-`schema.py` is added only when C3 needs to materialize the locked point payload
-as an Arrow schema or after Gate D freezes the complete manifest and
-metadata schema; C1 must not create it merely to mirror the legacy module.
+`writer_support.py` is introduced only in C5b, when the already implemented
+Exact physical schemas and helpers have an agreed second consumer. The future
+complete manifest and metadata schemas remain deferred to C7 rather than being
+added merely to mirror the legacy module.
 
 C1 owns `build_plan.py` and its private plan records. Small helpers should remain
 in their consuming module rather than creating speculative modules. `hashing.py`
@@ -312,8 +315,9 @@ retained idea requires independent justification from this roadmap.
 | C3 | Implemented; Gate B approved Dask | Dask exact-level writer and acceptance benchmark | Yes | No |
 | C4 | Deferred indefinitely; not justified by Gate B | Direct-PyArrow exact-writer investigation, reopened only for a concrete Dask limitation | Yes | No |
 | C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
-| C5b | Planned | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
-| C5c | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
+| C5b | Planned | Level-neutral physical writer-support extraction | No | No |
+| C5c | Planned | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
+| C5d | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
 | C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
@@ -323,9 +327,9 @@ Each slice must be independently reviewable. C3 implements one credible writer
 rather than two competing engines. Gate B accepted its measured Dask writer, so
 C4 is deferred indefinitely unless new evidence identifies a concrete Dask
 limitation and measurable PyArrow success criterion. It does not block C5a or
-later work. C5a is the implemented pure sampled-tile selector, C5c remains a
-pure parent-assembly spike, and C5b is the first persistent sampled-level
-integration.
+later work. C5a is the implemented pure sampled-tile selector, C5b extracts the
+now-concrete level-neutral physical writer support, C5c is the first persistent
+sampled-level integration, and C5d remains a pure parent-assembly spike.
 
 ## Slice C1: pure grid and level build planning
 
@@ -793,7 +797,7 @@ C8 end-to-end builder
     │               ├── manifest_rows
     │               └── intermediate_tile_value_count_files
     │
-    ├── calls C5b Bridge writer
+    ├── calls C5c Bridge writer
     │       └── returns the Bridge _LevelWriteResult
     │
     ├── calls C6 spatial-level writers
@@ -1593,7 +1597,7 @@ not raw returned index numbers, when candidate input order changes.
 
 Do not add value-label permutation tests: `value_id` is absent from the API, so
 value neutrality is enforced structurally. Do not test physical row-group shard
-division or perform a Xenium inspection in this pure slice. C5b already owns one
+division or perform a Xenium inspection in this pure slice. C5c already owns one
 Exact tile split across several row groups and its focused Xenium acceptance
 check.
 
@@ -1605,7 +1609,7 @@ check.
 - every winner is an unchanged input candidate and capacity is never exceeded;
 - input order does not affect membership;
 - `value_id` is absent from the selection API and has no influence on winners;
-- the one-complete-current-tile memory assumption is accepted for C5b and C5c.
+- the one-complete-current-tile memory assumption is accepted for C5c and C5d.
 
 ### Implemented C5a result
 
@@ -1623,7 +1627,98 @@ microgrid boundary scaling, input-order invariance, controlled priority
 collisions, and representative invalid inputs. The existing Exact bucket fixed
 vector remains unchanged after extracting the shared SplitMix64 transform.
 
-## Slice C5b: persistent bridge-level construction and acceptance check
+## Slice C5b: level-neutral physical writer-support extraction
+
+### Goal
+
+Extract the physical cache-format machinery that is already concrete in the
+Exact writer before the persistent Bridge writer becomes its second consumer.
+This is a behavior-preserving internal refactor: it creates
+`writer_support.py`, but it does not create `bridge_writer.py`, read staged
+Exact rows, construct a sampled level, or change any persistent output.
+
+### Module responsibilities
+
+After this refactor, the construction modules have these boundaries:
+
+```text
+writer_models.py
+    immutable configuration and result records
+
+writer_support.py
+    shared physical schemas
+    bucket-count calculation
+    tile-to-bucket hashing
+    intermediate tile/value-count writer
+    bucket-file validation
+    level-result reconciliation
+
+exact_writer.py
+    original source -> Exact
+    source annotation and value-ID mapping
+    Dask disk shuffle and Exact bucket finalization
+
+bridge_writer.py
+    not created until C5c
+```
+
+Move the immutable `_BucketWriteResult` from `exact_writer.py` into
+`writer_models.py` beside `_ManifestRow`, `_IntermediateTileValueCountFile`, and
+`_LevelWriteResult`. Its documentation and accounting semantics become
+level-neutral; `_ExactLevelWriterConfig` remains explicitly Exact-specific.
+
+Move only the established physical primitives needed by both Exact and future
+sampled writers into `writer_support.py`:
+
+- rename `_EXACT_PAYLOAD_SCHEMA` to the level-neutral
+  `_POINT_PAYLOAD_SCHEMA` without changing its four fields, order, types, or
+  nullability;
+- move `_TILE_VALUE_COUNT_SCHEMA`, the intermediate-count directory and buffer
+  constants, `BUCKET_HASH_METHOD`, `TARGET_ROWS_PER_OUTPUT_BUCKET`, and the
+  shared maximum-row-group default;
+- move `_bucket_count_for_level` and `_tile_bucket_ids` without changing their
+  formulas, versioned hash, or fixed-vector output;
+- move `_IntermediateTileValueCountWriter` without changing its buffering,
+  Parquet encoding, row accounting, or close behavior;
+- make bucket-file validation level-neutral while preserving its schema,
+  footer, manifest-row, and intermediate-descriptor checks;
+- make level-result reconciliation level-neutral while preserving point-count,
+  value-count, manifest ordering, duplicate physical-key, and duplicate
+  intermediate-path checks.
+
+`exact_writer.py` imports those primitives and retains all original-source,
+normalization, identity, annotation, Dask, shuffle, and Exact-finalization
+logic. `DEFAULT_DASK_WORKER_COUNT`, `_ExactLevelWriterConfig`, and the
+reconciliation against `ValidatedPointsSource.row_count` remain Exact-owned.
+
+Do not introduce an abstract base writer, writer-engine hierarchy, callback
+pipeline, generic tile scheduler, placeholder Bridge module, or new public
+export. This slice extracts only code with a concrete Exact consumer and an
+agreed C5c Bridge consumer.
+
+### Focused tests and exit criteria
+
+Run the existing focused Exact-writer and writer-model tests after the move.
+Retain the fixed tile-hash vector and focused intermediate-count, schema,
+manifest-ordering, row-count, and duplicate-key coverage. Add direct tests only
+where moving a shared boundary exposes a real untested behavior; do not test
+module import structure or Python itself.
+
+C5b is complete when:
+
+- the Exact writer produces the same schemas, hash assignments, filenames,
+  row-group layout, manifest rows, intermediate counts, and reconciliation
+  results as before;
+- no persistent method name, default, or cache-format field changes;
+- `exact_writer.py` no longer owns level-neutral physical schemas, hashing,
+  count writing, file validation, or result reconciliation;
+- `writer_support.py` contains no source-reading, Dask-shuffle, sampling, or
+  Bridge-specific behavior;
+- `bridge_writer.py` does not yet exist;
+- focused tests and lint checks pass. A new Xenium benchmark is unnecessary for
+  this behavior-preserving refactor.
+
+## Slice C5c: persistent bridge-level construction and acceptance check
 
 ### Goal
 
@@ -1786,7 +1881,7 @@ With this reconstruction contract, the bridge writer must:
   per-value consolidation.
 
 The source manifest already identifies complete logical tiles independently of
-their physical shards. C5b therefore routes tile descriptors to bridge output
+their physical shards. C5c therefore routes tile descriptors to bridge output
 buckets and reads the referenced rows; it does not redistribute individual
 points merely because C3 required a source-to-Exact shuffle.
 
@@ -1808,7 +1903,7 @@ remove all acceptance artifacts afterward.
 - no original-source content scan or point-level reshuffle occurs;
 - the measured densest-tile memory cost supports the initial in-memory policy.
 
-## Slice C5c: four-child parent assembly and coordinate-rebasing spike
+## Slice C5d: four-child parent assembly and coordinate-rebasing spike
 
 ### Goal
 
@@ -1863,7 +1958,7 @@ retained immediate-finer candidates without rescanning `points.parquet`.
 - later edge/capacity-doubling levels when required by the plan;
 - the terminal one-tile capacity clamp when required by the plan;
 - manifest-driven parent formation from up to four immediate-finer child tiles;
-- C5c parent assembly and coordinate rebasing followed by the C5a generic
+- C5d parent assembly and coordinate rebasing followed by the C5a generic
   16 × 16 current-tile sampler;
 - unchanged `point_id` and `value_id` propagation;
 - self-contained payloads at every level;
@@ -2003,7 +2098,7 @@ ValidatedPointsSource + resolved logical planning arguments
   once after the initial source guard;
 - generate a fresh cache-generation ID;
 - create and own a unique sibling staging directory;
-- pass the resulting immutable plan records to C3, C5b, C6, and C7 without
+- pass the resulting immutable plan records to C3, C5c, C6, and C7 without
   rebuilding validation facts;
 - fail the final metadata-only source guard after staged validation and before
   completion;
@@ -2133,14 +2228,14 @@ Approve:
 - coordinate reconstruction tolerance;
 - exact-writer performance viability.
 
-### Gate C: after C5c
+### Gate C: after C5d
 
 Approve:
 
 - sampler name and version;
 - the shared C5a 16 × 16 current-tile microgrid at every sampled level;
-- C5c child assembly, parent-coordinate rebasing, and boundary behavior;
-- the initial one-complete-current-tile in-memory policy and C5b Xenium memory
+- C5d child assembly, parent-coordinate rebasing, and boundary behavior;
+- the initial one-complete-current-tile in-memory policy and C5c Xenium memory
   evidence;
 - proportional microgrid-cell target allocation with no `value_id` influence;
 - hash, seed, tie-breaking, and output ordering;
@@ -2192,11 +2287,11 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C5b: persistent bridge-level construction and acceptance
-check**. Consume staged Exact tile shards, apply the implemented C5a selector,
-write the self-contained bridge payload and intermediate tile/value counts, and
-perform the focused Xenium acceptance check without rescanning the original
-Parquet source. C5c then owns four-child assembly and rebasing into
-parent-relative coordinates.
+Specify and implement **C5b: level-neutral physical writer-support extraction**.
+Move the agreed immutable bucket result and shared physical schemas, hashing,
+count writing, file validation, and result reconciliation out of
+`exact_writer.py` without changing Exact behavior or creating
+`bridge_writer.py`. C5c then constructs and measures the persistent Bridge, and
+C5d owns four-child assembly and rebasing into parent-relative coordinates.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.

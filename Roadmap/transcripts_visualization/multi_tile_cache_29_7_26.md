@@ -489,11 +489,14 @@ Only add modules when their responsibility becomes concrete. Cache
 construction is expected to add:
 
 ```text
-  schema.py
   builder.py
-  exact_level.py
+  build_plan.py
+  writer_models.py
+  writer_support.py
+  exact_writer.py
+  bridge_writer.py
+  hashing.py
   sampling.py
-  parquet_writer.py
   manifest.py
   publication.py
 ```
@@ -1486,7 +1489,7 @@ signature and point-identity policy record that scope.
 
 ### Sampling contract
 
-The C5a and C5c sampling slices produce one concrete, versioned sampler
+The C5a and C5d sampling slices produce one concrete, versioned sampler
 specification. They refine, but do not reopen, this fixed algorithm family:
 
 1. start from candidates retained by the next finer level;
@@ -1513,7 +1516,7 @@ current tile key, stable stratum key, and `point_id`. A stateful random-number
 generator, input row or partition arrival order, and Python's randomized
 `hash()` must not affect membership. C5a freezes the shared current-tile
 microgrid, priority payload encoding, integer allocation, collision
-tie-breaking, and final deterministic sort. C5c approves immediate-finer child
+tie-breaking, and final deterministic sort. C5d approves immediate-finer child
 assembly and coordinate rebasing into the parent before the same sampler is
 invoked.
 
@@ -1548,7 +1551,7 @@ The sampler must define behavior when:
 The initial bridge builder may load and concatenate every physical shard of one
 logical Exact tile before sampling. It processes one complete logical tile at a
 time and does not promise a source-size-independent bound for a pathological
-tile. C5b measures the densest Xenium tile before Gate C; a two-pass or streaming
+tile. C5c measures the densest Xenium tile before Gate C; a two-pass or streaming
 top-k sampler is deferred unless that evidence shows the initial assumption is
 insufficient.
 
@@ -2577,12 +2580,14 @@ pure C5a sampler are implemented, Gate B accepted Dask, and optional C4 is
 deferred indefinitely unless new evidence identifies a concrete Dask
 limitation. Continue with:
 
-1. construct and measure the persistent bridge level in C5b;
-2. approve four-child parent assembly and coordinate rebasing in C5c;
-3. build the remaining spatial pyramid in C6;
-4. consolidate sparse tile/value counts and validate the staged cache in C7;
-5. implement guarded publication in C8;
-6. run the complete multilevel Xenium benchmark and hardening in C9.
+1. extract the level-neutral physical writer support in C5b without changing
+   Exact behavior;
+2. construct and measure the persistent bridge level in C5c;
+3. approve four-child parent assembly and coordinate rebasing in C5d;
+4. build the remaining spatial pyramid in C6;
+5. consolidate sparse tile/value counts and validate the staged cache in C7;
+6. implement guarded publication in C8;
+7. run the complete multilevel Xenium benchmark and hardening in C9.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused
