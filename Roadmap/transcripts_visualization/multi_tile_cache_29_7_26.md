@@ -501,6 +501,7 @@ construction is expected to add:
     support.py
     exact.py
     bridge.py
+    spatial.py
 ```
 
 The private `writer/` subpackage groups physical writer contracts and

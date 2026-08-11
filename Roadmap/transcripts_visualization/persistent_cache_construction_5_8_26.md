@@ -284,6 +284,7 @@ src/napari_harpy/core/multi_scale_cache_points/
     support.py
     exact.py
     bridge.py
+    spatial.py
 ```
 
 The private `writer/` subpackage groups physical writer contracts and
@@ -2118,18 +2119,145 @@ of occupied parent microgrid cells. There is no separate child-level allocation
 stage and no `value_id` influence.
 
 The pure spike consumes bounded in-memory child candidate tables and returns
-selected indices or rows only. It writes no persistent level. Every parent
-winner must already belong to the immediate finer level, establishing nested
-membership by construction.
+one sampled, parent-relative payload table. It writes no persistent level.
+Every parent winner must already belong to the immediate finer level,
+establishing nested membership by construction.
+
+### Private in-memory boundary
+
+Implement the pure parent assembly in `writer/spatial.py`. This module is
+introduced only when the concrete parent-assembly behavior is implemented; it
+contains no persistent spatial writer yet.
+
+Represent each supplied child with a small private helper record:
+
+```python
+@dataclass(frozen=True)
+class _ParentTileChild:
+    tile_x: int
+    tile_y: int
+    points: pa.Table
+```
+
+The logical coordinates are carried separately because the shared four-column
+point payload does not repeat `tile_x` or `tile_y`. `points` must be a nonempty
+table with the level-neutral point payload:
+
+```text
+x_rel:    float32
+y_rel:    float32
+value_id: uint32
+point_id: uint64
+```
+
+The minimal pure entry point is:
+
+```python
+def _assemble_and_sample_parent_tile(
+    children: tuple[_ParentTileChild, ...],
+    *,
+    finer: _LevelBuildPlan,
+    parent: _LevelBuildPlan,
+    parent_tile_x: int,
+    parent_tile_y: int,
+) -> pa.Table:
+    ...
+```
+
+Return the complete sampled parent payload rather than indices into an internal
+concatenated candidate table. The future persistent spatial writer needs the
+rebased four-column rows, while indices into this helper's temporary table have
+no useful external meaning.
+
+### Parent and child geometry
+
+Require `parent` to be the immediate planned level after `finer`, to have
+`kind == _LevelKind.SPATIAL`, and to satisfy:
+
+```text
+parent.level     = finer.level + 1
+parent.tile_size = 2 * finer.tile_size
+```
+
+The parent coordinates must lie inside the parent grid and its effective
+`max_points_per_tile` must be present. For parent `(parent_x, parent_y)`, the
+only valid immediate-finer child coordinates are:
+
+```text
+(2 * parent_x,     2 * parent_y)
+(2 * parent_x + 1, 2 * parent_y)
+(2 * parent_x,     2 * parent_y + 1)
+(2 * parent_x + 1, 2 * parent_y + 1)
+```
+
+Accept one through four nonempty children because dataset edges and sparse
+regions may omit child tiles. Reject duplicate child coordinates, children
+outside the finer grid, and children belonging to another parent. Ignore input
+tuple order: process valid children deterministically by `(tile_y, tile_x)`.
+
+### Coordinate rebasing and selection
+
+For each child, derive offsets in `{0, 1}` and rebase its coordinates:
+
+```python
+child_offset_x = child.tile_x - 2 * parent_tile_x
+child_offset_y = child.tile_y - 2 * parent_tile_y
+
+parent_x_rel = child_offset_x * finer.tile_size + child_x_rel
+parent_y_rel = child_offset_y * finer.tile_size + child_y_rel
+```
+
+Perform rebasing calculations in `float64`, then represent the parent-relative
+payload coordinates as `float32`. Child upper-edge values are allowed by the
+existing coordinate contract: a parent upper-edge value may equal
+`parent.tile_size` and the sampler assigns it to the final microgrid cell.
+
+Concatenate the rebased child payloads in deterministic child order and call
+the existing `_select_sampled_tile_indices(...)` with:
+
+```text
+level     = parent.level
+tile_x    = parent_tile_x
+tile_y    = parent_tile_y
+tile_size = parent.tile_size
+target    = parent.max_points_per_tile
+```
+
+Apply the returned positions to all four columns. `value_id` is carried into
+the output but is never supplied to the selector. The resulting table must:
+
+- use the shared four-column point schema;
+- contain exactly
+  `min(sum(child.points.num_rows), parent.max_points_per_tile)` rows;
+- be ordered by ascending `point_id`;
+- preserve every retained candidate's `point_id` and `value_id`;
+- contain parent-relative `x_rel` and `y_rel`;
+- be a subset of the supplied immediate-finer candidates.
+
+### Explicit exclusions
+
+This is a pure bounded in-memory spike. It performs no Parquet IO, manifest
+construction, bucket assignment, intermediate value counting, Dask execution,
+persistent level writing, or Xenium benchmark. C6 owns those concerns after the
+parent assembly and rebasing contract is approved.
 
 ### Focused tests and exit criteria
 
-Cover one through four occupied children, coordinate rebasing for all four child
-quadrants, parent boundaries and upper-edge clamping, unequal child counts,
-coincident coordinates, deterministic ties, value-label changes, and input-child
-ordering. Approve the rebasing rule and prove that the generic sampler gives
-deterministic, value-neutral, nested membership with hard target compliance
-before C6.
+Keep the focused coverage compact:
+
+- sparse four-child assembly covering all coordinate quadrants and unchanged
+  membership;
+- dense parent sampling with hard capacity compliance, nested membership,
+  deterministic point ordering, and unchanged membership after changing only
+  `value_id`;
+- identical output after permuting child input order;
+- one through three occupied children at sparse or edge parents, including
+  parent upper-edge clamping;
+- rejection of duplicate, out-of-grid, or geometrically unrelated children.
+
+C5d is complete when the rebasing rule is approved and the existing generic
+sampler is shown to produce deterministic, value-neutral, nested parent output
+with exact capacity behavior, without introducing persistent construction.
 
 ## Slice C6: complete nested spatial pyramid from the bridge
 
