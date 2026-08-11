@@ -227,6 +227,18 @@ def _write_bridge_bucket(
     filename_width: int,
     parquet_files: dict[str, pq.ParquetFile],
 ) -> _BucketWriteResult:
+    """Write one nonempty physical Bridge output bucket.
+
+    The supplied Exact tiles have already been assigned to this bucket and are
+    ordered by logical ``(tile_y, tile_x)``. Each tile is reconstructed from its
+    staged Exact row groups, retained completely when sparse or sampled down to
+    the Bridge capacity when dense, written as one point row group, and counted
+    by ``value_id`` in the bucket's companion intermediate file.
+
+    After closing both Parquet writers, the files are validated against their
+    descriptors. The returned result contains the bucket's manifest rows,
+    intermediate-count descriptor, and reconciliable point totals.
+    """
     bridge_capacity = bridge.max_points_per_tile
     if bridge_capacity is None:  # guarded by the level-plan contract
         raise ValueError("The Bridge level must have a per-tile capacity.")
