@@ -1657,9 +1657,50 @@ sampling target is not a separate argument; it is the bridge level's
 remain staged and unchanged for later consolidation with the intermediate
 count files produced by the bridge and subsequent sampled levels.
 
-- consume the Exact `_LevelWriteResult` and staged Exact point files;
-- group Exact manifest rows by logical `(tile_y, tile_x)` and read every shard
-  belonging to one tile before sampling it;
+#### Logical Exact-tile reconstruction
+
+`_LevelWriteResult` is level-neutral, so the bridge writer must first require
+that every input `_ManifestRow` belongs to Exact level 0. It then groups the
+manifest rows by logical `(tile_y, tile_x)` and processes those logical tiles in
+deterministic `(tile_y, tile_x)` order.
+
+One dense logical Exact tile may occupy several physical Parquet row groups.
+Within each tile group, order the manifest rows by `tile_shard` and require the
+logical shard numbers to be exactly `0, 1, ..., n - 1`. `row_group` identifies
+the physical row-group index inside `level_file`; it is not the tile-local
+ordering key and need not start at zero for a tile. For example:
+
+```text
+level_file          row_group  tile_y  tile_x  tile_shard  n_points
+------------------  ---------  ------  ------  ----------  ---------
+bucket-007.parquet          1       8       4           0  1,000,000
+bucket-007.parquet          2       8       4           1    145,108
+```
+
+Read only the referenced row groups and their complete point payload:
+
+```text
+x_rel:    float32
+y_rel:    float32
+value_id: uint32
+point_id: uint64
+```
+
+Concatenate the decoded shards in `tile_shard` order into one complete
+candidate tile. Its decoded row count must equal the sum of the grouped
+manifest `n_points`; a missing, duplicate, or inconsistent shard fails before
+sampling. The C5a selector receives `x_rel`, `y_rel`, and `point_id`, and its
+returned original-row positions are applied to the complete four-column table.
+This preserves each selected point's `value_id` without allowing values to
+influence membership.
+
+Exact and Bridge use the same planned `tile_size`, which is 512 under the
+initial default, and the same logical tile coordinates. Copy `x_rel` and `y_rel`
+unchanged into the Bridge payload. Coordinate rebasing begins only when several
+immediate-finer child tiles are assembled into one larger spatial parent.
+
+With this reconstruction contract, the bridge writer must:
+
 - process logical tiles in deterministic order and keep only one complete
   candidate tile in memory at a time;
 - apply the C5a indices to the complete four-column point payload, preserving
