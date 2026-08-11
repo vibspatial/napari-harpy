@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points.writer_models import (
+from napari_harpy.core.multi_scale_cache_points.writer.models import (
     _ExactLevelWriterConfig,
     _IntermediateTileValueCountFile,
     _ManifestRow,

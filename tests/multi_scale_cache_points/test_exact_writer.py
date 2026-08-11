@@ -8,30 +8,25 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points.exact_writer as exact_writer_module
+import napari_harpy.core.multi_scale_cache_points.writer.exact as exact_writer_module
+import napari_harpy.core.multi_scale_cache_points.writer.support as writer_support_module
 from napari_harpy.core.multi_scale_cache_points import (
     ParquetPointsSource,
     PointColumnSelection,
     ValidatedPointsSource,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points.build_plan import (
-    _LevelBuildPlan,
-    _LevelKind,
-    _plan_points_cache,
-)
-from napari_harpy.core.multi_scale_cache_points.exact_writer import (
-    BUCKET_HASH_METHOD,
+from napari_harpy.core.multi_scale_cache_points.build_plan import _plan_points_cache
+from napari_harpy.core.multi_scale_cache_points.models import ParquetSourceFile, ParquetSourceRowGroup
+from napari_harpy.core.multi_scale_cache_points.writer.exact import (
     _annotate_source_partition,
-    _bucket_count_for_level,
-    _tile_bucket_ids,
     _write_exact_level,
 )
-from napari_harpy.core.multi_scale_cache_points.models import ParquetSourceFile, ParquetSourceRowGroup
-from napari_harpy.core.multi_scale_cache_points.writer_models import (
+from napari_harpy.core.multi_scale_cache_points.writer.models import (
     _ExactLevelWriterConfig,
     _LevelWriteResult,
 )
+from napari_harpy.core.multi_scale_cache_points.writer.support import _bucket_count_for_level
 
 
 def _dictionary_array(dictionary: list[str], indices: list[int]) -> pa.DictionaryArray:
@@ -82,7 +77,7 @@ def _build_exact(
 ) -> tuple[_LevelWriteResult, ValidatedPointsSource, Path, Path]:
     validated = validate_parquet_points_source(source, max_batch_rows=2)
     plan = _plan_points_cache(validated, leaf_tile_size=10, overview_point_budget=10)
-    monkeypatch.setattr(exact_writer_module, "TARGET_ROWS_PER_OUTPUT_BUCKET", 2)
+    monkeypatch.setattr(writer_support_module, "TARGET_ROWS_PER_OUTPUT_BUCKET", 2)
     exact = plan.levels[0]
     config = _ExactLevelWriterConfig(
         bucket_count=_bucket_count_for_level(exact),
@@ -120,28 +115,6 @@ def _read_written_points(result: _LevelWriteResult, staging: Path) -> list[dict[
                 }
             )
     return sorted(rows, key=lambda row: row["point_id"])
-
-
-def test_splitmix64_bucket_mapping_has_fixed_vectors() -> None:
-    tile_x = np.array([0, 1, 0, 1, 2**32 - 1], dtype=np.uint32)
-    tile_y = np.array([0, 0, 1, 1, 2**32 - 1], dtype=np.uint32)
-
-    assert BUCKET_HASH_METHOD == "harpy-tile-splitmix64-v1"
-    assert _tile_bucket_ids(tile_x, tile_y, bucket_count=69).tolist() == [16, 26, 43, 1, 2]
-
-
-def test_bucket_count_targets_two_million_rows() -> None:
-    level = _LevelBuildPlan(
-        level=0,
-        kind=_LevelKind.EXACT,
-        tile_size=512,
-        grid_width=1,
-        grid_height=1,
-        max_points_per_tile=None,
-        point_count_upper_bound=136_578_750,
-    )
-
-    assert _bucket_count_for_level(level) == 69
 
 
 def test_annotation_reconstructs_fractional_coordinates_within_float32_tolerance() -> None:
@@ -243,7 +216,7 @@ def test_exact_writer_propagates_finalizer_failure_and_cleans_shuffle_directory(
     source = _source(tmp_path)
     validated = validate_parquet_points_source(source, max_batch_rows=2)
     plan = _plan_points_cache(validated, leaf_tile_size=10, overview_point_budget=10)
-    monkeypatch.setattr(exact_writer_module, "TARGET_ROWS_PER_OUTPUT_BUCKET", 2)
+    monkeypatch.setattr(writer_support_module, "TARGET_ROWS_PER_OUTPUT_BUCKET", 2)
     config = _ExactLevelWriterConfig(
         bucket_count=_bucket_count_for_level(plan.levels[0]),
         max_rows_per_row_group=2,

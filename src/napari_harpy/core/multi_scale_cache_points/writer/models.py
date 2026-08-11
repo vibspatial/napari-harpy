@@ -104,6 +104,34 @@ class _IntermediateTileValueCountFile:
 
 
 @dataclass(frozen=True)
+class _BucketWriteResult:
+    """Return the compact output of one physical bucket writer.
+
+    Parameters
+    ----------
+    bucket_id
+        Deterministic identifier used to order independently written buckets.
+    point_count
+        Number of point rows consumed and written by this bucket. The level
+        coordinator reconciles the sum across buckets with its expected count.
+    value_count_total
+        Number of points represented by this bucket's intermediate tile/value
+        counts. The level coordinator independently reconciles its bucket sum.
+    manifest_rows
+        Descriptors for the physical point row groups written by this bucket.
+    intermediate_value_count_file
+        Descriptor for the bucket's intermediate tile/value-count file, or
+        ``None`` when the bucket is empty and writes no files.
+    """
+
+    bucket_id: int
+    point_count: int
+    value_count_total: int
+    manifest_rows: tuple[_ManifestRow, ...]
+    intermediate_value_count_file: _IntermediateTileValueCountFile | None
+
+
+@dataclass(frozen=True)
 class _LevelWriteResult:
     """Manifest rows and intermediate count-file descriptors for one level."""
 
