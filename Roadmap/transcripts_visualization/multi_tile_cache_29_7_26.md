@@ -1558,7 +1558,7 @@ The sampler must define behavior when:
 The initial bridge builder may load and concatenate every physical shard of one
 logical Exact tile before sampling. It processes one complete logical tile at a
 time and does not promise a source-size-independent bound for a pathological
-tile. C5c measures the densest Xenium tile before Gate C; a two-pass or streaming
+tile. C5c measured the densest Xenium tile before Gate C; a two-pass or streaming
 top-k sampler is deferred unless that evidence shows the initial assumption is
 insufficient.
 
@@ -2583,16 +2583,18 @@ Phase 0 validation and its Gate D are complete. Do not add the new builder to
 specification.
 
 The next work follows the construction companion roadmap. C1 through C3, the
-pure C5a sampler, and the C5b level-neutral physical writer support are
-implemented. Gate B accepted Dask, and optional C4 is deferred indefinitely
-unless new evidence identifies a concrete Dask limitation. Continue with:
+pure C5a sampler, the C5b level-neutral physical writer support, and the C5c
+persistent Bridge writer are implemented. The one-shot Xenium Bridge build
+retained 21,722,305 representatives in 25.99 seconds with 76,087,296 bytes of
+incremental peak RSS. Gate B accepted Dask, and optional C4 is deferred
+indefinitely unless new evidence identifies a concrete Dask limitation.
+Continue with:
 
-1. construct and measure the persistent bridge level in C5c;
-2. approve four-child parent assembly and coordinate rebasing in C5d;
-3. build the remaining spatial pyramid in C6;
-4. consolidate sparse tile/value counts and validate the staged cache in C7;
-5. implement guarded publication in C8;
-6. run the complete multilevel Xenium benchmark and hardening in C9.
+1. approve four-child parent assembly and coordinate rebasing in C5d;
+2. build the remaining spatial pyramid in C6;
+3. consolidate sparse tile/value counts and validate the staged cache in C7;
+4. implement guarded publication in C8;
+5. run the complete multilevel Xenium benchmark and hardening in C9.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused

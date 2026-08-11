@@ -320,7 +320,7 @@ retained idea requires independent justification from this roadmap.
 | C4 | Deferred indefinitely; not justified by Gate B | Direct-PyArrow exact-writer investigation, reopened only for a concrete Dask limitation | Yes | No |
 | C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
 | C5b | Implemented | Level-neutral physical writer-support extraction | No | No |
-| C5c | Planned | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
+| C5c | Implemented | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
 | C5d | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
@@ -332,9 +332,8 @@ rather than two competing engines. Gate B accepted its measured Dask writer, so
 C4 is deferred indefinitely unless new evidence identifies a concrete Dask
 limitation and measurable PyArrow success criterion. It does not block C5a or
 later work. C5a is the implemented pure sampled-tile selector, C5b has extracted
-the now-concrete level-neutral physical writer support, C5c is the first
-persistent sampled-level integration, and C5d remains a pure parent-assembly
-spike.
+the now-concrete level-neutral physical writer support, and C5c has implemented
+the first persistent sampled level. C5d remains a pure parent-assembly spike.
 
 ## Slice C1: pure grid and level build planning
 
@@ -2047,6 +2046,49 @@ output, intermediate count files, and measurement artifacts afterward.
 - no original-source content scan or point-level reshuffle occurs;
 - the measured densest-tile memory cost supports the initial in-memory policy.
 
+### Implemented C5c result
+
+Implemented on 2026-08-11 in `writer/bridge.py`. The sequential Bridge writer
+groups Exact manifest rows into complete logical tiles, validates contiguous
+tile shards, assigns tile descriptors to independently sized Bridge buckets,
+reads only the referenced staged Exact row groups, applies the C5a selector,
+and writes the shared four-column payload plus intermediate tile/value counts.
+It does not receive `ValidatedPointsSource`, revisit the original source, or
+perform a point-level shuffle.
+
+Focused synthetic coverage reconstructs a sparse tile and a 4,100-point Exact
+tile split across three physical row groups. It verifies sparse pass-through,
+the 4,096 representative cap, one Bridge row group per tile, deterministic
+membership and ordering across equivalent builds, identical decoded
+intermediate counts across equivalent builds, and unchanged selected
+`point_id` membership after changing every candidate's `value_id`. The focused
+planner, sampler, writer-model, writer-support, Exact-writer, and Bridge-writer
+suite passed 54 tests.
+
+The Xenium acceptance source contained 136,578,750 Exact points. One prepared
+Exact staging generation was reused for one separately measured Bridge build
+with the accepted defaults. Results were:
+
+- Bridge build time: 25.99 seconds;
+- Bridge representatives: 21,722,305;
+- Bridge point files: 17, containing 7,294 tile-owned row groups;
+- largest, average, and smallest bucket rows: 1,440,970, 1,277,783, and
+  1,157,736 respectively;
+- Bridge point-file bytes: 331,497,230;
+- intermediate tile/value-count files: 17, containing 9,253,957 rows and
+  50,453,095 bytes;
+- total incremental staged bytes: 381,950,325;
+- largest logical Exact tile: 108,598 rows and 2,171,960 decoded Arrow bytes;
+- measured incremental Bridge peak RSS: 76,087,296 bytes, from a
+  2,704,228,352-byte post-Exact baseline to 2,780,315,648 bytes.
+
+Validation and the one-time Exact preparation took 2.44 and 56.53 seconds
+respectively and were excluded from the Bridge interval. The modest decoded
+dense-tile size and incremental peak RSS support the initial one-complete-tile
+in-memory policy. The benchmark's prepared Exact generation, Bridge output,
+intermediate count files, JSON report, and temporary directories were removed
+after the measurement.
+
 ## Slice C5d: four-child parent assembly and coordinate-rebasing spike
 
 ### Goal
@@ -2431,11 +2473,10 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C5c: persistent bridge-level construction and acceptance
-check**. Consume staged Exact tile shards through the C5b shared writer support,
-apply the implemented C5a selector, write the self-contained Bridge payload and
-intermediate tile/value counts, and perform the focused Xenium acceptance check
-without rescanning the original Parquet source. C5d then owns four-child
-assembly and rebasing into parent-relative coordinates.
+Specify and implement **C5d: four-child parent assembly and coordinate-rebasing
+spike**. Consume bounded in-memory immediate-finer child tables, rebase their
+relative coordinates into one parent tile, and apply the implemented C5a
+selector without persistent output. Gate C then reviews the sampling and
+parent-assembly contracts before C6 constructs the complete spatial pyramid.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
