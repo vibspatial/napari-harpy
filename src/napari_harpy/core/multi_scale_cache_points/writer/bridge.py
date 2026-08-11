@@ -273,6 +273,8 @@ def _write_bridge_bucket(
                 )
                 sampled_table = candidate_table.take(pa.array(selected_indices, type=pa.int64()))
                 expected_rows = min(candidate_table.num_rows, bridge_capacity)
+                # Sparse tiles retain every candidate; dense tiles must fill the
+                # Bridge capacity exactly.
                 if sampled_table.num_rows != expected_rows:
                     raise ValueError("The sampled Bridge tile does not match its planned capacity.")
 
