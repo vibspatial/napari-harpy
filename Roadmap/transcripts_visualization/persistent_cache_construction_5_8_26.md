@@ -1912,14 +1912,50 @@ With this reconstruction contract, the bridge writer must:
 - write self-contained bridge point files with the C3 payload and tile-owned
   row-group contract;
 - emit bridge `_ManifestRow` records and intermediate tile/value-count files and
-  return one `_LevelWriteResult`;
-- perform level-total reconciliation without yet duplicating C7's exact
-  per-value consolidation.
+  return one `_LevelWriteResult`.
 
 The source manifest already identifies complete logical tiles independently of
 their physical shards. C5c therefore routes tile descriptors to bridge output
 buckets and reads the referenced rows; it does not redistribute individual
 points merely because C3 required a source-to-Exact shuffle.
+
+#### Bridge reconciliation
+
+Calculate the expected complete Bridge row count from the grouped Exact input
+manifest before returning:
+
+```python
+expected_bridge_rows = sum(
+    min(exact_tile_rows, bridge.max_points_per_tile)
+    for exact_tile_rows in logical_exact_tile_row_counts
+)
+```
+
+After every Bridge bucket has been written and its physical files validated,
+require:
+
+```text
+sum(Bridge manifest n_points)
+    = sum(written Bridge point rows)
+    = sum(intermediate tile/value-count n_points)
+    = expected_bridge_rows
+```
+
+The level result must also satisfy all of the following:
+
+- every output manifest row has `level == bridge.level`;
+- every logical Bridge tile contains at most
+  `bridge.max_points_per_tile` rows;
+- every physical `(level_file, row_group)` key is unique;
+- every intermediate tile/value-count file path is unique.
+
+Intermediate counts are exact for the representatives retained in the Bridge
+output, and their complete `n_points` total must reconcile as above. Do not
+compare sampled per-`value_id` totals with
+`ValidatedPointsSource.value_table`: sampling intentionally changes those
+totals, and `ValidatedPointsSource` is not an input to `_write_bridge_level`.
+Exact source per-value reconciliation remains a later C7 responsibility and
+must not be duplicated here.
 
 ### Focused tests and acceptance check
 
