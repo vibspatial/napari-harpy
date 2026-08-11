@@ -1699,16 +1699,85 @@ initial default, and the same logical tile coordinates. Copy `x_rel` and `y_rel`
 unchanged into the Bridge payload. Coordinate rebasing begins only when several
 immediate-finer child tiles are assembled into one larger spatial parent.
 
+#### Deterministic bucket-major traversal
+
+Derive the Bridge output bucket count independently from the Bridge level's
+conservative point-count upper bound:
+
+```python
+bucket_count = max(
+    1,
+    ceil(bridge.point_count_upper_bound / 2_000_000),
+)
+```
+
+`bucket_count` sizes the physical Parquet output-file groups; it does not define
+the logical tile grid. Exact and Bridge share the same logical tile geometry,
+but Exact retains every point while Bridge retains at most 4,096 points per
+tile. Bridge therefore normally has a much smaller point-count upper bound and
+needs fewer physical buckets. Reusing the larger Exact bucket count would
+unnecessarily fragment the sampled level into many small files.
+
+The denominator is the accepted `target_rows_per_output_bucket`. Map each
+complete logical tile to one of these buckets with the existing versioned
+deterministic tile hash. Group only the small logical-tile descriptors at this
+stage; do not redistribute or buffer their point rows.
+
+The Exact manifest and the Bridge hash serve different purposes. A grouped
+tile's Exact manifest rows identify the staged `level_file` and physical
+`row_group` values from which its candidate shards must be read. Its logical
+`(tile_y, tile_x)` coordinates are then hashed with the independently derived
+Bridge `bucket_count` to determine where the sampled tile will be written. Do
+not reuse or infer the Bridge destination from the Exact bucket filename: the
+same logical tile can belong to different physical bucket numbers at the two
+levels because their bucket counts differ.
+
+Construction then follows this exact order:
+
+```text
+Exact manifest rows
+    -> group into complete logical tiles
+    -> assign every tile descriptor to its Bridge output bucket
+    -> process output buckets by ascending bucket_id
+    -> process each bucket's tiles by (tile_y, tile_x)
+    -> read one complete Exact tile
+    -> sample it
+    -> append it to the current Bridge point and intermediate-count files
+```
+
+For each tile descriptor assigned to the current Bridge bucket, the sampling
+handoff is conceptually:
+
+```python
+candidate_table = concatenate_exact_shards_in_tile_shard_order(...)
+selected_indices = _select_sampled_tile_indices(
+    candidate_table["x_rel"],
+    candidate_table["y_rel"],
+    candidate_table["point_id"],
+    level=bridge.level,
+    tile_x=tile_x,
+    tile_y=tile_y,
+    tile_size=bridge.tile_size,
+    target=bridge.max_points_per_tile,
+)
+sampled_table = candidate_table.take(selected_indices)
+```
+
+The selector therefore determines membership from the complete Exact tile,
+while applying its returned positions to `candidate_table` carries the matching
+`value_id` values into the Bridge payload unchanged.
+
+Open one Bridge point writer and its companion intermediate tile/value-count
+writer for the current nonempty output bucket. Close both before advancing to
+the next bucket. This keeps only one output-writer pair and one complete
+candidate tile active at a time. It also gives deterministic physical output
+ordering without another point-level shuffle or a shuffle-temporary directory.
+
 With this reconstruction contract, the bridge writer must:
 
-- process logical tiles in deterministic order and keep only one complete
-  candidate tile in memory at a time;
+- keep only one complete candidate tile in memory at a time;
 - apply the C5a indices to the complete four-column point payload, preserving
   `point_id` and `value_id` unchanged;
-- derive the bridge output `bucket_count` independently from the bridge
-  `point_count_upper_bound` and the accepted target rows per output bucket;
-- group complete sampled tiles by their deterministic destination bucket using
-  manifest metadata rather than performing another point-level shuffle;
 - write self-contained bridge point files with the C3 payload and tile-owned
   row-group contract;
 - emit bridge `_ManifestRow` records and intermediate tile/value-count files and
