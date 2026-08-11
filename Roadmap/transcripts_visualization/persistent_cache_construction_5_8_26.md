@@ -274,20 +274,24 @@ concrete:
 src/napari_harpy/core/multi_scale_cache_points/
   builder.py
   build_plan.py
-  writer_models.py
-  writer_support.py
-  exact_writer.py
-  bridge_writer.py
   hashing.py
   sampling.py
   manifest.py
   publication.py
+  writer/
+    __init__.py
+    models.py
+    support.py
+    exact.py
+    bridge.py
 ```
 
-`writer_support.py` is introduced only in C5b, when the already implemented
-Exact physical schemas and helpers have an agreed second consumer. The future
-complete manifest and metadata schemas remain deferred to C7 rather than being
-added merely to mirror the legacy module.
+The private `writer/` subpackage groups physical writer contracts and
+implementations without creating another exported API. `writer/support.py` is
+introduced only in C5b, when the already implemented Exact physical schemas and
+helpers have an agreed second consumer. The future complete manifest and
+metadata schemas remain deferred to C7 rather than being added merely to mirror
+the legacy module.
 
 C1 owns `build_plan.py` and its private plan records. Small helpers should remain
 in their consuming module rather than creating speculative modules. `hashing.py`
@@ -315,7 +319,7 @@ retained idea requires independent justification from this roadmap.
 | C3 | Implemented; Gate B approved Dask | Dask exact-level writer and acceptance benchmark | Yes | No |
 | C4 | Deferred indefinitely; not justified by Gate B | Direct-PyArrow exact-writer investigation, reopened only for a concrete Dask limitation | Yes | No |
 | C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
-| C5b | Planned | Level-neutral physical writer-support extraction | No | No |
+| C5b | Implemented | Level-neutral physical writer-support extraction | No | No |
 | C5c | Planned | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
 | C5d | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
@@ -327,9 +331,10 @@ Each slice must be independently reviewable. C3 implements one credible writer
 rather than two competing engines. Gate B accepted its measured Dask writer, so
 C4 is deferred indefinitely unless new evidence identifies a concrete Dask
 limitation and measurable PyArrow success criterion. It does not block C5a or
-later work. C5a is the implemented pure sampled-tile selector, C5b extracts the
-now-concrete level-neutral physical writer support, C5c is the first persistent
-sampled-level integration, and C5d remains a pure parent-assembly spike.
+later work. C5a is the implemented pure sampled-tile selector, C5b has extracted
+the now-concrete level-neutral physical writer support, C5c is the first
+persistent sampled-level integration, and C5d remains a pure parent-assembly
+spike.
 
 ## Slice C1: pure grid and level build planning
 
@@ -567,7 +572,7 @@ Freeze only the private records and engine-independent boundaries required by
 the first exact-level writer. This slice performs no point-row IO and does not
 implement or compare writer engines.
 
-The contracts below are implemented in `writer_models.py`, covered by the
+The contracts below are implemented in `writer/models.py`, covered by the
 focused `test_writer_models.py` module, and remain private package internals.
 The existing `max_source_rows_per_partition` field is removed before C3: the
 file-aligned source contract below deliberately does not expose a nominal row
@@ -1634,7 +1639,7 @@ vector remains unchanged after extracting the shared SplitMix64 transform.
 Extract the physical cache-format machinery that is already concrete in the
 Exact writer before the persistent Bridge writer becomes its second consumer.
 This is a behavior-preserving internal refactor: it creates
-`writer_support.py`, but it does not create `bridge_writer.py`, read staged
+`writer/support.py`, but it does not create `writer/bridge.py`, read staged
 Exact rows, construct a sampled level, or change any persistent output.
 
 ### Module responsibilities
@@ -1642,10 +1647,10 @@ Exact rows, construct a sampled level, or change any persistent output.
 After this refactor, the construction modules have these boundaries:
 
 ```text
-writer_models.py
+writer/models.py
     immutable configuration and result records
 
-writer_support.py
+writer/support.py
     shared physical schemas
     bucket-count calculation
     tile-to-bucket hashing
@@ -1653,22 +1658,22 @@ writer_support.py
     bucket-file validation
     level-result reconciliation
 
-exact_writer.py
+writer/exact.py
     original source -> Exact
     source annotation and value-ID mapping
     Dask disk shuffle and Exact bucket finalization
 
-bridge_writer.py
+writer/bridge.py
     not created until C5c
 ```
 
-Move the immutable `_BucketWriteResult` from `exact_writer.py` into
-`writer_models.py` beside `_ManifestRow`, `_IntermediateTileValueCountFile`, and
+Move the immutable `_BucketWriteResult` from the Exact writer into
+`writer/models.py` beside `_ManifestRow`, `_IntermediateTileValueCountFile`, and
 `_LevelWriteResult`. Its documentation and accounting semantics become
 level-neutral; `_ExactLevelWriterConfig` remains explicitly Exact-specific.
 
 Move only the established physical primitives needed by both Exact and future
-sampled writers into `writer_support.py`:
+sampled writers into `writer/support.py`:
 
 - rename `_EXACT_PAYLOAD_SCHEMA` to the level-neutral
   `_POINT_PAYLOAD_SCHEMA` without changing its four fields, order, types, or
@@ -1686,7 +1691,7 @@ sampled writers into `writer_support.py`:
   value-count, manifest ordering, duplicate physical-key, and duplicate
   intermediate-path checks.
 
-`exact_writer.py` imports those primitives and retains all original-source,
+`writer/exact.py` imports those primitives and retains all original-source,
 normalization, identity, annotation, Dask, shuffle, and Exact-finalization
 logic. `DEFAULT_DASK_WORKER_COUNT`, `_ExactLevelWriterConfig`, and the
 reconciliation against `ValidatedPointsSource.row_count` remain Exact-owned.
@@ -1710,13 +1715,29 @@ C5b is complete when:
   row-group layout, manifest rows, intermediate counts, and reconciliation
   results as before;
 - no persistent method name, default, or cache-format field changes;
-- `exact_writer.py` no longer owns level-neutral physical schemas, hashing,
+- `writer/exact.py` no longer owns level-neutral physical schemas, hashing,
   count writing, file validation, or result reconciliation;
-- `writer_support.py` contains no source-reading, Dask-shuffle, sampling, or
+- `writer/support.py` contains no source-reading, Dask-shuffle, sampling, or
   Bridge-specific behavior;
-- `bridge_writer.py` does not yet exist;
+- `writer/bridge.py` does not yet exist;
 - focused tests and lint checks pass. A new Xenium benchmark is unnecessary for
   this behavior-preserving refactor.
+
+### Implemented C5b result
+
+Implemented on 2026-08-11. The internal `writer/support.py` owns the shared
+point and tile/value-count schemas, physical writer constants, deterministic
+tile bucket mapping and bucket-count calculation, intermediate count writer,
+bucket-file validation, and level-result reconciliation. `_BucketWriteResult`
+now lives with the other immutable records in `writer/models.py`.
+
+`writer/exact.py` retains source annotation, value and point identity mapping,
+Dask redistribution, and Exact bucket finalization while importing the shared
+physical support. The Exact benchmark script and focused tests now import the
+level-neutral constants and helpers from their owning module. The fixed bucket
+hash vector, Exact point payload, row-group layout, manifest rows, and
+intermediate counts remain unchanged. No Bridge module or sampled output was
+introduced, and the large Xenium benchmark was not rerun.
 
 ## Slice C5c: persistent bridge-level construction and acceptance check
 
@@ -2376,11 +2397,11 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C5b: level-neutral physical writer-support extraction**.
-Move the agreed immutable bucket result and shared physical schemas, hashing,
-count writing, file validation, and result reconciliation out of
-`exact_writer.py` without changing Exact behavior or creating
-`bridge_writer.py`. C5c then constructs and measures the persistent Bridge, and
-C5d owns four-child assembly and rebasing into parent-relative coordinates.
+Specify and implement **C5c: persistent bridge-level construction and acceptance
+check**. Consume staged Exact tile shards through the C5b shared writer support,
+apply the implemented C5a selector, write the self-contained Bridge payload and
+intermediate tile/value counts, and perform the focused Xenium acceptance check
+without rescanning the original Parquet source. C5d then owns four-child
+assembly and rebasing into parent-relative coordinates.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
