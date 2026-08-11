@@ -256,9 +256,9 @@ representative sampling, not evidence that a value is biologically absent.
 Every sampled level uses a 16 × 16 microgrid relative to its current logical
 tile, subject to the focused C5a pure-sampler spike and Gate C approval. The
 bridge is the first concrete demonstration; later spatial levels use the same
-sampler after child coordinates have been rebased into their parent tile. C5a
-also freezes the concrete priority-hash payload. The following structural
-guarantees are already fixed:
+sampler after immediate-finer coordinates have been rebased into their coarser
+tile. C5a also freezes the concrete priority-hash payload. The following
+structural guarantees are already fixed:
 
 - deterministic results for the same source identity and build parameters;
 - actual source rows as representatives;
@@ -344,11 +344,11 @@ tile_capacity(k) = 4,096 * 2**k
 ```
 
 where `k = 0` is the sampled finest bridge. Doubling the tile edge combines
-approximately four child tiles, while doubling rather than quadrupling the
-capacity. A fully populated parent therefore retains approximately half the
-representatives in its four children. This targets an approximately twofold
-point-count change between adjacent sampled LODs rather than an automatic
-fourfold change.
+approximately four immediate-finer tiles, while doubling rather than
+quadrupling the capacity. A fully populated coarser tile therefore retains
+approximately half the representatives in its four contributing finer tiles.
+This targets an approximately twofold point-count change between adjacent
+sampled LODs rather than an automatic fourfold change.
 
 Capacity is a hard maximum, not a fill target. Sparse tiles retain all available
 candidates. Every sampled level is built from representatives retained by the
@@ -1236,7 +1236,7 @@ x_origin = floor(x_min / leaf_tile_size) * leaf_tile_size
 y_origin = floor(y_min / leaf_tile_size) * leaf_tile_size
 ```
 
-All levels reuse this origin. The rule keeps doubled child and parent grids
+All levels reuse this origin. The rule keeps adjacent finer and coarser grids
 aligned and produces non-negative tile indices for finite negative or positive
 source coordinates. C1 implements this contract in its IO-free build planner.
 
@@ -1512,10 +1512,10 @@ specification. They refine, but do not reopen, this fixed algorithm family:
 Every sampled logical tile uses a fixed 16 × 16 microgrid relative to that
 current output tile. The intrinsic cell edge therefore scales with tile
 geometry: 32 for the 512-unit bridge, 64 for L1, 128 for L2, and 256 for L3.
-Immediate-finer child tiles remain the manifest and IO units used to assemble a
-spatial parent's candidates, but they are not sampling strata. Their retained
-coordinates are rebased into the parent tile, and the combined candidates are
-assigned directly to the parent's 16 × 16 microgrid.
+Immediate-finer tiles remain the manifest and IO units used to assemble a
+coarser spatial tile's candidates, but they are not sampling strata. Their
+retained coordinates are rebased into the coarser tile, and the combined
+candidates are assigned directly to that tile's 16 × 16 microgrid.
 
 Sampling randomness comes only from
 `harpy-value-neutral-stratified-splitmix64-v1` with the initial fixed uint64 seed
@@ -1524,9 +1524,9 @@ current tile key, stable stratum key, and `point_id`. A stateful random-number
 generator, input row or partition arrival order, and Python's randomized
 `hash()` must not affect membership. C5a freezes the shared current-tile
 microgrid, priority payload encoding, integer allocation, collision
-tie-breaking, and final deterministic sort. C5d approves immediate-finer child
-assembly and coordinate rebasing into the parent before the same sampler is
-invoked.
+tie-breaking, and final deterministic sort. C5d approves immediate-finer tile
+assembly and coordinate rebasing into the coarser tile before the same sampler
+is invoked.
 
 For stratum count `n_i`, total candidate count `N`, and target `K`, allocate
 `(K * n_i) // N` representatives first, then assign remaining slots by descending
@@ -2591,7 +2591,7 @@ incremental peak RSS. Gate B accepted Dask, and optional C4 is deferred
 indefinitely unless new evidence identifies a concrete Dask limitation.
 Continue with:
 
-1. approve four-child parent assembly and coordinate rebasing in C5d;
+1. approve immediate-finer tile assembly and coarser-coordinate rebasing in C5d;
 2. build the remaining spatial pyramid in C6;
 3. consolidate sparse tile/value counts and validate the staged cache in C7;
 4. implement guarded publication in C8;

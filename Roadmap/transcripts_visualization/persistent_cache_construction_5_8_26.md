@@ -258,8 +258,8 @@ named review gates rather than guessed during implementation:
   payload, seed representation, and collision tie-breaking;
 - C5c evidence that one complete logical Exact tile is a viable initial memory
   unit on Xenium;
-- C5d approval of immediate-finer child assembly and coordinate rebasing into
-  the parent's shared microgrid;
+- C5d approval of immediate-finer tile assembly and coordinate rebasing into
+  the coarser tile's shared microgrid;
 - bounded worker concurrency and memory limits;
 - whether the first public builder exposes progress and cancellation or remains
   a synchronous core API wrapped later by product integration;
@@ -322,7 +322,7 @@ retained idea requires independent justification from this roadmap.
 | C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
 | C5b | Implemented | Level-neutral physical writer-support extraction | No | No |
 | C5c | Implemented | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
-| C5d | Planned | Four-child parent assembly and coordinate-rebasing spike | No original-source rescan | No |
+| C5d | Planned | Immediate-finer tile assembly and coarser-coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
 | C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
@@ -334,7 +334,8 @@ C4 is deferred indefinitely unless new evidence identifies a concrete Dask
 limitation and measurable PyArrow success criterion. It does not block C5a or
 later work. C5a is the implemented pure sampled-tile selector, C5b has extracted
 the now-concrete level-neutral physical writer support, and C5c has implemented
-the first persistent sampled level. C5d remains a pure parent-assembly spike.
+the first persistent sampled level. C5d remains a pure finer-to-coarser
+assembly spike.
 
 ## Slice C1: pure grid and level build planning
 
@@ -399,7 +400,7 @@ grid_height = max_tile_y + 1
 ```
 
 This rule applies unchanged to negative source coordinates. The shared origin
-and edge-doubling schedule keep child and parent grids aligned.
+and edge-doubling schedule keep adjacent finer and coarser grids aligned.
 
 ### Private plan contracts
 
@@ -1379,8 +1380,8 @@ L2:     fewer again
 Overview: very few tiles, eventually one
 ```
 
-Four 512-unit bridge tiles form one 1,024-unit L1 parent. Each bridge child
-therefore covers an 8 × 8 quadrant of the parent's 16 × 16 microgrid:
+Four 512-unit Bridge tiles form one 1,024-unit L1 tile. Each finer Bridge tile
+therefore covers an 8 × 8 quadrant of the coarser L1 tile's 16 × 16 microgrid:
 
 ```text
 L1 microgrid: 16 × 16
@@ -1421,13 +1422,14 @@ def _select_sampled_tile_indices(
 
 The implementation docstring must preserve this distinction between the
 logical tile hierarchy and the transient microgrid. It should include the
-Bridge/L1/L2 tile-and-cell-size table and the four-child L1 schematic above, or
+Bridge/L1/L2 tile-and-cell-size table and the four-finer-tile L1 schematic
+above, or
 an equivalently clear compact explanation, so callers do not mistake microgrid
 cells for cache tiles.
 
 `x_rel` and `y_rel` are relative to the current output tile. For the bridge,
 Exact and output tile geometry match. For a later spatial level, its writer
-first rebases immediate-finer child coordinates into the parent tile before
+first rebases immediate-finer tile coordinates into the coarser tile before
 calling this same function.
 
 The function deliberately does not accept `value_id`. The caller applies the
@@ -1584,7 +1586,7 @@ and Dask partitioning must not influence membership.
 The first implementation may load and concatenate every candidate contributing
 to one current output tile before sampling. For the bridge this means all
 physical row-group shards belonging to one logical Exact tile. For a later
-spatial level it means candidates from up to four immediate-finer child tiles.
+spatial level it means candidates from up to four immediate-finer tiles.
 It does not promise a source-size-independent bound for a pathological tile.
 Peak candidate memory is therefore bounded by the densest current-level
 candidate tile encountered, not by the complete dataset and not by
@@ -1827,7 +1829,7 @@ influence membership.
 Exact and Bridge use the same planned `tile_size`, which is 512 under the
 initial default, and the same logical tile coordinates. Copy `x_rel` and `y_rel`
 unchanged into the Bridge payload. Coordinate rebasing begins only when several
-immediate-finer child tiles are assembled into one larger spatial parent.
+immediate-finer tiles are assembled into one larger spatial tile.
 
 #### Deterministic bucket-major traversal
 
@@ -2090,50 +2092,50 @@ in-memory policy. The benchmark's prepared Exact generation, Bridge output,
 intermediate count files, JSON report, and temporary directories were removed
 after the measurement.
 
-## Slice C5d: four-child parent assembly and coordinate-rebasing spike
+## Slice C5d: immediate-finer tile assembly and coarser-coordinate-rebasing spike
 
 ### Goal
 
-Demonstrate that retained immediate-finer children can be assembled into one
-parent-coordinate candidate table and passed to the same C5a sampler before the
-complete spatial pyramid writer is implemented.
+Demonstrate that retained immediate-finer tiles can be assembled into one
+coarser-coordinate candidate table and passed to the same C5a sampler before
+the complete spatial pyramid writer is implemented.
 
 ### Contract
 
-Immediate-finer child tiles are manifest and IO units used to assemble the
-parent candidate set; they are **not** sampling strata. A parent has twice the
-child tile edge and receives candidates from up to four children. Rebase each
-child's coordinates into the parent before sampling:
+Immediate-finer tiles are manifest and IO units used to assemble the coarser
+candidate set; they are **not** sampling strata. A coarser tile has twice the
+finer tile edge and receives candidates from up to four finer tiles. Rebase
+each finer tile's coordinates into the coarser tile before sampling:
 
 ```text
-parent_x_rel = child_offset_x * child_tile_size + child_x_rel
-parent_y_rel = child_offset_y * child_tile_size + child_y_rel
+coarser_x_rel = tile_offset_x * finer_tile_size + finer_x_rel
+coarser_y_rel = tile_offset_y * finer_tile_size + finer_y_rel
 ```
 
-where each child offset is zero or one and follows deterministically from the
-parent and child tile indices. Assign the combined candidates to the parent's
-own 16 × 16 microgrid and invoke `_select_sampled_tile_indices` with the parent
-level, tile key, tile size, and target. Each child geometrically covers an 8 × 8
-region of that parent grid, but allocation is performed over the complete set
-of occupied parent microgrid cells. There is no separate child-level allocation
-stage and no `value_id` influence.
+where each tile offset is zero or one and follows deterministically from the
+coarser and finer tile indices. Assign the combined candidates to the coarser
+tile's own 16 × 16 microgrid and invoke `_select_sampled_tile_indices` with the
+coarser level, tile key, tile size, and target. Each finer tile geometrically
+covers an 8 × 8 region of that coarser grid, but allocation is performed over
+the complete set of occupied coarser-tile microgrid cells. There is no separate
+finer-tile allocation stage and no `value_id` influence.
 
-The pure spike consumes bounded in-memory child candidate tables and returns
-one sampled, parent-relative payload table. It writes no persistent level.
-Every parent winner must already belong to the immediate finer level,
-establishing nested membership by construction.
+The pure spike consumes bounded in-memory finer-tile candidate tables and
+returns one sampled, coarser-relative payload table. It writes no persistent
+level. Every coarser-level winner must already belong to the immediate finer
+level, establishing nested membership by construction.
 
 ### Private in-memory boundary
 
-Implement the pure parent assembly in `writer/spatial.py`. This module is
-introduced only when the concrete parent-assembly behavior is implemented; it
-contains no persistent spatial writer yet.
+Implement the pure finer-to-coarser assembly in `writer/spatial.py`. This
+module is introduced only when the concrete assembly behavior is implemented;
+it contains no persistent spatial writer yet.
 
-Represent each supplied child with a small private helper record:
+Represent each supplied finer tile with a small private helper record:
 
 ```python
 @dataclass(frozen=True)
-class _ParentTileChild:
+class _FinerLevelTile:
     tile_x: int
     tile_y: int
     points: pa.Table
@@ -2153,74 +2155,77 @@ point_id: uint64
 The minimal pure entry point is:
 
 ```python
-def _assemble_and_sample_parent_tile(
-    children: tuple[_ParentTileChild, ...],
+def _assemble_and_sample_coarser_tile(
+    finer_tiles: tuple[_FinerLevelTile, ...],
     *,
-    finer: _LevelBuildPlan,
-    parent: _LevelBuildPlan,
-    parent_tile_x: int,
-    parent_tile_y: int,
+    finer_level: _LevelBuildPlan,
+    coarser_level: _LevelBuildPlan,
+    coarser_tile_x: int,
+    coarser_tile_y: int,
 ) -> pa.Table:
     ...
 ```
 
-Return the complete sampled parent payload rather than indices into an internal
-concatenated candidate table. The future persistent spatial writer needs the
-rebased four-column rows, while indices into this helper's temporary table have
-no useful external meaning.
+Return the complete sampled coarser-level payload rather than indices into an
+internal concatenated candidate table. The future persistent spatial writer
+needs the rebased four-column rows, while indices into this helper's temporary
+table have no useful external meaning.
 
-### Parent and child geometry
+### Finer and coarser geometry
 
-Require `parent` to be the immediate planned level after `finer`, to have
-`kind == _LevelKind.SPATIAL`, and to satisfy:
-
-```text
-parent.level     = finer.level + 1
-parent.tile_size = 2 * finer.tile_size
-```
-
-The parent coordinates must lie inside the parent grid and its effective
-`max_points_per_tile` must be present. For parent `(parent_x, parent_y)`, the
-only valid immediate-finer child coordinates are:
+Require `coarser_level` to be the immediate planned level after `finer_level`,
+to have `kind == _LevelKind.SPATIAL`, and to satisfy:
 
 ```text
-(2 * parent_x,     2 * parent_y)
-(2 * parent_x + 1, 2 * parent_y)
-(2 * parent_x,     2 * parent_y + 1)
-(2 * parent_x + 1, 2 * parent_y + 1)
+coarser_level.level     = finer_level.level + 1
+coarser_level.tile_size = 2 * finer_level.tile_size
 ```
 
-Accept one through four nonempty children because dataset edges and sparse
-regions may omit child tiles. Reject duplicate child coordinates, children
-outside the finer grid, and children belonging to another parent. Ignore input
-tuple order: process valid children deterministically by `(tile_y, tile_x)`.
+The coarser tile coordinates must lie inside the coarser level's grid and its
+effective `max_points_per_tile` must be present. For coarser tile
+`(coarser_tile_x, coarser_tile_y)`, the only valid immediate-finer coordinates
+are:
+
+```text
+(2 * coarser_tile_x,     2 * coarser_tile_y)
+(2 * coarser_tile_x + 1, 2 * coarser_tile_y)
+(2 * coarser_tile_x,     2 * coarser_tile_y + 1)
+(2 * coarser_tile_x + 1, 2 * coarser_tile_y + 1)
+```
+
+Accept one through four nonempty finer tiles because dataset edges and sparse
+regions may omit tiles. Reject duplicate finer-tile coordinates, tiles outside
+the finer grid, and tiles that do not contribute to the requested coarser tile.
+Ignore input tuple order: process valid finer tiles deterministically by
+`(tile_y, tile_x)`.
 
 ### Coordinate rebasing and selection
 
-For each child, derive offsets in `{0, 1}` and rebase its coordinates:
+For each finer tile, derive offsets in `{0, 1}` and rebase its coordinates:
 
 ```python
-child_offset_x = child.tile_x - 2 * parent_tile_x
-child_offset_y = child.tile_y - 2 * parent_tile_y
+tile_offset_x = finer_tile.tile_x - 2 * coarser_tile_x
+tile_offset_y = finer_tile.tile_y - 2 * coarser_tile_y
 
-parent_x_rel = child_offset_x * finer.tile_size + child_x_rel
-parent_y_rel = child_offset_y * finer.tile_size + child_y_rel
+coarser_x_rel = tile_offset_x * finer_level.tile_size + finer_x_rel
+coarser_y_rel = tile_offset_y * finer_level.tile_size + finer_y_rel
 ```
 
-Perform rebasing calculations in `float64`, then represent the parent-relative
-payload coordinates as `float32`. Child upper-edge values are allowed by the
-existing coordinate contract: a parent upper-edge value may equal
-`parent.tile_size` and the sampler assigns it to the final microgrid cell.
+Perform rebasing calculations in `float64`, then represent the coarser-relative
+payload coordinates as `float32`. Finer-tile upper-edge values are allowed by
+the existing coordinate contract: a coarser-tile upper-edge value may equal
+`coarser_level.tile_size` and the sampler assigns it to the final microgrid
+cell.
 
-Concatenate the rebased child payloads in deterministic child order and call
+Concatenate the rebased finer-tile payloads in deterministic tile order and call
 the existing `_select_sampled_tile_indices(...)` with:
 
 ```text
-level     = parent.level
-tile_x    = parent_tile_x
-tile_y    = parent_tile_y
-tile_size = parent.tile_size
-target    = parent.max_points_per_tile
+level     = coarser_level.level
+tile_x    = coarser_tile_x
+tile_y    = coarser_tile_y
+tile_size = coarser_level.tile_size
+target    = coarser_level.max_points_per_tile
 ```
 
 Apply the returned positions to all four columns. `value_id` is carried into
@@ -2228,10 +2233,10 @@ the output but is never supplied to the selector. The resulting table must:
 
 - use the shared four-column point schema;
 - contain exactly
-  `min(sum(child.points.num_rows), parent.max_points_per_tile)` rows;
+  `min(sum(finer_tile.points.num_rows), coarser_level.max_points_per_tile)` rows;
 - be ordered by ascending `point_id`;
 - preserve every retained candidate's `point_id` and `value_id`;
-- contain parent-relative `x_rel` and `y_rel`;
+- contain coarser-relative `x_rel` and `y_rel`;
 - be a subset of the supplied immediate-finer candidates.
 
 ### Explicit exclusions
@@ -2239,25 +2244,26 @@ the output but is never supplied to the selector. The resulting table must:
 This is a pure bounded in-memory spike. It performs no Parquet IO, manifest
 construction, bucket assignment, intermediate value counting, Dask execution,
 persistent level writing, or Xenium benchmark. C6 owns those concerns after the
-parent assembly and rebasing contract is approved.
+finer-to-coarser assembly and rebasing contract is approved.
 
 ### Focused tests and exit criteria
 
 Keep the focused coverage compact:
 
-- sparse four-child assembly covering all coordinate quadrants and unchanged
-  membership;
-- dense parent sampling with hard capacity compliance, nested membership,
+- sparse four-finer-tile assembly covering all coordinate quadrants and
+  unchanged membership;
+- dense coarser-tile sampling with hard capacity compliance, nested membership,
   deterministic point ordering, and unchanged membership after changing only
   `value_id`;
-- identical output after permuting child input order;
-- one through three occupied children at sparse or edge parents, including
-  parent upper-edge clamping;
-- rejection of duplicate, out-of-grid, or geometrically unrelated children.
+- identical output after permuting finer-tile input order;
+- one through three occupied finer tiles at sparse or edge coarser tiles,
+  including coarser upper-edge clamping;
+- rejection of duplicate, out-of-grid, or geometrically unrelated finer tiles.
 
 C5d is complete when the rebasing rule is approved and the existing generic
-sampler is shown to produce deterministic, value-neutral, nested parent output
-with exact capacity behavior, without introducing persistent construction.
+sampler is shown to produce deterministic, value-neutral, nested coarser-level
+output with exact capacity behavior, without introducing persistent
+construction.
 
 ## Slice C6: complete nested spatial pyramid from the bridge
 
@@ -2271,9 +2277,9 @@ retained immediate-finer candidates without rescanning `points.parquet`.
 - 1,024-at-8,192, 2,048-at-16,384, and 4,096-at-32,768 spatial levels;
 - later edge/capacity-doubling levels when required by the plan;
 - the terminal one-tile capacity clamp when required by the plan;
-- manifest-driven parent formation from up to four immediate-finer child tiles;
-- C5d parent assembly and coordinate rebasing followed by the C5a generic
-  16 × 16 current-tile sampler;
+- manifest-driven coarser-tile formation from up to four immediate-finer tiles;
+- C5d finer-to-coarser assembly and coordinate rebasing followed by the C5a
+  generic 16 × 16 current-tile sampler;
 - unchanged `point_id` and `value_id` propagation;
 - self-contained payloads at every level;
 - the C3 physical sharding and manifest-row contract for sampled levels;
@@ -2282,14 +2288,16 @@ retained immediate-finer candidates without rescanning `points.parquet`.
   minimum of one;
 - flat intermediate tile/value-count files emitted while sampled tiles are
   written, with only file descriptors retained and no additional level scan;
-- process one complete parent candidate set at a time, accepting the documented
-  in-memory logical-tile policy rather than adding speculative streaming.
+- process one complete coarser-tile candidate set at a time, accepting the
+  documented in-memory logical-tile policy rather than adding speculative
+  streaming.
 
 ### Focused tests
 
-Cover exact-only and bridge-terminal plans, sparse parents, one through four
-occupied children, dense capacity truncation, a value-skewed fixture, the
-terminal one-tile capacity clamp, nested membership, and deterministic rebuilds.
+Cover exact-only and bridge-terminal plans, sparse coarser tiles, one through
+four occupied finer tiles, dense capacity truncation, a value-skewed fixture,
+the terminal one-tile capacity clamp, nested membership, and deterministic
+rebuilds.
 Verify that changing only value labels does not change sampled membership. Do
 not require one test for every possible number of occupied strata or values.
 
@@ -2548,7 +2556,7 @@ Approve:
 
 - sampler name and version;
 - the shared C5a 16 × 16 current-tile microgrid at every sampled level;
-- C5d child assembly, parent-coordinate rebasing, and boundary behavior;
+- C5d finer-tile assembly, coarser-coordinate rebasing, and boundary behavior;
 - the initial one-complete-current-tile in-memory policy and C5c Xenium memory
   evidence;
 - proportional microgrid-cell target allocation with no `value_id` influence;
@@ -2601,10 +2609,11 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C5d: four-child parent assembly and coordinate-rebasing
-spike**. Consume bounded in-memory immediate-finer child tables, rebase their
-relative coordinates into one parent tile, and apply the implemented C5a
-selector without persistent output. Gate C then reviews the sampling and
-parent-assembly contracts before C6 constructs the complete spatial pyramid.
+Specify and implement **C5d: immediate-finer tile assembly and
+coarser-coordinate-rebasing spike**. Consume bounded in-memory immediate-finer
+tile tables, rebase their relative coordinates into one coarser tile, and apply
+the implemented C5a selector without persistent output. Gate C then reviews the
+sampling and finer-to-coarser assembly contracts before C6 constructs the
+complete spatial pyramid.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
