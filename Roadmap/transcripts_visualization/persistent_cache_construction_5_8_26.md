@@ -1960,11 +1960,28 @@ must not be duplicated here.
 ### Focused tests and acceptance check
 
 Cover a sparse tile, a dense tile, one Exact tile split across several row
-groups, several tiles routed into one bridge output file, deterministic rebuilds,
-and value-neutral membership. On Xenium, record bridge build time, peak RSS,
-largest logical Exact tile rows and decoded bytes, bridge point count, bucket
-skew, and output size. Build any required Exact staging generation once and
-remove all acceptance artifacts afterward.
+groups, several tiles routed into one bridge output file, deterministic
+rebuilds, and value-neutral membership.
+
+For focused synthetic determinism coverage, two equivalent Bridge builds must
+produce identical:
+
+- selected `point_id` membership for every logical tile;
+- `point_id` ordering within every tile;
+- `_ManifestRow` records;
+- decoded intermediate tile/value-count rows and their ordering.
+
+Determinism is a logical cache contract. Do not compare raw Parquet bytes or
+require byte-identical files.
+
+Prepare the required Xenium Exact staging generation once, before starting the
+Bridge measurement interval. Exclude Exact construction time and memory from
+the reported Bridge measurements, then run `_write_bridge_level(...)` once and
+record its build time, peak RSS, largest logical Exact tile rows and decoded
+bytes, Bridge point count, bucket skew, and output size. The synthetic focused
+test owns the repeated-build determinism check; the Xenium Bridge does not need
+to be constructed more than once. Remove the prepared Exact generation, Bridge
+output, intermediate count files, and measurement artifacts afterward.
 
 ### Exit criteria
 
