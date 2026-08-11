@@ -1773,6 +1773,20 @@ sampling target is not a separate argument; it is the bridge level's
 remain staged and unchanged for later consolidation with the intermediate
 count files produced by the bridge and subsequent sampled levels.
 
+Before reading or writing point rows, `_write_bridge_level(...)` must require:
+
+- `plan.levels[0]` is serialized Exact level 0;
+- `plan.levels[1]` exists and is the serialized Bridge level;
+- Exact and Bridge have identical `tile_size`, `grid_width`, and `grid_height`;
+- every input manifest row belongs to Exact level 0;
+- `staging_directory` is an existing directory;
+- neither the Bridge point directory nor its intermediate tile/value-count
+  directory already exists.
+
+An Exact-only plan has no Bridge to construct and must fail with a clear error.
+These checks make the standalone private entry point reject a mismatched plan,
+input result, or staging generation before creating partial Bridge output.
+
 #### Logical Exact-tile reconstruction
 
 `_LevelWriteResult` is level-neutral, so the bridge writer must first require
@@ -1924,6 +1938,26 @@ writer for the current nonempty output bucket. Close both before advancing to
 the next bucket. This keeps only one output-writer pair and one complete
 candidate tile active at a time. It also gives deterministic physical output
 ordering without another point-level shuffle or a shuffle-temporary directory.
+
+Use the same deterministic filename convention as the Exact writer. Let
+`filename_width = max(3, len(str(bucket_count - 1)))`, and write each nonempty
+Bridge bucket to:
+
+```text
+levels/level_{bridge.level}/bucket-{bucket_id:0{filename_width}d}.parquet
+intermediate_tile_value_counts/level_{bridge.level}/bucket-{bucket_id:0{filename_width}d}.parquet
+```
+
+For the initial Bridge this yields paths such as:
+
+```text
+levels/level_1/bucket-000.parquet
+intermediate_tile_value_counts/level_1/bucket-000.parquet
+```
+
+Empty bucket IDs produce no files. This path policy is part of deterministic
+manifest and intermediate-file descriptors; equivalent builds must not choose
+filenames from task arrival order or filesystem state.
 
 With this reconstruction contract, the bridge writer must:
 
