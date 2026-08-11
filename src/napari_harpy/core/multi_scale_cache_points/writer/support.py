@@ -176,6 +176,12 @@ def _reconcile_level_results(
     *,
     expected_point_count: int,
 ) -> _LevelWriteResult:
+    """Validate bucket outputs and assemble one deterministic level result.
+
+    Written point rows and intermediate value-count totals must match the
+    expected level count. Physical row-group keys and intermediate file paths
+    must also be unique across the complete level.
+    """
     ordered_results = tuple(sorted(bucket_results, key=lambda result: result.bucket_id))
     if sum(result.point_count for result in ordered_results) != expected_point_count:
         raise ValueError("Bucket rows do not reconcile to the expected level point count.")

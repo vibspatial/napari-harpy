@@ -379,6 +379,12 @@ def _validate_bridge_result(
     bridge: _LevelBuildPlan,
     expected_tile_rows: dict[tuple[int, int], int],
 ) -> None:
+    """Validate the Bridge-specific invariants of a completed level result.
+
+    Every manifest row must belong to the Bridge level, every tile must remain
+    unsharded, and each tile's row count must match the count implied by its
+    Exact candidates and the Bridge capacity.
+    """
     observed_tile_rows: dict[tuple[int, int], int] = defaultdict(int)
     for row in result.manifest_rows:
         if row.level != bridge.level:
