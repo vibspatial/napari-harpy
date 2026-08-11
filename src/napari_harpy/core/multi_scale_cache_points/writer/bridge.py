@@ -240,7 +240,7 @@ def _write_bridge_bucket(
     relative_point_path = point_path.relative_to(staging_directory).as_posix()
     relative_intermediate_count_path = intermediate_count_path.relative_to(staging_directory).as_posix()
     manifest_rows: list[_ManifestRow] = []
-    point_count = 0
+    bucket_point_count = 0
     intermediate_count_writer = _IntermediateTileValueCountWriter(
         intermediate_count_path,
         level=bridge.level,
@@ -300,7 +300,7 @@ def _write_bridge_bucket(
                         tile_shard=0,
                     )
                 )
-                point_count += sampled_table.num_rows
+                bucket_point_count += sampled_table.num_rows
     finally:
         intermediate_count_writer.close()
 
@@ -317,7 +317,7 @@ def _write_bridge_bucket(
     )
     return _BucketWriteResult(
         bucket_id=bucket_id,
-        point_count=point_count,
+        point_count=bucket_point_count,
         value_count_total=intermediate_count_writer.point_count,
         manifest_rows=tuple(manifest_rows),
         intermediate_value_count_file=intermediate_count_file,
