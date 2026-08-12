@@ -32,7 +32,7 @@ from napari_harpy.core.multi_scale_cache_points.writer.support import (
 
 
 @dataclass(frozen=True)
-class _ExactTile:
+class _ExactTileDescriptor:
     """Helper record for physical shard descriptors of one complete Exact tile."""
 
     shard_descriptors: tuple[_ManifestRow, ...]
@@ -149,7 +149,7 @@ def _group_exact_manifest_rows(
     exact_result: _LevelWriteResult,
     *,
     exact: _LevelBuildPlan,
-) -> tuple[_ExactTile, ...]:
+) -> tuple[_ExactTileDescriptor, ...]:
     """Group physical Exact row groups into complete logical tiles.
 
     The Exact manifest is a flat sequence with one record per physical Parquet
@@ -163,8 +163,8 @@ def _group_exact_manifest_rows(
     become::
 
         (
-            _ExactTile(shard_descriptors=(tile_0_shard_0, tile_0_shard_1)),
-            _ExactTile(shard_descriptors=(tile_1_shard_0,)),
+            _ExactTileDescriptor(shard_descriptors=(tile_0_shard_0, tile_0_shard_1)),
+            _ExactTileDescriptor(shard_descriptors=(tile_1_shard_0,)),
         )
 
     Every record must belong to the planned Exact level and lie inside its
@@ -184,13 +184,13 @@ def _group_exact_manifest_rows(
             raise ValueError("An Exact manifest tile lies outside the planned Exact grid.")
         grouped[(row.tile_y, row.tile_x)].append(row)
 
-    exact_tiles: list[_ExactTile] = []
+    exact_tiles: list[_ExactTileDescriptor] = []
     for (tile_y, tile_x), rows in sorted(grouped.items()):
         ordered_rows = tuple(sorted(rows, key=lambda row: row.tile_shard))
         if tuple(row.tile_shard for row in ordered_rows) != tuple(range(len(ordered_rows))):
             raise ValueError(f"Exact tile (tile_y={tile_y}, tile_x={tile_x}) has non-contiguous shards.")
         exact_tiles.append(
-            _ExactTile(
+            _ExactTileDescriptor(
                 shard_descriptors=ordered_rows,
             )
         )
@@ -198,16 +198,16 @@ def _group_exact_manifest_rows(
 
 
 def _assign_tiles_to_buckets(
-    exact_tiles: tuple[_ExactTile, ...],
+    exact_tiles: tuple[_ExactTileDescriptor, ...],
     *,
     bucket_count: int,
-) -> dict[int, tuple[_ExactTile, ...]]:
+) -> dict[int, tuple[_ExactTileDescriptor, ...]]:
     """Group Exact-tile descriptors by deterministic Bridge output bucket."""
     tile_y = np.fromiter((tile.tile_y for tile in exact_tiles), dtype=np.uint32, count=len(exact_tiles))
     tile_x = np.fromiter((tile.tile_x for tile in exact_tiles), dtype=np.uint32, count=len(exact_tiles))
     bucket_ids = _tile_bucket_ids(tile_x, tile_y, bucket_count=bucket_count)
 
-    grouped: dict[int, list[_ExactTile]] = defaultdict(list)
+    grouped: dict[int, list[_ExactTileDescriptor]] = defaultdict(list)
     for tile, bucket_id in zip(exact_tiles, bucket_ids, strict=True):
         grouped[int(bucket_id)].append(tile)
     return {
@@ -219,7 +219,7 @@ def _assign_tiles_to_buckets(
 def _write_bridge_bucket(
     *,
     bucket_id: int,
-    exact_tiles: tuple[_ExactTile, ...],
+    exact_tiles: tuple[_ExactTileDescriptor, ...],
     bridge: _LevelBuildPlan,
     staging_directory: Path,
     level_directory: Path,
