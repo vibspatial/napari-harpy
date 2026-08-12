@@ -766,6 +766,11 @@ reader reconstructs the same Arrow table for Bridge and spatial sampling. This
 keeps persistent layout decisions out of the sampler and coordinate-rebasing
 code.
 
+Treat Arrow as a pragmatic construction boundary: splitting interleaved
+`location` into separate Arrow coordinate columns may copy returned rows, runtime
+readers are not required to use Arrow, and measured overhead may later justify a
+storage-neutral NumPy payload without changing the persisted Zarr format.
+
 ### Proposed module boundaries
 
 Use narrow level-neutral boundaries rather than spreading Zarr calls across all
