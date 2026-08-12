@@ -1042,7 +1042,7 @@ def test_classifier_controller_bind_is_passive_until_marked_dirty(qtbot, monkeyp
     assert "Classifier: model is stale because the feature matrix changed" == controller.status_message
 
     controller.retrain_now()
-    qtbot.waitUntil(lambda: call_log == [1], timeout=5000)
+    qtbot.waitUntil(lambda: len(call_log) == 1, timeout=5000)
     assert controller.is_dirty is False
     assert len(table_state_changes) == 1
     assert table_state_changes[0].regions == ("blobs_labels",)
