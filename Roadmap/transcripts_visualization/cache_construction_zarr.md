@@ -736,11 +736,13 @@ writer/spatial.py
 
 The following physical concerns change:
 
-- `_ManifestRow` becomes a logical-tile/bucket location record rather than a
-  Parquet row-group descriptor;
+- `_ManifestRow` is replaced by `_LogicalTileLocation`, with one record per
+  complete logical tile rather than one record per Parquet row group;
 - `_POINT_PAYLOAD_SCHEMA` becomes a storage-neutral in-memory payload contract,
   not a Parquet file schema;
-- `_read_logical_tile` delegates to a Zarr bucket reader;
+- `_read_logical_tile` becomes a storage-neutral complete-tile reader boundary;
+  Z1 temporarily implements it with Parquet, Z2 adds the Zarr implementation,
+  and Z3–Z5 migrate its call sites;
 - Parquet bucket writers become Zarr bucket writers;
 - row-group sharding becomes Zarr chunking and sharding;
 - Parquet physical-file validation becomes Zarr array/range validation;
@@ -919,38 +921,240 @@ for evaluating the Zarr backend on its own.
 Separate logical tile construction from Parquet row-group descriptors without
 changing output membership yet.
 
-#### Work
+#### Storage-neutral Arrow payload
 
-- move the four-column Arrow payload schema into a level-neutral module;
-- define an immutable logical tile location containing at least `level`,
-  `bucket_id`, `bucket_path`, `bucket_tile_index`, `tile_x`, `tile_y`, and
-  `n_points`;
-- change `_BucketWriteResult` and `_LevelWriteResult` to carry logical tile
-  records plus intermediate count-file descriptors;
-- introduce one private `read_complete_tile(location) -> pa.Table` boundary;
-- the current Parquet reader may remain temporarily behind that boundary only
-  to keep intermediate commits coherent while consumers are converted. This is
-  a sequencing scaffold, not a compatibility layer, supported backend, or
-  benchmark subject;
-- change Bridge and spatial grouping code to reason about one logical tile
-  record rather than one or more row-group shards;
-- preserve existing point counts, tile order, capacity checks, and sampled
-  membership tests.
+Move the existing four-column schema from Parquet writer support into the
+level-neutral `multi_scale_cache_points/payload.py` module:
+
+```text
+_POINT_PAYLOAD_SCHEMA
+  x_rel: float32, non-nullable
+  y_rel: float32, non-nullable
+  value_id: uint32, non-nullable
+  point_id: uint64, non-nullable
+```
+
+This is an in-memory interchange contract, not the schema of any published
+physical file. Every accepted table must:
+
+- be a `pa.Table` with exactly these fields, types, nullability rules, and order;
+- have equally sized, row-aligned columns;
+- contain zero null values in every column;
+- contain at least one row when it represents a nonempty logical tile;
+- keep `x_rel` and `y_rel` tile-local and perform no implicit rebasing;
+- contain no tile coordinates, bucket fields, or physical row/chunk references.
+
+The generic payload contract does not promise a semantic row order. All four
+columns remain aligned, and callers must not use arrival order to define sampling
+membership. During Z1 the temporary Parquet adapter preserves the current
+concatenated row-group order so the refactor itself introduces no incidental
+reordering. Z2 is responsible for the final persisted
+`(tile_y, tile_x, value_id, point_id)` order.
+
+#### `_LogicalTileLocation`
+
+Define one private immutable `_LogicalTileLocation` for every nonempty logical
+tile:
+
+```text
+level: int
+bucket_id: int
+bucket_path: str
+bucket_tile_index: int
+tile_x: int
+tile_y: int
+n_points: int
+```
+
+The fields mean:
+
+- `level` is the serialized pyramid level;
+- `bucket_id` is the deterministic physical bucket identifier;
+- `bucket_path` is the normalized cache-root-relative path of the physical
+  container holding the tile;
+- `bucket_tile_index` is the tile's zero-based ordinal inside that bucket, not a
+  point-row offset, Parquet row-group number, Zarr chunk number, or shard number;
+- `tile_x` and `tile_y` are the logical grid coordinates;
+- `n_points` is the complete logical-tile count across all physical storage
+  units.
+
+Instance validation freezes these rules:
+
+- reject booleans and non-integers for serialized integer fields;
+- `level` fits nonnegative `int16`;
+- `bucket_id`, `bucket_tile_index`, `tile_x`, and `tile_y` fit `uint32`;
+- `n_points` is in `[1, int64_max]`;
+- `bucket_path` is a nonempty normalized relative POSIX path with no absolute
+  root, `..`, or noncanonical spelling;
+- `bucket_path` is directly inside `levels/level_<level>`.
+
+Z1 deliberately does not validate a `.parquet` or `.zarr` suffix. The temporary
+adapter uses the former and the target backend uses the latter; storage-neutral
+consumers treat the path as an opaque container location.
+
+Collection validation in level reconciliation freezes these rules:
+
+- `(level, tile_x, tile_y)` is unique;
+- `(bucket_path, bucket_tile_index)` is unique;
+- one `bucket_path` belongs to exactly one `(level, bucket_id)` and one
+  `(level, bucket_id)` identifies at most one nonempty bucket path;
+- all locations in a bucket are ordered by `(tile_y, tile_x)`;
+- their `bucket_tile_index` values are exactly `0..K-1` in that order;
+- empty tiles and empty buckets produce no location records.
+
+#### Writer-result contracts
+
+Change `_BucketWriteResult.manifest_rows` to
+`_BucketWriteResult.tile_locations`. Preserve `bucket_id`, `point_count`,
+`value_count_total`, and `intermediate_value_count_file`.
+
+For a nonempty bucket:
+
+- every location has the result's `bucket_id` and the same `bucket_path`;
+- `point_count == sum(location.n_points)`;
+- `value_count_total == point_count`;
+- locations satisfy the bucket-local ordering and index rules above;
+- the intermediate count descriptor remains construction-only and unchanged.
+
+For an empty bucket, both counts are zero, `tile_locations == ()`, and
+`intermediate_value_count_file is None`.
+
+Change `_LevelWriteResult.manifest_rows` to
+`_LevelWriteResult.tile_locations`. Preserve
+`intermediate_tile_value_count_files`. `_reconcile_level_results` must:
+
+- order independent bucket results by `bucket_id`;
+- reconcile point and value-count totals with the expected level count;
+- validate the logical and bucket-local uniqueness rules above instead of
+  physical `(level_file, row_group)` uniqueness;
+- return locations sorted globally by `(level, tile_y, tile_x)`;
+- retain deterministic intermediate count-file ordering and path uniqueness.
+
+Neither result type publishes or exposes `level_file`, `row_group`,
+`tile_shard`, Zarr offsets, chunks, or shards.
+
+#### Complete-tile reader boundary
+
+Introduce one private level-neutral reader protocol with this semantic method:
+
+```text
+read_complete_tile(location: _LogicalTileLocation) -> pa.Table
+```
+
+The reader instance, not the caller, owns:
+
+- the staging/cache root;
+- physical lookup state;
+- reusable open file or store handles;
+- deterministic cleanup of those handles.
+
+The protocol is context-managed. Exiting its context closes every owned handle;
+explicit `close()` is idempotent, and reads after closure fail clearly rather
+than reopening resources implicitly.
+
+The method must return exactly `_POINT_PAYLOAD_SCHEMA`, preserve row alignment and
+tile-local coordinates, and require `table.num_rows == location.n_points`. It
+must fail clearly for an unknown location, missing physical container,
+incompatible payload, or row-count disagreement. It does not sample, rebase,
+filter values, or expose backend-specific handles. Bridge and spatial code may
+know only the protocol and `_LogicalTileLocation`.
+
+#### Temporary Parquet adapter
+
+Keep the current Parquet payload readable only through a private
+`_ParquetCompleteTileReader` used to sequence Z1. When initialized for one input
+level, it receives the staging root and that level's complete ordered
+`tile_locations`.
+
+For each `bucket_path`, the adapter inspects Parquet metadata and builds a private
+lookup:
+
+```text
+(bucket_path, bucket_tile_index)
+    -> one or more consecutive Parquet row-group references
+```
+
+It constructs the lookup by visiting bucket locations in `bucket_tile_index`
+order and consuming consecutive row groups until their row counts sum exactly to
+the location's `n_points`. It must reject a row group that crosses a logical-tile
+boundary, an incomplete tile total, surplus row groups, schema disagreement, or
+noncontiguous assignment. Each physical row group is assigned exactly once.
+
+The lookup and row-group references are adapter-private transient state. They are
+not fields of `_LogicalTileLocation`, are not written to a sidecar or manifest,
+and are not returned in `_BucketWriteResult` or `_LevelWriteResult`. The adapter
+caches at most one open `ParquetFile` handle per required bucket and closes all
+handles deterministically.
+
+This adapter is a temporary construction scaffold. It is not a supported cache
+backend, compatibility reader, benchmark subject, or fallback. Z2 introduces the
+Zarr reader at the same complete-tile boundary, Z3–Z5 migrate producers and
+consumers, and Gate Z5 removes the temporary adapter.
+
+#### Writer and consumer conversion
+
+Z1 retains current Parquet writes so that physical replacement remains isolated
+to Z2 and later slices. Convert the current pipeline as follows:
+
+- Exact still writes its current row groups, but emits one logical location per
+  complete tile; `bucket_tile_index` increments once per tile even when that tile
+  spans several row groups;
+- Bridge consumes ordered Exact locations directly and asks the reader for each
+  complete candidate tile;
+- Bridge emits one logical location per sampled output tile;
+- spatial grouping consumes one logical location per immediate-finer tile rather
+  than grouping `_ManifestRow` shards;
+- spatial construction asks the reader for each complete finer tile before the
+  existing rebase, concatenate, and sample operations;
+- `_ExactTileDescriptor` and `_FinerTileDescriptor` are removed, or temporarily
+  reduced to wrappers around one `_LogicalTileLocation`; neither may retain
+  physical shard descriptors;
+- capacity, grid-membership, overview-budget, deterministic bucket assignment,
+  tile order, point counts, coordinate tolerance, and sampled `point_id`
+  membership remain unchanged.
+
+#### Non-goals
+
+Z1 does not:
+
+- write or validate Zarr;
+- introduce `tile_offset`, `tile_indptr`, value ranges, chunks, shards, or codecs;
+- change persisted point ordering to value-major order;
+- change sampling or coordinate rebasing;
+- remove `max_rows_per_row_group` from the temporary Parquet writer;
+- publish a cache format or implement a runtime viewer;
+- expose Parquet and Zarr as two selectable backends.
 
 #### Focused tests
 
-- immutable model validation and path containment;
-- unique and contiguous bucket-local tile indexes;
-- unchanged build-plan and sampler tests;
-- Bridge and spatial logical grouping independent of row groups;
-- logical tile grouping and payload contracts remain covered independently of
-  the temporary physical scaffold.
+- exact Arrow schema, nullability, field order, and table validation;
+- `_LogicalTileLocation` integer ranges, path containment, and opaque file
+  suffix;
+- duplicate logical coordinates and duplicate physical location keys;
+- bucket/path consistency, `(tile_y, tile_x)` order, and contiguous
+  `bucket_tile_index` values;
+- empty and nonempty `_BucketWriteResult` reconciliation;
+- deterministic `_LevelWriteResult` ordering and intermediate-file uniqueness;
+- temporary Parquet reads for one tile/one row group, one tile/multiple row
+  groups, multiple tiles in one bucket, and multiple buckets;
+- temporary-adapter rejection of missing files, schema mismatch, crossed or
+  incomplete tile boundaries, surplus row groups, and unknown locations;
+- Bridge and spatial inputs contain only logical locations and produce unchanged
+  capacity, count, coordinate, and sampled-membership results;
+- unchanged focused build-plan and sampler tests.
 
 #### Exit criteria
 
-- no sampling or rebasing function accepts a Parquet row-group descriptor;
-- Parquet-specific code is isolated behind the temporary physical adapter;
-- all C1–C6 logical invariants remain green.
+- `_POINT_PAYLOAD_SCHEMA` and `_LogicalTileLocation` are the only payload and
+  location contracts visible to logical construction code;
+- `_BucketWriteResult` and `_LevelWriteResult` expose one location per nonempty
+  logical tile and no physical row-group descriptors;
+- no Bridge, spatial, sampling, or rebasing function accepts or inspects a
+  Parquet row-group descriptor;
+- all Parquet reading and handle reuse is isolated behind the temporary adapter;
+- the current writers remain usable only as a coherent Z1 sequencing scaffold;
+- all focused C1–C6 logical invariants remain green without changing point
+  membership.
 
 ### Slice Z2: implement and freeze the Zarr bucket primitive
 
@@ -1029,8 +1233,9 @@ the proven source annotation and Dask shuffle.
 
 - change the bucket sort key from `(tile_y, tile_x, point_id)` to
   `(tile_y, tile_x, value_id, point_id)`;
-- replace `ParquetWriter`, row-group sharding, and `_ManifestRow` emission in the
-  Exact finalizer with the Zarr bucket writer;
+- replace `ParquetWriter` and row-group sharding in the Exact finalizer with the
+  Zarr bucket writer while continuing to emit the Z1 `_LogicalTileLocation`
+  contract;
 - keep bucket naming, bucket hashing, Dask partition ownership, staging
   ownership, point conservation, and intermediate tile/value counts;
 - reconcile every logical tile record with `tile_x`, `tile_y`, and `tile_offset`,
@@ -1429,8 +1634,9 @@ Leave one supported implementation and one coherent set of roadmaps.
 
 #### Work
 
-- delete the temporary Parquet point adapter and obsolete row-group payload
-  models once every consumer uses Zarr;
+- verify that the temporary Parquet point adapter and obsolete row-group payload
+  models removed at Gate Z5 have not left imports, tests, or dead compatibility
+  paths;
 - remove `max_rows_per_row_group` from public cache construction configuration
   and metadata while retaining source-Parquet row-group validation concepts;
 - remove writer tests whose only contract was Parquet packaging and replace
