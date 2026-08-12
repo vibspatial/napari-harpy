@@ -171,6 +171,51 @@ def _validate_bucket_files(
         )
 
 
+def _read_logical_tile(
+    shard_descriptors: tuple[_ManifestRow, ...],
+    *,
+    staging_directory: Path,
+    parquet_files: dict[str, pq.ParquetFile],
+) -> pa.Table:
+    """Read and concatenate the physical row groups of one logical tile.
+
+    The descriptors must represent all physical shards of the tile in shard
+    order. Open Parquet handles are cached by their cache-relative paths so a
+    level writer can reconstruct multiple tiles without reopening shared files.
+    Each decoded row group and the complete reconstructed tile are reconciled
+    with their manifest row counts before the point payload is returned.
+    """
+    decoded_shards: list[pa.Table] = []
+    expected_rows = 0
+    for descriptor in shard_descriptors:
+        parquet_file = parquet_files.get(descriptor.level_file)
+        if parquet_file is None:
+            path = staging_directory / descriptor.level_file
+            if not path.is_file():
+                raise ValueError(f"Point file `{descriptor.level_file}` does not exist.")
+            parquet_file = pq.ParquetFile(path)
+            if not parquet_file.schema_arrow.equals(_POINT_PAYLOAD_SCHEMA, check_metadata=False):
+                parquet_file.close()
+                raise ValueError(f"Point file `{descriptor.level_file}` has an incompatible payload schema.")
+            parquet_files[descriptor.level_file] = parquet_file
+        if descriptor.row_group >= parquet_file.num_row_groups:
+            raise ValueError(f"Point file `{descriptor.level_file}` does not contain row group {descriptor.row_group}.")
+
+        decoded_shard = parquet_file.read_row_group(
+            descriptor.row_group,
+            columns=_POINT_PAYLOAD_SCHEMA.names,
+        )
+        if decoded_shard.num_rows != descriptor.n_points:
+            raise ValueError("A decoded tile shard does not match its manifest row count.")
+        decoded_shards.append(decoded_shard)
+        expected_rows += descriptor.n_points
+
+    points = pa.concat_tables(decoded_shards)
+    if points.num_rows != expected_rows:
+        raise ValueError("The reconstructed logical tile does not match its manifest row count.")
+    return points
+
+
 def _reconcile_level_results(
     bucket_results: tuple[_BucketWriteResult, ...],
     *,

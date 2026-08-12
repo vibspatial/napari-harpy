@@ -25,6 +25,7 @@ from napari_harpy.core.multi_scale_cache_points.writer.support import (
     _POINT_PAYLOAD_SCHEMA,
     _bucket_count_for_level,
     _IntermediateTileValueCountWriter,
+    _read_logical_tile,
     _reconcile_level_results,
     _tile_bucket_ids,
     _validate_bucket_files,
@@ -150,7 +151,13 @@ def _group_exact_manifest_rows(
     *,
     exact: _LevelBuildPlan,
 ) -> tuple[_ExactTileDescriptor, ...]:
-    """Group physical Exact row groups into complete logical tiles.
+    """Normalize the Exact manifest into one descriptor per logical tile.
+
+    This is the Exact-level counterpart of spatial construction's
+    ``_group_finer_manifest_rows``. Both helpers group flat physical manifest
+    rows by logical tile coordinates, order their shards, and require contiguous
+    shard numbering. This variant requires Exact level 0 and returns
+    ``_ExactTileDescriptor`` records.
 
     The Exact manifest is a flat sequence with one record per physical Parquet
     row group. A dense logical tile may therefore appear in several records,
@@ -268,7 +275,7 @@ def _write_bridge_bucket(
             # loop iteration therefore writes exactly one row group, making the
             # enumerate index its output row-group index and `tile_shard` zero.
             for physical_row_group, exact_tile in enumerate(exact_tiles):
-                candidate_table = _read_exact_tile(
+                candidate_table = _read_logical_tile(
                     shard_descriptors=exact_tile.shard_descriptors,
                     staging_directory=staging_directory,
                     parquet_files=parquet_files,
@@ -334,43 +341,6 @@ def _write_bridge_bucket(
         manifest_rows=tuple(manifest_rows),
         intermediate_value_count_file=intermediate_count_file,
     )
-
-
-def _read_exact_tile(
-    shard_descriptors: tuple[_ManifestRow, ...],
-    *,
-    staging_directory: Path,
-    parquet_files: dict[str, pq.ParquetFile],
-) -> pa.Table:
-    """Read and concatenate the Parquet row groups described by one Exact tile."""
-    decoded_shard_tables: list[pa.Table] = []
-    expected_rows = 0
-    for descriptor in shard_descriptors:
-        parquet_file = parquet_files.get(descriptor.level_file)
-        if parquet_file is None:
-            parquet_file = pq.ParquetFile(staging_directory / descriptor.level_file)
-            if not parquet_file.schema_arrow.equals(_POINT_PAYLOAD_SCHEMA, check_metadata=False):
-                parquet_file.close()
-                raise ValueError(f"Exact point file `{descriptor.level_file}` has an incompatible payload schema.")
-            parquet_files[descriptor.level_file] = parquet_file
-        if descriptor.row_group >= parquet_file.num_row_groups:
-            raise ValueError(
-                f"Exact point file `{descriptor.level_file}` does not contain row group {descriptor.row_group}."
-            )
-
-        decoded_shard = parquet_file.read_row_group(
-            descriptor.row_group,
-            columns=_POINT_PAYLOAD_SCHEMA.names,
-        )
-        if decoded_shard.num_rows != descriptor.n_points:
-            raise ValueError("A decoded Exact tile shard does not match its manifest row count.")
-        decoded_shard_tables.append(decoded_shard)
-        expected_rows += descriptor.n_points
-
-    candidate_table = pa.concat_tables(decoded_shard_tables)
-    if candidate_table.num_rows != expected_rows:
-        raise ValueError("The reconstructed Exact tile does not match its manifest row count.")
-    return candidate_table
 
 
 def _validate_bridge_result(
