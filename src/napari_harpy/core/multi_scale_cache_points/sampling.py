@@ -67,9 +67,9 @@ def _select_sampled_tile_indices(
         L1           1,024      16 x 16           64
         L2           2,048      16 x 16          128
 
-    Four bridge tiles form one L1 parent. After child coordinates are rebased
-    into that parent, each child covers one 8-by-8 quadrant of the L1
-    microgrid::
+    Four Bridge tiles form one coarser L1 tile. After the immediate-finer
+    coordinates are rebased into that L1 tile, each Bridge tile covers one
+    8-by-8 quadrant of its microgrid::
 
         L1 microgrid: 16 x 16
         +---------+---------+

@@ -91,8 +91,8 @@ class _PointsCacheBuildPlan:
         X-coordinate anchor shared by every level. It is the greatest multiple
         of ``leaf_tile_size`` less than or equal to the validated source
         ``x_min``. Tile x indices are measured from this anchor, which keeps
-        them non-negative and keeps doubled parent and child grids aligned. It
-        does not transform the source coordinates. For example,
+        them non-negative and keeps adjacent finer and coarser grids aligned.
+        It does not transform the source coordinates. For example,
         ``leaf_tile_size=512`` and ``x_min=600`` produce ``x_origin=512``.
     y_origin
         Y-axis counterpart of ``x_origin``, derived identically from the
