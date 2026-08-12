@@ -254,7 +254,7 @@ Disappearance from a sampled level is an expected consequence of
 representative sampling, not evidence that a value is biologically absent.
 
 Every sampled level uses a 16 × 16 microgrid relative to its current logical
-tile, subject to the focused C5a pure-sampler spike and Gate C approval. The
+tile, as approved at Gate C after the focused C5a and C5d spikes. The
 bridge is the first concrete demonstration; later spatial levels use the same
 sampler after immediate-finer coordinates have been rebased into their coarser
 tile. C5a also freezes the concrete priority-hash payload. The following
@@ -2591,9 +2591,9 @@ incremental peak RSS. Gate B accepted Dask, and optional C4 is deferred
 indefinitely unless new evidence identifies a concrete Dask limitation.
 Continue with:
 
-1. review the implemented immediate-finer tile assembly and
-   coarser-coordinate rebasing at Gate C;
-2. build the remaining spatial pyramid in C6;
+1. review the detailed persistent spatial-pyramid specification and implement
+   C6 using the Gate C-approved sampling and finer-to-coarser contracts;
+2. verify every planned spatial level and its nested membership;
 3. consolidate sparse tile/value counts and validate the staged cache in C7;
 4. implement guarded publication in C8;
 5. run the complete multilevel Xenium benchmark and hardening in C9.

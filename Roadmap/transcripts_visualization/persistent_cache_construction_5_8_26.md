@@ -322,7 +322,7 @@ retained idea requires independent justification from this roadmap.
 | C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
 | C5b | Implemented | Level-neutral physical writer-support extraction | No | No |
 | C5c | Implemented | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
-| C5d | Implemented | Immediate-finer tile assembly and coarser-coordinate-rebasing spike | No original-source rescan | No |
+| C5d | Implemented; Gate C approved | Immediate-finer tile assembly and coarser-coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
 | C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
@@ -2289,34 +2289,186 @@ sampler, and build-plan focused suite passed 29 tests.
 Starting from the completed bridge, build every planned spatial level from
 retained immediate-finer candidates without rescanning `points.parquet`.
 
-### Implement
+### Private entry points
 
-- 1,024-at-8,192, 2,048-at-16,384, and 4,096-at-32,768 spatial levels;
-- later edge/capacity-doubling levels when required by the plan;
-- the terminal one-tile capacity clamp when required by the plan;
-- manifest-driven coarser-tile formation from up to four immediate-finer tiles;
-- C5d finer-to-coarser assembly and coordinate rebasing followed by the C5a
-  generic 16 × 16 current-tile sampler;
-- unchanged `point_id` and `value_id` propagation;
-- self-contained payloads at every level;
-- the C3 physical sharding and manifest-row contract for sampled levels;
-- derive every spatial level's physical `bucket_count` independently as
-  `ceil(level.point_count_upper_bound / target_rows_per_output_bucket)`, with a
-  minimum of one;
-- flat intermediate tile/value-count files emitted while sampled tiles are
-  written, with only file descriptors retained and no additional level scan;
-- process one complete coarser-tile candidate set at a time, accepting the
-  documented in-memory logical-tile policy rather than adding speculative
-  streaming.
+The complete spatial writer consumes the staged Bridge result and the immutable
+build plan:
+
+```python
+def _write_spatial_levels(
+    bridge_result: _LevelWriteResult,
+    plan: _PointsCacheBuildPlan,
+    *,
+    staging_directory: Path,
+) -> tuple[_LevelWriteResult, ...]:
+    ...
+```
+
+The returned tuple contains one result per planned spatial level, ordered from
+L1 toward the terminal overview. A valid Bridge-terminal plan returns an empty
+tuple. `ValidatedPointsSource`, original source paths, Dask settings, and the
+preceding levels' intermediate tile/value-count files are not inputs.
+
+Keep one internal single-level operation:
+
+```python
+def _write_spatial_level(
+    finer_result: _LevelWriteResult,
+    *,
+    finer_level: _LevelBuildPlan,
+    coarser_level: _LevelBuildPlan,
+    staging_directory: Path,
+) -> _LevelWriteResult:
+    ...
+```
+
+The level writer requires the implemented C5d finer-to-coarser transition
+contract. It creates one complete staged spatial level and returns the same
+level-neutral `_LevelWriteResult` used by Bridge construction.
+
+### Level-by-level construction
+
+Build only from the immediately preceding sampled level:
+
+```text
+Bridge result
+→ construct L1
+→ use L1 result to construct L2
+→ use L2 result to construct L3
+→ ...
+→ terminal overview
+```
+
+This preserves the nesting rule by construction: every coarser representative
+already belongs to the immediately finer level. Construct the 1,024-at-8,192,
+2,048-at-16,384, and 4,096-at-32,768 levels when present in the plan, continue
+with later edge/capacity-doubling levels, and honor the terminal one-tile
+capacity clamp recorded by C1. Do not hard-code a maximum number of spatial
+levels.
+
+### Manifest-driven finer-tile reconstruction
+
+The immediately finer `_LevelWriteResult.manifest_rows` is the physical input
+index. Group rows into complete logical finer tiles by `(tile_y, tile_x)`, order
+each tile's descriptors by `tile_shard`, and require shard indices to be
+contiguous from zero. Every descriptor must belong to `finer_level`, lie inside
+its grid, reference a compatible point-payload file, and agree with its physical
+row-group row count.
+
+For each requested coarser tile:
+
+```text
+identify its one through four nonempty logical finer tiles
+→ read and concatenate every physical shard of each finer tile
+→ construct one _FinerLevelTile per complete logical tile
+→ call _assemble_and_sample_coarser_tile(...)
+```
+
+The preceding level's intermediate tile/value-count files remain untouched for
+C7 and are never used to reconstruct points. Cache open `ParquetFile` handles
+within the single-level writer and close every handle before returning or
+propagating an exception.
+
+### Deterministic bucket-major output
+
+Calculate each spatial level's bucket count independently:
+
+```python
+bucket_count = max(
+    1,
+    ceil(coarser_level.point_count_upper_bound / target_rows_per_output_bucket),
+)
+```
+
+Map the coarser logical tile coordinates through the existing versioned tile
+hash. Process nonempty output buckets in ascending `bucket_id`, and each
+bucket's coarser tiles in `(tile_y, tile_x)` order:
+
+```text
+coarser logical-tile descriptors
+→ assign by coarser (tile_x, tile_y) to output buckets
+→ open one point writer and one intermediate-count writer
+→ reconstruct and sample one complete coarser candidate set at a time
+→ append the sampled tile and its exact sampled value counts
+```
+
+This is sequential in the initial implementation. It performs no point-level
+shuffle and adds no Dask dependency or worker setting. At most one complete
+coarser candidate set and one output writer pair are active at a time.
+
+### Physical payload, sharding, and intermediate counts
+
+Every spatial level writes the shared self-contained point payload:
+
+```text
+x_rel:    float32
+y_rel:    float32
+value_id: uint32
+point_id: uint64
+```
+
+For every complete sampled coarser tile, count `value_id` once before physical
+sharding and append those counts to the bucket's flat intermediate
+tile/value-count file. The intermediate file is returned only through its
+descriptor and is not rescanned by the level writer.
+
+Write a sampled tile in consecutive physical shards of at most
+`max_rows_per_row_group=1_000_000` rows. Assign `tile_shard=0, 1, ...` and one
+`_ManifestRow` per physical row group. Current planned spatial capacities are
+normally below this physical limit, but retaining the general sharding contract
+keeps spatial output compatible with Exact and future capacity policies.
+
+Output bucket filenames, compression, point schema, dictionary encoding for
+`value_id`, intermediate-count schema, file-footer validation, and
+cache-root-relative paths reuse the accepted level-neutral writer support.
+
+### Explicit reconciliation
+
+For each coarser tile:
+
+```python
+expected_tile_rows = min(
+    sum(complete_finer_tile_rows),
+    coarser_level.max_points_per_tile,
+)
+```
+
+Require its sampled table and the sum of its manifest shard rows to equal this
+count. At complete-level scope require:
+
+```text
+sum(expected_tile_rows)
+    = written point rows
+    = manifest n_points total
+    = intermediate tile/value-count n_points total
+```
+
+Also require unique physical `(level_file, row_group)` keys, unique intermediate
+count-file paths, correct output level numbers, contiguous tile shards, in-grid
+tile coordinates, and per-tile capacity compliance. Do not compare coarser
+per-value totals with the finer level: value-neutral sampling intentionally
+changes those totals.
 
 ### Focused tests
 
-Cover exact-only and bridge-terminal plans, sparse coarser tiles, one through
-four occupied finer tiles, dense capacity truncation, a value-skewed fixture,
-the terminal one-tile capacity clamp, nested membership, and deterministic
-rebuilds.
-Verify that changing only value labels does not change sampled membership. Do
-not require one test for every possible number of occupied strata or values.
+Keep persistent coverage compact and reuse the pure C5d tests for detailed
+coordinate and sampler behavior. Cover:
+
+- a Bridge-terminal plan returning no spatial results;
+- one small persistent build containing multiple spatial levels;
+- sparse and edge coarser tiles with one through four occupied finer tiles;
+- dense capacity truncation and the terminal one-tile overview clamp;
+- nested `point_id` membership across every generated level;
+- unchanged `point_id` membership after changing only `value_id`;
+- deterministic point order, manifest records, and decoded intermediate counts
+  across equivalent builds;
+- rejection of invalid finer manifest levels, non-contiguous shards, missing or
+  incompatible physical row groups, and row-count disagreement.
+
+Exact-only plan handling belongs to the later end-to-end builder because C6
+requires a completed Bridge result. Do not add one test per number of strata,
+values, or planned spatial levels, and do not require byte-identical Parquet
+files.
 
 ### Exit criteria
 
@@ -2569,7 +2721,12 @@ Approve:
 
 ### Gate C: after C5d
 
-Approve:
+Decision on 2026-08-12: approved. The implemented C5a sampler, C5c persistent
+Bridge result, and C5d finer-to-coarser spike establish the initial sampled
+pyramid contract. Proceed to C6 without adding a streaming sampler or
+value-aware membership policy.
+
+Approved:
 
 - sampler name and version;
 - the shared C5a 16 × 16 current-tile microgrid at every sampled level;
@@ -2626,10 +2783,9 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Review **Gate C** against the implemented sampling and finer-to-coarser
-assembly contracts. If approved, specify **C6: complete nested spatial pyramid
-from the bridge**, which adds manifest-driven assembly, physical bucket output,
-intermediate tile/value counts, and persistent level reconciliation around the
-pure C5d boundary.
+Review the detailed **C6: complete nested spatial pyramid from the bridge**
+specification, then implement manifest-driven finer-level reconstruction,
+sequential bucket-major spatial output, intermediate tile/value counts, and
+level reconciliation around the pure C5d boundary.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
