@@ -1055,66 +1055,124 @@ pointer design and is deferred.
 
 ### Schema versioning
 
-The existing constant is `harpy-transcripts-vis-0.1`, but no public
-end-to-end builder currently exists.
+The new value-generic format uses:
 
-- If no `0.1` cache has been used outside development, the format may be
-  redefined before the first public builder.
-- If any such cache must remain readable, introduce
-  `harpy-transcripts-vis-0.2`.
-- Readers reject unsupported versions; they do not guess.
+```python
+POINTS_CACHE_SCHEMA_VERSION = "harpy-multiscale-points-cache-0.1"
+```
+
+It is structurally incompatible with the legacy
+`harpy-transcripts-vis-0.1` artifact and must not be accepted by its reader.
+Readers reject unsupported versions; they do not guess or reinterpret another
+format family.
 
 ### `metadata.json`
 
-Required cache identity:
+The exact metadata object is:
 
-- `schema_version`
-- `cache_generation_id`
-- `created_by` package and version
+```json
+{
+  "schema_version": "harpy-multiscale-points-cache-0.1",
+  "cache_generation_id": "00000000-0000-0000-0000-000000000000",
+  "created_by": {
+    "package": "napari-harpy",
+    "version": "0.0.0"
+  },
+  "source": {
+    "points_name": "transcripts",
+    "element_path": "points/transcripts",
+    "row_count": 136578750,
+    "columns": {"x": "x", "y": "y", "value": "gene"},
+    "selected_schema": [
+      {
+        "role": "x",
+        "name": "x",
+        "nullable": false,
+        "type": {"kind": "float", "bit_width": 32}
+      },
+      {
+        "role": "y",
+        "name": "y",
+        "nullable": false,
+        "type": {"kind": "float", "bit_width": 32}
+      },
+      {
+        "role": "value",
+        "name": "gene",
+        "nullable": false,
+        "type": {"kind": "string", "offset_width": 32}
+      }
+    ],
+    "signature_method": "harpy-parquet-source-inventory-sha256-v1",
+    "signature": "...",
+    "value_normalization_method": "harpy-string-trim-unicode-white-space-case-sensitive-v1",
+    "point_id_policy": "harpy-source-file-row-offset-uint64-v1"
+  },
+  "geometry": {
+    "x_origin": 0.0,
+    "y_origin": 0.0,
+    "x_min": 0.0,
+    "x_max": 100000.0,
+    "y_min": 0.0,
+    "y_max": 100000.0,
+    "coordinate_axes": ["x", "y"],
+    "relative_coordinate_dtype": "float32"
+  },
+  "build": {
+    "leaf_tile_size": 512,
+    "overview_point_budget": 100000,
+    "max_rows_per_row_group": 1000000,
+    "target_rows_per_output_bucket": 2000000,
+    "bucket_hash_method": "harpy-tile-splitmix64-v1",
+    "sampling_method": "harpy-value-neutral-stratified-splitmix64-v1",
+    "sampling_seed": 0,
+    "sampling_microgrid_edge": 16
+  },
+  "levels": [
+    {
+      "level": 0,
+      "kind": "exact",
+      "tile_size": 512,
+      "grid_width": 200,
+      "grid_height": 200,
+      "point_count": 136578750,
+      "max_points_per_tile": null,
+      "relative_directory": "levels/level_0"
+    }
+  ],
+  "artifacts": {
+    "values": "values.parquet",
+    "manifest": "manifest.parquet",
+    "tile_value_counts": "tile_value_counts.parquet"
+  }
+}
+```
 
-Required source identity:
+Numeric values are illustrative; field names, nesting, JSON types, and ordering
+semantics are normative. `cache_generation_id` is a canonical lowercase
+hyphenated UUID string. Level records are ordered by ascending serialized level
+and use `kind` values `exact`, `bridge`, or `spatial`.
 
-- points element name;
-- resolved element path;
-- source row count;
-- source schema summary;
-- coordinate and value column names;
-- source-signature method and value.
+`source.selected_schema` follows semantic role order `x`, `y`, `value` and uses
+the same normalized Arrow-type representation as the source-signature contract.
+It excludes Arrow schema and field metadata and never uses
+`str(pa.DataType)` as a serialized type contract.
 
-Required geometry:
+Serialize the payload as UTF-8 using:
 
-- `x_origin`, `y_origin`;
-- `x_min`, `x_max`, `y_min`, `y_max`;
-- axis convention;
-- coordinate dtype contract.
+```python
+json.dumps(
+    payload,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+    allow_nan=False,
+) + "\n"
+```
 
-Required level records, ordered by ascending serialized level from finest to
-coarsest:
-
-- `level`;
-- `tile_size`;
-- grid shape or equivalent validated grid bounds;
-- `is_exact`;
-- total stored point count;
-- sampling-policy name and version;
-- effective maximum per-tile capacity;
-- sampling target or density semantics;
-- level directory.
-
-Required build parameters:
-
-- `leaf_tile_size`;
-- `overview_point_budget`;
-- `max_rows_per_row_group`, initially `1_000_000`;
-- stable hash algorithm and seed;
-- sampler name/version and parameters;
-- value-normalization method;
-- internal point-identity policy.
-
-Required auxiliary-index records:
-
-- tile/value count-index path;
-- tile/value count-index method/version.
+The file therefore has deterministic sorted keys, compact separators, no
+non-finite numeric values, and exactly one final newline. All artifact and level
+paths are normalized cache-root-relative POSIX paths.
 
 `metadata.json` is the source of truth for cache semantics. The manifest is the
 source of truth for physical tile/row-group locations and actual stored counts.
@@ -1326,12 +1384,15 @@ retain only small intermediate-file descriptors. This avoids both an additional
 scan of the canonical source or completed levels and unsafe concurrent appends
 from independent bucket finalizers into one shared Parquet file. The
 intermediate counts are exact, but each file covers only one finalization unit
-and is not the complete, globally value-ordered and reconciled index. C7 reads
-the intermediate files in bounded batches, sorts and validates the complete
-index, writes `tile_value_counts.parquet`, and then removes the intermediate
-files. Because every tile belongs to exactly one bucket, its finalizer must
-aggregate across any physical tile shards and emit each nonzero
-`(level, value_id, tile_x, tile_y)` key exactly once. C7 rejects duplicate keys
+and is not the complete, globally value-ordered and reconciled index. C7b reads
+their already aggregated sparse rows, concatenates them into one compact Arrow
+table, rejects duplicate logical keys, sorts once by
+`(level, value_id, tile_y, tile_x)`, writes `tile_value_counts.parquet`, and then
+removes the intermediate files. This initial policy is measurable rather than
+an end-to-end bounded-memory guarantee; C9 determines whether a bounded external
+merge is justified. Because every tile belongs to exactly one bucket, its
+finalizer must aggregate across any physical tile shards and emit each nonzero
+`(level, value_id, tile_x, tile_y)` key exactly once. C7b rejects duplicate keys
 rather than silently combining them.
 Dask shuffle files are separate execution scratch and may be removed as soon as
 their bucket is finalized.

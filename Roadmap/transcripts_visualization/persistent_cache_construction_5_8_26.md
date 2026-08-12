@@ -234,16 +234,15 @@ and preserves any previously completed cache.
 
 ## Decisions deliberately left for slice refinement
 
-The high-level slices below are ready, but these details must be frozen at their
-named review gates rather than guessed during implementation:
+The high-level slices below are ready, but these remaining details must be frozen
+at their named review gates rather than guessed during implementation. C7a has
+already frozen the new `harpy-multiscale-points-cache-0.1` format identifier and
+the complete Arrow and metadata contracts.
 
-- whether the first public format redefines `harpy-transcripts-vis-0.1` or uses
-  a new `0.2` schema version;
 - the public build-result model and any later public builder parameters beyond
   the two logical planning arguments;
 - any future change to C1's implemented grid-origin normalization or exact
   maximum-boundary behavior;
-- the remaining Arrow details for the locked manifest column set;
 - whether measured C3 results justify the optional C4 direct-PyArrow
   investigation;
 - deterministic bucket filename width; the bucket hash and the initial
@@ -274,9 +273,9 @@ concrete:
 src/napari_harpy/core/multi_scale_cache_points/
   builder.py
   build_plan.py
+  cache_format.py
   hashing.py
   sampling.py
-  manifest.py
   publication.py
   writer/
     __init__.py
@@ -2528,10 +2527,17 @@ metadata, values, the manifest, or the sparse tile/value-count index.
 
 ### Specify and freeze
 
-- choose a cache schema identifier that cannot be mistaken for the incompatible
-  legacy `harpy-transcripts-vis-0.1` artifact;
+- use the distinct format identifier:
+
+  ```python
+  POINTS_CACHE_SCHEMA_VERSION = "harpy-multiscale-points-cache-0.1"
+  ```
+
+  This value-generic cache is incompatible with the legacy
+  `harpy-transcripts-vis-0.1` artifact and must not be accepted by its reader;
 - freeze exact non-nullable Arrow schemas, column order, and metadata policy for
-  `values.parquet`, `manifest.parquet`, and `tile_value_counts.parquet`;
+  `values.parquet`, `manifest.parquet`, and `tile_value_counts.parquet`. All
+  three schemas and all their fields carry no custom Arrow metadata;
 - retain the canonical `values.parquet` schema:
 
   ```text
@@ -2563,16 +2569,121 @@ metadata, values, the manifest, or the sparse tile/value-count index.
   n_points: uint64
   ```
 
-- freeze the exact `metadata.json` object structure and JSON value types for
-  cache identity, source identity, geometry, ordered level records, build
-  parameters, normalization and point-identity policies, sampler and writer
-  methods, coordinate storage, and auxiliary indexes;
-- define canonical JSON serialization, including finite-number handling,
-  deterministic key ordering, UTF-8 encoding, and final-newline policy;
+- freeze `metadata.json` to this exact nested structure and these JSON value
+  types:
+
+  ```json
+  {
+    "schema_version": "harpy-multiscale-points-cache-0.1",
+    "cache_generation_id": "00000000-0000-0000-0000-000000000000",
+    "created_by": {
+      "package": "napari-harpy",
+      "version": "0.0.0"
+    },
+    "source": {
+      "points_name": "transcripts",
+      "element_path": "points/transcripts",
+      "row_count": 136578750,
+      "columns": {
+        "x": "x",
+        "y": "y",
+        "value": "gene"
+      },
+      "selected_schema": [
+        {
+          "role": "x",
+          "name": "x",
+          "nullable": false,
+          "type": {"kind": "float", "bit_width": 32}
+        },
+        {
+          "role": "y",
+          "name": "y",
+          "nullable": false,
+          "type": {"kind": "float", "bit_width": 32}
+        },
+        {
+          "role": "value",
+          "name": "gene",
+          "nullable": false,
+          "type": {"kind": "string", "offset_width": 32}
+        }
+      ],
+      "signature_method": "harpy-parquet-source-inventory-sha256-v1",
+      "signature": "...",
+      "value_normalization_method": "harpy-string-trim-unicode-white-space-case-sensitive-v1",
+      "point_id_policy": "harpy-source-file-row-offset-uint64-v1"
+    },
+    "geometry": {
+      "x_origin": 0.0,
+      "y_origin": 0.0,
+      "x_min": 0.0,
+      "x_max": 100000.0,
+      "y_min": 0.0,
+      "y_max": 100000.0,
+      "coordinate_axes": ["x", "y"],
+      "relative_coordinate_dtype": "float32"
+    },
+    "build": {
+      "leaf_tile_size": 512,
+      "overview_point_budget": 100000,
+      "max_rows_per_row_group": 1000000,
+      "target_rows_per_output_bucket": 2000000,
+      "bucket_hash_method": "harpy-tile-splitmix64-v1",
+      "sampling_method": "harpy-value-neutral-stratified-splitmix64-v1",
+      "sampling_seed": 0,
+      "sampling_microgrid_edge": 16
+    },
+    "levels": [
+      {
+        "level": 0,
+        "kind": "exact",
+        "tile_size": 512,
+        "grid_width": 200,
+        "grid_height": 200,
+        "point_count": 136578750,
+        "max_points_per_tile": null,
+        "relative_directory": "levels/level_0"
+      }
+    ],
+    "artifacts": {
+      "values": "values.parquet",
+      "manifest": "manifest.parquet",
+      "tile_value_counts": "tile_value_counts.parquet"
+    }
+  }
+  ```
+
+  Numeric examples are illustrative; the field names, nesting, JSON types, and
+  ordering semantics are normative. `cache_generation_id` is a canonical
+  lowercase hyphenated UUID string. `levels` is ordered by ascending serialized
+  level. Every level records `kind` as `exact`, `bridge`, or `spatial`;
+- serialize source `selected_schema` in semantic role order `x`, `y`, `value`
+  using the same normalized Arrow-type representation already frozen for the
+  versioned source signature. Do not use `str(pa.DataType)` and do not serialize
+  Arrow schema or field metadata;
+- serialize metadata as UTF-8 bytes produced by:
+
+  ```python
+  json.dumps(
+      payload,
+      sort_keys=True,
+      separators=(",", ":"),
+      ensure_ascii=False,
+      allow_nan=False,
+  ) + "\n"
+  ```
+
+  Non-finite numeric metadata is therefore rejected, keys are deterministic,
+  and the file ends with exactly one newline;
 - freeze artifact names and require every stored path to be a normalized
   cache-root-relative POSIX path;
-- define the private metadata and artifact models required by C7b and C7c
-  without exposing legacy cache models;
+- implement the shared format contracts in the level-neutral
+  `multi_scale_cache_points/cache_format.py`, not under `writer/`. Keep the
+  private model surface to `_CacheLevelMetadata` and `_CacheMetadata`, plus the
+  format and artifact constants, the three Arrow schemas, and pure
+  metadata-to-payload and payload-to-metadata conversion. Do not expose or
+  reuse legacy cache models;
 - define successful staged validation as returning `None`; failures raise and
   no diagnostics report or partial-success object is persisted.
 
@@ -2583,9 +2694,10 @@ but never for locating point rows inside mixed-value row groups.
 
 ### Focused tests
 
-Keep contract tests small: valid model construction and one representative
-failure for unsupported schema version, malformed metadata, invalid path, and
-unexpected Arrow columns or metadata. Do not test JSON or PyArrow themselves.
+Keep contract tests in `tests/multi_scale_cache_points/test_cache_format.py`.
+Cover valid model and payload conversion plus one representative failure for
+unsupported schema version, malformed metadata, invalid path, and unexpected
+Arrow columns or metadata. Do not test JSON or PyArrow themselves.
 
 ### Exit criteria
 
