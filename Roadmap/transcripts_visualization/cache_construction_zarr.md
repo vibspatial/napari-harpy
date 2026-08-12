@@ -53,15 +53,18 @@ This work is a clean backend replacement on its development branch. The current
 tiled-Parquet implementation is preserved in a separate version-control branch
 as the rollback point; it is not carried forward as a second backend.
 
-The Zarr implementation is benchmarked and accepted on its own using the Xenium
-example and the logical correctness contracts in this roadmap. The project does
-not perform an exhaustive backward-compatibility exercise, cache conversion, or
-side-by-side performance qualification against the tiled-Parquet implementation.
+The Zarr implementation is evaluated on its own using the Xenium example and the
+logical correctness contracts in this roadmap. The cache must build successfully,
+remain memory-bounded, and be practically fast for construction and selected
+reads. This is an engineering review of the measured behavior, not a
+pre-registered numerical pass/fail benchmark. The project does not perform an
+exhaustive backward-compatibility exercise, cache conversion, or side-by-side
+performance qualification against the tiled-Parquet implementation.
 
 The decision is intentionally binary:
 
 ```text
-Zarr satisfies correctness and standalone acceptance criteria
+Zarr satisfies correctness and is practically satisfactory on Xenium
     -> continue with the hybrid Parquet/Zarr format
 
 Zarr is unsatisfactory
@@ -874,36 +877,40 @@ exists for sparse, dense, or terminal overview levels.
 Each slice ends in a focused green test set and leaves the repository in a
 coherent state. Do not implement the full runtime viewer during these slices.
 
-### Slice Z0: freeze the branch boundary and Zarr acceptance criteria
+### Slice Z0: establish the branch boundary and evaluation policy — resolved
+
+**Status:** resolved on 2026-08-12.
 
 #### Goal
 
-Make this roadmap authoritative, confirm the branch-level rollback point, and
-define how the Zarr backend will be judged on its own.
+Make this roadmap authoritative and define the deliberately lightweight policy
+for evaluating the Zarr backend on its own.
 
 #### Work
 
-- record the current focused C1–C6 test commands and results;
-- confirm that the current tiled-Parquet implementation is preserved in its
-  separate branch and requires no compatibility code in this branch;
-- define standalone Xenium Zarr measurements for build time, peak RSS, bytes,
-  bucket count, tile count, complete-tile reads, selected-range reads, and
-  sampled counts;
-- explicitly mark the parent roadmap's draft C7 Parquet manifest and point-file
-  contracts as superseded by this document;
-- confirm that no existing development cache is migrated or accepted by the new
-  reader;
-- confirm the direct runtime dependency policy for Zarr v3. Zarr is currently
-  present transitively, but production imports require a direct project
-  dependency with a tested minimum version and `<4` upper bound until a future
-  compatibility review.
+- use bucket-local Zarr v3 as the only point-payload backend pursued on this
+  branch;
+- require no compatibility code, cache migration, or comparison against the
+  separately preserved tiled-Parquet implementation;
+- supersede the parent roadmap's draft C7 Parquet manifest and point-file
+  contracts with this document;
+- evaluate the completed backend on the Xenium example by recording build time,
+  peak RSS, bytes, object counts, logical counts, and representative complete and
+  selected reads;
+- judge the measurements as an engineering whole: the cache must build, remain
+  memory-bounded, and be considerably fast for its intended use, without frozen
+  numerical pass/fail thresholds;
+- defer changes to the direct Zarr dependency and its version constraints until
+  implementation and benchmark evidence justify them.
 
 #### Exit criteria
 
-- the Parquet rollback branch is identified and no dual-backend work is planned;
+- the tiled-Parquet implementation is preserved separately and no dual-backend
+  work is planned;
 - the source and logical construction contracts are unchanged;
-- the team agrees that bucket-local Zarr v3 is the only production point
-  backend targeted by the remaining slices.
+- bucket-local Zarr v3 is the only production point backend targeted by the
+  remaining slices;
+- no further Z0 work is required before Z1 begins.
 
 ### Slice Z1: introduce storage-neutral payload and tile-location contracts
 
@@ -954,8 +961,9 @@ independently of Dask and the multiscale coordinators.
 
 #### Work
 
-- add the direct Zarr v3 dependency and use environment binaries according to
-  repository policy;
+- use the Zarr v3 implementation available in the project environment behind the
+  narrow internal storage adapter; do not freeze new `pyproject.toml` version
+  constraints in this slice;
 - define the exact root attributes, arrays, dtypes, shapes, ordering, chunking,
   sharding, codec, and path rules described above;
 - implement bucket creation from an ordered sequence of nonempty logical Arrow
@@ -1063,9 +1071,10 @@ Freeze `point_chunk_rows`, `point_shard_rows`, range chunking, and codec setting
 only after this gate. A configuration is rejected if it obtains selection speed
 by causing unacceptable complete-tile latency, build memory, file count, or
 storage growth for the intended viewer and development environment. Acceptance
-thresholds are absolute Zarr requirements, not ratios against Parquet. They must
-be recorded before the run and must not be silently changed after results are
-known.
+is a documented engineering judgment over correctness, build success, bounded
+memory, construction speed, storage behavior, and representative reads. Do not
+require pre-registered numerical thresholds or a comparison against the Parquet
+implementation.
 
 #### Exit criteria
 
@@ -1386,8 +1395,8 @@ produce material improvement, without requiring a corresponding Parquet run.
 
 #### Acceptance
 
-Correctness is mandatory. Performance thresholds are frozen before the run and
-include:
+Correctness is mandatory. Review the following performance measurements together
+without pre-registering numerical pass/fail thresholds:
 
 - complete build time and peak RSS;
 - total cache bytes and filesystem-object count;
@@ -1407,9 +1416,10 @@ Do not silently change a published physical contract.
 - final build and runtime measurements are recorded;
 - the hybrid generation is accepted as the Phase 2 input artifact.
 
-If the Zarr backend fails the frozen acceptance requirements, stop this roadmap
-and return to the separately preserved tiled-Parquet branch. Do not implement a
-fallback backend inside this branch.
+If the measured backend does not build reliably, remain memory-bounded, or feel
+practically fast enough for the intended viewer, stop this roadmap and return to
+the separately preserved tiled-Parquet branch. Do not implement a fallback
+backend inside this branch.
 
 ### Slice Z10: remove transitional code and synchronize documentation
 
@@ -1542,9 +1552,10 @@ their equality a cache invariant rather than trusting either writer.
 
 ### Zarr API/version instability
 
-Use a direct bounded dependency, a narrow internal adapter, explicit Zarr v3
-validation, and no experimental rectilinear chunks. Keep Zarr calls out of
-sampling and planning modules.
+Use a narrow internal adapter, explicit Zarr v3 validation, and no experimental
+rectilinear chunks. Keep Zarr calls out of sampling and planning modules. Defer a
+direct dependency declaration and version bounds until implementation and Xenium
+benchmark evidence establish what is actually required before release.
 
 ### Nested `.zarr` directories inside SpatialData
 
@@ -1620,7 +1631,7 @@ The refactor is complete when:
 
 ## Immediate next slice
 
-Execute Z0, then implement Z1 before changing any writer output. Do not implement
+Z0 is resolved. Implement Z1 before changing any writer output. Do not implement
 the draft Parquet-based C7a contract first: it would freeze fields that this
 backend deliberately removes. The first code-producing Zarr slice is Z2, and
 the first full-data decision gate is the Exact-only Z3 benchmark.
