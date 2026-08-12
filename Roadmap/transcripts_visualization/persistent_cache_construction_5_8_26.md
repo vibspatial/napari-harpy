@@ -322,7 +322,7 @@ retained idea requires independent justification from this roadmap.
 | C5a | Implemented | Generic 16 × 16 sampled-tile contract and pure in-memory sampler | No original-source rescan | No |
 | C5b | Implemented | Level-neutral physical writer-support extraction | No | No |
 | C5c | Implemented | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
-| C5d | Planned | Immediate-finer tile assembly and coarser-coordinate-rebasing spike | No original-source rescan | No |
+| C5d | Implemented | Immediate-finer tile assembly and coarser-coordinate-rebasing spike | No original-source rescan | No |
 | C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
 | C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
 | C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
@@ -334,8 +334,8 @@ C4 is deferred indefinitely unless new evidence identifies a concrete Dask
 limitation and measurable PyArrow success criterion. It does not block C5a or
 later work. C5a is the implemented pure sampled-tile selector, C5b has extracted
 the now-concrete level-neutral physical writer support, and C5c has implemented
-the first persistent sampled level. C5d remains a pure finer-to-coarser
-assembly spike.
+the first persistent sampled level. C5d implements the pure finer-to-coarser
+assembly boundary used by later spatial levels.
 
 ## Slice C1: pure grid and level build planning
 
@@ -2265,6 +2265,23 @@ sampler is shown to produce deterministic, value-neutral, nested coarser-level
 output with exact capacity behavior, without introducing persistent
 construction.
 
+### Implemented C5d result
+
+Implemented on 2026-08-11 in `writer/spatial.py`. `_FinerLevelTile` carries one
+nonempty, schema-compatible finer-level payload with its logical tile
+coordinates. `_assemble_and_sample_coarser_tile(...)` validates adjacent
+sampled-level geometry, accepts one through four unique contributing finer
+tiles, orders them deterministically, rebases coordinates in `float64`, and
+returns the shared `float32` four-column payload selected by the existing C5a
+sampler. It performs no Parquet IO, manifest construction, bucket assignment,
+or persistent writing.
+
+Focused coverage verifies all four coordinate quadrants, deterministic
+`point_id` ordering, exact dense-tile capacity, nested and value-neutral
+membership, input-order invariance, sparse edge behavior at the closed coarser
+boundary, and rejection of invalid level or tile geometry. The spatial,
+sampler, and build-plan focused suite passed 29 tests.
+
 ## Slice C6: complete nested spatial pyramid from the bridge
 
 ### Goal
@@ -2609,11 +2626,10 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C5d: immediate-finer tile assembly and
-coarser-coordinate-rebasing spike**. Consume bounded in-memory immediate-finer
-tile tables, rebase their relative coordinates into one coarser tile, and apply
-the implemented C5a selector without persistent output. Gate C then reviews the
-sampling and finer-to-coarser assembly contracts before C6 constructs the
-complete spatial pyramid.
+Review **Gate C** against the implemented sampling and finer-to-coarser
+assembly contracts. If approved, specify **C6: complete nested spatial pyramid
+from the bridge**, which adds manifest-driven assembly, physical bucket output,
+intermediate tile/value counts, and persistent level reconciliation around the
+pure C5d boundary.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.

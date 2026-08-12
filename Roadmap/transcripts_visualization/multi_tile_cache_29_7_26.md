@@ -2591,7 +2591,8 @@ incremental peak RSS. Gate B accepted Dask, and optional C4 is deferred
 indefinitely unless new evidence identifies a concrete Dask limitation.
 Continue with:
 
-1. approve immediate-finer tile assembly and coarser-coordinate rebasing in C5d;
+1. review the implemented immediate-finer tile assembly and
+   coarser-coordinate rebasing at Gate C;
 2. build the remaining spatial pyramid in C6;
 3. consolidate sparse tile/value counts and validate the staged cache in C7;
 4. implement guarded publication in C8;
