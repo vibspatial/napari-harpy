@@ -47,6 +47,31 @@ format may retain that schema-version string after the new C7 contract is
 frozen. Incomplete development artifacts using the draft Parquet payload are
 not caches and are never migrated or accepted.
 
+### Branch and compatibility policy
+
+This work is a clean backend replacement on its development branch. The current
+tiled-Parquet implementation is preserved in a separate version-control branch
+as the rollback point; it is not carried forward as a second backend.
+
+The Zarr implementation is benchmarked and accepted on its own using the Xenium
+example and the logical correctness contracts in this roadmap. The project does
+not perform an exhaustive backward-compatibility exercise, cache conversion, or
+side-by-side performance qualification against the tiled-Parquet implementation.
+
+The decision is intentionally binary:
+
+```text
+Zarr satisfies correctness and standalone acceptance criteria
+    -> continue with the hybrid Parquet/Zarr format
+
+Zarr is unsatisfactory
+    -> abandon this backend branch and return to the preserved Parquet branch
+```
+
+Do not respond to an unsatisfactory Zarr result by adding a runtime backend
+selector, a mixed-format reader, an automatic fallback, or an artifact migration
+path.
+
 ## Decision summary
 
 Use a hybrid representation:
@@ -111,6 +136,8 @@ and the [Zarr v3 array and sharding documentation](https://zarr.readthedocs.io/e
 - Do not convert old or incomplete development cache artifacts in place; rebuild
   derived caches from the validated canonical source.
 - Do not maintain two public point-payload backends.
+- Do not add Parquet/Zarr compatibility tests or require performance parity with
+  the tiled-Parquet development implementation.
 - Do not use one Zarr array or group per logical tile.
 - Do not use one Zarr array or chunk per gene.
 - Do not use a dense `n_tiles x (n_values + 1)` gene-offset matrix in the first
@@ -788,24 +815,25 @@ exists for sparse, dense, or terminal overview levels.
 Each slice ends in a focused green test set and leaves the repository in a
 coherent state. Do not implement the full runtime viewer during these slices.
 
-### Slice Z0: freeze the refactor boundary and preserve a baseline
+### Slice Z0: freeze the branch boundary and Zarr acceptance criteria
 
 #### Goal
 
-Record the current Parquet writer as a benchmark baseline and make this roadmap
-authoritative before changing physical artifacts.
+Make this roadmap authoritative, confirm the branch-level rollback point, and
+define how the Zarr backend will be judged on its own.
 
 #### Work
 
 - record the current focused C1–C6 test commands and results;
-- preserve the existing Exact, Bridge, and spatial benchmark reports needed for
-  before/after comparison;
-- record current full-Xenium build time, peak RSS, bytes, bucket count, tile
-  count, representative complete-tile read latency, and sampled counts;
+- confirm that the current tiled-Parquet implementation is preserved in its
+  separate branch and requires no compatibility code in this branch;
+- define standalone Xenium Zarr measurements for build time, peak RSS, bytes,
+  bucket count, tile count, complete-tile reads, selected-range reads, and
+  sampled counts;
 - explicitly mark the parent roadmap's draft C7 Parquet manifest and point-file
   contracts as superseded by this document;
-- confirm that no completed public `0.1` hybrid-incompatible cache must be
-  migrated;
+- confirm that no existing development cache is migrated or accepted by the new
+  reader;
 - confirm the direct runtime dependency policy for Zarr v3. Zarr is currently
   present transitively, but production imports require a direct project
   dependency with a tested minimum version and `<4` upper bound until a future
@@ -813,7 +841,7 @@ authoritative before changing physical artifacts.
 
 #### Exit criteria
 
-- baseline evidence is retained outside disposable benchmark workspaces;
+- the Parquet rollback branch is identified and no dual-backend work is planned;
 - the source and logical construction contracts are unchanged;
 - the team agrees that bucket-local Zarr v3 is the only production point
   backend targeted by the remaining slices.
@@ -834,8 +862,10 @@ changing output membership yet.
 - change `_BucketWriteResult` and `_LevelWriteResult` to carry logical tile
   records plus intermediate count-file descriptors;
 - introduce one private `read_complete_tile(location) -> pa.Table` boundary;
-- temporarily wrap the current Parquet reader behind that boundary only as an
-  incremental scaffold; do not expose a public backend switch;
+- the current Parquet reader may remain temporarily behind that boundary only
+  to keep intermediate commits coherent while consumers are converted. This is
+  a sequencing scaffold, not a compatibility layer, supported backend, or
+  benchmark subject;
 - change Bridge and spatial grouping code to reason about one logical tile
   record rather than one or more row-group shards;
 - preserve existing point counts, tile order, capacity checks, and sampled
@@ -847,7 +877,8 @@ changing output membership yet.
 - unique and contiguous bucket-local tile indexes;
 - unchanged build-plan and sampler tests;
 - Bridge and spatial logical grouping independent of row groups;
-- current Parquet scaffold reads the same Arrow tile payload during this slice.
+- logical tile grouping and payload contracts remain covered independently of
+  the temporary physical scaffold.
 
 #### Exit criteria
 
@@ -956,8 +987,8 @@ the proven source annotation and Dask shuffle.
 
 #### Gate Z3: full-Xenium Exact benchmark
 
-Run the complete 136,578,750-point Exact build and compare it with the preserved
-Parquet baseline. Record:
+Run the complete 136,578,750-point Exact Zarr build as a standalone acceptance
+benchmark. Record:
 
 - build time and peak RSS;
 - total and per-array compressed bytes;
@@ -972,16 +1003,18 @@ Parquet baseline. Record:
 Freeze `point_chunk_rows`, `point_shard_rows`, range chunking, and codec settings
 only after this gate. A configuration is rejected if it obtains selection speed
 by causing unacceptable complete-tile latency, build memory, file count, or
-storage growth. Initial thresholds are acceptance hypotheses and must be
-recorded before the run; they must not be silently changed after results are
+storage growth for the intended viewer and development environment. Acceptance
+thresholds are absolute Zarr requirements, not ratios against Parquet. They must
+be recorded before the run and must not be silently changed after results are
 known.
 
 #### Exit criteria
 
-- Exact correctness matches the current implementation;
+- Exact correctness satisfies the validated-source membership, identity,
+  coordinate, tile, and value-count contracts;
 - the production Zarr physical settings are frozen for all levels;
 - selected-value evidence justifies proceeding with the hybrid backend;
-- any observed regression and accepted tradeoff is documented explicitly.
+- any observed Zarr limitation and accepted tradeoff is documented explicitly.
 
 ### Slice Z4: move Bridge construction to Zarr
 
@@ -1013,9 +1046,10 @@ Consume Exact Zarr tiles and persist Bridge through the same Zarr backend.
 
 #### Acceptance check
 
-Repeat the existing full-Xenium Bridge measurement. Reconcile the previously
-observed representative total, nested identity membership, time, peak memory,
-bytes, chunks, shards, and complete-tile reads.
+Run the full-Xenium Bridge through the Zarr backend. Validate its planned
+capacity, deterministic nested identity membership, and value counts, and record
+time, peak memory, bytes, chunks, shards, and complete-tile reads without a
+Parquet comparison requirement.
 
 #### Exit criteria
 
@@ -1280,9 +1314,9 @@ chunk read amplification
 latency
 ```
 
-Compare against the preserved Parquet baseline where reproducible. Report cases
-where small tiles make the difference negligible and cases where broadly
-distributed sparse genes produce material improvement.
+Interpret the Zarr measurements on their own. Report cases where small tiles
+make range selection negligible and cases where broadly distributed sparse genes
+produce material improvement, without requiring a corresponding Parquet run.
 
 #### Acceptance
 
@@ -1307,6 +1341,10 @@ Do not silently change a published physical contract.
 - final build and runtime measurements are recorded;
 - the hybrid generation is accepted as the Phase 2 input artifact.
 
+If the Zarr backend fails the frozen acceptance requirements, stop this roadmap
+and return to the separately preserved tiled-Parquet branch. Do not implement a
+fallback backend inside this branch.
+
 ### Slice Z10: remove transitional code and synchronize documentation
 
 #### Goal
@@ -1316,19 +1354,19 @@ Leave one supported implementation and one coherent set of roadmaps.
 #### Work
 
 - delete the temporary Parquet point adapter and obsolete row-group payload
-  models after benchmark evidence is retained;
+  models once every consumer uses Zarr;
 - remove `max_rows_per_row_group` from public cache construction configuration
   and metadata while retaining source-Parquet row-group validation concepts;
 - remove writer tests whose only contract was Parquet packaging and replace
   them with logical/Zarr coverage;
-- retain a clearly named opt-in historical benchmark only if it remains useful;
 - update `multi_tile_cache_29_7_26.md` and
   `persistent_cache_construction_5_8_26.md` to point to this roadmap for the
   physical payload and revised C7–C9 work;
 - update `compare_to_xenium.md` with measured rather than proposed Harpy
   behavior;
-- document that cache rebuild, not artifact conversion, is the supported
-  migration path.
+- document that this branch provides no artifact conversion or backward
+  compatibility. Rejection of the backend means returning to the preserved
+  Parquet branch before release.
 
 #### Exit criteria
 
