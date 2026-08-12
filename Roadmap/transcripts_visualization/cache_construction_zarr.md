@@ -632,6 +632,65 @@ The speedup comes only when selected ranges touch fewer chunks than the complete
 positive tiles. The indexes eliminate large-array gene searches; Zarr chunking
 reduces physical decoding. Neither property alone guarantees faster viewing.
 
+### Opening a bucket versus reading point payload
+
+Opening a bucket does **not** mean loading all points in that bucket. These are
+separate costs:
+
+```text
+open bucket store
+  -> access group/array metadata and the required small index chunks
+
+read point payload
+  -> fetch and decompress only point chunks intersecting requested row ranges
+```
+
+For explicit value selection, runtime first limits work to the positive tiles
+inside the current viewport at the chosen pyramid level. It groups those tiles
+by `bucket_path` and opens only the unique buckets required by that visible
+selection. Opening one such bucket must not materialize its complete `location`,
+`value_id`, or `point_id` arrays.
+
+Inside each opened bucket, the reader uses `bucket_tile_index`, `tile_indptr`, and
+the sparse range arrays to determine the selected values' exact point-row
+intervals. It then reads only the `location` chunks intersecting those intervals.
+It does not read the point-level `value_id` array merely to filter it, and reads
+`point_id` only when identity or picking is requested. Repeated ranges that touch
+the same chunk should reuse the already decoded or cached chunk.
+
+For example, a bucket may contain 100,000 points while three selected visible
+tile/value ranges contain rows `8200:8203`, `41100:41107`, and `72500:72501`.
+With 4,096-row point chunks, those requests can touch three chunks; they do not
+load the complete 100,000-row bucket. The exact number of chunks depends on range
+alignment and whether multiple ranges share a chunk.
+
+The compression/read unit is nevertheless a complete chunk. A nonempty interval
+`[start, stop)` with chunk size `C` touches:
+
+```text
+floor((stop - 1) / C) - floor(start / C) + 1
+```
+
+chunks. A one-point range therefore still decompresses the complete chunk that
+contains it, including nonselected rows. Value-contiguous point ordering bounds
+the number of chunks touched by one tile/value range, but cannot remove this
+chunk-level read amplification.
+
+The important sparse worst case is a rare value present in every visible tile.
+`tile_value_counts.parquet` cannot prune any of those tiles, so every unique
+bucket containing them must be accessed and each disjoint range may require at
+least one point chunk. This still does not read every tile in the dataset or each
+bucket's complete payload: viewport clipping limits the logical tiles, pyramid
+selection prevents a zoomed-out view from reading Exact tiles, and sparse ranges
+limit point reads within each positive visible tile. The acceptance benchmark
+must measure this case rather than assume that sparse value selection is always
+cheap.
+
+`manifest.parquet` only locates the relevant bucket and bucket-local tile index.
+It reduces lookup work but does not itself reduce point-payload I/O. That
+reduction comes from the combination of positive-tile pruning, sparse value
+ranges, value-contiguous point order, Zarr chunk slicing, and cache reuse.
+
 ## Reuse and refactor boundaries
 
 ### Reuse without semantic changes
@@ -1282,11 +1341,16 @@ The selected reader must:
 
 - use `tile_value_counts.parquet` to skip zero-count tiles;
 - use manifest bucket locations and Zarr sparse ranges;
+- group positive visible tiles by `bucket_path` and open each required bucket at
+  most once per request;
+- treat store metadata/index access separately from point-payload reads and never
+  materialize complete point arrays merely by opening a bucket;
 - avoid scanning the point-level `value_id` array;
 - merge adjacent chunk reads where practical;
 - return selected coordinates, IDs when requested, and known value IDs;
-- report logical rows, chunks touched, decoded-row estimate, and bytes where the
-  store API exposes them.
+- report positive visible tiles, unique buckets opened, logical rows, chunks
+  touched, decoded-row estimate, and metadata/index versus point-payload bytes
+  where the store API exposes them.
 
 #### Full-Xenium scenarios
 
@@ -1307,6 +1371,8 @@ For every selected case calculate:
 ```text
 logical selected rows
 complete positive-tile rows
+positive visible tiles
+unique buckets opened
 chunks touched
 estimated decoded chunk rows
 tile read amplification
@@ -1544,7 +1610,8 @@ The refactor is complete when:
 - every nonempty tile/value key resolves to one contiguous sparse range;
 - `values.parquet`, `manifest.parquet`, `tile_value_counts.parquet`, and all Zarr
   stores reconcile under independent staged validation;
-- selected-value reads avoid point-level value scans and decode only intersecting
+- selected-value reads open only the unique buckets required by positive visible
+  tiles, avoid point-level value scans, and decode only intersecting point
   chunks;
 - all-values reads remain acceptable under measured viewer scenarios;
 - construction is bounded, failure-safe, and atomically published;
