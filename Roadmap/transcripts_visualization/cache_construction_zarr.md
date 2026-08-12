@@ -190,6 +190,8 @@ bucket-000.zarr/
   location             shape=(N, 2)   dtype=float32
   point_id             shape=(N,)     dtype=uint64
   value_id             shape=(N,)     dtype=uint32
+  tile_x               shape=(K,)     dtype=uint32
+  tile_y               shape=(K,)     dtype=uint32
   tile_offset          shape=(K + 1,) dtype=uint64
 
   ranges/
@@ -209,13 +211,17 @@ three arrays describes the same point.
 The persisted point order is:
 
 ```text
-(bucket-local tile order, value_id, point_id)
+(tile_y, tile_x, value_id, point_id)
 ```
 
-Bucket-local tiles are ordered by `(tile_y, tile_x)`. Points belonging to one
-tile are contiguous. Points belonging to one value inside that tile are also
-contiguous. Sorting by value happens only after sampling membership is fixed, so
-it never changes which representatives are retained.
+This is a logical grouping inside the flat aligned `location`, `value_id`, and
+`point_id` arrays. The store does not create nested Zarr groups per tile or per
+value. Bucket-local tiles are ordered by `(tile_y, tile_x)`. `tile_x[i]` and
+`tile_y[i]` identify bucket-local tile `i`; the same index addresses that tile's
+entries in `tile_offset` and `tile_indptr`. Points belonging to one tile are
+contiguous. Points belonging to one value inside that tile are also contiguous.
+Sorting by value happens only after sampling membership is fixed, so it never
+changes which representatives are retained.
 
 The bucket root attributes contain only versioned physical facts needed to
 reject incompatible stores:
@@ -240,7 +246,20 @@ shared by writers, staged validation, and the later runtime store. Semantic
 cache metadata remains in `metadata.json`; Zarr attributes do not duplicate the
 source signature, build plan, or value vocabulary.
 
-### `tile_offset`
+### Tile identity and `tile_offset`
+
+The two coordinate arrays make each bucket self-describing at logical-tile
+granularity:
+
+```text
+bucket-local tile i = (tile_x[i], tile_y[i])
+```
+
+`manifest.parquet` remains the runtime spatial index from
+`(level, tile_x, tile_y)` to `(bucket_path, bucket_tile_index)`. The duplicated
+coordinates allow independent staged validation to prove that the manifest did
+not permute or mislabel equally sized tile intervals. The storage overhead is
+two `uint32` values per nonempty tile.
 
 `tile_offset` is a CSR-style pointer array:
 
@@ -253,15 +272,22 @@ It supports a complete all-values tile read and reconciles the Zarr payload with
 
 Required invariants:
 
+- `tile_x.shape == tile_y.shape == (K,)`;
+- every `(tile_x[i], tile_y[i])` is unique and lies inside the level grid;
+- coordinate pairs are strictly ordered by `(tile_y, tile_x)`;
 - `tile_offset[0] == 0`;
 - `tile_offset[-1] == N`;
 - offsets are strictly increasing because empty tiles are not stored;
+- manifest row `(bucket_path, bucket_tile_index=i)` has exactly
+  `tile_x == tile_x[i]` and `tile_y == tile_y[i]`;
 - `tile_offset[i + 1] - tile_offset[i]` equals the manifest `n_points` for
   bucket-local tile `i`.
 
 ### Sparse value ranges
 
-`tile_indptr` partitions the three range arrays by bucket-local tile:
+`indptr` means *index pointer*, following CSR sparse-array terminology.
+`tile_indptr` does not point into the point payload. It partitions the three
+range arrays by bucket-local tile:
 
 ```text
 tile i range records = tile_indptr[i] : tile_indptr[i + 1]
@@ -278,6 +304,121 @@ row_start[j] : row_start[j] + row_count[j]
 slightly duplicates cumulative counts, but makes runtime lookup direct, staged
 validation clearer, and future physical-layout changes representable without
 changing the query model.
+
+There are therefore two pointer layers:
+
+```text
+tile_offset
+    bucket-local tile -> rows in location/value_id/point_id
+
+tile_indptr
+    bucket-local tile -> rows in ranges/value_id/row_start/row_count
+```
+
+#### Worked sparse-range example
+
+Suppose one bucket contains three nonempty tiles and the value vocabulary maps:
+
+```text
+value_id 0 = ACTB
+value_id 1 = MALAT1
+value_id 2 = EPCAM
+```
+
+The bucket-local tile arrays and complete point intervals are:
+
+```text
+tile_x      = [4,  5,  4]
+tile_y      = [2,  2,  3]
+tile_offset = [0, 13, 25, 31]
+
+tile index  coordinates  complete point rows
+----------  -----------  -------------------
+0           (4, 2)       [0:13]
+1           (5, 2)       [13:25]
+2           (4, 3)       [25:31]
+```
+
+Assume their nonempty value runs are:
+
+```text
+tile 0: ACTB    -> point rows [0:10]
+        EPCAM   -> point rows [10:13]
+
+tile 1: MALAT1 -> point rows [13:21]
+        EPCAM   -> point rows [21:25]
+
+tile 2: ACTB    -> point rows [25:31]
+```
+
+Flatten those five runs into the range arrays:
+
+```text
+range index  value_id  row_start  row_count
+-----------  --------  ---------  ---------
+0            0         0          10
+1            2         10          3
+2            1         13          8
+3            2         21          4
+4            0         25          6
+
+ranges/value_id  = [0,  2,  1,  2,  0]
+ranges/row_start = [0, 10, 13, 21, 25]
+ranges/row_count = [10, 3,  8,  4,  6]
+```
+
+`tile_indptr` states which of those range records belong to each tile:
+
+```text
+tile_indptr = [0, 2, 4, 5]
+
+tile 0 range records = [0:2]
+tile 1 range records = [2:4]
+tile 2 range records = [4:5]
+```
+
+For example, a MALAT1 lookup in bucket-local tile 1 proceeds as:
+
+```text
+i = 1
+
+range_begin = tile_indptr[i]      = 2
+range_end   = tile_indptr[i + 1]  = 4
+
+ranges/value_id[2:4] = [1, 2]
+```
+
+Value ID 1 is range record 2, whose physical point interval is:
+
+```text
+start = ranges/row_start[2] = 13
+stop  = start + ranges/row_count[2] = 21
+
+selected locations = location[13:21]
+selected point IDs = point_id[13:21]
+```
+
+The extra final entries in both pointer arrays are sentinels. They make every
+interval expressible as `[pointer[i]:pointer[i + 1]]` without a special case for
+the final tile:
+
+```text
+tile_offset[-1] == N == 31
+tile_indptr[-1] == M == 5
+```
+
+This example is illustrative in its coordinates and counts but normative for
+the pointer semantics. It should be adapted into the Zarr bucket reader/writer
+docstrings in Z2.
+
+Required global range-index invariants:
+
+- `tile_indptr.shape == (K + 1,)`;
+- `tile_indptr[0] == 0`;
+- `tile_indptr[-1] == M`;
+- pointers are strictly increasing because every stored nonempty tile contains
+  at least one value run;
+- all three range arrays have shape `(M,)`.
 
 Required invariants for every tile:
 
@@ -331,10 +472,10 @@ production point chunk, shard, and codec settings from Exact-level evidence
 before C7 publishes metadata.
 
 Index arrays use independent, larger regular chunks. Their configuration is not
-required to match point chunks. `tile_offset` and `tile_indptr` are normally
-small enough for one chunk per bucket. Range arrays share one aligned
-`range_chunk_rows` setting. Z2 must prevent scalar reads from producing an
-unbounded number of tiny objects.
+required to match point chunks. `tile_x`, `tile_y`, `tile_offset`, and
+`tile_indptr` are normally small enough for one chunk per bucket. Range arrays
+share one aligned `range_chunk_rows` setting. Z2 must prevent scalar reads from
+producing an unbounded number of tiny objects.
 
 Fixed chunks may cross tile and value boundaries. A selected range therefore
 causes Zarr to decode every chunk it touches, including adjacent unselected
@@ -379,6 +520,8 @@ Rows are sorted by `(level, tile_y, tile_x)`. Required invariants:
 - all rows sharing `bucket_path` agree on `level` and `bucket_id`;
 - for each bucket, `bucket_tile_index` is exactly `0..K-1` in
   `(tile_y, tile_x)` order;
+- manifest coordinates for `bucket_tile_index=i` equal the bucket's
+  `tile_x[i]` and `tile_y[i]` arrays;
 - `n_points` is positive and equals its `tile_offset` interval;
 - every Zarr bucket store is referenced by at least one manifest row, and every
   manifest bucket path exists exactly once.
@@ -431,6 +574,7 @@ bucket-local sparse ranges to locate payload rows.
 viewport + chosen level
   -> manifest rows for visible tiles
   -> bucket_path and bucket_tile_index
+  -> require tile_x[i], tile_y[i] to match the manifest tile
   -> tile_offset[i:i+2]
   -> location[start:stop]
   -> value_id[start:stop]
@@ -444,6 +588,7 @@ selected labels
   -> values.parquet -> selected value_ids
   -> tile_value_counts.parquet -> positive visible tiles and render estimate
   -> manifest.parquet -> bucket_path and bucket_tile_index
+  -> require tile_x[i], tile_y[i] to match the manifest tile
   -> tile_indptr[i:i+2] -> tile's sparse range records
   -> binary/search-merge selected value_ids against sorted range value_ids
   -> location[row_start:row_stop] for matching runs
@@ -727,8 +872,8 @@ independently of Dask and the multiscale coordinators.
   tiles;
 - implement bounded point-array writes without a second full-bucket location
   copy;
-- implement `tile_offset`, `tile_indptr`, sorted sparse ranges, and consistency
-  checks;
+- implement `tile_x`, `tile_y`, `tile_offset`, `tile_indptr`, sorted sparse
+  ranges, and consistency checks;
 - implement complete-tile reads returning the storage-neutral Arrow payload;
 - implement selected-value range lookup and reads for a small standalone
   acceptance reader;
@@ -745,6 +890,7 @@ independently of Dask and the multiscale coordinators.
 Use tiny deterministic fixtures covering:
 
 - several tiles and values in one bucket;
+- manifest-to-bucket tile-coordinate reconciliation;
 - values absent from some tiles;
 - one tile containing one value;
 - a value run crossing a point-chunk boundary;
@@ -789,8 +935,8 @@ the proven source annotation and Dask shuffle.
   Exact finalizer with the Zarr bucket writer;
 - keep bucket naming, bucket hashing, Dask partition ownership, staging
   ownership, point conservation, and intermediate tile/value counts;
-- reconcile every logical tile record with `tile_offset` and every intermediate
-  count row with one sparse range;
+- reconcile every logical tile record with `tile_x`, `tile_y`, and `tile_offset`,
+  and every intermediate count row with one sparse range;
 - ensure each Dask finalizer writes only its own Zarr store and intermediate
   count file;
 - keep failure cleanup at staging-generation scope; never expose a partially
@@ -998,7 +1144,8 @@ Open the staging generation without trusting writer objects and validate:
 - exact set equality between manifest bucket paths and physical Zarr stores;
 - Zarr v3 root/group/array contracts and root attributes;
 - array shapes, dtypes, chunks, shards, codecs, and aligned point lengths;
-- bucket-local tile index continuity and `tile_offset` reconciliation;
+- bucket-local tile index continuity, coordinate-array equality with the
+  manifest, and `tile_offset` reconciliation;
 - sparse-range structure, coverage, value order, and point-level value agreement;
 - manifest totals by tile and level;
 - tile/value index equality with Zarr range keys and counts;
@@ -1354,7 +1501,8 @@ The refactor is complete when:
 - no published cache point payload is Parquet;
 - source validation, identities, coordinates, sampling, capacities, nesting,
   and overview-budget invariants remain satisfied;
-- every manifest tile resolves to one contiguous Zarr interval;
+- every manifest tile matches the bucket's stored `tile_x`/`tile_y` identity and
+  resolves to one contiguous Zarr interval;
 - every nonempty tile/value key resolves to one contiguous sparse range;
 - `values.parquet`, `manifest.parquet`, `tile_value_counts.parquet`, and all Zarr
   stores reconcile under independent staged validation;
