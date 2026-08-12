@@ -2583,20 +2583,21 @@ Phase 0 validation and its Gate D are complete. Do not add the new builder to
 `_transcript_tiles.py` or treat its schemas and tests as the Phase 1
 specification.
 
-The next work follows the construction companion roadmap. C1 through C3, the
-pure C5a sampler, the C5b level-neutral physical writer support, and the C5c
-persistent Bridge writer are implemented. The one-shot Xenium Bridge build
-retained 21,722,305 representatives in 25.99 seconds with 76,087,296 bytes of
-incremental peak RSS. Gate B accepted Dask, and optional C4 is deferred
-indefinitely unless new evidence identifies a concrete Dask limitation.
-Continue with:
+The next work follows the construction companion roadmap. Planning, the Dask
+Exact writer, the shared value-neutral sampler, level-neutral physical writer
+support, the persistent Bridge writer, and the complete nested spatial writer
+are implemented. The one-shot Xenium Bridge build retained 21,722,305
+representatives in 25.99 seconds with 76,087,296 bytes of incremental peak RSS.
+Gate B accepted Dask, Gate C accepted the finer-to-coarser contract, and
+optional direct-PyArrow investigation remains deferred indefinitely unless new
+evidence identifies a concrete Dask limitation. Continue with:
 
-1. review the detailed persistent spatial-pyramid specification and implement
-   C6 using the Gate C-approved sampling and finer-to-coarser contracts;
-2. verify every planned spatial level and its nested membership;
-3. consolidate sparse tile/value counts and validate the staged cache in C7;
-4. implement guarded publication in C8;
-5. run the complete multilevel Xenium benchmark and hardening in C9.
+1. freeze the published cache artifact schemas and consolidate sparse
+   tile/value counts in C7;
+2. write and validate metadata, values, manifest, and the complete staged cache
+   in C7;
+3. implement guarded end-to-end construction and publication in C8;
+4. run the complete multilevel Xenium benchmark and hardening in C9.
 
 This order keeps logical cache requirements stable while deferring the physical
 writer and the remaining manifest and metadata schema choices until focused

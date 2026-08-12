@@ -2479,6 +2479,31 @@ files.
 - sampled construction performs no original-source content rescan;
 - all planned levels are written and accounted for.
 
+### Implemented C6 result
+
+Implemented on 2026-08-12 in `writer/spatial.py`. The spatial coordinator
+walks every planned spatial level from L1 toward the terminal overview, using
+only the completed immediately finer `_LevelWriteResult` as point input. It
+reconstructs complete logical finer tiles from manifest row groups, validates
+contiguous physical shards and decoded row counts, rebases one through four
+contributing tiles, and applies the shared deterministic value-neutral sampler.
+
+Each spatial level independently assigns logical output tiles to deterministic
+buckets, writes the shared four-column point payload in bounded physical row
+groups, emits exact intermediate tile/value counts before sharding, and returns
+the level-neutral manifest and count-file descriptors. Complete-level
+reconciliation checks the expected sampled rows, written rows, manifest totals,
+intermediate value-count totals, grid membership, shard continuity, per-tile
+capacity, and terminal overview budget. Construction remains sequential,
+performs no point-level shuffle, and never revisits the original points source.
+
+Focused persistent coverage verifies a deterministic two-level spatial build,
+nested and value-neutral `point_id` membership, physical output sharding,
+intermediate counts, the Bridge-terminal case, and rejection of invalid finer
+shards or physical row counts. The focused planning, sampling, and writer suite
+passed 61 tests. The complete Xenium performance measurement remains assigned
+to the end-to-end cache benchmark and hardening work.
+
 ## Slice C7: metadata, values, manifest, tile/value counts, and staged-cache validation
 
 ### Goal
@@ -2783,9 +2808,9 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Review the detailed **C6: complete nested spatial pyramid from the bridge**
-specification, then implement manifest-driven finer-level reconstruction,
-sequential bucket-major spatial output, intermediate tile/value counts, and
-level reconciliation around the pure C5d boundary.
+Specify and implement **C7: metadata, values, manifest, tile/value counts, and
+staged-cache validation** around the completed Exact, Bridge, and spatial writer
+results. Freeze the published artifact schemas before exposing the cache to a
+runtime reader.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
