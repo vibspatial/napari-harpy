@@ -291,8 +291,8 @@ The private `writer/` subpackage groups physical writer contracts and
 implementations without creating another exported API. `writer/support.py` is
 introduced only in C5b, when the already implemented Exact physical schemas and
 helpers have an agreed second consumer. The future complete manifest and
-metadata schemas remain deferred to C7 rather than being added merely to mirror
-the legacy module.
+metadata schemas remain deferred to C7a rather than being added merely to
+mirror the legacy module.
 
 C1 owns `build_plan.py` and its private plan records. Small helpers should remain
 in their consuming module rather than creating speculative modules. `hashing.py`
@@ -323,8 +323,10 @@ retained idea requires independent justification from this roadmap.
 | C5b | Implemented | Level-neutral physical writer-support extraction | No | No |
 | C5c | Implemented | Persistent bridge-level construction and acceptance check | No original-source rescan | No |
 | C5d | Implemented; Gate C approved | Immediate-finer tile assembly and coarser-coordinate-rebasing spike | No original-source rescan | No |
-| C6 | Planned | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
-| C7 | Planned | Metadata, values, manifest, tile/value counts, and staged-cache validation | No | No |
+| C6 | Implemented | Complete nested spatial pyramid from the bridge | No original-source rescan | No |
+| C7a | Planned | Published cache artifact contracts | No | No |
+| C7b | Planned | Artifact writing and tile/value-count consolidation | No | No |
+| C7c | Planned; Gate D follows | Staged-cache validation | No | No |
 | C8 | Planned | Guarded end-to-end builder and local publication | Through level builders | Yes |
 | C9 | Planned | Xenium construction benchmark and hardening | Yes | Benchmark only |
 
@@ -335,7 +337,10 @@ limitation and measurable PyArrow success criterion. It does not block C5a or
 later work. C5a is the implemented pure sampled-tile selector, C5b has extracted
 the now-concrete level-neutral physical writer support, and C5c has implemented
 the first persistent sampled level. C5d implements the pure finer-to-coarser
-assembly boundary used by later spatial levels.
+assembly boundary used by later spatial levels, and C6 implements the complete
+nested spatial pyramid. C7 is divided into separately reviewable artifact
+contracts, artifact writing, and staged validation rather than introducing all
+three concerns in one implementation step.
 
 ## Slice C1: pure grid and level build planning
 
@@ -664,7 +669,7 @@ class _LevelWriteResult:
 
 The result is level-neutral: the Exact writer and every later sampled-level
 writer return the same record type. Exact-specific behavior remains in the
-writer entry point and `_ExactLevelWriterConfig`, while C7 can consolidate a
+writer entry point and `_ExactLevelWriterConfig`, while C7b can consolidate a
 homogeneous collection of `_LevelWriteResult` records.
 
 All configuration values are positive integers, excluding `bool`. C2 gives the
@@ -743,7 +748,7 @@ reconciles to the corresponding exact count in
 #### Why the count files are intermediate
 
 Counts are derived while a bucket finalizer already has the tile rows needed to
-write the point payload. Persisting them at that moment prevents C7 from
+write the point payload. Persisting them at that moment prevents C7b from
 rereading every completed point row group, or the canonical source, solely to
 recalculate counts. For Exact on the Xenium acceptance source, such a rescan
 would revisit all 136,578,750 points.
@@ -757,27 +762,32 @@ bucket-local flat intermediate file that it owns exclusively.
 The counts in an intermediate file are exact, not approximate, but the file
 covers only one finalization unit. It is not yet the complete, globally
 value-ordered, reconciled runtime index. After every required level has been
-written, C7 performs the reduction step:
+written, C7b performs the reduction step:
 
 ```text
 all bucket-local intermediate count files
-→ read in bounded batches
+→ read their already aggregated sparse rows
+→ concatenate those count rows
+→ reject duplicate logical keys
 → order by (level, value_id, tile_y, tile_x)
-→ validate that every logical key occurs exactly once
 → reconcile with manifest rows and exact value totals
-→ write and validate tile_value_counts.parquet
+→ write and reconcile tile_value_counts.parquet
 → remove the intermediate files
 ```
 
 Intermediate count files are distinct from Dask shuffle-temporary files.
 Shuffle files are execution scratch and are removed once their bucket has been
 finalized. Intermediate count files contain semantic construction results and
-must survive until C7 has successfully written and validated the final index.
+must survive until C7b has successfully written and reconciled the final index.
 
 The result retains tuples of small descriptors, not all count rows or Arrow
-tables in memory. C7 reads the intermediate files in bounded batches,
-consolidates and sorts them into the final Arrow tile/value-count index, and
-removes them. C2 itself does not materialize Arrow cache schemas.
+tables in memory. C7b initially reads the already aggregated intermediate rows,
+concatenates them into one compact Arrow table, rejects duplicate logical keys,
+and sorts that table once for the final index. This is not an end-to-end bounded
+memory guarantee. C9 measures the Xenium index row count and peak memory; a
+bounded external merge remains a local replacement if the evidence requires
+it. C7b removes the intermediate files after the final index has been written
+and reconciled. C2 itself does not materialize Arrow cache schemas.
 
 ### Cross-slice construction handoff
 
@@ -809,18 +819,22 @@ C8 end-to-end builder
     ├── calls C6 spatial-level writers
     │       └── each spatial level returns another _LevelWriteResult
     │
-    └── passes all _LevelWriteResult objects to C7
-            ├── writes manifest.parquet from _ManifestRow records
-            ├── streams the intermediate count files
-            ├── writes tile_value_counts.parquet
-            ├── removes the intermediate count files
-            └── validates the staged cache
+    ├── passes all _LevelWriteResult objects to C7b
+    │       ├── writes values.parquet and metadata.json
+    │       ├── writes manifest.parquet from _ManifestRow records
+    │       ├── consolidates the intermediate count files
+    │       ├── writes tile_value_counts.parquet
+    │       └── removes the intermediate count files
+    │
+    └── calls C7c
+            └── independently validates the complete staged cache
 ```
 
 The point bucket files are persistent members of the staged cache generation;
 they are not Dask shuffle scratch. The intermediate count files are
-construction-only handoff artifacts and disappear after C7 has created and
-validated the final index. After this handoff returns successfully, C8 performs
+construction-only handoff artifacts and disappear after C7b has created and
+reconciled the final index. C7c then validates only the final staged artifacts.
+After this handoff returns successfully, C8 performs
 its final source-signature guard, completion-marker write, and local publication
 steps.
 
@@ -836,8 +850,9 @@ removes the complete staging generation after any construction failure.
 Intermediate tile/value-count files are staged construction artifacts, not
 shuffle-temporary files. They remain inside `staging_directory` after a level
 writer returns, appear in `_LevelWriteResult` only through cache-root-relative
-descriptors, and survive until C7 has written and validated the consolidated
-index. C7 then removes the intermediate files before publication.
+descriptors, and survive until C7b has written and reconciled the consolidated
+index. C7b then removes the intermediate files before C7c validates the final
+staged generation and before C8 publication.
 
 `temporary_directory_root` is a caller-selected location for disposable local
 shuffle storage. The writer creates a unique child beneath it, owns that child
@@ -876,7 +891,7 @@ non-normalized manifest and intermediate-file paths, invalid integer ranges,
 and invalid nonpositive counts. Do not test dataclass immutability, Python tuple
 behavior, Dask, or PyArrow. Intermediate-file contents, deterministic ordering,
 duplicate logical keys, and cross-record reconciliation require actual writer
-output and are tested in C3 and C7.
+output and are tested across C3, C7b, and C7c.
 
 ### Exit criteria
 
@@ -1146,7 +1161,7 @@ individual `value_id` has the canonical `n_points` recorded during source
 validation. Do not add a potentially large per-value mapping to every bucket
 result or reread all intermediate count files inside the Exact writer merely to
 perform that later reduction twice. Exact per-value reconciliation belongs to
-C7, which consumes the actual intermediate files. A cache cannot be completed
+C7b, which consumes the actual intermediate files. A cache cannot be completed
 or published before that check succeeds.
 
 ### Locked physical point payload
@@ -1169,7 +1184,7 @@ Use the locked manifest column set from the parent roadmap. Do not copy
 `schema_version` or the derived string `tile_id` from the legacy metadata
 dataframe: `schema_version` belongs once in `metadata.json`, while `tile_id` is
 derived from `(level, tile_x, tile_y)`. C3 records the physical row-group facts
-needed by C7; Gate D owns the remaining manifest Arrow details but does not
+needed by C7a; Gate D owns the remaining manifest Arrow details but does not
 reopen these exclusions.
 
 ### Initial local execution and failure contract
@@ -2011,7 +2026,7 @@ output, and their complete `n_points` total must reconcile as above. Do not
 compare sampled per-`value_id` totals with
 `ValidatedPointsSource.value_table`: sampling intentionally changes those
 totals, and `ValidatedPointsSource` is not an input to `_write_bridge_level`.
-Exact source per-value reconciliation remains a later C7 responsibility and
+Exact source per-value reconciliation remains a later C7b responsibility and
 must not be duplicated here.
 
 ### Focused tests and acceptance check
@@ -2365,7 +2380,7 @@ identify its one through four nonempty logical finer tiles
 ```
 
 The preceding level's intermediate tile/value-count files remain untouched for
-C7 and are never used to reconstruct points. Cache open `ParquetFile` handles
+C7b and are never used to reconstruct points. Cache open `ParquetFile` handles
 within the single-level writer and close every handle before returning or
 propagating an exception.
 
@@ -2504,23 +2519,41 @@ shards or physical row counts. The focused planning, sampling, and writer suite
 passed 61 tests. The complete Xenium performance measurement remains assigned
 to the end-to-end cache benchmark and hardening work.
 
-## Slice C7: metadata, values, manifest, tile/value counts, and staged-cache validation
+## Slice C7a: published cache artifact contracts
 
 ### Goal
 
-Turn writer outputs into a complete but unpublished cache generation whose
-semantics and physical accounting can be validated independently.
+Freeze the first public cache-generation contract before implementation writes
+metadata, values, the manifest, or the sparse tile/value-count index.
 
-### Implement
+### Specify and freeze
 
-- freeze the cache schema version before writing publicly consumable artifacts;
-- write `values.parquet` directly from the validated canonical value table;
-- write deterministic `manifest.parquet` rows sorted by
-  `(level, tile_y, tile_x, tile_shard)`;
-- read the writers' intermediate count files in bounded batches and
-  consolidate them into
-  `tile_value_counts.parquet`, with exactly one row per nonzero
-  `(level, value_id, tile_x, tile_y)` tuple and this logical schema:
+- choose a cache schema identifier that cannot be mistaken for the incompatible
+  legacy `harpy-transcripts-vis-0.1` artifact;
+- freeze exact non-nullable Arrow schemas, column order, and metadata policy for
+  `values.parquet`, `manifest.parquet`, and `tile_value_counts.parquet`;
+- retain the canonical `values.parquet` schema:
+
+  ```text
+  value_id: uint32
+  value: string
+  n_points: uint64
+  ```
+
+- retain the manifest schema with exactly one row per physical point row group:
+
+  ```text
+  level: int16
+  level_file: string
+  tile_x: uint32
+  tile_y: uint32
+  n_points: int64
+  row_group: int32
+  tile_shard: int32
+  ```
+
+  The manifest contains neither the derived `tile_id` nor `schema_version`;
+- retain the sparse tile/value-count schema:
 
   ```text
   level: int16
@@ -2530,51 +2563,208 @@ semantics and physical accounting can be validated independently.
   n_points: uint64
   ```
 
-  Reject duplicate logical keys rather than combining or repairing them; a
-  duplicate violates the single-bucket ownership contract. Sort the valid rows
-  by `(level, value_id, tile_y, tile_x)`. It is a planning index, not a
-  physical point locator; `manifest.parquet` remains authoritative for files and
-  row groups. The first physical point layout remains tile-co-located and is not
-  value-sharded;
-- write no manifest `tile_id` or `schema_version` column; derive the former from
-  the numeric tile key and store the latter once in `metadata.json`;
-- write `metadata.json` with cache identity, source identity, geometry, ordered
-  level records, build parameters, value-normalization method, point-id policy,
-  sampler version, writer layout, coordinate dtype contract, and the tile/value
-  count-index path and method;
-- use cache-root-relative POSIX paths only;
-- validate exact Arrow schemas and absence of unexpected metadata where the
-  format requires it;
-- validate every referenced file and row group;
-- reconcile shard → tile → level → cache row counts;
-- validate that every tile/value count is positive, every value ID and tile key
-  exists, and no nonzero tuple is duplicated;
-- reconcile tile/value counts to the manifest total for every logical tile and
-  aggregate exact-level counts by `value_id`, then require every resulting
-  count to equal the corresponding canonical `n_points` copied from
-  `ValidatedPointsSource.value_table` into `values.parquet`;
-- validate exact membership totals, nested sampled counts, capacities, terminal
-  overview budget, level ordering, and path containment;
-- reject an absent or premature artifact without creating `COMPLETED`.
+- freeze the exact `metadata.json` object structure and JSON value types for
+  cache identity, source identity, geometry, ordered level records, build
+  parameters, normalization and point-identity policies, sampler and writer
+  methods, coordinate storage, and auxiliary indexes;
+- define canonical JSON serialization, including finite-number handling,
+  deterministic key ordering, UTF-8 encoding, and final-newline policy;
+- freeze artifact names and require every stored path to be a normalized
+  cache-root-relative POSIX path;
+- define the private metadata and artifact models required by C7b and C7c
+  without exposing legacy cache models;
+- define successful staged validation as returning `None`; failures raise and
+  no diagnostics report or partial-success object is persisted.
+
+`metadata.json` is the source of truth for generation semantics. The manifest
+is authoritative for physical point row groups and their actual stored counts.
+The tile/value-count index is authoritative for selection-aware count estimates,
+but never for locating point rows inside mixed-value row groups.
+
+### Focused tests
+
+Keep contract tests small: valid model construction and one representative
+failure for unsupported schema version, malformed metadata, invalid path, and
+unexpected Arrow columns or metadata. Do not test JSON or PyArrow themselves.
+
+### Exit criteria
+
+- every public artifact has one exact versioned schema;
+- metadata field names, types, ordering semantics, and path ownership are
+  unambiguous;
+- C7b and C7c can consume the contracts without inventing format details.
+
+## Slice C7b: artifact writing and tile/value-count consolidation
+
+### Goal
+
+Turn the completed per-level writer results into every required final artifact
+of one unpublished staging generation.
+
+### Private entry point
+
+Use one level-neutral operation shaped as:
+
+```python
+def _write_staged_cache_artifacts(
+    validated: ValidatedPointsSource,
+    plan: _PointsCacheBuildPlan,
+    level_results: tuple[_LevelWriteResult, ...],
+    *,
+    staging_directory: Path,
+    cache_generation_id: str,
+) -> None:
+    ...
+```
+
+C8 owns generation-ID creation and passes it into this operation. C7b requires
+exactly one result for every planned level in ascending serialized-level order;
+it does not infer missing levels or reconstruct the plan.
+
+### Write final artifacts
+
+C7b does not rewrite Exact, Bridge, or spatial point files and does not scan
+their point payloads. Those files were completed by the level writers. This
+slice serializes their descriptors and converts their already aggregated
+intermediate counts into the final cache-level artifacts.
+
+- write `values.parquet` from `ValidatedPointsSource.value_table` using the C7a
+  schema rather than preserving arbitrary Arrow metadata;
+- flatten all level results and write deterministic `manifest.parquet` rows
+  sorted by `(level, tile_y, tile_x, tile_shard)`;
+- read every described intermediate count file, require its descriptor and
+  physical row count to agree, and retain one row for every nonzero
+  `(level, value_id, tile_x, tile_y)` key;
+- reject duplicate logical count keys rather than combining or repairing them;
+  duplicates violate the single-bucket ownership contract;
+- sort valid tile/value-count rows by
+  `(level, value_id, tile_y, tile_x)` and write
+  `tile_value_counts.parquet` using the C7a schema;
+- write `metadata.json` from the validated source, immutable plan, actual level
+  results, generation ID, and versioned constants owned by the implementation;
+- write no completion marker and expose no staging path through a public API;
+- remove the complete intermediate tile/value-count directory only after all
+  final artifacts have been written successfully. A later failure rejects the
+  whole staging generation rather than trying to restore intermediate files.
+
+The initial count-index flow is deliberately simple:
+
+```text
+read each intermediate count file
+→ concatenate its already aggregated sparse rows
+→ reject duplicate (level, value_id, tile_x, tile_y) keys
+→ sort once by (level, value_id, tile_y, tile_x)
+→ write tile_value_counts.parquet
+```
+
+No point rows are counted again. Materializing the compact count rows for this
+sort is an explicitly measurable initial policy, not a claim of bounded peak
+memory. C9 records the Xenium index row count and memory cost. If that evidence
+is unacceptable, replace only this consolidation step with sorted runs and a
+bounded external merge.
+
+The sparse index remains a planning index rather than a physical point locator.
+Point files remain tile-co-located and are not reorganized by `value_id`.
+
+### Explicit reconciliation before return
+
+Require:
+
+```text
+one level result per planned level
+manifest rows == all writer manifest records
+manifest level totals == metadata level totals
+intermediate count descriptor rows == decoded count rows
+sum(tile/value n_points) == sum(manifest n_points)
+```
+
+Aggregate Exact tile/value counts by `value_id` and require them to equal the
+canonical `n_points` values written to `values.parquet`. Sampled per-value totals
+are allowed to change, but each sampled logical tile's value counts must equal
+its own manifest total.
+
+This is deliberately stronger than the Exact writer's earlier total-only
+conservation check. Canonical counts `{0: 100, 1: 50}` must not be accepted as
+`{0: 90, 1: 60}` merely because both distributions sum to 150.
+
+### Focused tests
+
+Use compact synthetic level results and intermediate files to cover one valid
+multilevel generation, deterministic artifact rows, duplicate count keys,
+descriptor disagreement, Exact per-value disagreement, wrong result ordering,
+and cleanup of intermediate files after successful writing. Do not require
+byte-identical Parquet output.
+
+### Exit criteria
+
+- the staging root contains canonical metadata, values, manifest, tile/value
+  counts, and all referenced level files;
+- no intermediate count directory remains after successful writing;
+- artifact writing performs no original-source content rescan;
+- no `COMPLETED` marker exists.
+
+## Slice C7c: staged-cache validation
+
+### Goal
+
+Independently validate the complete unpublished generation written by C7b
+without trusting its in-memory writer results or consulting the original Dask
+graph.
+
+### Private entry point
+
+```python
+def _validate_staged_cache(
+    validated: ValidatedPointsSource,
+    plan: _PointsCacheBuildPlan,
+    *,
+    staging_directory: Path,
+) -> None:
+    ...
+```
+
+Success returns `None`. Any disagreement raises and invalidates the complete
+staging generation. The validator returns no diagnostics report, repairs no
+artifact, and creates no completion marker.
+
+### Validation contract
+
+- parse `metadata.json` and require the supported schema version and exact C7a
+  object contract;
+- validate exact Arrow schemas, column order, nullability, and absence of
+  unexpected schema or field metadata where the format forbids it;
+- require every serialized path to be normalized, cache-root-relative, and
+  contained by the staging root after resolution;
+- validate every manifest-referenced point file and physical row group against
+  the shared point-payload schema and recorded row count;
+- require every physical point row group under `levels/` to appear exactly once
+  in the manifest;
+- reconcile physical row groups → tile shards → logical tiles → levels → the
+  complete cache, including contiguous shard numbering and metadata level
+  totals;
+- validate `values.parquet` IDs, labels, counts, source-wide total, and equality
+  with `ValidatedPointsSource.value_table`;
+- validate positive and unique tile/value-count keys, known values, known
+  manifest tiles, per-tile totals, and Exact per-value totals;
+- validate level ordering, geometry, effective capacities, Exact membership
+  totals, and the terminal overview budget;
+- decode point payloads in bounded logical-tile units to validate coordinate
+  ranges, `value_id` ranges, and immediate-coarser `point_id` membership as a
+  subset of the corresponding finer tiles;
+- require `COMPLETED` to be absent. C8 alone writes it after staged validation
+  and the final fresh source-signature guard.
 
 The staged validator checks the cache that was written. It does not rescan the
 canonical source to recompute bounds, values, or row counts.
 
-This is deliberately stronger than the Exact writer's earlier total-only
-conservation check. It detects a wrong distribution between value IDs even when
-the complete point total remains correct. For example, canonical counts
-`{0: 100, 1: 50}` must not validate as `{0: 90, 1: 60}` merely because both
-distributions sum to 150.
-
 ### Focused tests
 
-Start from one tiny valid staged generation and derive a small set of corruptions:
-missing files, escaped paths, wrong row-group references, count disagreement,
-duplicate or invalid tile/value count records, tile/count reconciliation
-failure, exact per-value disagreement, schema mismatch or an unexpected
-manifest column such as `tile_id` or `schema_version`, budget overflow, and
-non-nested membership where validated at this phase. Avoid one test per metadata
-field.
+Start from one tiny valid staged generation and derive a small set of
+corruptions: missing files, escaped paths, wrong row-group references, count
+disagreement, duplicate or invalid tile/value-count records, tile/count
+reconciliation failure, Exact per-value disagreement, schema mismatch or an
+unexpected manifest column such as `tile_id` or `schema_version`, budget
+overflow, and non-nested membership. Avoid one test per metadata field.
 
 ### Exit criteria
 
@@ -2614,7 +2804,7 @@ ValidatedPointsSource + resolved logical planning arguments
   once after the initial source guard;
 - generate a fresh cache-generation ID;
 - create and own a unique sibling staging directory;
-- pass the resulting immutable plan records to C3, C5c, C6, and C7 without
+- pass the resulting immutable plan records to C3, C5c, C6, C7b, and C7c without
   rebuilding validation facts;
 - fail the final metadata-only source guard after staged validation and before
   completion;
@@ -2762,7 +2952,7 @@ Approved:
 - hash, seed, tie-breaking, and output ordering;
 - deterministic, nested, spatial, value-neutral, and capacity behavior.
 
-### Gate D: after C7
+### Gate D: after C7c
 
 Approve:
 
@@ -2808,9 +2998,9 @@ Phase 1 is complete when:
 
 ## Immediate next slice
 
-Specify and implement **C7: metadata, values, manifest, tile/value counts, and
-staged-cache validation** around the completed Exact, Bridge, and spatial writer
-results. Freeze the published artifact schemas before exposing the cache to a
-runtime reader.
+Specify **C7a: published cache artifact contracts** around the completed Exact,
+Bridge, and spatial writer results. Then implement C7b artifact writing and C7c
+staged-cache validation without reopening the frozen format during those
+implementation slices.
 Optional C4 remains deferred indefinitely unless new evidence identifies a
 concrete Dask limitation and measurable PyArrow success criterion.
