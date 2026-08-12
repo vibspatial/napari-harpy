@@ -736,8 +736,8 @@ writer/spatial.py
 
 The following physical concerns change:
 
-- `_ManifestRow` is replaced by `_LogicalTileLocation`, with one record per
-  complete logical tile rather than one record per Parquet row group;
+- `_ManifestRow` is replaced by `_TileDescriptor`, with one record per
+  complete cache tile rather than one record per Parquet row group;
 - `_POINT_PAYLOAD_SCHEMA` becomes a storage-neutral in-memory payload contract,
   not a Parquet file schema;
 - `_read_logical_tile` becomes a storage-neutral complete-tile reader boundary;
@@ -778,7 +778,7 @@ writers:
 
 ```text
 multi_scale_cache_points/payload.py
-  storage-neutral Arrow payload schema and logical tile records
+  storage-neutral Arrow payload schema and tile descriptors
 
 multi_scale_cache_points/zarr_payload.py
   Zarr v3 layout constants
@@ -919,11 +919,11 @@ for evaluating the Zarr backend on its own.
   remaining slices;
 - no further Z0 work is required before Z1 begins.
 
-### Slice Z1: introduce storage-neutral payload and tile-location contracts
+### Slice Z1: introduce storage-neutral payload and tile-descriptor contracts
 
 #### Goal
 
-Separate logical tile construction from Parquet row-group descriptors without
+Separate cache-tile construction from Parquet row-group descriptors without
 changing output membership yet.
 
 #### Storage-neutral Arrow payload
@@ -945,7 +945,7 @@ physical file. Every accepted table must:
 - be a `pa.Table` with exactly these fields, types, nullability rules, and order;
 - have equally sized, row-aligned columns;
 - contain zero null values in every column;
-- contain at least one row when it represents a nonempty logical tile;
+- contain at least one row when it represents a nonempty cache tile;
 - keep `x_rel` and `y_rel` tile-local and perform no implicit rebasing;
 - contain no tile coordinates, bucket fields, or physical row/chunk references.
 
@@ -956,10 +956,10 @@ concatenated row-group order so the refactor itself introduces no incidental
 reordering. Z2 is responsible for the final persisted
 `(tile_y, tile_x, value_id, point_id)` order.
 
-#### `_LogicalTileLocation`
+#### `_TileDescriptor`
 
-Define one private immutable `_LogicalTileLocation` for every nonempty logical
-tile:
+Define one private immutable `_TileDescriptor` for every nonempty cache tile. It
+identifies the tile and describes where its point payload is stored:
 
 ```text
 level: int
@@ -979,8 +979,8 @@ The fields mean:
   container holding the tile;
 - `bucket_tile_index` is the tile's zero-based ordinal inside that bucket, not a
   point-row offset, Parquet row-group number, Zarr chunk number, or shard number;
-- `tile_x` and `tile_y` are the logical grid coordinates;
-- `n_points` is the complete logical-tile count across all physical storage
+- `tile_x` and `tile_y` are the tile's grid coordinates;
+- `n_points` is the complete cache-tile count across all physical storage
   units.
 
 Instance validation freezes these rules:
@@ -1003,36 +1003,36 @@ Collection validation in level reconciliation freezes these rules:
 - `(bucket_path, bucket_tile_index)` is unique;
 - one `bucket_path` belongs to exactly one `(level, bucket_id)` and one
   `(level, bucket_id)` identifies at most one nonempty bucket path;
-- all locations in a bucket are ordered by `(tile_y, tile_x)`;
+- all descriptors in a bucket are ordered by `(tile_y, tile_x)`;
 - their `bucket_tile_index` values are exactly `0..K-1` in that order;
-- empty tiles and empty buckets produce no location records.
+- empty tiles and empty buckets produce no descriptor records.
 
 #### Writer-result contracts
 
 Change `_BucketWriteResult.manifest_rows` to
-`_BucketWriteResult.tile_locations`. Preserve `bucket_id`, `point_count`,
+`_BucketWriteResult.tile_descriptors`. Preserve `bucket_id`, `point_count`,
 `value_count_total`, and `intermediate_value_count_file`.
 
 For a nonempty bucket:
 
-- every location has the result's `bucket_id` and the same `bucket_path`;
-- `point_count == sum(location.n_points)`;
+- every descriptor has the result's `bucket_id` and the same `bucket_path`;
+- `point_count == sum(descriptor.n_points)`;
 - `value_count_total == point_count`;
-- locations satisfy the bucket-local ordering and index rules above;
+- descriptors satisfy the bucket-local ordering and index rules above;
 - the intermediate count descriptor remains construction-only and unchanged.
 
-For an empty bucket, both counts are zero, `tile_locations == ()`, and
+For an empty bucket, both counts are zero, `tile_descriptors == ()`, and
 `intermediate_value_count_file is None`.
 
 Change `_LevelWriteResult.manifest_rows` to
-`_LevelWriteResult.tile_locations`. Preserve
+`_LevelWriteResult.tile_descriptors`. Preserve
 `intermediate_tile_value_count_files`. `_reconcile_level_results` must:
 
 - order independent bucket results by `bucket_id`;
 - reconcile point and value-count totals with the expected level count;
 - validate the logical and bucket-local uniqueness rules above instead of
   physical `(level_file, row_group)` uniqueness;
-- return locations sorted globally by `(level, tile_y, tile_x)`;
+- return descriptors sorted globally by `(level, tile_y, tile_x)`;
 - retain deterministic intermediate count-file ordering and path uniqueness.
 
 Neither result type publishes or exposes `level_file`, `row_group`,
@@ -1043,7 +1043,7 @@ Neither result type publishes or exposes `level_file`, `row_group`,
 Introduce one private level-neutral reader protocol with this semantic method:
 
 ```text
-read_complete_tile(location: _LogicalTileLocation) -> pa.Table
+read_complete_tile(tile: _TileDescriptor) -> pa.Table
 ```
 
 The reader instance, not the caller, owns:
@@ -1058,18 +1058,18 @@ explicit `close()` is idempotent, and reads after closure fail clearly rather
 than reopening resources implicitly.
 
 The method must return exactly `_POINT_PAYLOAD_SCHEMA`, preserve row alignment and
-tile-local coordinates, and require `table.num_rows == location.n_points`. It
-must fail clearly for an unknown location, missing physical container,
+tile-local coordinates, and require `table.num_rows == tile.n_points`. It must
+fail clearly for an unknown descriptor, missing physical container,
 incompatible payload, or row-count disagreement. It does not sample, rebase,
 filter values, or expose backend-specific handles. Bridge and spatial code may
-know only the protocol and `_LogicalTileLocation`.
+know only the protocol and `_TileDescriptor`.
 
 #### Temporary Parquet adapter
 
 Keep the current Parquet payload readable only through a private
 `_ParquetCompleteTileReader` used to sequence Z1. When initialized for one input
 level, it receives the staging root and that level's complete ordered
-`tile_locations`.
+`tile_descriptors`.
 
 For each `bucket_path`, the adapter inspects Parquet metadata and builds a private
 lookup:
@@ -1079,14 +1079,14 @@ lookup:
     -> one or more consecutive Parquet row-group references
 ```
 
-It constructs the lookup by visiting bucket locations in `bucket_tile_index`
+It constructs the lookup by visiting bucket descriptors in `bucket_tile_index`
 order and consuming consecutive row groups until their row counts sum exactly to
-the location's `n_points`. It must reject a row group that crosses a logical-tile
+the descriptor's `n_points`. It must reject a row group that crosses a cache-tile
 boundary, an incomplete tile total, surplus row groups, schema disagreement, or
 noncontiguous assignment. Each physical row group is assigned exactly once.
 
 The lookup and row-group references are adapter-private transient state. They are
-not fields of `_LogicalTileLocation`, are not written to a sidecar or manifest,
+not fields of `_TileDescriptor`, are not written to a sidecar or manifest,
 and are not returned in `_BucketWriteResult` or `_LevelWriteResult`. The adapter
 caches at most one open `ParquetFile` handle per required bucket and closes all
 handles deterministically.
@@ -1101,18 +1101,18 @@ consumers, and Gate Z5 removes the temporary adapter.
 Z1 retains current Parquet writes so that physical replacement remains isolated
 to Z2 and later slices. Convert the current pipeline as follows:
 
-- Exact still writes its current row groups, but emits one logical location per
+- Exact still writes its current row groups, but emits one tile descriptor per
   complete tile; `bucket_tile_index` increments once per tile even when that tile
   spans several row groups;
-- Bridge consumes ordered Exact locations directly and asks the reader for each
+- Bridge consumes ordered Exact descriptors directly and asks the reader for each
   complete candidate tile;
-- Bridge emits one logical location per sampled output tile;
-- spatial grouping consumes one logical location per immediate-finer tile rather
+- Bridge emits one descriptor per sampled output tile;
+- spatial grouping consumes one descriptor per immediate-finer tile rather
   than grouping `_ManifestRow` shards;
 - spatial construction asks the reader for each complete finer tile before the
   existing rebase, concatenate, and sample operations;
 - `_ExactTileDescriptor` and `_FinerTileDescriptor` are removed, or temporarily
-  reduced to wrappers around one `_LogicalTileLocation`; neither may retain
+  reduced to wrappers around one `_TileDescriptor`; neither may retain
   physical shard descriptors;
 - capacity, grid-membership, overview-budget, deterministic bucket assignment,
   tile order, point counts, coordinate tolerance, and sampled `point_id`
@@ -1133,9 +1133,10 @@ Z1 does not:
 #### Focused tests
 
 - exact Arrow schema, nullability, field order, and table validation;
-- `_LogicalTileLocation` integer ranges, path containment, and opaque file
+- `_TileDescriptor` integer ranges, path containment, and opaque file
   suffix;
-- duplicate logical coordinates and duplicate physical location keys;
+- duplicate tile coordinates and duplicate `(bucket_path, bucket_tile_index)`
+  keys;
 - bucket/path consistency, `(tile_y, tile_x)` order, and contiguous
   `bucket_tile_index` values;
 - empty and nonempty `_BucketWriteResult` reconciliation;
@@ -1143,17 +1144,17 @@ Z1 does not:
 - temporary Parquet reads for one tile/one row group, one tile/multiple row
   groups, multiple tiles in one bucket, and multiple buckets;
 - temporary-adapter rejection of missing files, schema mismatch, crossed or
-  incomplete tile boundaries, surplus row groups, and unknown locations;
-- Bridge and spatial inputs contain only logical locations and produce unchanged
+  incomplete tile boundaries, surplus row groups, and unknown descriptors;
+- Bridge and spatial inputs contain only tile descriptors and produce unchanged
   capacity, count, coordinate, and sampled-membership results;
 - unchanged focused build-plan and sampler tests.
 
 #### Exit criteria
 
-- `_POINT_PAYLOAD_SCHEMA` and `_LogicalTileLocation` are the only payload and
-  location contracts visible to logical construction code;
-- `_BucketWriteResult` and `_LevelWriteResult` expose one location per nonempty
-  logical tile and no physical row-group descriptors;
+- `_POINT_PAYLOAD_SCHEMA` and `_TileDescriptor` are the only payload and tile
+  descriptor contracts visible to logical construction code;
+- `_BucketWriteResult` and `_LevelWriteResult` expose one descriptor per nonempty
+  cache tile and no physical row-group descriptors;
 - no Bridge, spatial, sampling, or rebasing function accepts or inspects a
   Parquet row-group descriptor;
 - all Parquet reading and handle reuse is isolated behind the temporary adapter;
@@ -1239,11 +1240,11 @@ the proven source annotation and Dask shuffle.
 - change the bucket sort key from `(tile_y, tile_x, point_id)` to
   `(tile_y, tile_x, value_id, point_id)`;
 - replace `ParquetWriter` and row-group sharding in the Exact finalizer with the
-  Zarr bucket writer while continuing to emit the Z1 `_LogicalTileLocation`
+  Zarr bucket writer while continuing to emit the Z1 `_TileDescriptor`
   contract;
 - keep bucket naming, bucket hashing, Dask partition ownership, staging
   ownership, point conservation, and intermediate tile/value counts;
-- reconcile every logical tile record with `tile_x`, `tile_y`, and `tile_offset`,
+- reconcile every tile descriptor with `tile_x`, `tile_y`, and `tile_offset`,
   and every intermediate count row with one sparse range;
 - ensure each Dask finalizer writes only its own Zarr store and intermediate
   count file;
