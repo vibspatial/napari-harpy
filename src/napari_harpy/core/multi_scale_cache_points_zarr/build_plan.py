@@ -1,3 +1,35 @@
+"""Plan the logical level hierarchy of a Zarr-backed points cache.
+
+A typical multi-level plan is:
+
+.. code-block:: text
+
+    cache level 0: Exact       tile size S     uncapped
+          |
+          | sample within the same logical tiles
+          v
+    cache level 1: Bridge      tile size S     4,096 points/tile
+          |
+          | combine each 2 x 2 group of finer tiles and sample
+          v
+    cache level 2: Spatial 1   tile size 2S    8,192 points/tile
+          |
+          v
+    cache level 3: Spatial 2   tile size 4S   16,384 points/tile
+          |
+         ...
+          v
+    terminal overview level    complete upper bound <= overview budget
+
+``Spatial 1`` is the first spatial level but serialized cache level 2; cache
+level 1 is reserved for Bridge. Exact and Bridge share tile geometry. Every
+subsequent Spatial level doubles the preceding tile edge and scheduled
+capacity, while each grid dimension becomes ``ceil(finer_dimension / 2)``.
+The final one-tile level may clamp its capacity to the overview budget.
+
+This hierarchy is logical and independent of physical Zarr arrays and chunks.
+"""
+
 from __future__ import annotations
 
 import math
