@@ -318,12 +318,16 @@ Every nonempty stored tile has one descriptor:
 ```text
 level: int
 bucket_id: int
-bucket_path: str
 bucket_tile_index: int
 tile_x: int
 tile_y: int
 n_points: int
 ```
+
+`bucket_path` is not stored independently on the descriptor. It is the
+canonical cache-relative property
+`levels/level_<level>/bucket-<bucket_id, minimum three digits>.zarr`, derived
+only from `level` and `bucket_id`.
 
 `bucket_tile_index` is a zero-based tile ordinal inside a bucket. It is not a
 point offset, chunk number, shard number, or Parquet row group. Physical point
@@ -530,7 +534,10 @@ n_points: int64
 
 Rows are sorted by `(level, tile_y, tile_x)`. The manifest maps a logical tile
 to its bucket and bucket-local ordinal; it never exposes Zarr offsets, chunks,
-or shards.
+or shards. `bucket_path` is materialized from the descriptor's canonical
+property for direct lookup; it is never accepted as independent construction
+state. Validation recomputes it from `level` and `bucket_id` and requires exact
+equality.
 
 ### `tile_value_counts.parquet`
 
@@ -662,6 +669,52 @@ because `M` is not always known before sampling; they are trimmed and frozen at
 finalization. They must not resize once per point or retain one Python object per
 range for a complete level.
 
+### Finalization count reconciliation
+
+Finalization obtains counts from the finalized physical arrays; it must not
+derive the observed counts from the plan or descriptors. After all planned
+tiles have been written, define:
+
+```text
+physical_point_count = location.shape[0]
+physical_range_count = ranges/value_id.shape[0]
+```
+
+Before publishing root attributes or returning a result, require:
+
+```text
+location.shape                         == (physical_point_count, 2)
+point_id.shape                         == (physical_point_count,)
+value_id.shape                         == (physical_point_count,)
+writer point cursor                    == physical_point_count
+tile_offset[-1]                        == physical_point_count
+sum(descriptor.n_points)               == physical_point_count
+BucketPlan.point_count                 == physical_point_count
+
+ranges/value_id.shape                  == (physical_range_count,)
+ranges/row_start.shape                 == (physical_range_count,)
+ranges/row_count.shape                 == (physical_range_count,)
+writer range cursor                    == physical_range_count
+tile_indptr[-1]                        == physical_range_count
+```
+
+The growable range arrays are first trimmed to the writer's completed range
+cursor and are then measured through their finalized shapes. The point cursor
+is checked separately because a preallocated point array can have its planned
+shape even after an incomplete write.
+
+Only after every equality succeeds does finalization write
+`point_count=physical_point_count` and `range_count=physical_range_count` to the
+root attributes and return the same observed values in `_BucketWriteResult`.
+Thus `point_count` is not `sum(descriptor.n_points)` under another name: the two
+values come from independent physical and logical sources and are reconciled.
+Any mismatch fails finalization and leaves the staging generation incomplete.
+
+The independent on-disk validator reopens the store without trusting
+`_BucketWriteResult`. It repeats the array-shape, root-attribute, offset, and
+pointer checks. Later cross-artifact validation additionally reconciles the
+manifest descriptor counts with these validated physical counts.
+
 Exact can derive its bucket plan from the materialized bucket. Bridge and
 spatial writers derive expected output tile counts from candidate counts and
 level capacities before opening their output bucket.
@@ -747,7 +800,9 @@ Make the new-package strategy authoritative before implementation.
 - acceptance or rejection of the experiment has a simple package-level
   boundary.
 
-### Slice Z1: scaffold fresh contracts and build planning
+### Slice Z1: scaffold fresh contracts and build planning — resolved
+
+**Status:** implemented and verified on 2026-08-13.
 
 #### Goal
 
@@ -915,6 +970,57 @@ Required invariants:
 - upper bounds never increase toward coarser levels;
 - the terminal upper bound does not exceed `overview_point_budget`.
 
+The serialized cache-level number and the spatial-level number are distinct.
+Cache level 1 is Bridge, so Spatial 1 starts at cache level 2:
+
+```text
+validated source points
+        |
+        v
+cache level 0: Exact
+  tile size: S
+  grid: W x H
+  capacity: uncapped
+        |
+        | sample within the same logical tiles
+        v
+cache level 1: Bridge
+  tile size: S
+  grid: W x H
+  scheduled capacity: 4,096 points/tile
+        |
+        | combine each 2 x 2 group of finer tiles and sample
+        v
+cache level 2: Spatial 1
+  tile size: 2S
+  grid: ceil(W / 2) x ceil(H / 2)
+  scheduled capacity: 8,192 points/tile
+        |
+        v
+cache level 3: Spatial 2
+  tile size: 4S
+  grid: ceil(W / 4) x ceil(H / 4)
+  scheduled capacity: 16,384 points/tile
+        |
+        v
+cache level 4: Spatial 3
+  tile size: 8S
+  scheduled capacity: 32,768 points/tile
+        |
+       ...
+        v
+terminal overview level
+  complete point-count upper bound <= overview_point_budget
+```
+
+Exact and Bridge therefore have identical logical tile geometry; Bridge adds
+sampling without changing spatial resolution. Each Spatial level doubles the
+preceding tile edge and normally doubles its scheduled capacity. Once one tile
+covers the dataset, the final capacity may instead be clamped to
+`overview_point_budget`. This is the logical level hierarchy and is independent
+of physical Zarr arrays, buckets, and chunking. If the Exact row count already
+fits the overview budget, the hierarchy stops at cache level 0.
+
 Implement one pure planner:
 
 ```text
@@ -978,12 +1084,16 @@ bucket_count = max(1, ceil(level.point_count_upper_bound / 2_000_000))
 This is a construction policy, not part of the logical tile identity. Z3 may
 change it from Xenium evidence before the cache format is frozen.
 
-Bucket filenames use the complete planned bucket count for deterministic width:
+Bucket filenames use a canonical minimum width of three digits and do not
+depend on the complete planned bucket count:
 
 ```text
-width = max(3, len(str(bucket_count - 1)))
-levels/level_<level>/bucket-<zero-padded bucket_id>.zarr
+levels/level_<level>/bucket-<bucket_id:03d>.zarr
 ```
+
+The width is a minimum: bucket IDs above 999 expand normally. Numeric ordering
+uses `bucket_id`, never lexicographic filename order. This count-independent
+rule lets every construction model derive the path from bucket identity alone.
 
 Empty bucket IDs create no plan, descriptor, or store.
 
@@ -994,7 +1104,6 @@ Define `_TileDescriptor` in `models.py`:
 ```text
 level: int
 bucket_id: int
-bucket_path: str
 bucket_tile_index: int
 tile_x: int
 tile_y: int
@@ -1006,10 +1115,8 @@ Validate:
 - serialized integer ranges: level `int16`, bucket/tile/index `uint32`, and
   `n_points` in `[1, int64_max]`;
 - booleans are rejected as integers;
-- `bucket_path` is a normalized cache-root-relative POSIX path;
-- it is directly inside `levels/level_<level>`;
-- it has the `.zarr` suffix;
-- it contains no absolute root, `..`, or noncanonical spelling.
+- `bucket_path` is a read-only property derived canonically from `level` and
+  `bucket_id`; callers cannot supply a conflicting path.
 
 Define `_PlannedTile` in `storage/models.py`:
 
@@ -1039,7 +1146,6 @@ Define `_BucketPlan`:
 ```text
 level: int
 bucket_id: int
-bucket_path: str
 tiles: tuple[_PlannedTile, ...]
 settings: _ZarrWriteSettings
 ```
@@ -1047,7 +1153,8 @@ settings: _ZarrWriteSettings
 Required invariants:
 
 - a plan contains at least one nonempty tile;
-- the path matches its level and ends in `.zarr`;
+- `bucket_path` is the same canonical property of `level` and `bucket_id` used
+  by `_TileDescriptor`;
 - tile coordinates are unique and strictly ordered by `(tile_y, tile_x)`;
 - tile fields fit the serialized ranges;
 - the sum of tile counts is positive and at most `int64_max`;
@@ -1057,29 +1164,32 @@ Required invariants:
 Define `_BucketWriteResult`:
 
 ```text
-level: int
-bucket_id: int
-bucket_path: str
 tile_descriptors: tuple[_TileDescriptor, ...]
 point_count: int
 range_count: int
 ```
 
-It represents a finalized nonempty store. Descriptors must all belong to its
-level, bucket ID, and path; their bucket-local indexes are exactly `0..K-1` in
-tile order; their point total equals `point_count`; and `range_count` is at
-least the tile count and at most the point count.
+It represents a finalized nonempty store. The complete bucket identity remains
+on the standalone descriptors because they later become manifest rows.
+`level` and `bucket_id` are taken from their shared descriptor identity, and
+`bucket_path` is derived canonically from those values. None is duplicated as
+stored result state. Descriptors must all have the same identity; their
+bucket-local indexes are exactly
+`0..K-1` in tile order. `point_count` remains an explicit independent physical
+total so finalization can reconcile it with the sum of descriptor counts.
+`range_count` is at least the tile count and at most the point count.
 
 Define `_LevelWriteResult`:
 
 ```text
-level: int
 buckets: tuple[_BucketWriteResult, ...]
 ```
 
-Buckets are ordered by unique `bucket_id`. Derived properties flatten globally
+Its `level` is derived from the shared level of its nonempty bucket results,
+again leaving the descriptors as the single source of identity. Buckets are
+ordered by unique `bucket_id`. Other derived properties flatten globally
 ordered tile descriptors and calculate point, tile, bucket, and range totals.
-Across the level, tile coordinates and `(bucket_path, bucket_tile_index)` keys
+Across the level, tile coordinates and `(bucket_id, bucket_tile_index)` keys
 are unique. An empty level result is invalid because a validated source is
 nonempty and every planned constructed level retains at least one point.
 
@@ -1143,7 +1253,9 @@ Implement and validate one bucket independently of Dask and pyramid writers.
 - implement planned sequential point writes and bounded range-array growth;
 - persist tile identity arrays, offsets, sparse value ranges, and root
   attributes;
-- implement deterministic finalization, close, and incomplete-write behavior;
+- implement the exact physical/logical count reconciliation specified above;
+- implement deterministic finalization, close, and incomplete-write behavior,
+  writing count attributes only after reconciliation succeeds;
 - implement complete-tile reads returning the storage-neutral payload;
 - implement selected-value range lookup and selected payload reads;
 - reuse open store/array handles within a reader context and close them
@@ -1163,6 +1275,12 @@ Implement and validate one bucket independently of Dask and pyramid writers.
 - one- and multi-value selected reads;
 - tiles and value runs crossing chunk and shard boundaries;
 - coordinate and `point_id` alignment;
+- physical point-array shapes, writer cursor, terminal tile offset, descriptor
+  totals, plan total, root `point_count`, and result `point_count` all reconcile;
+- finalized range-array shapes, writer cursor, terminal `tile_indptr`, root
+  `range_count`, and result `range_count` all reconcile;
+- partial preallocated point writes and deliberately mismatched count sources
+  fail finalization without producing a valid result;
 - every structural corruption class above;
 - unknown descriptor, closed reader, failed write, and cleanup behavior.
 
@@ -1712,7 +1830,7 @@ The experiment is complete when:
 
 ## Immediate next slice
 
-Z0 is resolved by this roadmap. Implement Z1 by creating
-`multi_scale_cache_points_zarr` and its fresh logical contracts. Do not modify or
-adapt the existing Exact, Bridge, spatial, or writer-support modules, and do not
-introduce a transitional Parquet point reader.
+Z0 and Z1 are resolved. Implement Z2 against the fresh NumPy payload and bucket
+plans. Do not modify or adapt the existing Exact, Bridge, spatial, or
+writer-support modules, and do not introduce a transitional Parquet point
+reader.
