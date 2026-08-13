@@ -1220,11 +1220,10 @@ Z1 does not:
 - exact Bridge geometry and spatial doubling invariants;
 - fixed SplitMix64 bucket vectors, dtype rejection, and deterministic bucket
   paths;
-- descriptor paths, suffixes, integer ranges, uniqueness, order, and bucket
+- descriptor-derived paths, integer ranges, uniqueness, order, and bucket
   ownership;
 - exact `BucketPlan` prefix sums and total reconciliation;
 - valid and invalid bucket/level results;
-- an import scan proving no forbidden existing implementation dependency;
 - monkeypatched source access proving the pure planner does not read source
   files.
 
