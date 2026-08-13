@@ -381,6 +381,7 @@ coordinate_encoding
 point_chunk_rows
 point_shard_rows
 range_chunk_rows
+range_shard_rows
 codec_id
 ```
 
@@ -477,9 +478,14 @@ Required invariants:
 This sparse representation is the Harpy equivalent of Xenium's gene-offset
 idea without a dense tile-by-gene matrix.
 
-### Chunking and sharding
+### Chunking and Zarr-internal sharding
 
-Point arrays use aligned chunks and Zarr v3 shards along the point dimension:
+Logical tiles are not shards, and construction code does not create or name
+shard files. Sharding is an internal Zarr v3 physical packing choice: chunks
+remain the independent compression/read units, while each shard stores several
+chunks in one filesystem object and is the efficient write unit.
+
+Point arrays use aligned chunks and shards along the point dimension:
 
 ```text
 location chunks = (point_chunk_rows, 2)
@@ -491,20 +497,37 @@ point_id shards = (point_shard_rows,)
 value_id shards = (point_shard_rows,)
 ```
 
-`point_shard_rows` is an integer multiple of `point_chunk_rows`. Chunks are the
-compression/read unit; shards reduce filesystem-object growth. Fixed chunks may
-cross tile and value boundaries.
+Sparse range arrays use their own aligned chunks and shards:
+
+```text
+ranges/value_id chunks  = (range_chunk_rows,)
+ranges/row_start chunks = (range_chunk_rows,)
+ranges/row_count chunks = (range_chunk_rows,)
+
+ranges/value_id shards  = (range_shard_rows,)
+ranges/row_start shards = (range_shard_rows,)
+ranges/row_count shards = (range_shard_rows,)
+```
+
+`point_shard_rows` is an integer multiple of `point_chunk_rows`, and
+`range_shard_rows` is an integer multiple of `range_chunk_rows`. Fixed chunk and
+shard boundaries may cross tile and value boundaries. The small `tile_x`,
+`tile_y`, `tile_offset`, and `tile_indptr` arrays each use one unsharded chunk
+per bucket.
 
 Initial experimental values are:
 
 ```text
 point_chunk_rows = 4,096
-point_shard_rows = 131,072       # 32 chunks
+point_shard_rows = 131,072       # 32 point chunks
+range_chunk_rows = 8,192
+range_shard_rows = 131,072       # 16 range chunks
 ```
 
 They are provisional. Slice Z3 records Exact-level evidence before physical
-settings are frozen. Range arrays share a separate `range_chunk_rows` setting;
-small tile arrays may use one chunk per bucket.
+settings are frozen. At these values, the three aligned point shard buffers
+occupy approximately 2.5 MiB in aggregate, and the three aligned range shard
+buffers occupy approximately another 2.5 MiB.
 
 Writers buffer aligned point fields across logical tile boundaries and flush
 complete `point_shard_rows` blocks where possible. The final partial shard is
@@ -512,6 +535,12 @@ flushed once during finalization. A `write_tile` call therefore advances the
 logical tile contract but does not imply an immediate tile-sized Zarr write.
 This keeps memory bounded while avoiding repeated updates of the same partially
 filled shard when a bucket contains many small tiles.
+
+Range records are buffered and flushed in the same way using
+`range_shard_rows`. A selected read still resolves and decodes only the inner
+chunks touched by its sparse row ranges; it does not decode the complete
+containing shard. The reader deduplicates touched chunk IDs so two selected
+ranges in the same inner chunk do not request that chunk twice.
 
 All arrays are created with empty-chunk storage enabled. This is necessary
 because a completely zero-valued chunk can be legitimate cache data. Readers
@@ -1156,14 +1185,18 @@ Define `_ZarrWriteSettings` without importing Zarr:
 point_chunk_rows: int
 point_shard_rows: int
 range_chunk_rows: int
+range_shard_rows: int
 codec_id: str
 ```
 
-All row settings are positive integers, `point_shard_rows` is an integer
-multiple of `point_chunk_rows`, and `codec_id` is a nonempty versioned string.
-The settings describe requested physical behavior; Z2 maps them to concrete
-Zarr codec objects and may extend the model with JSON-compatible codec
-parameters before the bucket contract is frozen.
+All row settings are positive integers. `point_shard_rows` is an integer
+multiple of `point_chunk_rows`, `range_shard_rows` is an integer multiple of
+`range_chunk_rows`, and `codec_id` is a nonempty versioned string. The settings
+describe requested physical behavior; Z2 maps them to concrete Zarr codec
+objects and may extend the model with JSON-compatible codec parameters before
+the bucket contract is frozen. Because Z1 was scaffolded before range sharding
+was selected, adding `range_shard_rows` to the implemented model and its focused
+tests is the narrow prerequisite adjustment at the start of Z2.
 
 Define `_BucketPlan`:
 
@@ -1365,13 +1398,15 @@ After a tile is ordered, contiguous equal `value_id` runs become bucket-global
 `ranges/value_id`, `ranges/row_start`, and `ranges/row_count` records. The
 writer records the completed range cursor for that tile in `tile_indptr`.
 
-The final range count `M` is not part of `_BucketPlan`. The range arrays
-therefore:
+The final range count `M` is not part of `_BucketPlan`. The writer therefore
+uses one bounded `range_shard_rows` NumPy buffer shared across logical tile
+boundaries. The range arrays:
 
-- start with one `range_chunk_rows` capacity block;
-- grow geometrically, rounded to a multiple of `range_chunk_rows`;
-- receive writes through a bounded range buffer rather than one resize/write
-  per range;
+- start with one `range_shard_rows` capacity block;
+- grow geometrically, rounded to a multiple of `range_shard_rows`;
+- receive complete shard-sized writes where possible rather than one
+  resize/write per range;
+- write the final partial range shard once during finalization;
 - are trimmed to the exact completed range cursor before physical counts are
   measured;
 - never retain one Python object per range for the complete bucket.
@@ -1381,10 +1416,11 @@ during finalization.
 
 #### Zarr creation and strict reads
 
-Create a new local Zarr v3 group with unconsolidated metadata. Apply aligned
-chunks and shards from `_ZarrWriteSettings` to the point arrays; range arrays
-are chunked but unsharded, and each small tile/index array uses one unsharded
-chunk.
+Create a new local Zarr v3 group with unconsolidated metadata. Apply the aligned
+point chunks/shards and range chunks/shards from `_ZarrWriteSettings`. Each
+small tile/index array uses one unsharded chunk. Writer code supplies sequential
+shard-sized array slices, while Zarr owns shard encoding, indexing, file naming,
+and inner-chunk placement.
 
 Z2 maps the versioned settings `codec_id` through the registry above rather
 than accepting arbitrary codec objects or parameters. Both the reader and
@@ -1420,8 +1456,10 @@ strictly increasing unique `uint32` ID array and performs:
 tile_indptr[i:i+2]
   -> this tile's sorted sparse range records
   -> binary search selected value IDs
-  -> coalesce only adjacent selected point intervals
-  -> read matching aligned point-array slices
+  -> map selected row intervals to inner point-chunk IDs
+  -> deduplicate and group touched chunk IDs
+  -> read every touched inner chunk once
+  -> extract the exact selected intervals
 ```
 
 It does not scan the tile's point-level `value_id` slice. It returns `None` when
@@ -1429,6 +1467,8 @@ no requested value is present because `_PointPayload` deliberately cannot be
 empty. Otherwise it returns a complete payload including `point_id`. Splitting
 the stored `(N, 2)` `location` slice into contiguous `x_rel` and `y_rel` arrays
 is an accepted Z2 conversion cost and is measured rather than optimized now.
+The inner chunk remains the selected-read granularity even though several
+chunks share one physical shard.
 
 #### Independent bucket validation
 
@@ -1487,9 +1527,12 @@ the build plan and metadata are available.
 - complete-tile round trips;
 - one- and multi-value selected reads, adjacent-range coalescing, and `None` for
   no match;
-- tiles and value runs crossing chunk and shard boundaries;
-- a final partial shard and a payload larger than the shard buffer;
-- range capacity growth across several `range_chunk_rows` boundaries and exact
+- tiles and value runs crossing point and range chunk/shard boundaries;
+- selected ranges sharing an inner point chunk cause that chunk to be read only
+  once;
+- final partial point and range shards, plus payloads and range streams larger
+  than their respective shard buffers;
+- range capacity growth across several `range_shard_rows` boundaries and exact
   trimming;
 - a legitimate all-zero chunk remains readable because it was physically
   stored;
@@ -1532,8 +1575,8 @@ gate.
 
 - the primitive roundtrips aligned payloads exactly;
 - selected lookup does not scan the point-level `value_id` array;
-- shard-buffered writing and range growth remain bounded by settings rather than
-  bucket size;
+- point and range shard-buffered writing remains bounded by settings rather
+  than bucket size;
 - valid all-zero data roundtrips while missing chunks, shards, and structural
   corruption fail closed;
 - validation reconstructs a result without trusting in-memory construction
@@ -1590,9 +1633,9 @@ Build the complete 136,578,750-point Exact level and record:
 - common, median, rare-localized, and rare-distributed selected reads;
 - logical selected rows, chunks touched, and decoded-row amplification.
 
-Use the evidence to select point chunks, shard rows, range chunks, and codecs for
-the remaining slices. This is an engineering decision, not a comparison gate
-against the existing Parquet implementation.
+Use the evidence to select point chunks/shards, range chunks/shards, and codecs
+for the remaining slices. This is an engineering decision, not a comparison
+gate against the existing Parquet implementation.
 
 #### Exit criteria
 
@@ -1976,10 +2019,11 @@ counts belong to opt-in benchmark scripts.
   needed for one coarser tile plus bounded output buffers.
 - Point arrays use final planned shapes. Do not resize them once per tile or
   point.
-- Range arrays may grow only in coarse bounded blocks and are trimmed at
+- Range arrays may grow only in coarse shard-aligned blocks and are trimmed at
   finalization.
-- Small consecutive tiles should be buffered across tile boundaries so one
-  partially filled shard is not repeatedly rewritten.
+- Small consecutive tiles and their range records are buffered across tile
+  boundaries so partially filled point or range shards are not repeatedly
+  rewritten.
 - Readers reuse handles within a request/context and close them deterministically.
 - All writers and readers close before staged validation or publication.
 
@@ -2020,7 +2064,12 @@ before promotion.
 
 Use independent bucket stores with Zarr v3 sharding. Measure actual files and
 directories at full scale rather than inferring object count from logical
-chunks.
+chunks. The initial 4,096-row unsharded Exact point arrays would create roughly
+100,000 chunk files before range arrays and coarser levels; 131,072-row point
+shards reduce the corresponding physical point objects to roughly 3,300 after
+allowing for the 69 bucket boundaries. Range arrays are sharded for the same
+reason. These estimates motivate the initial layout but do not replace the
+full-Xenium measurement.
 
 ### Duplicate indexes
 
