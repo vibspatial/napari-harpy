@@ -44,6 +44,13 @@ class _TileDescriptor:
     access to both tile pointer arrays without searching the bucket's coordinate
     arrays. The reader still verifies that ``tile_x[i]`` and ``tile_y[i]`` match
     the descriptor before returning point data.
+
+    Value membership is deliberately absent. A tile can contain a variable and
+    potentially large number of distinct ``value_id`` values; duplicating them
+    here would turn the compact descriptor into a second sparse index. Instead,
+    ``bucket_tile_index`` locates the tile's records through
+    ``tile_indptr[i:i + 2]``, and those records store each present value together
+    with its point-row start and count.
     """
 
     level: int
