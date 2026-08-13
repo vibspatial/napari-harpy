@@ -296,20 +296,20 @@ value_id: uint32
 point_id: uint64
 ```
 
-An implementation may use an immutable dataclass of NumPy arrays or a strict
-four-column Arrow table. Slice Z1 chooses and freezes that internal form. The
-contract requires:
+The internal representation is the frozen NumPy `_PointPayload` specified in
+Z1. The contract requires:
 
 - equal row counts;
 - exact dtypes;
-- no nulls or non-finite coordinates;
+- no non-finite coordinates;
 - tile-local coordinates;
 - aligned rows across all fields;
 - at least one row for a stored tile.
 
 Sampling and rebasing operate on this payload. The Zarr writer converts the two
-coordinate columns to `location[:, 0:2]`. The runtime reader is not required to
-convert selected rows through Arrow.
+coordinate arrays to `location[:, 0:2]`. Arrow remains appropriate for the
+canonical value table and final compact Parquet indexes, but is not the point
+interchange boundary.
 
 ## Logical tile descriptor
 
@@ -754,36 +754,382 @@ Make the new-package strategy authoritative before implementation.
 Create a standalone, testable logical foundation without writing persistent
 point payloads yet.
 
-#### Work
+Z1 freezes only pure Python and NumPy contracts. It opens no source Parquet
+file, imports no Zarr module, creates no Dask graph, and writes no cache object.
 
-- create the package and test directories;
-- implement fresh immutable level and cache build-plan models;
-- reproduce aligned origins, grid geometry, Exact/Bridge/spatial kinds,
-  capacities, and overview planning from the semantic requirements;
-- implement fresh tile-to-bucket hashing and bucket-count policy;
-- define the storage-neutral point payload and validation;
-- define `TileDescriptor`, `BucketPlan`, `BucketWriteResult`, and
-  `LevelWriteResult` owned by the new package;
-- define physical settings models for Zarr chunks, shards, codecs, and range
-  chunks, but keep their values provisional;
-- add an import-boundary test or static test proving the new package does not
-  import `multi_scale_cache_points.writer`.
+#### Package scaffold and dependency rule
+
+Create:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points_zarr/
+  __init__.py
+  models.py
+  build_plan.py
+  hashing.py
+  payload.py
+  storage/
+    __init__.py
+    models.py
+
+tests/multi_scale_cache_points_zarr/
+  test_build_plan.py
+  test_hashing.py
+  test_payload.py
+  test_models.py
+  test_import_boundary.py
+```
+
+All Z1 implementation symbols are private. `__init__.py` does not expose a
+builder prematurely.
+
+The only permitted imports from `multi_scale_cache_points` in Z1 are source
+types needed at the validation boundary:
+
+```text
+PointsBounds
+ValidatedPointsSource
+```
+
+Z1 may accept a `ValidatedPointsSource` but must not call source scanning or
+inspect Parquet content. It must not import any existing build-plan, hashing,
+sampling, writer, or writer-support implementation. In particular, imports
+whose module path begins with either of the following fail the boundary test:
+
+```text
+napari_harpy.core.multi_scale_cache_points.build_plan
+napari_harpy.core.multi_scale_cache_points.writer
+```
+
+The test scans imports in the new package rather than relying only on which
+branches happened to execute.
+
+#### NumPy point-payload contract
+
+Define a frozen container `_PointPayload` in `payload.py`:
+
+```text
+_PointPayload
+  x_rel: np.ndarray      shape=(N,) dtype=float32
+  y_rel: np.ndarray      shape=(N,) dtype=float32
+  value_id: np.ndarray   shape=(N,) dtype=uint32
+  point_id: np.ndarray   shape=(N,) dtype=uint64
+```
+
+The constructor validates rather than silently coercing:
+
+- every field is an `np.ndarray`, not an arbitrary array-like value;
+- every array is one-dimensional, C-contiguous, and has its exact dtype;
+- all four lengths are equal;
+- `N >= 1` because empty logical tiles are never stored;
+- `x_rel` and `y_rel` contain only finite values;
+- the four arrays do not share a semantic field through accidental broadcasting
+  or shape normalization;
+- boolean, signed, wider, and platform-dependent integer dtypes are rejected
+  rather than cast.
+
+The dataclass is a frozen container. It exposes read-only array views so payload
+consumers cannot mutate through the payload fields. Construction does not make
+a defensive full-tile copy merely to enforce ownership; callers must not mutate
+the original backing arrays while the payload is in use. This borrowed-buffer
+rule is documented and tested.
+
+Provide only small storage-neutral operations needed by later slices:
+
+```text
+n_points -> int
+take(indices: np.ndarray[int64]) -> _PointPayload
+ordered_by_value_and_point_id() -> _PointPayload
+```
+
+`take` applies one index vector to all four arrays and preserves alignment. It
+requires a one-dimensional integer index vector with in-bounds unique indices;
+the sampler, not `_PointPayload`, determines membership. The ordering helper is
+stable and uses `(value_id, point_id)`; it does not change membership.
+
+Generic payload validation does not know a tile size, so it does not enforce an
+upper coordinate bound. Exact, Bridge, and spatial writers later require
+`0 <= x_rel <= tile_size` and `0 <= y_rel <= tile_size` in the relevant level
+context, retaining the accepted upper-edge tolerance.
+
+Z1 deliberately chooses NumPy rather than Arrow for this internal boundary.
+The canonical value table and final compact indexes may still use Arrow and
+Parquet. No logical writer needs to create a four-column Arrow table merely to
+pass points to Zarr.
+
+#### Fresh build-plan contracts
+
+Define a fresh enum:
+
+```text
+_LevelKind
+  EXACT = "exact"
+  BRIDGE = "bridge"
+  SPATIAL = "spatial"
+```
+
+Define `_LevelBuildPlan`:
+
+```text
+level: int
+kind: _LevelKind
+tile_size: int
+grid_width: int
+grid_height: int
+max_points_per_tile: int | None
+point_count_upper_bound: int
+```
+
+Required invariants:
+
+- `level` is a nonnegative `int16`-compatible integer;
+- `tile_size`, `grid_width`, and `grid_height` are positive integers;
+- `grid_width` and `grid_height` are at most `2**32`, so their maximum valid
+  tile index fits `uint32`;
+- `point_count_upper_bound` is positive and at most `int64_max`;
+- Exact has `max_points_per_tile is None`;
+- Bridge and spatial levels have a positive `int64`-compatible capacity;
+- `relative_directory` is derived as `levels/level_<level>` and is not stored as
+  independent mutable data.
+
+Define `_PointsCacheBuildPlan`:
+
+```text
+x_origin: float
+y_origin: float
+leaf_tile_size: int
+overview_point_budget: int
+levels: tuple[_LevelBuildPlan, ...]
+```
+
+Required invariants:
+
+- origins are finite floats;
+- `leaf_tile_size` and `overview_point_budget` are positive integers;
+- levels are nonempty and numbered consecutively from zero;
+- level 0 is uncapped Exact;
+- if present, level 1 is Bridge and has Exact's tile size and grid geometry;
+- every later level is spatial, doubles the preceding tile size, and has
+  `grid_width == ceil(finer.grid_width / 2)` and
+  `grid_height == ceil(finer.grid_height / 2)`;
+- upper bounds never increase toward coarser levels;
+- the terminal upper bound does not exceed `overview_point_budget`.
+
+Implement one pure planner:
+
+```text
+_plan_points_cache(
+    validated: ValidatedPointsSource,
+    *,
+    leaf_tile_size: int,
+    overview_point_budget: int,
+) -> _PointsCacheBuildPlan
+```
+
+It reads only validated aggregate facts: `row_count` and `bounds`. It must not
+read `validated.source.parquet_path` or any source row.
+
+Freeze the planning policy:
+
+1. Align `x_origin` and `y_origin` downward to integer multiples of
+   `leaf_tile_size` using the validated minima.
+2. Compute each grid dimension as
+   `floor((maximum - origin) / tile_size) + 1`.
+3. Create uncapped Exact level 0 with the source row count as its upper bound.
+4. If the source row count already fits the overview budget, stop with Exact.
+5. Otherwise create Bridge level 1 with the same tile size and geometry as
+   Exact and a scheduled capacity of 4,096 points per tile.
+6. Create spatial levels by doubling both the preceding tile size and scheduled
+   capacity.
+7. For every sampled level, calculate
+   `min(finer_upper_bound, grid_width * grid_height * capacity)`.
+8. Once one tile covers the dataset, reduce that terminal tile's effective
+   capacity to the overview budget if necessary.
+9. Stop at the first level whose complete upper bound is at most the overview
+   budget.
+
+Reject row counts above `int64_max`, levels above `int16_max`, grid dimensions
+above the `uint32` coordinate space, nonfinite bounds, and arithmetic that would
+escape the serialized ranges.
+
+#### Fresh bucket policy
+
+Implement deterministic bucket routing in `hashing.py` without importing the
+existing helper:
+
+```text
+tile_key = (uint64(tile_y) << 32) | uint64(tile_x)
+tile_hash = SplitMix64(tile_key)
+bucket_id = tile_hash % bucket_count
+```
+
+The policy has a new-package-owned version identifier and fixed golden vectors.
+It accepts one-dimensional C-contiguous `uint32` NumPy arrays for `tile_x` and
+`tile_y`, requires identical shapes, and returns `uint64` bucket IDs. Invalid
+dtypes, a nonpositive bucket count, or a bucket count above `2**32` fail rather
+than being silently cast.
+
+Use a provisional construction target of 2,000,000 planned points per bucket:
+
+```text
+bucket_count = max(1, ceil(level.point_count_upper_bound / 2_000_000))
+```
+
+This is a construction policy, not part of the logical tile identity. Z3 may
+change it from Xenium evidence before the cache format is frozen.
+
+Bucket filenames use the complete planned bucket count for deterministic width:
+
+```text
+width = max(3, len(str(bucket_count - 1)))
+levels/level_<level>/bucket-<zero-padded bucket_id>.zarr
+```
+
+Empty bucket IDs create no plan, descriptor, or store.
+
+#### Tile and bucket models
+
+Define `_TileDescriptor` in `models.py`:
+
+```text
+level: int
+bucket_id: int
+bucket_path: str
+bucket_tile_index: int
+tile_x: int
+tile_y: int
+n_points: int
+```
+
+Validate:
+
+- serialized integer ranges: level `int16`, bucket/tile/index `uint32`, and
+  `n_points` in `[1, int64_max]`;
+- booleans are rejected as integers;
+- `bucket_path` is a normalized cache-root-relative POSIX path;
+- it is directly inside `levels/level_<level>`;
+- it has the `.zarr` suffix;
+- it contains no absolute root, `..`, or noncanonical spelling.
+
+Define `_PlannedTile` in `storage/models.py`:
+
+```text
+tile_x: int
+tile_y: int
+n_points: int
+```
+
+Define `_ZarrWriteSettings` without importing Zarr:
+
+```text
+point_chunk_rows: int
+point_shard_rows: int
+range_chunk_rows: int
+codec_id: str
+```
+
+All row settings are positive integers, `point_shard_rows` is an integer
+multiple of `point_chunk_rows`, and `codec_id` is a nonempty versioned string.
+The settings describe requested physical behavior; Z2 maps them to concrete
+Zarr codec objects and may extend the model with JSON-compatible codec
+parameters before the bucket contract is frozen.
+
+Define `_BucketPlan`:
+
+```text
+level: int
+bucket_id: int
+bucket_path: str
+tiles: tuple[_PlannedTile, ...]
+settings: _ZarrWriteSettings
+```
+
+Required invariants:
+
+- a plan contains at least one nonempty tile;
+- the path matches its level and ends in `.zarr`;
+- tile coordinates are unique and strictly ordered by `(tile_y, tile_x)`;
+- tile fields fit the serialized ranges;
+- the sum of tile counts is positive and at most `int64_max`;
+- derived properties expose `tile_count`, `point_count`, and the exact
+  `tile_offset` prefix sums without storing a second independent count.
+
+Define `_BucketWriteResult`:
+
+```text
+level: int
+bucket_id: int
+bucket_path: str
+tile_descriptors: tuple[_TileDescriptor, ...]
+point_count: int
+range_count: int
+```
+
+It represents a finalized nonempty store. Descriptors must all belong to its
+level, bucket ID, and path; their bucket-local indexes are exactly `0..K-1` in
+tile order; their point total equals `point_count`; and `range_count` is at
+least the tile count and at most the point count.
+
+Define `_LevelWriteResult`:
+
+```text
+level: int
+buckets: tuple[_BucketWriteResult, ...]
+```
+
+Buckets are ordered by unique `bucket_id`. Derived properties flatten globally
+ordered tile descriptors and calculate point, tile, bucket, and range totals.
+Across the level, tile coordinates and `(bucket_path, bucket_tile_index)` keys
+are unique. An empty level result is invalid because a validated source is
+nonempty and every planned constructed level retains at least one point.
+
+#### Z1 non-goals
+
+Z1 does not:
+
+- import or configure Zarr;
+- create directories, arrays, Parquet files, or metadata;
+- implement `_BucketWriter` or `_BucketReader`;
+- read canonical source rows;
+- create a Dask graph;
+- implement value-neutral sampling or coordinate rebasing;
+- define final published metadata or Arrow index schemas;
+- expose an experimental public builder;
+- alter any file under `multi_scale_cache_points` or its existing tests.
 
 #### Focused tests
 
-- build-plan geometry and level sequencing;
-- integer ranges and immutable model validation;
-- descriptor uniqueness and bucket-local ordering;
-- payload dtype, alignment, null/finite-coordinate rules;
-- deterministic bucket hashes;
-- forbidden writer-package imports.
+- `_PointPayload` accepts exact aligned arrays and rejects wrong type, rank,
+  dtype, length, contiguity, emptiness, and nonfinite coordinates;
+- payload fields are read-only views, `take` keeps all fields aligned, and
+  value/point ordering is deterministic;
+- aligned origins for positive, negative, and exact-boundary minima;
+- Exact-only, Exact-plus-Bridge, and multi-spatial build plans;
+- one-tile overview capacity reduction;
+- grid, level, count, and capacity overflow rejection;
+- exact Bridge geometry and spatial doubling invariants;
+- fixed SplitMix64 bucket vectors, dtype rejection, and deterministic bucket
+  paths;
+- descriptor paths, suffixes, integer ranges, uniqueness, order, and bucket
+  ownership;
+- exact `BucketPlan` prefix sums and total reconciliation;
+- valid and invalid bucket/level results;
+- an import scan proving no forbidden existing implementation dependency;
+- monkeypatched source access proving the pure planner does not read source
+  files.
 
 #### Exit criteria
 
 - a validated source can produce a complete fresh Zarr-cache build plan;
-- logical construction contracts contain no Parquet row-group concepts;
+- `_PointPayload` is the only point interchange contract planned for Exact,
+  Bridge, spatial construction, and the Zarr primitive;
+- tile, bucket-plan, bucket-result, and level-result ownership is unambiguous;
+- logical contracts contain no Arrow-table requirement and no Parquet row-group
+  concept;
+- hashing and bucket naming are deterministic and independently versioned;
+- Z1 imports no Zarr implementation and writes no files;
 - no existing writer module has changed;
-- Z2 can be developed entirely against tiny in-memory payloads.
+- Z2 can be developed entirely against tiny NumPy payloads and bucket plans.
 
 ### Slice Z2: implement the standalone Zarr bucket primitive
 
