@@ -157,6 +157,7 @@ multi_scale_cache_points_zarr/
 
   storage/
     __init__.py
+    _schema.py              # private bucket constants and Zarr codec/layout map
     models.py               # bucket plans/results and physical settings
     bucket_writer.py        # create and finalize one Zarr bucket
     bucket_reader.py        # complete and selected tile reads
@@ -370,22 +371,24 @@ physical order but never changes representative membership.
 The root attributes contain only versioned physical facts:
 
 ```text
-payload_schema_version
-level
-bucket_id
-tile_count
-point_count
-range_count
-point_order
-coordinate_encoding
-point_chunk_rows
-point_shard_rows
-range_chunk_rows
-range_shard_rows
-codec_id
+payload_schema_version = 1
+level                  = <JSON integer>
+bucket_id              = <JSON integer>
+tile_count             = <JSON integer>
+point_count            = <JSON integer>
+range_count            = <JSON integer>
+point_order            = ["tile_y", "tile_x", "value_id", "point_id"]
+coordinate_encoding    = "tile-relative-xy-float32-v1"
+point_chunk_rows       = <JSON integer>
+point_shard_rows       = <JSON integer>
+range_chunk_rows       = <JSON integer>
+range_shard_rows       = <JSON integer>
+codec_id               = "zstd-v1"
 ```
 
-Semantic cache metadata remains in `metadata.json`.
+These exact keys and value encodings are part of payload schema version 1.
+NumPy scalar objects are not written as attributes. Semantic cache metadata
+remains in `metadata.json`.
 
 ### Tile identity and offsets
 
@@ -547,11 +550,25 @@ because a completely zero-valued chunk can be legitimate cache data. Readers
 and validators use strict missing-chunk reads so an absent chunk or shard raises
 instead of being silently reconstructed from the array fill value.
 
+Every array uses an explicit zero fill value of its declared dtype. The store
+uses the standard Zarr v3 default chunk-key encoding with `/` as the separator.
+Because empty chunks are written, a valid all-zero chunk remains physically
+present; because reads are strict, the zero fill value cannot conceal a missing
+chunk or shard.
+
 Z2 owns a small internal registry from a versioned `codec_id` to an exact public
 Zarr v3 codec pipeline. The initial mapping is:
 
 ```text
-zstd-v1 -> Zstd level 3 with checksum enabled
+zstd-v1
+  inner chunk data:
+    little-endian bytes
+    -> Zstd level 3 with checksum enabled
+
+  shard index:
+    little-endian bytes
+    -> CRC32C
+    -> index stored at the end of the shard
 ```
 
 Unknown codec IDs are rejected. The roadmap does not add or freeze a direct
@@ -1192,10 +1209,9 @@ codec_id: str
 All row settings are positive integers. `point_shard_rows` is an integer
 multiple of `point_chunk_rows`, `range_shard_rows` is an integer multiple of
 `range_chunk_rows`, and `codec_id` is a nonempty versioned string. The settings
-describe requested physical behavior; Z2 maps them to concrete Zarr codec
-objects and may extend the model with JSON-compatible codec parameters before
-the bucket contract is frozen. Because Z1 was scaffolded before range sharding
-was selected, adding `range_shard_rows` to the implemented model and its focused
+describe requested physical behavior; Z2 maps the supported ID to the exact
+codec objects frozen above. Because Z1 was scaffolded before range sharding was
+selected, adding `range_shard_rows` to the implemented model and its focused
 tests is the narrow prerequisite adjustment at the start of Z2.
 
 Define `_BucketPlan`:
@@ -1312,10 +1328,16 @@ Implement the primitive under:
 
 ```text
 multi_scale_cache_points_zarr/storage/
+  _schema.py
   bucket_writer.py
   bucket_reader.py
   bucket_validation.py
 ```
+
+`_schema.py` is the single private source for payload schema version, exact
+root-attribute literals, array names/dtypes/fill values, chunk-key encoding,
+and the `codec_id` registry. Writer, reader, and validator import these facts
+rather than reproducing them independently.
 
 The existing Z1 models remain the ownership boundary:
 
@@ -1330,6 +1352,12 @@ _BucketWriteResult
 The plan, supplied payloads, and finalized arrays are independent count sources
 that must be reconciled. Z2 does not import or adapt any writer or reader from
 `multi_scale_cache_points`.
+
+Before opening a Zarr store, Z2 makes the already documented narrow extension
+to the implemented Z1 settings model: add `range_shard_rows`, validate it as a
+positive serialized integer, require exact divisibility by `range_chunk_rows`,
+and update only the focused Zarr-package model tests. This is the first Z2 task,
+not a reopening of Z1 planning or payload design.
 
 #### Writer lifecycle
 
@@ -1422,6 +1450,12 @@ small tile/index array uses one unsharded chunk. Writer code supplies sequential
 shard-sized array slices, while Zarr owns shard encoding, indexing, file naming,
 and inner-chunk placement.
 
+Every array is created with its exact schema dtype, `fill_value=0`, the standard
+Zarr v3 default chunk-key encoding with `/` separator, and the `zstd-v1` pipeline
+defined above. For sharded arrays this means independently compressed inner
+chunks plus the checksummed end-of-shard index. These choices are explicit
+rather than inherited from mutable library defaults.
+
 Z2 maps the versioned settings `codec_id` through the registry above rather
 than accepting arbitrary codec objects or parameters. Both the reader and
 validator verify the public array chunk, shard, dtype, and codec properties
@@ -1484,7 +1518,8 @@ from the physical store and validates:
 
 - Zarr format 3 and the exact logical group/array hierarchy;
 - exact required root attributes, supported schema version, and `codec_id`;
-- dtypes, ranks, shapes, chunks, shards, codecs, and strict chunk presence;
+- dtypes, ranks, shapes, zero fill values, chunk-key encoding, chunks, shards,
+  codecs, shard-index configuration, and strict chunk presence;
 - ordered unique `(tile_y, tile_x)` pairs and exact local indexes;
 - monotonic `tile_offset` and `tile_indptr` with correct terminal counts;
 - finite, nonnegative relative coordinates;
@@ -1515,6 +1550,22 @@ the build plan and metadata are available.
 - make structural failure closed and deterministic without adding generation
   publication or repair behavior to Z2.
 
+#### Implementation order
+
+Implement Z2 in these reviewable stages without creating additional roadmap
+slices:
+
+1. add `range_shard_rows` to `_ZarrWriteSettings` and its focused tests;
+2. define `_schema.py` and test the exact attributes, array specifications,
+   chunk-key encoding, and `zstd-v1` codec map;
+3. implement store/array creation plus bounded point and range shard buffers;
+4. implement finalization, physical/logical count reconciliation, close, and
+   partial-target cleanup;
+5. implement complete and chunk-aware selected reads;
+6. implement independent on-disk validation;
+7. add lifecycle, corruption, chunk-boundary, and shard-boundary tests;
+8. run the opt-in small synthetic characterization benchmark.
+
 #### Focused tests
 
 - writer state transitions: before enter, after failure, double finalization,
@@ -1538,6 +1589,8 @@ the build plan and metadata are available.
   stored;
 - deleting a chunk or shard causes strict reader and validator failure rather
   than fill-value reconstruction;
+- exact schema-version, point-order, coordinate-encoding, fill-value,
+  chunk-key, inner-codec, and shard-index metadata;
 - coordinate and `point_id` alignment;
 - physical point-array shapes, writer cursor, terminal tile offset, descriptor
   totals, plan total, root `point_count`, and result `point_count` all reconcile;
