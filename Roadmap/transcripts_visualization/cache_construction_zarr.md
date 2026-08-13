@@ -1,6 +1,6 @@
 # Independent hybrid Parquet/Zarr multiscale points cache
 
-Status: implementation roadmap for an isolated Zarr-backed cache experiment
+Status: implementation roadmap for an isolated production-quality Zarr-backed cache
 
 Roadmap date: 2026-08-13
 
@@ -19,9 +19,9 @@ implementation, but it is not a refactor of that implementation. It starts with
 fresh models, planning, writers, readers, validation, artifact construction, and
 orchestration.
 
-The existing `multi_scale_cache_points` package remains unchanged while the
-experiment is developed. It is a reference and rollback point, not a runtime
-fallback and not a backend selected by the new package.
+The existing `multi_scale_cache_points` package remains unchanged while the new
+architecture is developed and evaluated. It is a reference and rollback point,
+not a runtime fallback and not a backend selected by the new package.
 
 The only intentional code sharing is the canonical read-only source boundary:
 
@@ -37,7 +37,7 @@ source signature facts
 Everything downstream of a `ValidatedPointsSource` is owned by
 `multi_scale_cache_points_zarr`, even where the implementation initially looks
 similar to the Parquet-backed code. Duplication is acceptable and preferred over
-coupling the experiment to existing writer internals.
+coupling the new architecture to existing writer internals.
 
 In particular, the new package must not import from:
 
@@ -55,8 +55,9 @@ Parquet-backed and Zarr-backed levels.
 
 ## Authority and relationship to earlier roadmaps
 
-This document defines the Zarr experiment. It replaces earlier proposals to
-incrementally migrate the existing Exact, Bridge, and spatial Parquet writers.
+This document defines the production-quality Zarr-backed cache candidate. It
+replaces earlier proposals to incrementally migrate the existing Exact, Bridge,
+and spatial Parquet writers.
 
 The following source and semantic requirements remain authoritative:
 
@@ -77,21 +78,24 @@ The new implementation may reproduce algorithms to satisfy those requirements.
 It does not need to call the corresponding implementation in the existing
 package.
 
-## Experiment and compatibility policy
+## Product-quality and compatibility policy
 
-This is an isolated engineering experiment evaluated on the Xenium example.
-Correctness is mandatory. Build time, peak RSS, cache size, object count, and
+This is an isolated implementation path for a professional product, evaluated
+at full Xenium scale before integration. Isolation does not lower the quality
+bar: every implemented slice must be correct, deterministic, memory-bounded,
+failure-safe, independently validated, maintainable, and suitable for continued
+production ownership. Build time, peak RSS, cache size, object count, and
 representative read behavior are recorded and reviewed together; there are no
 pre-registered numerical pass/fail thresholds.
 
-The decision remains binary:
+The architecture-adoption decision remains binary:
 
 ```text
 Zarr cache is correct, memory-bounded, and practically satisfactory
-    -> promote the new implementation in a later integration decision
+    -> adopt the new implementation in a later integration decision
 
 Zarr cache is unsatisfactory
-    -> abandon multi_scale_cache_points_zarr and retain the existing package
+    -> do not adopt it; retain the existing package
 ```
 
 Do not add:
@@ -122,8 +126,8 @@ primitive and Xenium evidence establish what is required.
    number of immediate-finer tiles, never a complete level.
 8. Independently validate the final Zarr stores and compact Parquet indexes
    before publication.
-9. Keep the experiment understandable in isolation, even when that duplicates
-   logic from `multi_scale_cache_points`.
+9. Keep the new implementation understandable and maintainable in isolation,
+   even when that duplicates logic from `multi_scale_cache_points`.
 
 ## Non-goals
 
@@ -272,9 +276,10 @@ the new package and must not create cross-writer dependencies.
         COMPLETED
 ```
 
-The final cache directory name is provisional until the public integration
-decision. During the experiment it must not collide with the existing derived
-cache path. Every `bucket-<id>.zarr` is an independent Zarr v3 `LocalStore`.
+The final cache directory name is intentionally deferred until the public
+integration decision. During isolated development it must not collide with the
+existing derived-cache path. Every `bucket-<id>.zarr` is an independent Zarr v3
+`LocalStore`.
 
 Parquet is used only for:
 
@@ -518,7 +523,7 @@ shard boundaries may cross tile and value boundaries. The small `tile_x`,
 `tile_y`, `tile_offset`, and `tile_indptr` arrays each use one unsharded chunk
 per bucket.
 
-Initial experimental values are:
+Current production-candidate values are:
 
 ```text
 point_chunk_rows = 4,096
@@ -527,10 +532,11 @@ range_chunk_rows = 8,192
 range_shard_rows = 131,072       # 16 range chunks
 ```
 
-They are provisional. Slice Z3 records Exact-level evidence before physical
-settings are frozen. At these values, the three aligned point shard buffers
-occupy approximately 2.5 MiB in aggregate, and the three aligned range shard
-buffers occupy approximately another 2.5 MiB.
+They are not frozen until Slice Z3 records Exact-level evidence. This is
+benchmark-guided configuration selection, not permission for a temporary or
+lower-quality implementation. At these values, the three aligned point shard
+buffers occupy approximately 2.5 MiB in aggregate, and the three aligned range
+shard buffers occupy approximately another 2.5 MiB.
 
 Writers buffer aligned point fields across logical tile boundaries and flush
 complete `point_shard_rows` blocks where possible. The final partial shard is
@@ -831,7 +837,7 @@ The dependency sequence is:
 
 | Slice | Delivers | Depends on |
 |---|---|---|
-| Z0 | isolated experiment boundary | roadmap decision |
+| Z0 | isolated implementation boundary | roadmap decision |
 | Z1 | fresh models, planning, hashes, and payload contracts | shared validated source |
 | Z2 | standalone Zarr bucket writer, reader, and validator | Z1 |
 | Z3 | Exact source-to-Zarr construction and Xenium Exact gate | Z1–Z2 |
@@ -841,11 +847,11 @@ The dependency sequence is:
 | Z7 | independent complete-generation validation | Z6 |
 | Z8 | guarded end-to-end build and publication | Z7 |
 | Z9 | acceptance reader and full-Xenium evaluation | Z8 |
-| Z10 | explicit promotion or retirement decision | Z9 |
+| Z10 | explicit architecture-adoption decision | Z9 |
 
 No slice depends on an adapted Parquet point writer or a compatibility reader.
 
-### Slice Z0: freeze the isolated experiment boundary — resolved
+### Slice Z0: freeze the isolated implementation boundary — resolved
 
 #### Goal
 
@@ -854,21 +860,20 @@ Make the new-package strategy authoritative before implementation.
 #### Work
 
 - declare `multi_scale_cache_points_zarr` the sole implementation location for
-  this experiment;
+  this Zarr-backed candidate;
 - reuse only canonical source models, validation, and source-signature facts;
 - allow duplication of all derived-cache logic;
 - forbid imports from the existing writer package;
 - forbid transitional or mixed point-payload backends;
 - retain the existing package unchanged as the reference and rollback point;
-- use `transcripts_vis_zarr` as a noncolliding experimental output path until
-  promotion is decided.
+- use `transcripts_vis_zarr` as a noncolliding isolated output path until public
+  integration is decided.
 
 #### Exit criteria
 
 - this roadmap contains no incremental Parquet-to-Zarr migration plan;
 - Z1 can create a new package without changing existing writers;
-- acceptance or rejection of the experiment has a simple package-level
-  boundary.
+- adoption or non-adoption has a simple package-level boundary.
 
 ### Slice Z1: scaffold fresh contracts and build planning — resolved
 
@@ -1145,7 +1150,8 @@ It accepts one-dimensional C-contiguous `uint32` NumPy arrays for `tile_x` and
 dtypes, a nonpositive bucket count, or a bucket count above `2**32` fail rather
 than being silently cast.
 
-Use a provisional construction target of 2,000,000 planned points per bucket:
+Use the current production-candidate construction target of 2,000,000 planned
+points per bucket:
 
 ```text
 bucket_count = max(1, ceil(level.point_count_upper_bound / 2_000_000))
@@ -1277,7 +1283,7 @@ Z1 does not:
 - create a Dask graph;
 - implement value-neutral sampling or coordinate rebasing;
 - define final published metadata or Arrow index schemas;
-- expose an experimental public builder;
+- expose a public builder before the guarded integration slice;
 - alter any file under `multi_scale_cache_points` or its existing tests.
 
 #### Focused tests
@@ -1313,7 +1319,17 @@ Z1 does not:
 - no existing writer module has changed;
 - Z2 can be developed entirely against tiny NumPy payloads and bucket plans.
 
-### Slice Z2: implement the standalone Zarr bucket primitive
+### Slice Z2: implement the standalone Zarr bucket primitive — resolved
+
+**Status:** implemented and verified on 2026-08-13.
+
+Focused verification completed with all 102 tests in
+`tests/multi_scale_cache_points_zarr` passing. The opt-in synthetic bucket
+characterization also completed with the current production-candidate
+chunk/shard settings for 131,394 points across representative average Exact,
+dense Exact, and Bridge tiles. These measurements establish operability only;
+they are not a numerical acceptance threshold and do not replace the
+full-Xenium Z3 gate.
 
 #### Goal
 
@@ -1389,7 +1405,7 @@ NEW -> OPEN -> FINALIZED -> CLOSED
 - successful finalization writes final attributes, closes the store, and
   returns `_BucketWriteResult`;
 - an ordinary write/finalization exception marks the writer failed, closes its
-  handles, and removes that exact partial bucket from the disposable staging
+  handles, and removes that exact partial bucket from the isolated staging
   generation;
 - a process crash may leave a partial bucket, but the enclosing generation has
   no `COMPLETED` marker and cannot be published or read as a valid cache.
@@ -1408,8 +1424,8 @@ blocks are flushed once; only the final partial shard is flushed at
 finalization. Large payloads may stream through that buffer and need not be
 copied in full.
 
-At the provisional production settings, the four aligned buffers occupy about
-2.6 MiB:
+At the current production-candidate settings, the four aligned buffers occupy
+about 2.6 MiB:
 
 ```text
 131,072 * (2 * float32 + uint32 + uint64)
@@ -1634,7 +1650,7 @@ gate.
   corruption fail closed;
 - validation reconstructs a result without trusting in-memory construction
   objects;
-- a provisional physical configuration is ready for Exact construction.
+- a measured physical configuration is ready for full-scale Exact construction.
 
 ### Slice Z3: implement fresh Exact construction directly to Zarr
 
@@ -1874,7 +1890,7 @@ structures where necessary.
 
 #### Goal
 
-Expose one experimental builder that creates only complete Zarr-backed
+Expose one isolated candidate builder that creates only complete Zarr-backed
 generations.
 
 #### Required flow
@@ -1898,13 +1914,14 @@ ValidatedPointsSource
 
 - own staging creation, cleanup, replacement, and publication in the new
   package;
-- preserve an existing completed experimental generation on every failure;
+- preserve an existing completed candidate generation on every failure;
 - close all Dask tasks, Zarr stores, memory maps, and file handles before
   validation and rename;
 - make `COMPLETED` the final staged write;
 - reject incomplete generations when opening;
 - expose no public backend selector and do not call the existing builder;
-- treat the experimental cache as disposable and rebuildable.
+- treat derived cache data as regenerable while preserving product-quality
+  failure and publication guarantees.
 
 #### Focused tests
 
@@ -1918,7 +1935,7 @@ ValidatedPointsSource
 
 #### Exit criteria
 
-- the experimental output path is absent or contains one complete independently
+- the isolated output path is absent or contains one complete independently
   validated generation;
 - no mixed or incomplete payload is observable;
 - the end-to-end builder never imports or invokes the existing writer package.
@@ -1982,8 +1999,8 @@ speed, storage behavior, object count, complete reads, and selected reads as one
 engineering decision without fixed numerical thresholds and without requiring a
 Parquet comparison run.
 
-If accepted, record the format and physical settings as the proposed Phase 2
-input. If rejected, stop work on this package and retain the existing cache
+If adopted, record the format and physical settings as the proposed Phase 2
+input. If not adopted, stop work on this package and retain the existing cache
 implementation. Do not add a fallback path.
 
 #### Exit criteria
@@ -1991,28 +2008,29 @@ implementation. Do not add a fallback path.
 - direct sparse-range lookup is demonstrated at full scale;
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
-- the experiment has an explicit accept/reject result.
+- the candidate architecture has an explicit adoption decision.
 
-### Slice Z10: promotion or retirement decision
+### Slice Z10: architecture-adoption decision
 
 #### Goal
 
-Conclude the isolated experiment without blurring the two implementations.
+Conclude the isolated architecture evaluation without blurring the two
+implementations.
 
-#### If accepted
+#### If adopted
 
 - update the higher-level transcript-visualization roadmaps with measured Zarr
   behavior;
 - choose the future public entrypoint and final cache directory name;
 - document the supported schema and dependency bounds;
 - plan removal or archival of the existing derived-cache implementation as a
-  separate integration task, not inside the experiment;
-- keep only one public backend after promotion.
+  separate integration task, not inside this roadmap;
+- keep only one public backend after integration.
 
-#### If rejected
+#### If not adopted
 
 - document the measured reason;
-- remove or archive `multi_scale_cache_points_zarr` as experimental work;
+- remove or archive `multi_scale_cache_points_zarr` as a non-adopted candidate;
 - retain the existing package without adding compatibility code.
 
 #### Exit criteria
@@ -2082,16 +2100,18 @@ counts belong to opt-in benchmark scripts.
 
 ## Failure and publication rules
 
-- The cache is derived and disposable.
+- The cache data are derived and regenerable; the implementation is held to the
+  same professional quality standard as other product code.
 - All writes occur under a unique sibling staging generation.
 - A failure in one bucket invalidates the whole staging generation.
-- The first implementation does not resume or repair partial stores.
+- This architecture deliberately does not resume or repair partial stores;
+  failed staging generations are rebuilt from the canonical source.
 - Independent validation reopens all required artifacts after writers close.
 - `COMPLETED` is absent throughout construction and validation.
 - The final source guard precedes `COMPLETED` and publication.
 - Readers reject missing completion, unsupported versions, missing stores, and
   inconsistent indexes.
-- Existing completed experimental generations survive failed replacements.
+- Existing completed candidate generations survive failed replacements.
 
 ## Risks and mitigations
 
@@ -2100,7 +2120,7 @@ counts belong to opt-in benchmark scripts.
 Fresh planning and sampling code may diverge unintentionally from the intended
 semantics. Mitigate with explicit invariant tests and small golden vectors, not
 imports from the existing writer package. Differences are acceptable only when
-documented as deliberate Zarr-experiment decisions.
+documented as deliberate Zarr-architecture decisions.
 
 ### Small selected reads
 
@@ -2111,7 +2131,7 @@ amplification and coalesce ranges; do not create a chunk per gene.
 
 Value-major ordering remains sequential within a complete tile, but it may
 alter compression and access behavior. Benchmark complete tiles and viewports
-before promotion.
+before adoption.
 
 ### Filesystem-object growth
 
@@ -2140,7 +2160,7 @@ requirements.
 
 The derived stores are not SpatialData elements. Use a distinct Harpy-owned
 path, validate containment, and verify that SpatialData operations ignore the
-experimental cache directory.
+isolated cache directory.
 
 ### Sparse values distributed everywhere
 
@@ -2150,7 +2170,7 @@ still bound work, but Z9 must measure this case.
 
 ## Definition of done
 
-The experiment is complete when:
+The production-candidate evaluation is complete when:
 
 - `multi_scale_cache_points_zarr` builds every planned level without importing
   existing writer code;
@@ -2164,11 +2184,11 @@ The experiment is complete when:
 - independent staged validation fails closed on corruption;
 - construction is bounded, failure-safe, and atomically published;
 - full-Xenium build and read measurements are recorded;
-- the project explicitly accepts or rejects the experiment.
+- the project explicitly adopts or does not adopt the candidate architecture.
 
 ## Immediate next slice
 
-Z0 and Z1 are resolved. Implement Z2 against the fresh NumPy payload and bucket
-plans. Do not modify or adapt the existing Exact, Bridge, spatial, or
-writer-support modules, and do not introduce a transitional Parquet point
-reader.
+Z0, Z1, and Z2 are resolved. Implement Z3 against the standalone bucket
+primitive. Build Exact directly from the validated canonical source into Zarr;
+do not modify or adapt the existing Exact, Bridge, spatial, or writer-support
+modules, and do not introduce a transitional Parquet point reader.
