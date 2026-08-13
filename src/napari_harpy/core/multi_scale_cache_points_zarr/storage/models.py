@@ -8,7 +8,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
     _UINT32_MAX,
-    _require_bucket_path,
+    _bucket_path,
     _require_integer_in_range,
     _TileDescriptor,
 )
@@ -71,9 +71,10 @@ class _BucketPlan:
     """Plan one nonempty independent Zarr bucket before physical writing.
 
     This is the bucket-wide write contract, not a container for point data. It
-    fixes the bucket identity and path, ordered nonempty tiles, expected count
-    of each tile, derived total and offsets, and physical Zarr settings. It is
-    therefore small relative to the points being written.
+    fixes the bucket identity, ordered nonempty tiles, expected count of each
+    tile, derived path, total and offsets, and physical Zarr settings. It is
+    therefore small relative to the points being written. ``bucket_path`` is a
+    canonical property of ``level`` and ``bucket_id``, not independent state.
 
     The bucket writer retains this plan while callers provide one
     ``_PointPayload`` at a time. For each call, the writer matches the supplied
@@ -88,14 +89,12 @@ class _BucketPlan:
 
     level: int
     bucket_id: int
-    bucket_path: str
     tiles: tuple[_PlannedTile, ...]
     settings: _ZarrWriteSettings
 
     def __post_init__(self) -> None:
         _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
         _require_integer_in_range(self.bucket_id, "bucket_id", maximum=_UINT32_MAX)
-        _require_bucket_path(self.bucket_path, level=self.level)
         if not isinstance(self.tiles, tuple) or not self.tiles:
             raise ValueError("A bucket plan must contain at least one planned tile.")
         if not all(isinstance(tile, _PlannedTile) for tile in self.tiles):
@@ -109,6 +108,11 @@ class _BucketPlan:
             raise ValueError("Planned tile coordinates must be unique.")
         if self.point_count > _INT64_MAX:
             raise ValueError("Bucket point count exceeds the supported int64 range.")
+
+    @property
+    def bucket_path(self) -> str:
+        """Return the canonical cache-relative Zarr path for this bucket."""
+        return _bucket_path(level=self.level, bucket_id=self.bucket_id)
 
     @property
     def tile_count(self) -> int:
@@ -180,13 +184,9 @@ class _BucketWriteResult:
         if not all(isinstance(tile, _TileDescriptor) for tile in self.tile_descriptors):
             raise ValueError("`tile_descriptors` must be a tuple of _TileDescriptor values.")
 
-        identity = (
-            self.tile_descriptors[0].level,
-            self.tile_descriptors[0].bucket_id,
-            self.tile_descriptors[0].bucket_path,
-        )
+        identity = (self.tile_descriptors[0].level, self.tile_descriptors[0].bucket_id)
         if any(
-            (tile.level, tile.bucket_id, tile.bucket_path) != identity
+            (tile.level, tile.bucket_id) != identity
             for tile in self.tile_descriptors
         ):
             raise ValueError("Every tile descriptor in a bucket result must have the same bucket identity.")
@@ -241,13 +241,11 @@ class _LevelWriteResult:
             raise ValueError("Bucket results must be ordered by bucket_id.")
         if len({bucket.bucket_id for bucket in self.buckets}) != len(self.buckets):
             raise ValueError("Level bucket IDs must be unique.")
-        if len({bucket.bucket_path for bucket in self.buckets}) != len(self.buckets):
-            raise ValueError("Level bucket paths must be unique.")
         tiles = self.tile_descriptors
         if len({(tile.tile_x, tile.tile_y) for tile in tiles}) != len(tiles):
             raise ValueError("Level tile coordinates must be unique.")
-        if len({(tile.bucket_path, tile.bucket_tile_index) for tile in tiles}) != len(tiles):
-            raise ValueError("Level bucket path/index keys must be unique.")
+        if len({(tile.bucket_id, tile.bucket_tile_index) for tile in tiles}) != len(tiles):
+            raise ValueError("Level bucket ID/index keys must be unique.")
 
     @property
     def level(self) -> int:
