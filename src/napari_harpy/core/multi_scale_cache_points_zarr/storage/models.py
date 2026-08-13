@@ -39,6 +39,7 @@ class _ZarrWriteSettings:
     point_chunk_rows: int
     point_shard_rows: int
     range_chunk_rows: int
+    range_shard_rows: int
     codec_id: str
 
     def __post_init__(self) -> None:
@@ -60,8 +61,16 @@ class _ZarrWriteSettings:
             minimum=1,
             maximum=_INT64_MAX,
         )
+        _require_integer_in_range(
+            self.range_shard_rows,
+            "range_shard_rows",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
         if self.point_shard_rows % self.point_chunk_rows:
             raise ValueError("`point_shard_rows` must be an integer multiple of `point_chunk_rows`.")
+        if self.range_shard_rows % self.range_chunk_rows:
+            raise ValueError("`range_shard_rows` must be an integer multiple of `range_chunk_rows`.")
         if not isinstance(self.codec_id, str) or self.codec_id == "":
             raise ValueError("`codec_id` must be a nonempty versioned string.")
 
