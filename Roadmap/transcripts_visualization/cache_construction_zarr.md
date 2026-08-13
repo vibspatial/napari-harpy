@@ -381,7 +381,7 @@ coordinate_encoding
 point_chunk_rows
 point_shard_rows
 range_chunk_rows
-codec identifier and parameters
+codec_id
 ```
 
 Semantic cache metadata remains in `metadata.json`.
@@ -505,6 +505,28 @@ point_shard_rows = 131,072       # 32 chunks
 They are provisional. Slice Z3 records Exact-level evidence before physical
 settings are frozen. Range arrays share a separate `range_chunk_rows` setting;
 small tile arrays may use one chunk per bucket.
+
+Writers buffer aligned point fields across logical tile boundaries and flush
+complete `point_shard_rows` blocks where possible. The final partial shard is
+flushed once during finalization. A `write_tile` call therefore advances the
+logical tile contract but does not imply an immediate tile-sized Zarr write.
+This keeps memory bounded while avoiding repeated updates of the same partially
+filled shard when a bucket contains many small tiles.
+
+All arrays are created with empty-chunk storage enabled. This is necessary
+because a completely zero-valued chunk can be legitimate cache data. Readers
+and validators use strict missing-chunk reads so an absent chunk or shard raises
+instead of being silently reconstructed from the array fill value.
+
+Z2 owns a small internal registry from a versioned `codec_id` to an exact public
+Zarr v3 codec pipeline. The initial mapping is:
+
+```text
+zstd-v1 -> Zstd level 3 with checksum enabled
+```
+
+Unknown codec IDs are rejected. The roadmap does not add or freeze a direct
+Zarr constraint in `pyproject.toml` at this stage.
 
 ## Compact Parquet indexes
 
@@ -741,14 +763,16 @@ selected labels
   -> manifest.parquet -> bucket path and tile index
   -> tile_indptr -> tile's sorted range records
   -> selected value range(s)
-  -> only intersecting location chunks
-  -> point_id chunks only when identity is required
+  -> only intersecting aligned point-array chunks
 ```
 
 Opening a Zarr bucket loads metadata and required small index chunks; it must not
 materialize the complete point arrays. Selection is beneficial only when the
 selected intervals touch fewer chunks than complete positive tiles. A rare value
 present in every visible tile remains a meaningful worst case and is measured.
+The Z2 reader returns a complete `_PointPayload`, so its selected read includes
+`point_id`. A later acceptance/runtime API may add a coordinates-only read that
+omits `point_id`; that optimization is deliberately outside the primitive.
 
 ## Implementation slices
 
@@ -1244,35 +1268,233 @@ Z1 does not:
 
 #### Goal
 
-Implement and validate one bucket independently of Dask and pyramid writers.
+Implement, read, and independently validate one bucket using only a
+`_BucketPlan` and one `_PointPayload` at a time. Z2 remains independent of Dask,
+canonical source readers, sampling, rebasing, pyramid writers, manifests, and
+publication.
+
+#### Files and ownership
+
+Implement the primitive under:
+
+```text
+multi_scale_cache_points_zarr/storage/
+  bucket_writer.py
+  bucket_reader.py
+  bucket_validation.py
+```
+
+The existing Z1 models remain the ownership boundary:
+
+```text
+_BucketPlan       expected bucket identity, tile order, counts, and settings
+_PointPayload     actual aligned rows supplied for one logical tile
+Zarr arrays       observed physical output
+_BucketWriteResult
+                  finalized descriptors and observed physical totals
+```
+
+The plan, supplied payloads, and finalized arrays are independent count sources
+that must be reconciled. Z2 does not import or adapt any writer or reader from
+`multi_scale_cache_points`.
+
+#### Writer lifecycle
+
+The intended interface is:
+
+```text
+with _BucketWriter(staging_root, plan) as writer:
+    writer.write_tile(tile_x, tile_y, payload)
+    ...
+    result = writer.finalize()
+```
+
+`staging_root` is the generation root, not a caller-composed bucket path. The
+writer derives the only target from `plan.bucket_path` and refuses to overwrite
+an existing target.
+
+The lifecycle is explicit:
+
+```text
+NEW -> OPEN -> FINALIZED -> CLOSED
+           \-> FAILED -> CLOSED
+```
+
+- writes are accepted only while open;
+- every planned tile is supplied exactly once, in plan order;
+- coordinates and `payload.n_points` must match the next `_PlannedTile`;
+- `finalize` succeeds exactly once and only after every planned tile;
+- root count attributes are absent until all final checks succeed;
+- successful finalization writes final attributes, closes the store, and
+  returns `_BucketWriteResult`;
+- an ordinary write/finalization exception marks the writer failed, closes its
+  handles, and removes that exact partial bucket from the disposable staging
+  generation;
+- a process crash may leave a partial bucket, but the enclosing generation has
+  no `COMPLETED` marker and cannot be published or read as a valid cache.
+
+#### Point writes and shard buffering
+
+Create the three point arrays immediately at the final `plan.point_count` shape.
+They are never resized. Write `location[:, 0] = x_rel` and
+`location[:, 1] = y_rel` without assembling a second full-bucket location
+matrix.
+
+For each tile, the writer orders rows by `(value_id, point_id)` after membership
+has been fixed. It appends the four aligned fields to one bounded
+`point_shard_rows` buffer shared across tile boundaries. Complete shard-sized
+blocks are flushed once; only the final partial shard is flushed at
+finalization. Large payloads may stream through that buffer and need not be
+copied in full.
+
+At the provisional production settings, the four aligned buffers occupy about
+2.6 MiB:
+
+```text
+131,072 * (2 * float32 + uint32 + uint64)
+```
+
+The small `tile_x`, `tile_y`, and planned `tile_offset` arrays are written once.
+Their values are derived from `_BucketPlan`, but finalization still reconciles
+their terminal offset against the independent writer cursor and physical array
+shapes.
+
+#### Sparse-range writes
+
+After a tile is ordered, contiguous equal `value_id` runs become bucket-global
+`ranges/value_id`, `ranges/row_start`, and `ranges/row_count` records. The
+writer records the completed range cursor for that tile in `tile_indptr`.
+
+The final range count `M` is not part of `_BucketPlan`. The range arrays
+therefore:
+
+- start with one `range_chunk_rows` capacity block;
+- grow geometrically, rounded to a multiple of `range_chunk_rows`;
+- receive writes through a bounded range buffer rather than one resize/write
+  per range;
+- are trimmed to the exact completed range cursor before physical counts are
+  measured;
+- never retain one Python object per range for the complete bucket.
+
+`tile_indptr` is a small `(K + 1,)` in-memory prefix array and is written once
+during finalization.
+
+#### Zarr creation and strict reads
+
+Create a new local Zarr v3 group with unconsolidated metadata. Apply aligned
+chunks and shards from `_ZarrWriteSettings` to the point arrays; range arrays
+are chunked but unsharded, and each small tile/index array uses one unsharded
+chunk.
+
+Z2 maps the versioned settings `codec_id` through the registry above rather
+than accepting arbitrary codec objects or parameters. Both the reader and
+validator verify the public array chunk, shard, dtype, and codec properties
+against the declared settings.
+
+Every array is created with `write_empty_chunks=True`. All reopened arrays used
+by `_BucketReader` and the independent validator set
+`read_missing_chunks=False`. Thus valid all-zero chunks are physically present,
+while a missing chunk or shard is structural corruption rather than an implicit
+fill-value region.
+
+#### Reader contract
+
+The reader is scoped to one bucket so repeated tile reads reuse open store and
+array handles:
+
+```text
+with _BucketReader(cache_root, level, bucket_id) as reader:
+    complete = reader.read_complete(descriptor)
+    selected = reader.read_selected(descriptor, selected_value_ids)
+```
+
+Both methods verify descriptor bucket identity, bucket-local index, stored tile
+coordinates, and descriptor count before reading point data. Calls after close
+fail.
+
+`read_complete` resolves `tile_offset[i:i+2]` and returns an exact
+`_PointPayload`. `read_selected` requires a nonempty, one-dimensional,
+strictly increasing unique `uint32` ID array and performs:
+
+```text
+tile_indptr[i:i+2]
+  -> this tile's sorted sparse range records
+  -> binary search selected value IDs
+  -> coalesce only adjacent selected point intervals
+  -> read matching aligned point-array slices
+```
+
+It does not scan the tile's point-level `value_id` slice. It returns `None` when
+no requested value is present because `_PointPayload` deliberately cannot be
+empty. Otherwise it returns a complete payload including `point_id`. Splitting
+the stored `(N, 2)` `location` slice into contiguous `x_rel` and `y_rel` arrays
+is an accepted Z2 conversion cost and is measured rather than optimized now.
+
+#### Independent bucket validation
+
+The validator's input and result are:
+
+```text
+_validate_bucket(cache_root, level, bucket_id) -> _BucketWriteResult
+```
+
+It receives neither `_BucketPlan` nor the writer's result. After reopening the
+canonical bucket read-only, it reconstructs descriptors and observed counts
+from the physical store and validates:
+
+- Zarr format 3 and the exact logical group/array hierarchy;
+- exact required root attributes, supported schema version, and `codec_id`;
+- dtypes, ranks, shapes, chunks, shards, codecs, and strict chunk presence;
+- ordered unique `(tile_y, tile_x)` pairs and exact local indexes;
+- monotonic `tile_offset` and `tile_indptr` with correct terminal counts;
+- finite, nonnegative relative coordinates;
+- per-tile `(value_id, point_id)` ordering;
+- strictly increasing unique range values within each tile;
+- positive counts and exact gap-free, overlap-free coverage of each tile;
+- agreement between every range value and its point-level `value_id` rows;
+- root counts against finalized physical shapes.
+
+Validation proceeds by tile, range, or chunk and does not materialize a complete
+bucket. Unexpected logical Zarr groups or arrays are rejected. The validator
+does not depend on raw chunk filenames or other private Zarr storage details;
+strict reads and codec checksums detect missing or corrupt physical payloads.
+
+Upper coordinate bounds remain a level-writer responsibility because neither
+`_PointPayload` nor `_BucketPlan` knows the tile size. Exact, Bridge, and spatial
+writers will enforce `x_rel <= tile_width` and `y_rel <= tile_height` before
+calling the bucket writer. Cross-artifact validation repeats those checks once
+the build plan and metadata are available.
 
 #### Work
 
-- create Zarr v3 stores with the exact array hierarchy above;
-- implement planned sequential point writes and bounded range-array growth;
-- persist tile identity arrays, offsets, sparse value ranges, and root
-  attributes;
-- implement the exact physical/logical count reconciliation specified above;
-- implement deterministic finalization, close, and incomplete-write behavior,
-  writing count attributes only after reconciliation succeeds;
-- implement complete-tile reads returning the storage-neutral payload;
-- implement selected-value range lookup and selected payload reads;
-- reuse open store/array handles within a reader context and close them
-  deterministically;
-- implement structural bucket validation from disk without trusting writer
-  result objects;
-- reject Zarr v2, unsupported attributes/codecs, missing arrays, dtype/shape
-  disagreements, nonmonotonic pointers, range gaps/overlaps, point/range value
-  disagreements, and unexpected objects.
+- implement the writer, reader, codec mapping, and independent validator exactly
+  against the contracts above;
+- use only public Zarr v3 APIs and explicitly close local stores;
+- keep all construction and validation memory bounded independently of bucket
+  point count;
+- make structural failure closed and deterministic without adding generation
+  publication or repair behavior to Z2.
 
 #### Focused tests
 
+- writer state transitions: before enter, after failure, double finalization,
+  and calls after close;
+- missing, duplicate, out-of-order, coordinate-mismatched, and count-mismatched
+  tile writes;
 - one and several tiles per bucket;
 - one and several values per tile;
 - values absent from some tiles;
 - complete-tile round trips;
-- one- and multi-value selected reads;
+- one- and multi-value selected reads, adjacent-range coalescing, and `None` for
+  no match;
 - tiles and value runs crossing chunk and shard boundaries;
+- a final partial shard and a payload larger than the shard buffer;
+- range capacity growth across several `range_chunk_rows` boundaries and exact
+  trimming;
+- a legitimate all-zero chunk remains readable because it was physically
+  stored;
+- deleting a chunk or shard causes strict reader and validator failure rather
+  than fill-value reconstruction;
 - coordinate and `point_id` alignment;
 - physical point-array shapes, writer cursor, terminal tile offset, descriptor
   totals, plan total, root `point_count`, and result `point_count` all reconcile;
@@ -1280,8 +1502,17 @@ Implement and validate one bucket independently of Dask and pyramid writers.
   `range_count`, and result `range_count` all reconcile;
 - partial preallocated point writes and deliberately mismatched count sources
   fail finalization without producing a valid result;
-- every structural corruption class above;
-- unknown descriptor, closed reader, failed write, and cleanup behavior.
+- corrupt schema/codec attributes, dtype or shape metadata, offsets, pointers,
+  range coverage, range values, point ordering, and unexpected logical nodes;
+- the independent validator reconstructs the same valid result without
+  receiving the plan or writer result;
+- unknown descriptor, closed reader, failed write, exact partial-target cleanup,
+  and refusal to overwrite an existing target.
+
+Tests use deliberately tiny chunks, shards, and range blocks so every physical
+boundary is exercised with small payloads. Normal unit tests assert declared
+configuration, logical content, shapes, and invariants; they do not assert exact
+compressed byte counts.
 
 #### Microbenchmark
 
@@ -1294,13 +1525,19 @@ Use synthetic payloads representing:
 
 Record complete and selected cold/warm reads, compressed bytes, chunks touched,
 decoded-row estimates, shard objects, and write time for a small configuration
-matrix.
+matrix. This is an opt-in characterization benchmark, not a numerical unit-test
+gate.
 
 #### Exit criteria
 
 - the primitive roundtrips aligned payloads exactly;
 - selected lookup does not scan the point-level `value_id` array;
-- corruption fails closed;
+- shard-buffered writing and range growth remain bounded by settings rather than
+  bucket size;
+- valid all-zero data roundtrips while missing chunks, shards, and structural
+  corruption fail closed;
+- validation reconstructs a result without trusting in-memory construction
+  objects;
 - a provisional physical configuration is ready for Exact construction.
 
 ### Slice Z3: implement fresh Exact construction directly to Zarr
