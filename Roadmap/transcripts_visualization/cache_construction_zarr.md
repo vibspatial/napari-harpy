@@ -1182,8 +1182,32 @@ points per bucket:
 bucket_count = max(1, ceil(level.point_count_upper_bound / 2_000_000))
 ```
 
-This is a construction policy, not part of the logical tile identity. Z3 may
-change it from Xenium evidence before the cache format is frozen.
+This is a construction policy, not part of the logical tile identity. The Z3
+full-Xenium Exact run retained it for the remaining construction slices: it
+produced 69 nonempty stores averaging 1,979,402 points, with a largest bucket of
+2,547,160 points, a 44.09-second build, 4.17 GiB peak build RSS, and 4,746
+filesystem objects across the complete Exact payload. Those results do not show
+an immediate construction or object-count problem that requires changing the
+policy before Bridge and spatial construction are implemented.
+
+The value is nevertheless inherited from the Parquet-backed design and is
+probably conservative for sharded Zarr. Physical read and decode granularity is
+defined by inner chunks, while shards group those chunks into storage objects;
+increasing the logical bucket size therefore does not make a reader decode a
+complete bucket. For the same Xenium Exact level, a target of 10,000,000 points
+would plan 14 buckets averaging approximately 9.76 million points. This is the
+leading Z9 alternative because a multi-tile viewport or distributed-value query
+could open materially fewer stores and read fewer bucket metadata documents.
+
+The corresponding risk is construction memory: one finalizer materializes and
+stable-sorts one complete shuffled bucket, and up to `dask_worker_count` such
+buckets may be active. A ten-million target makes that per-finalizer unit roughly
+five times larger than the current average. Do not change the target or the
+inner chunk/shard settings during Z4--Z8 based on speculation. Slice Z9 owns one
+explicit decision between the retained two-million policy and the ten-million
+candidate, using viewport buckets-opened/latency evidence together with build
+peak memory. Changing bucket size alone is not a reason to change point or range
+chunk and shard dimensions.
 
 Bucket filenames use a canonical minimum width of three digits and do not
 depend on the complete planned bucket count:
@@ -1577,19 +1601,23 @@ bucket. Unexpected logical Zarr groups or arrays are rejected. The validator
 does not depend on raw chunk filenames or other private Zarr storage details;
 strict reads and codec checksums detect missing or corrupt physical payloads.
 
-The permanent production consumer of `_validate_bucket` is the independent
-staged-generation validator introduced in Slice Z7. It reopens every expected
-bucket, uses the reconstructed `_BucketWriteResult` rather than an in-memory
-writer result, and reconciles those observed descriptors and counts with the
-manifest and the other cache artifacts. `_BucketReader` does not run complete
+Complete `_validate_bucket` scans are used by focused corruption tests and
+explicit exhaustive acceptance or diagnostic validation. Slice Z7 may factor
+its metadata, hierarchy, layout, root-count, and compact-pointer checks into a
+shared structural helper, but its normal publication path must not obtain a
+`_BucketWriteResult` by rereading every point and range payload. It instead
+reconciles independently reopened compact on-disk facts with the manifest and
+other cache artifacts while relying on each writer's controlled construction
+proof for complete payload semantics. `_BucketReader` does not run complete
 bucket validation during interactive reads, and `_BucketWriter.finalize()`
 retains only its immediate writer-side reconciliation responsibilities.
 
 Upper coordinate bounds remain a level-writer responsibility because neither
 `_PointPayload` nor `_BucketPlan` knows the tile size. Exact, Bridge, and spatial
-writers will enforce `x_rel <= tile_width` and `y_rel <= tile_height` before
-calling the bucket writer. Cross-artifact validation repeats those checks once
-the build plan and metadata are available.
+writers enforce `x_rel <= tile_width` and `y_rel <= tile_height` before calling
+the bucket writer. Explicit exhaustive validation may repeat that point-level
+check; normal publication validation does not reread all coordinates solely to
+replay an invariant already enforced during controlled construction.
 
 #### Work
 
@@ -1985,14 +2013,19 @@ The controlled construction proof consists of disjoint canonical point-ID
 ranges at annotation, a row-preserving routing operation, destination-ID checks,
 per-bucket uniqueness, and exact total reconciliation. Z3 does not add a second
 global shuffle solely to sort point IDs. The full-Xenium gate independently
-proves global `0..N-1` coverage from the finalized Zarr arrays, and Slice Z7
-later repeats that guarantee as part of complete staged validation.
+proves global `0..N-1` coverage from the finalized Zarr arrays. Normal Slice Z7
+validation relies on this controlled construction proof and persisted compact
+accounting facts rather than repeating a complete point-payload scan for every
+cache build. Exhaustive acceptance validation retains the independent global-ID
+proof when it is explicitly requested.
 
 `_validate_bucket` is not called automatically by `_BucketWriter.finalize()` or
 by every normal Exact finalizer. Z2 writer-side reconciliation remains the
 immediate construction check. Focused Z3 tests and the full-Xenium Z3 gate reopen
-the completed stores with `_validate_bucket`; Slice Z7 is its permanent
-production consumer.
+the completed stores with `_validate_bucket`. Complete `_validate_bucket` scans
+remain consumers of focused corruption tests and explicit exhaustive
+acceptance/diagnostic validation; normal Slice Z7 publication validation reuses
+or factors out its metadata/layout checks without rereading every point row.
 
 #### Memory contract
 
@@ -2251,34 +2284,76 @@ harpy-zarr-v3-bucket-sparse-value-ranges-v1
 
 #### Goal
 
-Validate a complete generation by reopening it from disk and trusting no
-in-memory writer results.
+Validate the publication-critical structure and accounting of a complete
+generation by reopening it from disk and trusting no in-memory writer result
+for those persisted facts. Do not replay the full source-equivalence acceptance
+gate during normal cache creation.
+
+#### Performance evidence and validation tiers
+
+The completed full-Xenium Z3 gate measured 44.09 seconds for construction and
+166.03 seconds for exhaustive verification of 136,578,750 points. The latter
+reopened every bucket with `_validate_bucket`, read every logical tile again,
+and rescanned every canonical Parquet source row to compare point IDs, values,
+and reconstructed coordinates. It was approximately 3.8 times the construction
+time and was predominantly single-threaded. This is valuable release and format
+evidence, but it is not an acceptable unconditional addition to normal cache
+creation.
+
+Z7 therefore has two deliberately separate validation tiers:
+
+1. **Normal publication validation** is mandatory in the Z8 build flow. It
+   reopens and validates metadata, hierarchy, array layouts, compact pointer and
+   index arrays, artifact schemas, paths, counts, versions, and cross-artifact
+   accounting. It must not read every `location`, point-level `value_id`, and
+   `point_id` row, construct a global point-ID bitmap, or rescan canonical source
+   content.
+2. **Exhaustive acceptance/diagnostic validation** is opt-in. It may run the
+   complete `_validate_bucket` scan, prove global Exact point-ID coverage with a
+   bounded external structure, check cross-level point-ID membership, and
+   compare finalized values and reconstructed coordinates with the canonical
+   source. Use it for format or algorithm changes, release qualification,
+   benchmarks, and investigation of suspected corruption, not every cache
+   build.
+
+The tiers share low-level parsers and structural checks where useful, but they
+have distinct entry points so the exhaustive path cannot accidentally become a
+normal publication cost.
 
 #### Work
 
 Validate, in bounded batches:
 
-- enumerate the bucket stores referenced by the manifest, call
-  `_validate_bucket(...)` for every expected physical bucket, and retain only
-  the bounded reconstructed results needed by the following reconciliation
-  passes;
+- enumerate the bucket stores referenced by the manifest and reopen every
+  expected physical bucket through a metadata/layout validation path that does
+  not decode the complete point payload;
 - metadata, backend version, build plan, and artifact schemas;
 - exact equality between manifest bucket paths and physical stores;
 - Zarr v3 hierarchy, attributes, shapes, dtypes, chunks, shards, and codecs;
 - bucket tile coordinates, offsets, and manifest counts;
-- sparse range ordering, coverage, and point-level value agreement;
+- compact sparse range keys, ordering, counts, and pointer bounds without
+  rereading point-level values during normal validation;
 - equality between range keys/counts and `tile_value_counts.parquet`;
 - Exact per-value totals and `values.parquet`;
-- Exact point-ID completeness;
-- immediate-coarser subset membership;
-- coordinate validity and reconstruction tolerance;
 - level geometry, capacities, and overview budget;
 - absence of unreferenced stores, unexpected point Parquet files,
   construction scratch, and premature `COMPLETED`.
 
+The optional exhaustive entry point additionally owns:
+
+- complete bucket payload validation, including sparse-range agreement with
+  point-level values;
+- Exact point-ID completeness and uniqueness;
+- immediate-coarser point-ID subset membership;
+- point-level coordinate validity and source-coordinate reconstruction
+  tolerance;
+- canonical source-row value and coordinate equivalence when requested.
+
 Validation must not load a complete level or all Exact IDs into one Python
 collection. Use bounded scans, sorted merge checks, or temporary external data
-structures where necessary.
+structures where necessary in the exhaustive tier. Normal publication
+validation must remain bounded by compact metadata/index batches and must not
+perform a complete point-payload or canonical-source scan.
 
 #### Focused tests
 
@@ -2287,14 +2362,22 @@ structures where necessary.
 - corrupted metadata and backend versions;
 - malformed arrays, offsets, ranges, and attributes;
 - manifest/bucket and range/index mismatches;
-- point-ID duplication, loss, and nesting violations;
-- capacity, coordinate, and overview violations;
-- proof that the validator performs no canonical-source content rescan.
+- normal-tier capacity, geometry, and overview violations detectable from
+  compact persisted facts;
+- exhaustive-tier point-ID duplication, loss, nesting, coordinate, and
+  point/range-semantic violations;
+- proof that normal publication validation neither opens canonical point
+  Parquet nor reads complete Zarr point arrays;
+- explicit invocation tests proving exhaustive checks cannot run implicitly
+  through the normal Z8 publication path.
 
 #### Exit criteria
 
-- corruption at every storage or cross-artifact layer fails closed;
-- validation is memory-bounded;
+- corruption at every storage or cross-artifact layer fails closed in the
+  validation tier that owns that semantic check;
+- normal publication validation is memory bounded and avoids complete point and
+  source scans;
+- exhaustive validation remains memory bounded and opt-in;
 - a successful staging result is safe to publish after the final source guard.
 
 ### Slice Z8: compose the guarded builder and publication
@@ -2402,6 +2485,27 @@ Record:
 - positive visible tiles and buckets opened;
 - chunks touched and estimated decoded rows;
 - tile- and chunk-read amplification.
+
+#### Bucket-target decision
+
+Retain `TARGET_POINTS_PER_BUCKET = 2_000_000` through construction and use its
+completed Xenium measurements as the baseline physical configuration. Evaluate
+`10_000_000` as the single leading alternative rather than opening an unbounded
+parameter sweep. The decision must account for both sides of the tradeoff:
+
+- complete and selected viewport latency, especially the number of distinct
+  bucket stores opened for common and rare-distributed values;
+- metadata/open-handle work per request;
+- Exact and multilevel construction peak RSS with the configured worker count;
+- largest materialized shuffled bucket and finalizer duration;
+- total object count and storage bytes;
+- unchanged inner-chunk decoded-row amplification.
+
+Choose ten million only if the reduced store-open and metadata work is material
+for realistic navigation and its larger construction unit remains practically
+memory bounded. Otherwise retain two million. Record the chosen target and
+evidence as a versioned construction policy before the format is proposed for
+Phase 2.
 
 #### Acceptance decision
 
