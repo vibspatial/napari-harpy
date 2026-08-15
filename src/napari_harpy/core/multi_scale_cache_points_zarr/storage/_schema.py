@@ -13,7 +13,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _UINT32_MAX,
     _require_integer_in_range,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 _PAYLOAD_SCHEMA_VERSION: Final = 1
 _POINT_ORDER: Final = ("tile_y", "tile_x", "value_id", "point_id")
@@ -34,10 +33,6 @@ _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
         "range_count",
         "point_order",
         "coordinate_encoding",
-        "point_chunk_rows",
-        "point_shard_rows",
-        "range_chunk_rows",
-        "range_shard_rows",
         "codec_id",
     }
 )
@@ -67,7 +62,7 @@ class _BucketAttributes:
     tile_count: int
     point_count: int
     range_count: int
-    settings: _ZarrWriteSettings
+    codec_id: str
 
 
 def _compressors(codec_id: str) -> tuple[ZstdCodec]:
@@ -120,19 +115,15 @@ def _parse_root_attributes(
     if not tile_count <= range_count <= point_count:
         raise ValueError("Zarr bucket tile, range, and point counts are inconsistent.")
 
-    settings = _ZarrWriteSettings(
-        point_chunk_rows=attributes["point_chunk_rows"],
-        point_shard_rows=attributes["point_shard_rows"],
-        range_chunk_rows=attributes["range_chunk_rows"],
-        range_shard_rows=attributes["range_shard_rows"],
-        codec_id=attributes["codec_id"],
-    )
-    _compressors(settings.codec_id)
+    codec_id = attributes["codec_id"]
+    if not isinstance(codec_id, str) or codec_id == "":
+        raise ValueError("Zarr bucket codec ID must be a nonempty string.")
+    _compressors(codec_id)
     return _BucketAttributes(
         level=level,
         bucket_id=bucket_id,
         tile_count=tile_count,
         point_count=point_count,
         range_count=range_count,
-        settings=settings,
+        codec_id=codec_id,
     )
