@@ -122,7 +122,37 @@ class _BucketReader:
         descriptor: _TileDescriptor,
         selected_value_ids: npt.NDArray[np.uint32],
     ) -> _PointPayload | None:
-        """Read exact selected value runs while decoding each touched point chunk once."""
+        """Read exact selected value runs while decoding touched chunks once.
+
+        Sparse range records identify the exact bucket-global point rows for the
+        requested values, but Zarr decompresses data at inner-chunk granularity.
+        Reading every exact range separately could therefore decode the same
+        chunk repeatedly. This method performs the following conversion::
+
+            selected sparse ranges
+                -> exact point-row intervals
+                -> touched inner-chunk IDs
+                -> deduplicated, consecutive chunk blocks
+                -> one read per block and aligned point array
+                -> exact selected rows extracted from those blocks
+
+        Chunk blocks may include unselected or neighboring-tile rows when a
+        physical chunk crosses a logical boundary; only the exact sparse-range
+        intervals are included in the returned payload.
+
+        Parameters
+        ----------
+        descriptor
+            Identity and expected point count of the logical tile.
+        selected_value_ids
+            Strictly increasing unique value IDs to retrieve.
+
+        Returns
+        -------
+        _PointPayload or None
+            Selected aligned point rows, or ``None`` when the tile contains no
+            requested value.
+        """
         self._require_selected_value_ids(selected_value_ids)
         tile_start, tile_stop = self._tile_interval(descriptor)
         tile_index = descriptor.bucket_tile_index
@@ -154,6 +184,10 @@ class _BucketReader:
             self._array("ranges/row_count")[range_start:range_stop],
             dtype=np.uint64,
         )[selected_positions]
+        # Each selected sparse range becomes a half-open, bucket-global row
+        # interval into the aligned ``location``, point-level ``value_id``, and
+        # ``point_id`` arrays. These are neither range-array indexes nor
+        # tile-local offsets.
         intervals = tuple(
             (int(start), int(start + count))
             for start, count in zip(row_starts, row_counts, strict=True)
@@ -164,7 +198,10 @@ class _BucketReader:
         attributes = self._attributes_or_raise()
         blocks = _chunk_blocks_for_intervals(
             intervals,
-            chunk_rows=attributes.settings.point_chunk_rows,
+            # ``location``, ``point_id``, and point-level ``value_id`` share
+            # identical row chunk boundaries. Use the one-dimensional
+            # ``value_id`` metadata as the canonical source for that row size.
+            chunk_rows=self._array("value_id").chunks[0],
             point_count=attributes.point_count,
         )
         x_parts: list[np.ndarray] = []
@@ -193,6 +230,22 @@ class _BucketReader:
         )
 
     def _tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
+        """Resolve and verify one tile's bucket-global point-row interval.
+
+        The descriptor's bucket identity, local tile index, coordinates, and
+        point count must agree with the opened bucket and its ``tile_offset``
+        array before the half-open ``(start, stop)`` interval is returned.
+
+        Parameters
+        ----------
+        descriptor
+            Compact identity and expected point count of the logical tile.
+
+        Returns
+        -------
+        start, stop
+            Half-open row bounds into the aligned bucket-wide point arrays.
+        """
         self._require_open()
         if not isinstance(descriptor, _TileDescriptor):
             raise ValueError("`descriptor` must be a _TileDescriptor.")
@@ -268,7 +321,13 @@ def _chunk_blocks_for_intervals(
     chunk_rows: int,
     point_count: int,
 ) -> tuple[tuple[int, int], ...]:
-    """Return maximal consecutive inner-chunk blocks touched by row intervals."""
+    """Return maximal consecutive inner-chunk blocks touched by row intervals.
+
+    The input intervals are half-open bucket-global point-row bounds. Mapping
+    them through a set deduplicates chunks touched by several value runs; merging
+    consecutive IDs reduces Zarr slice requests while preserving gaps between
+    untouched chunks. The final block is clipped to ``point_count``.
+    """
     chunk_ids: set[int] = set()
     for start, stop in intervals:
         chunk_ids.update(range(start // chunk_rows, (stop - 1) // chunk_rows + 1))
