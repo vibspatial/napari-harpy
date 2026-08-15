@@ -497,6 +497,10 @@ shard files. Sharding is an internal Zarr v3 physical packing choice: chunks
 remain the independent compression/read units, while each shard stores several
 chunks in one filesystem object and is the efficient write unit.
 
+This two-scale layout is deliberate: shards keep the number of physical storage
+objects small, inner chunks preserve fine-grained selected reads, and
+shard-sized staging buffers provide aligned, memory-bounded writes.
+
 Point arrays use aligned chunks and shards along the point dimension:
 
 ```text
