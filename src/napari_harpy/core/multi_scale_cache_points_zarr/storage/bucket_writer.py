@@ -484,7 +484,6 @@ class _BucketWriter:
         )
 
     def _write_root_attributes(self, result: _BucketWriteResult) -> None:
-        settings = self._plan.settings
         self._require_root().attrs.update(
             {
                 "payload_schema_version": _PAYLOAD_SCHEMA_VERSION,
@@ -495,11 +494,7 @@ class _BucketWriter:
                 "range_count": result.range_count,
                 "point_order": list(_POINT_ORDER),
                 "coordinate_encoding": _COORDINATE_ENCODING,
-                "point_chunk_rows": settings.point_chunk_rows,
-                "point_shard_rows": settings.point_shard_rows,
-                "range_chunk_rows": settings.range_chunk_rows,
-                "range_shard_rows": settings.range_shard_rows,
-                "codec_id": settings.codec_id,
+                "codec_id": self._plan.settings.codec_id,
             }
         )
 
