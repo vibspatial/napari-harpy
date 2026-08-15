@@ -19,6 +19,7 @@ def _settings(**overrides: object) -> _ZarrWriteSettings:
         "point_chunk_rows": 4_096,
         "point_shard_rows": 131_072,
         "range_chunk_rows": 8_192,
+        "range_shard_rows": 131_072,
         "codec_id": "zstd-v1",
     }
     values.update(overrides)
@@ -82,12 +83,15 @@ def test_tile_descriptor_enforces_serialized_ranges(field: str, value: object) -
 
 def test_write_settings_require_positive_aligned_rows_and_codec() -> None:
     assert _settings().point_shard_rows == 32 * _settings().point_chunk_rows
+    assert _settings().range_shard_rows == 16 * _settings().range_chunk_rows
     with pytest.raises(ValueError, match="point_chunk_rows"):
         _settings(point_chunk_rows=0)
     with pytest.raises(ValueError, match="multiple"):
         _settings(point_shard_rows=5_000)
     with pytest.raises(ValueError, match="range_chunk_rows"):
         _settings(range_chunk_rows=True)
+    with pytest.raises(ValueError, match="multiple"):
+        _settings(range_shard_rows=10_000)
     with pytest.raises(ValueError, match="codec_id"):
         _settings(codec_id="")
 
