@@ -373,7 +373,7 @@ Point rows are ordered by:
 Sorting by `value_id` happens only after sampling membership is fixed. It changes
 physical order but never changes representative membership.
 
-The root attributes contain only versioned physical facts:
+The root attributes contain the compact application-level bucket contract:
 
 ```text
 payload_schema_version = 1
@@ -384,16 +384,20 @@ point_count            = <JSON integer>
 range_count            = <JSON integer>
 point_order            = ["tile_y", "tile_x", "value_id", "point_id"]
 coordinate_encoding    = "tile-relative-xy-float32-v1"
-point_chunk_rows       = <JSON integer>
-point_shard_rows       = <JSON integer>
-range_chunk_rows       = <JSON integer>
-range_shard_rows       = <JSON integer>
 codec_id               = "zstd-v1"
 ```
 
 These exact keys and value encodings are part of payload schema version 1.
 NumPy scalar objects are not written as attributes. Semantic cache metadata
 remains in `metadata.json`.
+
+Chunk and shard shapes are deliberately not duplicated in the root attributes.
+Each array's Zarr v3 metadata is the authoritative source for its physical
+layout. Readers obtain the point read granularity from the point-array metadata;
+independent validation derives the point and range row layouts from their
+canonical `value_id` arrays and requires every parallel array to match. The
+versioned `codec_id` remains an application-level compatibility profile whose
+declared pipeline is checked against the physical array codec metadata.
 
 ### Tile identity and offsets
 
@@ -517,6 +521,10 @@ ranges/row_start shards = (range_shard_rows,)
 ranges/row_count shards = (range_shard_rows,)
 ```
 
+These sizes live canonically in each array's Zarr metadata. The names above
+describe `_ZarrWriteSettings` construction inputs and the cross-array alignment
+contract; they are not repeated as root attributes.
+
 `point_shard_rows` is an integer multiple of `point_chunk_rows`, and
 `range_shard_rows` is an integer multiple of `range_chunk_rows`. Fixed chunk and
 shard boundaries may cross tile and value boundaries. The small `tile_x`,
@@ -549,7 +557,10 @@ Range records are buffered and flushed in the same way using
 `range_shard_rows`. A selected read still resolves and decodes only the inner
 chunks touched by its sparse row ranges; it does not decode the complete
 containing shard. The reader deduplicates touched chunk IDs so two selected
-ranges in the same inner chunk do not request that chunk twice.
+ranges in the same inner chunk do not request that chunk twice. Intervals whose
+touched chunks overlap or are consecutive share one read using the minimal row
+envelope from the first exact selected row to the last; read bounds are not
+expanded to the outer chunk edges.
 
 All arrays are created with empty-chunk storage enabled. This is necessary
 because a completely zero-valued chunk can be legitimate cache data. Readers
@@ -1473,9 +1484,11 @@ chunks plus the checksummed end-of-shard index. These choices are explicit
 rather than inherited from mutable library defaults.
 
 Z2 maps the versioned settings `codec_id` through the registry above rather
-than accepting arbitrary codec objects or parameters. Both the reader and
-validator verify the public array chunk, shard, dtype, and codec properties
-against the declared settings.
+than accepting arbitrary codec objects or parameters. The reader uses the
+canonical point-array chunk metadata for selected reads. The validator derives
+point and range chunk/shard row sizes from their canonical `value_id` arrays,
+requires their parallel arrays to use the same layouts, and verifies dtype and
+codec properties against the format contract.
 
 Every array is created with `write_empty_chunks=True`. All reopened arrays used
 by `_BucketReader` and the independent validator set
@@ -1507,8 +1520,8 @@ tile_indptr[i:i+2]
   -> this tile's sorted sparse range records
   -> binary search selected value IDs
   -> map selected row intervals to inner point-chunk IDs
-  -> deduplicate and group touched chunk IDs
-  -> read every touched inner chunk once
+  -> group overlapping or consecutive touched chunks
+  -> read each group's minimal exact-row envelope
   -> extract the exact selected intervals
 ```
 
@@ -1549,6 +1562,14 @@ Validation proceeds by tile, range, or chunk and does not materialize a complete
 bucket. Unexpected logical Zarr groups or arrays are rejected. The validator
 does not depend on raw chunk filenames or other private Zarr storage details;
 strict reads and codec checksums detect missing or corrupt physical payloads.
+
+The permanent production consumer of `_validate_bucket` is the independent
+staged-generation validator introduced in Slice Z7. It reopens every expected
+bucket, uses the reconstructed `_BucketWriteResult` rather than an in-memory
+writer result, and reconciles those observed descriptors and counts with the
+manifest and the other cache artifacts. `_BucketReader` does not run complete
+bucket validation during interactive reads, and `_BucketWriter.finalize()`
+retains only its immediate writer-side reconciliation responsibilities.
 
 Upper coordinate bounds remain a level-writer responsibility because neither
 `_PointPayload` nor `_BucketPlan` knows the tile size. Exact, Bridge, and spatial
@@ -1851,6 +1872,10 @@ in-memory writer results.
 
 Validate, in bounded batches:
 
+- enumerate the bucket stores referenced by the manifest, call
+  `_validate_bucket(...)` for every expected physical bucket, and retain only
+  the bounded reconstructed results needed by the following reconciliation
+  passes;
 - metadata, backend version, build plan, and artifact schemas;
 - exact equality between manifest bucket paths and physical stores;
 - Zarr v3 hierarchy, attributes, shapes, dtypes, chunks, shards, and codecs;
