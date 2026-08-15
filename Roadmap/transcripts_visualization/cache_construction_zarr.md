@@ -1771,13 +1771,45 @@ complete source file. `ValidatedPointsSource` does not bound physical file size;
 row-group alignment prevents one large file from becoming an unnecessarily
 large construction partition while preserving physical source order.
 
+Do not obtain these partitions by calling `dd.read_parquet` over the complete
+dataset and inferring physical row-group identity from Dask partition order.
+Instead, construct one small immutable read specification per validated row
+group in canonical file and row-group order:
+
+```text
+_SourceRowGroupReadSpec
+  relative_path
+  row_group_index
+  expected_row_count
+  point_id_start
+```
+
+`point_id_start` is calculated by the coordinator from validated metadata before
+the graph is created. Build the annotated Dask DataFrame conceptually as:
+
+```text
+dd.from_map(
+    _read_and_annotate_row_group,
+    row_group_read_specs,
+    meta=_annotated_meta(),
+)
+```
+
+Each `_read_and_annotate_row_group` task resolves the canonical source path,
+opens `pyarrow.parquet.ParquetFile`, calls `read_row_group(row_group_index, ...)`
+for only the selected x, y, and value columns, and closes that handle within the
+task. It verifies the decoded row count before annotation and assigns IDs from
+the explicit `point_id_start`. The physical row-group index therefore remains a
+direct input to the read rather than being inferred through
+`partition_info["number"]` or another Dask ordering detail.
+
 For row group `r` in one validated source file, define:
 
 ```text
-row_group_offset = sum(row_count of row groups before r in this file)
+row_group_offset_within_file = sum(row_count of row groups before r in this file)
 
 point_id = source_file.row_offset
-           + row_group_offset
+           + row_group_offset_within_file
            + row_index_within_row_group
 ```
 
@@ -1786,6 +1818,14 @@ allowing row groups to execute and arrive in any order. Each task reads only the
 selected x, y, and value columns and requires the decoded row count to equal the
 validated row-group count. Empty physical row groups may produce empty input
 partitions but never output tiles or stores.
+
+Opening one Parquet handle per row-group task is an accepted correctness and
+memory tradeoff for Z3 and is measured in the full-Xenium gate. If evidence later
+shows that task or footer-open overhead is material, a read specification may be
+extended to cover a bounded consecutive group of explicitly identified row
+groups with precomputed offsets. It must not regress to an unbounded complete
+source-file partition or make point identity depend on implicit Dask partition
+ordering.
 
 The annotated Dask metadata contract is exact:
 
