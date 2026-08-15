@@ -20,7 +20,6 @@ from napari_harpy.core.multi_scale_cache_points.value_normalization import (
     _normalized_row_values,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
-    _LevelBuildPlan,
     _LevelKind,
     _PointsCacheBuildPlan,
 )
@@ -170,13 +169,31 @@ def _write_exact_level(
     _LevelWriteResult
         Nonempty finalized Exact buckets ordered by numeric bucket ID.
     """
-    exact, staging_root, temporary_directory_root = _require_exact_inputs(
-        validated,
-        plan,
-        staging_root=staging_root,
-        temporary_directory_root=temporary_directory_root,
-        config=config,
-    )
+    exact = plan.levels[0]
+    if validated.value_normalization_method != VALUE_NORMALIZATION_METHOD:
+        raise ValueError("The validated source uses an unsupported value-normalization method.")
+    if validated.point_id_policy != POINT_ID_POLICY:
+        raise ValueError("The validated source uses an unsupported point-ID policy.")
+    if exact.level != 0 or exact.kind is not _LevelKind.EXACT or exact.max_points_per_tile is not None:
+        raise ValueError("The first build-plan level must be uncapped Exact level zero.")
+    if exact.point_count_upper_bound != validated.row_count:
+        raise ValueError("Exact's planned point count must equal the validated source count.")
+
+    if not staging_root.is_dir():
+        raise ValueError("`staging_root` must be an existing pathlib.Path directory.")
+    if not temporary_directory_root.is_dir():
+        raise ValueError("`temporary_directory_root` must be an existing pathlib.Path directory.")
+    staging_resolved = staging_root.resolve()
+    temporary_resolved = temporary_directory_root.resolve()
+    if (
+        staging_resolved == temporary_resolved
+        or staging_resolved in temporary_resolved.parents
+        or temporary_resolved in staging_resolved.parents
+    ):
+        raise ValueError("Staging output and Dask temporary roots must be separate directory trees.")
+    if (staging_root / exact.relative_directory).exists():
+        raise FileExistsError(f"Exact-level output path already exists: {exact.relative_directory}.")
+
     read_specs = _source_row_group_read_specs(validated)
     if sum(spec.expected_row_count for spec in read_specs) != validated.row_count:
         raise ValueError("Row-group read specifications do not reconcile to the validated source count.")
@@ -245,54 +262,6 @@ def _write_exact_level(
         exact_grid_height=exact.grid_height,
         expected_point_count=exact.point_count_upper_bound,
     )
-
-
-def _require_exact_inputs(
-    validated: ValidatedPointsSource,
-    plan: _PointsCacheBuildPlan,
-    *,
-    staging_root: Path,
-    temporary_directory_root: Path,
-    config: _ExactWriterConfig,
-) -> tuple[_LevelBuildPlan, Path, Path]:
-    if not isinstance(validated, ValidatedPointsSource):
-        raise ValueError("`validated` must be ValidatedPointsSource.")
-    if not isinstance(plan, _PointsCacheBuildPlan):
-        raise ValueError("`plan` must be _PointsCacheBuildPlan.")
-    if not isinstance(config, _ExactWriterConfig):
-        raise ValueError("`config` must be _ExactWriterConfig.")
-    if validated.value_normalization_method != VALUE_NORMALIZATION_METHOD:
-        raise ValueError("The validated source uses an unsupported value-normalization method.")
-    if validated.point_id_policy != POINT_ID_POLICY:
-        raise ValueError("The validated source uses an unsupported point-ID policy.")
-
-    exact = plan.levels[0]
-    if exact.level != 0 or exact.kind is not _LevelKind.EXACT or exact.max_points_per_tile is not None:
-        raise ValueError("The first build-plan level must be uncapped Exact level zero.")
-    if exact.point_count_upper_bound != validated.row_count:
-        raise ValueError("Exact's planned point count must equal the validated source count.")
-    staging_root = _require_existing_directory(staging_root, "staging_root")
-    temporary_directory_root = _require_existing_directory(
-        temporary_directory_root,
-        "temporary_directory_root",
-    )
-    staging_resolved = staging_root.resolve()
-    temporary_resolved = temporary_directory_root.resolve()
-    if (
-        staging_resolved == temporary_resolved
-        or staging_resolved in temporary_resolved.parents
-        or temporary_resolved in staging_resolved.parents
-    ):
-        raise ValueError("Staging output and Dask temporary roots must be separate directory trees.")
-    if (staging_root / exact.relative_directory).exists():
-        raise FileExistsError(f"Exact-level output path already exists: {exact.relative_directory}.")
-    return exact, staging_root, temporary_directory_root
-
-
-def _require_existing_directory(value: object, name: str) -> Path:
-    if not isinstance(value, Path) or not value.is_dir():
-        raise ValueError(f"`{name}` must be an existing pathlib.Path directory.")
-    return value
 
 
 def _source_row_group_read_specs(validated: ValidatedPointsSource) -> tuple[_SourceRowGroupReadSpec, ...]:
