@@ -132,13 +132,13 @@ class _BucketReader:
             selected sparse ranges
                 -> exact point-row intervals
                 -> touched inner-chunk IDs
-                -> deduplicated, consecutive chunk blocks
-                -> one read per block and aligned point array
+                -> groups of overlapping or consecutive touched chunks
+                -> one minimal row-envelope read per group and aligned array
                 -> exact selected rows extracted from those blocks
 
-        Chunk blocks may include unselected or neighboring-tile rows when a
-        physical chunk crosses a logical boundary; only the exact sparse-range
-        intervals are included in the returned payload.
+        A coalesced read may include unselected rows between selected intervals,
+        but its outer bounds remain the first and last exact selected rows. Only
+        the exact sparse-range intervals are included in the returned payload.
 
         Parameters
         ----------
@@ -195,19 +195,19 @@ class _BucketReader:
         if any(start < tile_start or stop > tile_stop or start >= stop for start, stop in intervals):
             raise ValueError("Selected sparse ranges are outside the logical tile interval.")
 
-        attributes = self._attributes_or_raise()
-        blocks = _chunk_blocks_for_intervals(
+        blocks = _coalesced_read_blocks_for_intervals(
             intervals,
             # ``location``, ``point_id``, and point-level ``value_id`` share
             # identical row chunk boundaries. Use the one-dimensional
             # ``value_id`` metadata as the canonical source for that row size.
             chunk_rows=self._array("value_id").chunks[0],
-            point_count=attributes.point_count,
         )
         x_parts: list[np.ndarray] = []
         y_parts: list[np.ndarray] = []
         value_parts: list[np.ndarray] = []
         point_parts: list[np.ndarray] = []
+        # Read each coalesced envelope once to avoid repeated Zarr chunk
+        # decoding, then append only its exact selected intervals.
         for block_start, block_stop in blocks:
             location = np.asarray(self._array("location")[block_start:block_stop, :], dtype=np.float32)
             values = np.asarray(self._array("value_id")[block_start:block_stop], dtype=np.uint32)
@@ -281,6 +281,11 @@ class _BucketReader:
             raise ValueError("`selected_value_ids` must be strictly increasing and unique.")
 
     def _strict_array(self, name: str) -> zarr.Array:
+        """Return a required array configured to reject missing chunks.
+
+        A missing physical chunk indicates an incomplete or corrupt cache and
+        must fail rather than silently yielding the array's fill value.
+        """
         root = self._root
         if root is None:
             raise RuntimeError("Bucket Zarr group is not open.")
@@ -315,31 +320,43 @@ class _BucketReader:
         self._open = False
 
 
-def _chunk_blocks_for_intervals(
+def _coalesced_read_blocks_for_intervals(
     intervals: tuple[tuple[int, int], ...],
     *,
     chunk_rows: int,
-    point_count: int,
 ) -> tuple[tuple[int, int], ...]:
-    """Return maximal consecutive inner-chunk blocks touched by row intervals.
+    """Return minimal row envelopes for connected touched-chunk runs.
 
-    The input intervals are half-open bucket-global point-row bounds. Mapping
-    them through a set deduplicates chunks touched by several value runs; merging
-    consecutive IDs reduces Zarr slice requests while preserving gaps between
-    untouched chunks. The final block is clipped to ``point_count``.
+    The input intervals are half-open bucket-global point-row bounds. Overlapping
+    touched-chunk spans share one read to prevent repeated decoding; consecutive
+    spans also share one read to reduce Zarr slice requests, while gaps between
+    untouched chunks remain separate. Each returned block retains the first and
+    last exact interval bounds rather than expanding them to the outer chunk
+    edges. The caller has already verified that the nonempty intervals remain
+    within one logical tile.
+
+    Examples
+    --------
+    With four rows per chunk, ``(1, 2)`` and ``(3, 4)`` both touch chunk 0,
+    so they become one exact read envelope, ``(1, 4)``. The interval
+    ``(8, 9)`` touches chunk 2 and remains separate because chunk 1 is not
+    touched. The resulting blocks are therefore ``((1, 4), (8, 9))``.
     """
-    chunk_ids: set[int] = set()
-    for start, stop in intervals:
-        chunk_ids.update(range(start // chunk_rows, (stop - 1) // chunk_rows + 1))
-    ordered = sorted(chunk_ids)
+    ordered = sorted(intervals, key=lambda interval: interval[0])
+    block_start, block_stop = ordered[0]
+    last_chunk = (block_stop - 1) // chunk_rows
     blocks: list[tuple[int, int]] = []
-    first = previous = ordered[0]
-    for chunk_id in ordered[1:]:
-        if chunk_id != previous + 1:
-            blocks.append((first * chunk_rows, min((previous + 1) * chunk_rows, point_count)))
-            first = chunk_id
-        previous = chunk_id
-    blocks.append((first * chunk_rows, min((previous + 1) * chunk_rows, point_count)))
+    for start, stop in ordered[1:]:
+        first_chunk = start // chunk_rows
+        interval_last_chunk = (stop - 1) // chunk_rows
+        if first_chunk > last_chunk + 1:
+            blocks.append((block_start, block_stop))
+            block_start, block_stop = start, stop
+            last_chunk = interval_last_chunk
+            continue
+        block_stop = max(block_stop, stop)
+        last_chunk = max(last_chunk, interval_last_chunk)
+    blocks.append((block_start, block_stop))
     return tuple(blocks)
 
 
