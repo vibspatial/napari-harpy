@@ -225,13 +225,20 @@ multi_scale_cache_points.models
 multi_scale_cache_points.validation
   validate_parquet_points_source
 
+multi_scale_cache_points.value_normalization
+  VALUE_NORMALIZATION_METHOD
+  _normalized_row_values
+
 multi_scale_cache_points.signature
   source-signature facts and fresh metadata-only checks, where suitable
 ```
 
-If importing a private source helper would pull in cache-writer assumptions, the
-new package duplicates the small helper instead. The reuse boundary must remain
-obvious from imports.
+Value normalization is canonical source semantics rather than derived-cache
+writer behavior. Reusing its version identifier and row-aligned normalizer keeps
+validation and Exact annotation on the same definition. If importing another
+private source helper would pull in cache-writer assumptions, the new package
+duplicates the small helper instead. The reuse boundary must remain obvious from
+imports.
 
 ### Implemented fresh in the Zarr package
 
@@ -683,19 +690,21 @@ At no point does the derived point payload pass through Parquet.
 Implement a fresh Dask construction graph:
 
 ```text
-validated source files
-  -> one input partition per validated physical file
+validated source row groups
+  -> one input partition per validated physical row group
   -> annotate tile_x, tile_y, x_rel, y_rel, value_id, point_id, bucket_id
   -> disk shuffle by bucket_id
   -> one complete materialized partition per nonempty bucket
-  -> stable sort by (tile_y, tile_x, value_id, point_id)
+  -> stable sort/group by (tile_y, tile_x)
+  -> bucket writer orders each tile by (value_id, point_id)
   -> write one independent Zarr store
 ```
 
-Each finalizer owns exactly one store. It derives tile identities, offsets, and
-sparse ranges from the sorted bucket and returns compact descriptors. It writes
-`location` in bounded batches and does not allocate a second full-bucket
-`(N, 2)` array.
+Each finalizer owns exactly one store. It derives ordered tile identities and
+counts from the sorted bucket and uses them to construct `_BucketPlan`.
+`_BucketWriter` then owns tile-internal ordering, offsets, sparse ranges, and
+physical writing. It writes `location` in bounded batches and does not allocate
+a second full-bucket `(N, 2)` array.
 
 ### Bridge
 
@@ -876,7 +885,8 @@ Make the new-package strategy authoritative before implementation.
 
 - declare `multi_scale_cache_points_zarr` the sole implementation location for
   this Zarr-backed candidate;
-- reuse only canonical source models, validation, and source-signature facts;
+- reuse only canonical source models, validation, value-normalization, and
+  source-signature facts;
 - allow duplication of all derived-cache logic;
 - forbid imports from the existing writer package;
 - forbid transitional or mixed point-payload backends;
@@ -1684,58 +1694,390 @@ gate.
 Build a complete Exact level from `ValidatedPointsSource` without using any
 existing writer code or intermediate point Parquet.
 
-#### Work
+Z3 owns source annotation, redistribution, Exact bucket planning, and
+coordination of the Z2 storage primitive. It does not implement Bridge or
+spatial sampling, cache indexes, metadata, completion markers, publication, or
+the final cross-artifact validator.
 
-- implement one Dask input partition per validated source file;
-- assign deterministic source-row `point_id` values from validated file
-  offsets;
-- map normalized labels to canonical `value_id` values;
-- calculate tile coordinates, tile-local coordinates, and bucket IDs;
-- disk-shuffle by bucket ID;
-- stable-sort each materialized bucket by
-  `(tile_y, tile_x, value_id, point_id)`;
-- derive a `BucketPlan` and write one independent Zarr store per nonempty
-  bucket;
-- return one descriptor per nonempty logical tile;
-- reconcile Exact point count, unique IDs, bounds, tile totals, and per-value
-  totals;
-- clean Dask scratch independently of staging output;
-- make any finalizer failure invalidate the staging generation.
+#### Files and dependency boundary
+
+Create:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points_zarr/
+  writer/
+    __init__.py
+    exact.py
+
+tests/multi_scale_cache_points_zarr/
+  test_exact_writer.py
+```
+
+All Z3 symbols remain private. `exact.py` may import the existing canonical
+source models, `VALUE_NORMALIZATION_METHOD`, `_normalized_row_values`, and the
+point-ID policy identifier. It must not import any module from
+`multi_scale_cache_points.writer`. Source annotation, the Dask graph, bucket
+finalizers, and level reconciliation are implemented fresh in the Zarr package.
+
+#### Exact writer API and execution settings
+
+Define an Exact-specific execution configuration:
+
+```text
+_ExactWriterConfig
+  zarr_settings: _ZarrWriteSettings
+  dask_worker_count: int
+```
+
+`dask_worker_count` is a positive local threaded-scheduler worker count.
+`bucket_count` is deliberately absent: the writer derives it from Exact's
+`_LevelBuildPlan` through `_bucket_count_for_level`, so it cannot disagree with
+the versioned routing policy. Chunk, shard, and codec choices remain explicit in
+the supplied `_ZarrWriteSettings` rather than becoming Exact-writer constants.
+
+The construction entry point is:
+
+```text
+_write_exact_level(
+    validated,
+    plan,
+    *,
+    staging_root,
+    temporary_directory_root,
+    config,
+) -> _LevelWriteResult
+```
+
+Before creating a Dask graph it requires:
+
+- `validated` is a `ValidatedPointsSource` using the supported normalization and
+  point-ID policies;
+- `plan` is a `_PointsCacheBuildPlan` whose first level is uncapped Exact level
+  zero;
+- `staging_root` is an existing isolated generation root;
+- `levels/level_0` does not already exist; the Exact coordinator owns creation
+  of this directory;
+- `temporary_directory_root` is an existing caller-owned scratch root and is
+  distinct from staged cache output;
+- `config` contains valid Zarr settings and a positive worker count.
+
+The function returns the existing storage-neutral `_LevelWriteResult` containing
+only nonempty finalized bucket results ordered by numeric `bucket_id`.
+
+#### Row-group-aligned source partitions and point IDs
+
+Create one input partition per validated physical Parquet row group, not one per
+complete source file. `ValidatedPointsSource` does not bound physical file size;
+row-group alignment prevents one large file from becoming an unnecessarily
+large construction partition while preserving physical source order.
+
+For row group `r` in one validated source file, define:
+
+```text
+row_group_offset = sum(row_count of row groups before r in this file)
+
+point_id = source_file.row_offset
+           + row_group_offset
+           + row_index_within_row_group
+```
+
+This exactly implements the canonical file-row-offset point-ID policy while
+allowing row groups to execute and arrive in any order. Each task reads only the
+selected x, y, and value columns and requires the decoded row count to equal the
+validated row-group count. Empty physical row groups may produce empty input
+partitions but never output tiles or stores.
+
+The annotated Dask metadata contract is exact:
+
+```text
+tile_x     uint32
+tile_y     uint32
+x_rel      float32
+y_rel      float32
+value_id   uint32
+point_id   uint64
+bucket_id  uint64
+```
+
+Unexpected columns, nulls, incompatible dtypes, nonfinite coordinates, decoded
+row-count mismatches, arithmetic overflow, or IDs outside
+`[0, validated.row_count)` fail annotation.
+
+#### Canonical value-ID mapping
+
+Materialize the validated vocabulary once in canonical `value_id` order from
+`ValidatedPointsSource.value_table`. Every row-group task applies the canonical
+`_normalized_row_values` helper and maps the normalized row-aligned strings to
+positions in that vocabulary. Those positions are the serialized `uint32`
+`value_id` values.
+
+The writer verifies `validated.value_normalization_method` before graph
+construction. A null or empty normalized label, a label absent from the
+validated vocabulary, or a mapping outside the `uint32` value space fails
+rather than being silently recoded.
+
+#### Exact coordinate annotation
+
+Calculate tile identity in float64 before encoding tile-relative coordinates:
+
+```text
+tile_x = floor((x - plan.x_origin) / exact.tile_size)
+tile_y = floor((y - plan.y_origin) / exact.tile_size)
+
+x_rel = float32(x - (plan.x_origin + tile_x * exact.tile_size))
+y_rel = float32(y - (plan.y_origin + tile_y * exact.tile_size))
+```
+
+Signed temporary tile indexes must be nonnegative and strictly below Exact's
+planned grid width and height before conversion to `uint32`. Relative
+coordinates must remain finite and nonnegative. Because casting a coordinate
+immediately below a boundary to float32 may round it to the tile size, the
+accepted stored upper bound is inclusive:
+
+```text
+x_rel <= exact.tile_size
+y_rel <= exact.tile_size
+```
+
+Do not clamp or move coordinates to make them pass. Reconstructing an intrinsic
+coordinate from origin, tile index, and stored relative coordinate must agree
+with the source coordinate within an absolute tolerance of
+`spacing(float32(exact.tile_size))` and zero relative tolerance.
+
+Map the exact `uint32` tile arrays through `_tile_bucket_ids`. A logical tile
+therefore has one deterministic bucket regardless of which source row group
+provided its points.
+
+#### Disk shuffle and concurrency
+
+Build a fresh Dask DataFrame from the annotated row-group partitions and use a
+local disk shuffle with explicit integer divisions for all bucket IDs:
+
+```text
+annotated row-group partitions
+  -> set_index(bucket_id, explicit divisions, disk shuffle, keep bucket_id)
+  -> exactly one destination partition for each planned bucket ID
+  -> one side-effecting delayed finalizer per destination
+```
+
+Every nonempty destination contains all rows for every logical tile assigned to
+that bucket. A finalizer verifies that every retained `bucket_id` equals its
+destination ID. Empty destinations return an empty private outcome and create no
+`_BucketPlan`, descriptor, directory, or Zarr store.
+
+Run finalizers with the local threaded scheduler and the configured worker
+count. Every finalizer exclusively owns one canonical bucket path; concurrent
+tasks never write the same store or shard. The worker count is therefore also a
+bound on concurrently materialized bucket partitions and active shard buffers.
+
+Create one uniquely named temporary child directory beneath
+`temporary_directory_root` and install it as Dask's temporary directory only for
+this computation. It contains no cache artifact and is removed when computation
+unwinds after success or an ordinary failure. The caller-owned temporary root
+remains.
+
+#### Sorting and bucket-plan derivation
+
+After resetting the shuffled bucket index, a nonempty finalizer stable-sorts the
+materialized bucket only by:
+
+```text
+(tile_y, tile_x)
+```
+
+This makes every logical tile contiguous and orders tiles exactly as required by
+`_BucketPlan`. Derive one `_PlannedTile(tile_x, tile_y, n_points)` from each
+complete nonempty run and construct:
+
+```text
+_BucketPlan(
+    level=0,
+    bucket_id=destination_bucket_id,
+    tiles=ordered_planned_tiles,
+    settings=config.zarr_settings,
+)
+```
+
+Do not globally sort the bucket by `(value_id, point_id)`. For each tile, create
+one C-contiguous `_PointPayload` and pass it to `_BucketWriter.write_tile` in
+plan order. The common storage primitive remains the single owner of the final
+tile-internal `(value_id, point_id)` ordering and corresponding sparse-range
+construction. This avoids performing the same value-major sort both in Z3 and
+again in Z2.
+
+Before writing a tile, Z3 enforces the level-aware relative-coordinate upper
+bounds that `_PointPayload` and `_BucketPlan` cannot know. `_BucketWriter`
+continues to enforce payload alignment, nonnegative coordinates, expected tile
+identity and count, physical ordering, offsets, ranges, and final count
+reconciliation.
+
+#### Finalizer outcome and level reconciliation
+
+Use a private Exact-finalizer outcome containing:
+
+```text
+bucket_result: _BucketWriteResult | None
+value_id: sorted unique uint32 IDs present in this destination
+value_count: aligned uint64 point totals
+```
+
+The sparse value totals are construction facts used only to reconcile Exact
+against the canonical source-wide counts. They are not written as an
+intermediate file and do not replace the bucket's physical sparse range arrays.
+
+After all finalizers complete, the coordinator:
+
+- discards empty outcomes and orders nonempty `_BucketWriteResult` values by
+  numeric `bucket_id`;
+- constructs `_LevelWriteResult` and requires `level == 0`;
+- requires the sum of physical bucket point counts to equal
+  `validated.row_count` and Exact's planned point-count upper bound;
+- requires all point IDs observed by a finalizer to lie in the canonical range
+  and to be unique within that complete bucket partition;
+- requires the summed sparse per-value totals to equal every
+  `ValidatedPointsSource.value_table["n_points"]` entry exactly;
+- relies on `_LevelWriteResult` to reject duplicate bucket IDs, logical tile
+  coordinates, and bucket-local descriptor keys;
+- requires every descriptor coordinate to lie within Exact's planned grid and
+  every descriptor count to be positive.
+
+The controlled construction proof consists of disjoint canonical point-ID
+ranges at annotation, a row-preserving routing operation, destination-ID checks,
+per-bucket uniqueness, and exact total reconciliation. Z3 does not add a second
+global shuffle solely to sort point IDs. The full-Xenium gate independently
+proves global `0..N-1` coverage from the finalized Zarr arrays, and Slice Z7
+later repeats that guarantee as part of complete staged validation.
+
+`_validate_bucket` is not called automatically by `_BucketWriter.finalize()` or
+by every normal Exact finalizer. Z2 writer-side reconciliation remains the
+immediate construction check. Focused Z3 tests and the full-Xenium Z3 gate reopen
+the completed stores with `_validate_bucket`; Slice Z7 is its permanent
+production consumer.
+
+#### Memory contract
+
+- One source task materializes at most one validated physical row group.
+- One finalizer may materialize and stable-sort one complete shuffled bucket,
+  never a complete level.
+- Bucket size is a balancing target rather than a hard maximum because one
+  logical tile cannot be split across bucket IDs.
+- The finalizer retains at most its materialized bucket, sorting/grouping working
+  memory, one complete logical tile payload, and the Z2 writer's bounded point
+  and range shard buffers.
+- It must not allocate a second full-bucket `(N, 2)` location matrix or retain
+  one Python object per point or sparse range.
+- Temporary tile arrays and payload references are released as their tile is
+  appended; successful buckets are not reread during ordinary construction.
+- Peak concurrent memory scales with `dask_worker_count`; the full-Xenium gate
+  records the largest input row group, largest output bucket, and observed peak
+  RSS before selecting the downstream worker configuration.
+
+#### Failure and cleanup contract
+
+- Annotation, shuffle, finalizer, bucket-writer, or reconciliation failures
+  propagate from `_write_exact_level`.
+- `_BucketWriter` removes the exact partially written bucket it owns after an
+  ordinary write or finalization failure.
+- Other finalizers may already have completed valid bucket stores. Z3 does not
+  attempt cross-task rollback or resume; the enclosing staging generation is
+  invalid and the later builder owns its removal.
+- Dask scratch cleanup is independent of staged-output cleanup and occurs before
+  `_write_exact_level` returns or raises.
+- All Dask tasks, Zarr stores, and source handles are closed before control
+  returns to the caller.
+- Z3 never writes `COMPLETED`, publishes a generation, repairs partial output, or
+  deletes a caller-owned staging or temporary root.
+- No point-payload or intermediate tile/value-count Parquet file is created.
 
 #### Focused tests
 
-- multiple source files and source row groups;
-- points for one tile arriving from several input partitions;
-- sparse and dense tiles;
-- negative/nonzero origins and coordinate tolerance;
-- exact one-to-one source-row/`point_id` coverage;
-- canonical value IDs and value totals;
-- deterministic output under changed partition arrival order;
-- several independent bucket finalizers;
-- injected shuffle/finalizer failures and cleanup.
+- multiple source files, multiple row groups, empty row groups, and exact
+  row-group-offset point IDs;
+- points for one tile arriving from several input partitions and being
+  co-located in exactly one output bucket;
+- dictionary-encoded and ordinary UTF-8 values, canonical whitespace
+  normalization, canonical value IDs, and exact per-value totals;
+- null, empty, unknown, or changed normalized values failing closed;
+- negative and nonzero origins, fractional coordinates immediately around tile
+  boundaries, grid bounds, inclusive stored upper bounds, and float32
+  reconstruction tolerance;
+- exact one-to-one source-row/`point_id` coverage, in-range IDs, and injected
+  duplicate or missing rows;
+- empty destination buckets producing no store and nonempty bucket results being
+  numerically ordered;
+- sparse tiles, dense tiles, several tiles sharing one bucket, and tile payloads
+  crossing several tiny test chunks and shards;
+- finalized point rows ordered by `(tile_y, tile_x, value_id, point_id)` through
+  the combined Z3/Z2 responsibilities;
+- sparse ranges supporting complete and selected roundtrips through
+  `_BucketReader` without a point-level value scan;
+- every Z3-produced bucket independently passing `_validate_bucket`;
+- deterministic descriptors and decoded Zarr content under changed input-task
+  and finalizer arrival order; normal tests do not require deterministic codec
+  bytes;
+- more than one worker producing several independent buckets without shared
+  paths or handles;
+- existing output paths, row-count mismatches, invalid coordinates, wrong bucket
+  destinations, and unsupported source policies failing closed;
+- injected annotation, shuffle, bucket-write, finalizer, and reconciliation
+  failures, with Dask scratch removed and the staging generation left
+  unpublished;
+- inspection proving that no derived point Parquet or intermediate
+  tile/value-count file was created.
 
 #### Gate Z3: full-Xenium Exact evaluation
 
-Build the complete 136,578,750-point Exact level and record:
+Provide an opt-in Exact evaluation script separate from normal unit tests. Build
+the complete 136,578,750-point Xenium Exact level with the production-candidate
+bucket, chunk, shard, codec, and worker settings. Reopen every produced bucket
+through `_validate_bucket` and require the reconstructed result to agree with
+the construction result.
+
+Independently verify:
+
+- every canonical source row appears exactly once;
+- finalized `point_id` values are exactly the complete `0..N-1` set, using a
+  bounded external or memory-mapped structure rather than a Python set of all
+  IDs;
+- all logical tile counts and Exact's total equal the validated source count;
+- physical per-value totals equal the canonical validated value table;
+- tile identities, grid bounds, and coordinate reconstruction tolerance hold
+  across the complete level;
+- every point payload is Zarr and no derived point Parquet exists.
+
+Record:
 
 - build time and peak RSS;
+- validated source-file and row-group counts, the largest materialized input row
+  group, the largest output bucket, and the largest logical tile;
 - total and per-array compressed bytes;
 - bucket, chunk, shard, and filesystem-object counts;
-- all logical tile counts and complete point-ID coverage;
-- coordinate reconstruction error;
+- coordinate reconstruction error distribution and maximum;
 - complete-tile reads;
 - common, median, rare-localized, and rare-distributed selected reads;
 - logical selected rows, chunks touched, and decoded-row amplification.
 
 Use the evidence to select point chunks/shards, range chunks/shards, and codecs
-for the remaining slices. This is an engineering decision, not a comparison
-gate against the existing Parquet implementation.
+for the remaining slices and to choose a practically memory-bounded default
+worker count. This is an engineering decision, not a comparison gate against
+the existing Parquet implementation. There is no fixed numerical pass/fail
+benchmark threshold: the build must complete, remain practically memory bounded
+and performant, and produce independently valid Exact buckets.
 
 #### Exit criteria
 
-- Exact is independently correct and practically viable on Xenium;
+- Exact is independently correct and practically viable on the full Xenium
+  example;
+- one canonical source row produces exactly one finalized Exact point with its
+  deterministic ID, value ID, tile identity, and reconstructable coordinate;
+- all nonempty Exact buckets use the common Z2 storage primitive and pass its
+  independent validator;
+- construction is bounded by source-row-group, shuffled-bucket, logical-tile,
+  shard-buffer, and configured-worker limits rather than complete-level size;
 - the next level can consume Exact only through the Zarr bucket reader;
-- no point-payload Parquet artifact exists.
+- no point-payload or intermediate tile/value-count Parquet artifact exists;
+- Z3 leaves cache artifacts, publication, and complete-generation validation to
+  their planned later slices.
 
 ### Slice Z4: implement fresh Bridge construction
 
@@ -2107,8 +2449,9 @@ counts belong to opt-in benchmark scripts.
 
 ## Memory and concurrency rules
 
-- Exact may materialize one complete Dask bucket partition, not a complete
-  level.
+- Each Exact source task materializes at most one validated physical row group;
+  each Exact finalizer may materialize one complete shuffled bucket partition,
+  never a complete level.
 - Each finalizer owns one Zarr store; concurrent writers never target the same
   store or shard.
 - `location` is assembled and written in bounded batches; avoid a second
