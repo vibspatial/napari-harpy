@@ -71,11 +71,32 @@ class _ExactWriterConfig:
 
 @dataclass(frozen=True)
 class _SourceRowGroupReadSpec:
-    """Identify one validated physical row group and its first point ID.
+    """Describe one independently scheduled physical Parquet row-group read.
 
-    ``point_id_start`` already includes both the source-file row offset and the
-    counts of preceding row groups within that file. A read task therefore does
-    not infer physical row-group identity from Dask partition order.
+    Parameters
+    ----------
+    relative_path
+        Normalized POSIX path of the source Parquet file relative to the
+        validated dataset root.
+    row_group_index
+        Zero-based physical row-group index within the source file.
+    expected_row_count
+        Row count recorded during source validation. The read task compares
+        this with the decoded row count and fails immediately if the physical
+        source no longer matches the validated inventory.
+    point_id_start
+        First canonical internal cache point ID assigned to this row group.
+        Harpy synthesizes this value from the source file's global row offset
+        and the rows in preceding row groups within that file. It is not read
+        from a Parquet column or Parquet metadata field.
+
+    Notes
+    -----
+    This record contains no point data. It is a self-contained description of
+    one Dask input task. Carrying the physical row-group identity and global
+    point-ID start explicitly makes point identity independent of Dask
+    partition and execution order. Parquet supplies physical row counts and
+    ordering; Harpy assigns the resulting internal IDs.
     """
 
     relative_path: str
@@ -432,6 +453,9 @@ def _annotate_source_partition(
         value_labels_by_id=value_labels_by_id,
         source_label=source_label,
     )
+    # The selected source columns contain coordinates and values only. Synthesize
+    # Harpy's internal cache identity from canonical physical source-row order;
+    # this is not a point-ID column read from Parquet.
     point_id = np.arange(
         point_id_start,
         point_id_start + row_count,
