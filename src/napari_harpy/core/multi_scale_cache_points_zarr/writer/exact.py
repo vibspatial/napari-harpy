@@ -263,6 +263,10 @@ def _write_exact_level(
         value_labels_by_id=value_labels_by_id,
         validated_row_count=validated.row_count,
     )
+    # Create one task from each explicit physical row-group specification rather
+    # than deriving file/row-group identity from dd.read_parquet partition order.
+    # This keeps point_id_start tied to validated source metadata and independent
+    # of Dask partition planning.
     annotated = dd.from_map(
         read_partition,
         read_specs,
