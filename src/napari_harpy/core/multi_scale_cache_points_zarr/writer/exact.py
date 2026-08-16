@@ -220,7 +220,9 @@ def _write_exact_level(
         raise ValueError("Row-group read specifications do not reconcile to the validated source count.")
 
     bucket_count = _bucket_count_for_level(exact)
-    value_labels_by_id = tuple(validated.value_table["value"].to_pylist())
+    # Materialize the validated vocabulary in ID order; each tuple position is
+    # the canonical uint32 value ID defined by `ValidatedPointsSource.value_table`.
+    value_labels_by_id: tuple[str, ...] = tuple(validated.value_table["value"].to_pylist())
     columns = validated.source.columns
     read_partition = partial(
         _read_and_annotate_row_group,
@@ -243,6 +245,10 @@ def _write_exact_level(
         meta=_annotated_meta(),
         enforce_metadata=True,
     )
+    # Unit-width integer divisions create exactly one destination partition per
+    # valid bucket ID: partition position i contains only bucket_id == i. This
+    # makes enumerate(bucketed.to_delayed()) the canonical destination identity;
+    # each finalizer still verifies that its retained routing column agrees.
     bucketed = annotated.set_index(
         "bucket_id",
         divisions=list(range(bucket_count + 1)),
@@ -396,7 +402,76 @@ def _annotate_source_partition(
     validated_row_count: int,
     source_label: str,
 ) -> pd.DataFrame:
-    """Convert one row-group DataFrame into the exact annotated Dask schema."""
+    """Annotate one physical source row group for Exact cache routing.
+
+    Parameters
+    ----------
+    partition
+        Decoded row-group data containing exactly the selected x-coordinate,
+        y-coordinate, and value columns.
+    expected_row_count
+        Row count recorded for this physical row group during source
+        validation. Annotation fails if the decoded partition disagrees.
+    point_id_start
+        First Harpy-internal cache point ID assigned to this row group. It is
+        derived from canonical physical source-row order and is not read from
+        a Parquet column.
+    x_column
+        Physical source column containing x coordinates.
+    y_column
+        Physical source column containing y coordinates.
+    value_column
+        Physical source column containing values that map to canonical
+        ``value_id`` values.
+    x_origin
+        Shared x-coordinate origin from which Exact ``tile_x`` is calculated.
+    y_origin
+        Shared y-coordinate origin from which Exact ``tile_y`` is calculated.
+    tile_size
+        Exact logical tile edge in intrinsic source-coordinate units.
+    grid_width
+        Number of valid Exact tile columns.
+    grid_height
+        Number of valid Exact tile rows.
+    bucket_count
+        Number of deterministic tile-hash destinations.
+    value_labels_by_id
+        Canonical normalized vocabulary in ``value_id`` order. A label's tuple
+        position is its serialized ``uint32`` ID.
+    validated_row_count
+        Complete validated source row count, used to bound the internal point-ID
+        interval assigned to this row group.
+    source_label
+        Human-readable file and row-group identity used in validation errors.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Row-aligned Exact annotations with the fixed ``tile_x``, ``tile_y``,
+        ``x_rel``, ``y_rel``, ``value_id``, ``point_id``, and ``bucket_id``
+        schema.
+
+    Notes
+    -----
+    For example, with origin ``(0, 0)``, tile size ``512``,
+    ``point_id_start=100``, and 69 buckets, assume ``ACTB`` and ``GAPDH`` have
+    canonical value IDs 42 and 127. This conceptual row-group input::
+
+        x       y       value
+        12.5    30.0    GAPDH
+        520.0   42.0    ACTB
+
+    becomes::
+
+        tile_x  tile_y  x_rel  y_rel  value_id  point_id  bucket_id
+        0       0       12.5   30.0   127       100       16
+        1       0       8.0    42.0   42        101       26
+
+    Coordinates are assigned to logical tiles and stored relative to their tile
+    origins. Values map to their positions in ``value_labels_by_id``. Point IDs
+    are synthesized consecutively from ``point_id_start``. Bucket IDs come from
+    the versioned deterministic hash of ``(tile_x, tile_y)``.
+    """
     row_count = len(partition)
     if row_count != expected_row_count:
         raise ValueError(f"Decoded source row group `{source_label}` does not match its validated row count.")
@@ -514,7 +589,52 @@ def _finalize_exact_bucket(
     validated_row_count: int,
     settings: _ZarrWriteSettings,
 ) -> _ExactBucketOutcome:
-    """Plan and write one complete nonempty shuffled destination bucket."""
+    """Plan and write one complete nonempty shuffled destination bucket.
+
+    Parameters
+    ----------
+    partition
+        Complete materialized Dask destination partition. Row arrival order is
+        arbitrary, but every row must belong to ``bucket_id``.
+    bucket_id
+        Deterministic destination identity assigned by the tile hash.
+    staging_root
+        Cache-generation root beneath which the bucket writer creates its
+        canonical Zarr store.
+    tile_size
+        Exact logical tile edge, used to enforce relative-coordinate upper
+        bounds before storage.
+    grid_width
+        Number of valid Exact tile columns.
+    grid_height
+        Number of valid Exact tile rows.
+    validated_row_count
+        Complete validated source count, used to bound internal point IDs.
+    settings
+        Physical Zarr chunk, shard, and codec settings for the bucket.
+
+    Returns
+    -------
+    _ExactBucketOutcome
+        Finalized nonempty bucket result and its sparse per-value totals, or an
+        empty outcome when the planned destination received no rows.
+
+    Notes
+    -----
+    Ordering ownership is intentionally split across construction layers. This
+    finalizer stable-sorts the complete bucket only by ``(tile_y, tile_x)`` so
+    every logical tile is contiguous and tiles follow `_BucketPlan` order. It
+    then supplies one tile payload at a time to `_BucketWriter`. The bucket
+    writer independently canonicalizes the rows inside each tile by
+    ``(value_id, point_id)`` while constructing sparse value ranges. Together
+    these responsibilities produce the final physical order::
+
+        tile_y -> tile_x -> value_id -> point_id
+
+    Do not add a bucket-wide value/point sort here: it would duplicate the
+    shared writer's per-tile work and obscure which layer owns sparse-range
+    ordering.
+    """
     if partition.empty:
         return _empty_bucket_outcome()
     _require_annotated_partition(partition)
@@ -533,6 +653,9 @@ def _finalize_exact_bucket(
     value_ids = np.ascontiguousarray(value_ids, dtype=np.uint32)
     value_counts = np.ascontiguousarray(value_counts, dtype=np.uint64)
 
+    # This finalizer owns tile contiguity and row-major tile order only. The
+    # shared bucket writer later owns canonical (value_id, point_id) ordering
+    # within each resulting tile payload.
     ordered = frame.sort_values(
         ["tile_y", "tile_x"],
         kind="mergesort",
