@@ -36,7 +36,15 @@ def _tile_bucket_ids(
     *,
     bucket_count: int,
 ) -> np.ndarray:
-    """Map exact uint32 tile arrays through the versioned SplitMix64 policy."""
+    """Return one deterministic bucket ID per input point's logical tile.
+
+    The versioned SplitMix64 policy hashes the combined ``(tile_x, tile_y)``
+    key, rather than any point-level property. Consequently, every point with
+    the same tile coordinates receives the same bucket ID and the later shuffle
+    cannot split a logical tile across buckets. Different logical tiles may
+    intentionally map to the same bucket after reduction modulo
+    ``bucket_count``.
+    """
     _require_tile_coordinate_array(tile_x, "tile_x")
     _require_tile_coordinate_array(tile_y, "tile_y")
     if tile_x.shape != tile_y.shape:
