@@ -712,8 +712,8 @@ a second full-bucket `(N, 2)` array.
 Exact tile descriptor
   -> read complete Exact tile from Zarr through tile_offset
   -> fresh value-neutral sampler
-  -> reorder selected rows by (value_id, point_id)
-  -> append to planned Bridge bucket
+  -> take the selected aligned payload rows
+  -> bucket writer orders by (value_id, point_id) and appends
   -> finalize Bridge Zarr store
 ```
 
@@ -729,8 +729,8 @@ one through four immediate-finer Zarr tiles
   -> rebase tile-local coordinates into the coarser tile
   -> concatenate candidates
   -> fresh value-neutral sampler
-  -> reorder selected rows by (value_id, point_id)
-  -> append to planned coarser bucket
+  -> take the selected aligned payload rows
+  -> bucket writer orders by (value_id, point_id) and appends
 ```
 
 Every level uses exactly the same bucket writer and reader. Overview is the last
@@ -2158,35 +2158,425 @@ and performant, and produce independently valid Exact buckets.
 
 Construct Bridge Zarr buckets directly from Exact Zarr buckets.
 
-#### Work
+Z4 owns fresh value-neutral sampling, deterministic Bridge bucket planning,
+bounded Exact-reader reuse, and coordination of the Z2 storage primitive. It
+does not reread the canonical source, implement coarser coordinate rebasing,
+write compact Parquet indexes, publish a generation, or import an existing
+Parquet-backed writer or sampler.
 
-- group Exact descriptors by logical tile and deterministic Bridge bucket;
-- read one complete Exact tile through the new bucket reader;
-- implement the fresh value-neutral sampler inside the new package;
-- apply it exactly once per logical tile;
-- preserve sparse tiles and cap dense tiles at the Bridge capacity;
-- sort retained rows by `(value_id, point_id)` only after membership selection;
-- plan and write Bridge buckets with the same storage primitive;
-- retain at most one complete candidate tile plus bounded output buffers;
-- validate Bridge counts, tile identities, ranges, and `point_id` membership;
-- never reread the canonical source.
+#### Files and dependency boundary
+
+Create:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points_zarr/
+  sampling.py
+  storage/
+    reader_cache.py
+  writer/
+    bridge.py
+
+tests/multi_scale_cache_points_zarr/
+  test_sampling.py
+  test_reader_cache.py
+  test_bridge_writer.py
+```
+
+The fresh sampler may import `_splitmix64` from this package's `hashing.py`.
+Bridge construction may import only the new package's plans, descriptors,
+payload, hashes, reader cache, bucket reader/writer, and storage results. It
+must not import `multi_scale_cache_points.sampling`,
+`multi_scale_cache_points.writer.bridge`, or any existing writer-support
+module. Independent fixed-vector tests freeze the fresh algorithm directly;
+they are not cross-backend compatibility tests.
+
+#### Bridge writer API and execution settings
+
+Define a Bridge-specific physical configuration:
+
+```text
+_BridgeWriterConfig
+  zarr_settings: _ZarrWriteSettings
+  max_open_exact_readers: int
+```
+
+`max_open_exact_readers` is a positive bound on entered Exact bucket readers.
+Do not freeze a numeric default in Z4; the caller supplies the production
+candidate value and the full-Xenium Bridge evaluation records cache hits,
+misses, evictions, and build behavior. A value of one is valid and exercises
+the strictest handle bound.
+
+The construction entry point is:
+
+```text
+_write_bridge_level(
+    exact_result,
+    plan,
+    *,
+    staging_root,
+    config,
+) -> _LevelWriteResult
+```
+
+Z4 uses a deterministic sequential output-bucket coordinator. It does not add
+Dask or a worker-count setting: the expected memory bound is one materialized
+Exact candidate tile, one at-most-Bridge-capacity retained payload, one active
+output bucket writer, and a bounded reader-metadata cache. If full-scale
+evidence later shows that bucket concurrency is necessary, add it as an
+explicit bounded execution policy rather than allowing concurrent writes
+implicitly.
+
+Before opening an input store or creating output, require:
+
+- `exact_result` is a nonempty `_LevelWriteResult` for serialized Exact level
+  zero;
+- the build plan contains Exact level zero followed by Bridge level one;
+- Exact and Bridge have identical tile size, grid width, and grid height;
+- Exact is uncapped and Bridge has a positive `max_points_per_tile`;
+- every Exact descriptor lies inside the planned Exact grid;
+- the staged Exact level exists below `staging_root`;
+- `levels/level_1` does not exist; Z4 owns creation of that directory;
+- `config` contains valid Zarr settings and a positive reader-cache bound.
+
+#### One Exact descriptor is one complete input tile
+
+Do not reproduce the Parquet writer's `_ExactTileDescriptor` or group several
+physical manifest rows into one logical tile. The Zarr `_TileDescriptor`
+already identifies the complete point interval of one logical tile through its
+bucket-local `tile_offset` entry. Zarr chunks and shards are internal physical
+units and never become additional tile descriptors.
+
+`_LevelWriteResult.tile_descriptors` already provides one descriptor per
+nonempty Exact tile in global `(tile_y, tile_x)` order and rejects duplicate
+tile coordinates. Z4 validates that contract and routes those descriptors
+directly. Every nonempty Exact tile produces exactly one nonempty Bridge tile
+with the same `(tile_x, tile_y)`.
+
+#### Fresh value-neutral sampler
+
+Implement the established versioned policy freshly in `sampling.py`:
+
+```text
+SAMPLING_METHOD = "harpy-value-neutral-stratified-splitmix64-v1"
+SAMPLING_SEED = 0
+SAMPLED_TILE_MICROGRID_EDGE = 16
+```
+
+The primary contract is conceptually:
+
+```text
+_select_sampled_tile_indices(
+    x_rel: float32[N],
+    y_rel: float32[N],
+    point_id: uint64[N],
+    *,
+    level,
+    tile_x,
+    tile_y,
+    tile_size,
+    target,
+) -> int64[min(N, target)]
+```
+
+The sampler receives no `value_id`. Membership therefore cannot depend on a
+gene/value label, value frequency, or physical value-major input order.
+Coordinates and point IDs are candidate facts; the serialized level, logical
+tile identity, fixed seed, and versioned hash domains provide deterministic
+tie-breaking.
+
+Validate aligned one-dimensional arrays, exact coordinate and point-ID dtypes,
+finite coordinates in the inclusive interval `[0, tile_size]`, supported level
+and tile-coordinate ranges, and positive `tile_size` and `target`. Point-ID
+uniqueness is an accepted immediate-finer-level invariant and is verified by
+level acceptance; do not add a second full sort solely to rediscover it inside
+every sampler call.
+
+Sampling uses a transient 16-by-16 tile-local microgrid:
+
+1. assign every candidate to one of 256 cells, clamping an exactly represented
+   upper tile edge to the final cell;
+2. allocate `target` representatives proportionally through integer largest
+   remainders, never exceeding a cell's candidate count;
+3. resolve equal cell remainders by versioned SplitMix64 cell priority and then
+   numeric cell ID;
+4. rank candidates inside a cell by versioned SplitMix64 point priority and
+   then `point_id`;
+5. return exactly `min(N, target)` unique original row indices as a
+   C-contiguous `int64` array, ordered by ascending retained `point_id`.
+
+When `N <= target`, retain every candidate and return only the deterministic
+point-ID ordering. Membership must be invariant to candidate arrival order.
+Fixed tests cover point and cell priority vectors so a later algorithm change
+requires a new `SAMPLING_METHOD` identifier.
+
+The resulting `_select_sampled_tile_indices` implementation must carry a
+substantial NumPy-style docstring rather than leaving this spatial policy only
+in the roadmap. Its `Notes` section must make clear that cache tiles are the
+persistent storage/loading units while the 16-by-16 microgrid is transient
+sampling state inside one current tile. Include the scaling scheme:
+
+```text
+Level    tile edge    microgrid    cell edge
+Bridge         512      16 x 16           32
+L1           1,024      16 x 16           64
+L2           2,048      16 x 16          128
+```
+
+Also retain the coarser-level spatial relationship in the code documentation.
+After rebasing, four immediate-finer tiles occupy four 8-by-8 quadrants of one
+coarser tile's transient 16-by-16 microgrid:
+
+```text
+coarser 16 x 16 microgrid
++---------+---------+
+| finer   | finer   |
+| 8 x 8   | 8 x 8   |
++---------+---------+
+| finer   | finer   |
+| 8 x 8   | 8 x 8   |
++---------+---------+
+```
+
+The docstring must explain the five-stage cell assignment, proportional
+allocation, deterministic cell tie-break, deterministic within-cell point
+ranking, and final point-ID ordering. It must also state directly that
+`value_id` is absent by design, so candidate values cannot influence sampling
+membership. Helper docstrings and inline comments should explain the largest-
+remainder and priority calculations where they occur rather than requiring a
+future developer to reconstruct them from tests.
+
+Do not lose the useful local reasoning currently carried by the reference
+sampler's inline comments. Rephrase it for the fresh implementation and retain
+it next to the corresponding operations, especially:
+
+- why `target` is a maximum capacity and sparse tiles retain every candidate;
+- how point-level microgrid cell IDs become the fixed 256-entry occupancy
+  histogram;
+- what each `cell_targets[cell_id]` value represents;
+- why candidate point IDs and cell IDs are parallel arrays when priorities are
+  calculated;
+- that `np.lexsort` treats its last key as primary, together with the precise
+  cell/priority/point-ID key hierarchy;
+- why sorting by cell makes each cell's candidates contiguous;
+- how adjacent-cell comparisons find group starts, retaining the small concrete
+  example used to make that vectorized step understandable;
+- that selected values are original candidate-row positions before their final
+  point-ID ordering;
+- how integer division and remainder implement proportional allocation without
+  floating-point rounding;
+- how remaining slots are assigned by remainder, versioned cell priority, and
+  final numeric cell-ID tie-breaking;
+- which fixed domains, seed, level, tile key, cell ID, and point ID contribute
+  to deterministic hash state.
+
+These comments need not be copied verbatim. They must describe the fresh code
+accurately, use its final names and dtypes, and remain adjacent to the non-obvious
+vectorized or hashing operations they explain. Remove or rewrite any reference
+that only makes sense for the Parquet-backed implementation.
+
+#### Deterministic Bridge bucket planning
+
+Derive the planned Bridge bucket count from Bridge's conservative
+`point_count_upper_bound` through `_bucket_count_for_level`. Map the Exact tile
+coordinate arrays through `_tile_bucket_ids` with that count. Different Exact
+tiles may share one Bridge bucket, but one logical tile remains indivisible.
+
+Group only the small descriptors by output `bucket_id`; never materialize or
+shuffle point payloads for this planning step. Omit planned bucket IDs that
+receive no tiles. Process nonempty output buckets in numeric bucket-ID order and
+their descriptors in `(tile_y, tile_x)` order.
+
+The final Bridge count is known without reading the candidate payload:
+
+```text
+bridge_tile_count = min(exact_descriptor.n_points,
+                        bridge.max_points_per_tile)
+```
+
+Use that count to create one `_PlannedTile` per descriptor and a complete
+`_BucketPlan` before entering `_BucketWriter`:
+
+```text
+_BucketPlan(
+    level=1,
+    bucket_id=bridge_bucket_id,
+    tiles=ordered_planned_tiles,
+    settings=config.zarr_settings,
+)
+```
+
+This gives point arrays their final shape up front. Bridge does not resize point
+arrays per tile and does not introduce an intermediate point or count file.
+
+#### Bounded Exact reader reuse
+
+Implement `_BucketReaderCache` as a small generic context-managed LRU of
+entered `_BucketReader` instances keyed by `(level, bucket_id)`. Its cache root
+and positive maximum size are fixed at construction.
+
+- a hit returns the existing entered reader and marks it most recently used;
+- a miss enters one strict reader;
+- if the bound is already reached, close and remove the least-recently-used
+  reader before admitting the miss;
+- failed opens do not remain cached;
+- context exit and every exceptional unwind close all cached readers exactly
+  once;
+- callers never retain a reader beyond the immediate sequential tile operation.
+
+The cache contains Zarr metadata and handles only. It must not cache complete
+`_PointPayload` values or let point memory grow with the level. Keeping this
+cache generic allows Z5 to reuse the same bounded handle-lifetime policy for
+immediate-finer spatial reads.
+
+#### Per-tile read, sample, and write flow
+
+For every Exact descriptor in the current Bridge bucket:
+
+1. obtain its Exact bucket reader from the bounded cache;
+2. call `read_complete(descriptor)` exactly once;
+3. pass only `x_rel`, `y_rel`, and `point_id` to the fresh sampler with Bridge's
+   level, unchanged tile coordinates, unchanged tile size, and capacity;
+4. call `_PointPayload.take(selected_indices)` so all four fields remain
+   aligned;
+5. require the retained count to equal the `_PlannedTile` count;
+6. pass the retained payload and unchanged tile coordinates to
+   `_BucketWriter.write_tile`;
+7. release candidate and retained payload references before reading the next
+   tile.
+
+Bridge owns membership selection only. It must not sort the retained payload by
+`(value_id, point_id)` before writing. The common bucket writer remains the
+single owner of deterministic value-major ordering and aligned sparse-range
+construction. This avoids sorting the selected rows twice and preserves the
+same responsibility boundary established by Exact.
+
+Bridge coordinates require no rebasing because Exact and Bridge have identical
+tile geometry. Sampling changes membership only: every retained row keeps its
+Exact `x_rel`, `y_rel`, `value_id`, and `point_id` values.
+
+#### Result and fast level reconciliation
+
+Bridge needs no `_ExactBucketOutcome` equivalent. Exact's auxiliary global
+value totals prove source preservation; Bridge has no corresponding requirement
+to preserve every value or source row. Each finalized `_BucketWriteResult`
+already contains the generic persisted bucket facts needed to construct the
+Bridge `_LevelWriteResult`.
+
+After all readers and writers close, reconcile without rescanning every stored
+point during ordinary construction:
+
+- bucket results are nonempty, ordered by `bucket_id`, and belong to level one;
+- the output tile-coordinate set equals the Exact input tile-coordinate set;
+- every output tile has `min(exact_count, bridge_capacity)` rows;
+- the level point count equals the sum of those expected tile counts and does
+  not exceed Bridge's planned upper bound;
+- every descriptor lies inside the unchanged Bridge grid;
+- sparse Exact tiles preserve every candidate and dense tiles fill the capacity
+  exactly;
+- output paths contain Zarr buckets only and no derived point Parquet.
+
+Membership is selected by unique indices into the complete Exact payload, so
+construction verifies subset alignment before handing the payload to the
+writer. Focused tests and Gate Z4 independently reopen persisted Bridge and
+Exact tiles to prove `point_id` subset membership, unchanged retained fields,
+and valid physical ranges. Do not add an exhaustive `_validate_bucket` scan to
+ordinary Bridge construction; complete persisted-store validation remains an
+opt-in gate here and a mandatory publication check in Z7.
+
+#### Memory, failure, and cleanup contract
+
+At steady state Z4 retains only:
+
+- small level-wide descriptors and bucket assignments;
+- at most `max_open_exact_readers` reader metadata/handle objects;
+- one complete Exact candidate `_PointPayload`;
+- one selected payload capped by Bridge capacity;
+- one active `_BucketWriter` and its fixed point/range shard buffers.
+
+It never materializes a complete Bridge bucket's point rows in memory, never
+rereads the canonical Parquet source, and never creates Dask scratch.
+
+`_BucketWriter` removes its own partial current bucket after an ordinary write
+failure. The reader cache closes all input stores on every exit. Previously
+finalized Bridge buckets may remain inside the isolated unpublished staging
+generation; the later top-level builder owns removal of that complete failed
+generation rather than Z4 attempting partial repair or resume. `COMPLETED` is
+never created by Z4.
 
 #### Focused tests
 
-- sparse and over-capacity Exact tiles;
-- sampler allocation, spatial coverage, tie-breaking, and capacity vectors;
-- deterministic sampling and independence from value labels;
-- Bridge and Exact geometry equality;
-- unchanged tile-local coordinates;
-- one Bridge descriptor per nonempty Exact tile;
-- Bridge `point_id` subset membership;
-- multiple input/output buckets and handle reuse;
-- injected read/write failures and cleanup.
+- fixed point-priority and cell-priority vectors, proportional allocation,
+  upper-edge cell assignment, controlled priority collisions, and exact
+  capacity vectors;
+- sparse, empty sampler-input, and over-capacity candidate arrays;
+- sampler membership invariant to candidate permutation and unavailable to
+  `value_id` by API construction;
+- invalid coordinate, dtype, shape, capacity, level, and tile identities;
+- reader-cache hits, LRU eviction at bounds one and greater than one, failed
+  opens, exceptional unwind, and deterministic closure;
+- tiny staged Exact buckets with sparse and dense tiles crossing point chunks
+  and shards, built directly through the common Z2 primitive rather than the
+  canonical source reader;
+- Bridge and Exact geometry equality, unchanged retained fields, exact sparse
+  pass-through, dense capacity, and deterministic membership;
+- exactly one Bridge descriptor per nonempty Exact descriptor and no
+  Parquet-style tile-shard grouping;
+- multiple Exact input buckets routed into multiple Bridge output buckets,
+  including empty planned bucket IDs and reader-cache reuse/eviction;
+- persisted Bridge buckets passing `_validate_bucket` and independently
+  matching the corresponding Exact `point_id` subsets;
+- preexisting output, invalid level transitions, descriptor/count mismatch,
+  injected read, sampling, and write failures, current partial-bucket cleanup,
+  reader closure, and absence of `COMPLETED`.
+
+Tests use small chunks, shards, capacities, and reader-cache bounds so every
+physical and lifecycle boundary is exercised without depending on the
+Parquet-backed implementation.
+
+#### Gate Z4: full-Xenium Bridge evaluation
+
+Provide an opt-in Bridge evaluation separate from unit tests. Build or retain a
+current-tree full-Xenium Exact staging level, construct Bridge with the
+production-candidate settings, and measure Bridge separately from Exact.
+
+Record:
+
+- Bridge construction time and peak incremental RSS;
+- expected and observed point, tile, bucket, range, shard, and filesystem-object
+  counts;
+- largest Exact candidate tile and largest Bridge output tile;
+- reader-cache bound, hits, misses, evictions, and peak entered readers;
+- compressed bytes by array and total Bridge output size.
+
+Reopen every Bridge bucket through `_validate_bucket`. For every logical tile,
+read the corresponding Exact and Bridge payloads and independently require:
+
+- the Bridge count is `min(exact_count, bridge_capacity)`;
+- Bridge `point_id` values are a unique subset of that Exact tile;
+- retained coordinates and values agree exactly by `point_id`;
+- recomputing the fresh sampler from Exact produces the persisted Bridge
+  membership;
+- no source Parquet read occurs during the Bridge phase and no point Parquet is
+  written.
+
+This is a current-format engineering gate, not a comparison against the old
+Parquet-derived cache and not a fixed numerical benchmark threshold. It should
+complete with practical time, bounded memory, bounded open readers, and fully
+valid persisted membership before Z5 uses Bridge as its immediate-finer input.
 
 #### Exit criteria
 
 - Bridge reads and writes only Zarr point payloads;
-- Bridge membership and capacity semantics are independently verified;
+- the fresh sampler is deterministic, value-neutral, versioned, and
+  independently fixed by vectors and logical tests;
+- each complete Exact tile is sampled exactly once and produces one same-geometry
+  Bridge tile;
+- Bridge membership, retained-field alignment, capacity, and physical storage
+  semantics are independently verified;
+- construction memory and open readers are bounded by explicit contracts rather
+  than complete-level size;
+- every reader and writer closes deterministically on success and failure;
+- the full-Xenium Bridge gate is practically viable and independently correct;
 - Z5 can treat Bridge like any other immediate-finer Zarr level.
 
 ### Slice Z5: implement fresh spatial pyramid and overview
@@ -2203,7 +2593,8 @@ Build every coarser level through the uniform Zarr path.
 - implement fresh coordinate-rebasing helpers inside the new package;
 - rebase coordinates into the coarser frame;
 - concatenate candidates and sample once at the coarser capacity;
-- sort retained rows by `(value_id, point_id)` after membership selection;
+- leave retained-row `(value_id, point_id)` ordering to the common bucket
+  writer after membership selection;
 - plan and write every spatial bucket with the common bucket primitive;
 - use the same flow for the terminal overview;
 - build levels strictly from their immediate predecessor;
