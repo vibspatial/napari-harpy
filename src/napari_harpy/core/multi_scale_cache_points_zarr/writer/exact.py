@@ -119,7 +119,29 @@ class _SourceRowGroupReadSpec:
 
 @dataclass(frozen=True, eq=False)
 class _ExactBucketOutcome:
-    """Return one destination's bucket result and sparse value totals."""
+    """Carry one Exact finalizer result across the Dask task boundary.
+
+    Parameters
+    ----------
+    bucket_result
+        Generic physical Zarr result shared by all cache levels, or ``None``
+        when this planned destination received no points and created no bucket.
+    value_id
+        Strictly increasing ``uint32`` IDs present in this Exact destination.
+        These are Exact-specific auxiliary data rather than part of the generic
+        physical bucket result.
+    value_count
+        Positive ``uint64`` point counts aligned one-to-one with ``value_id``.
+        Level reconciliation combines these counts across destinations and
+        compares them with the validated source vocabulary totals.
+
+    Notes
+    -----
+    ``bucket_result`` describes the finalized physical Zarr store. The aligned
+    ``value_id`` and ``value_count`` arrays additionally let the Exact writer
+    prove that construction preserved every validated source value without
+    adding level-specific fields to the shared ``_BucketWriteResult`` contract.
+    """
 
     bucket_result: _BucketWriteResult | None
     value_id: np.ndarray
