@@ -166,10 +166,34 @@ def _write_exact_level(
 ) -> _LevelWriteResult:
     """Construct uncapped Exact level zero directly from source Parquet to Zarr.
 
-    Physical source row groups become explicit Dask input partitions. A disk
-    shuffle co-locates complete logical tiles by deterministic bucket ID, after
-    which each side-effecting finalizer exclusively owns one Zarr store. Dask
-    scratch is disposable and separate from the caller-owned staging generation.
+    Each point belongs to one logical spatial tile. The deterministic tile hash
+    assigns that complete tile to one bucket, even when the tile's points occur
+    in several source files or row groups. Different logical tiles may share a
+    bucket, but one logical tile is never split across buckets.
+
+    Construction follows this physical flow::
+
+        row-group-aligned source partitions
+            -> read only the selected x, y, and value columns
+            -> annotate tile coordinates, tile-relative coordinates,
+               canonical value IDs, and internal point IDs
+            -> hash each logical (tile_x, tile_y) to one bucket_id
+            -> disk-redistribute points into partitions by bucket_id
+            -> stable-sort each complete bucket by (tile_y, tile_x)
+            -> derive the ordered _BucketPlan and one _PointPayload per tile
+            -> order each tile payload by (value_id, point_id)
+            -> append aligned point arrays and sparse value ranges
+            -> finalize one independent Zarr store per nonempty bucket
+
+    The disk shuffle is what co-locates tile rows that arrived through different
+    row-group partitions. Sorting the complete destination bucket then makes
+    each tile a contiguous run. The Exact finalizer owns that bucket-level tile
+    order; the shared bucket writer owns deterministic value-major ordering and
+    sparse-range construction inside each tile.
+
+    Every side-effecting finalizer exclusively owns one Zarr store, so concurrent
+    tasks never write the same bucket. Dask scratch is disposable and separate
+    from the caller-owned staging generation.
 
     Parameters
     ----------
