@@ -397,7 +397,7 @@ def _read_and_annotate_row_group(
             f"{table.num_rows} rows; validation recorded {spec.expected_row_count}."
         )
     return _annotate_source_partition(
-        table.to_pandas(),
+        table,
         expected_row_count=spec.expected_row_count,
         point_id_start=spec.point_id_start,
         x_column=x_column,
@@ -416,7 +416,7 @@ def _read_and_annotate_row_group(
 
 
 def _annotate_source_partition(
-    partition: pd.DataFrame,
+    table: pa.Table,
     *,
     expected_row_count: int,
     point_id_start: int,
@@ -437,9 +437,11 @@ def _annotate_source_partition(
 
     Parameters
     ----------
-    partition
-        Decoded row-group data containing exactly the selected x-coordinate,
-        y-coordinate, and value columns.
+    table
+        Decoded Arrow row-group table containing exactly the selected
+        x-coordinate, y-coordinate, and value columns. Source columns remain in
+        Arrow through annotation; only the final numeric result is materialized
+        as a Pandas partition for Dask.
     expected_row_count
         Row count recorded for this physical row group during source
         validation. Annotation fails if the decoded partition disagrees.
@@ -503,18 +505,24 @@ def _annotate_source_partition(
     are synthesized consecutively from ``point_id_start``. Bucket IDs come from
     the versioned deterministic hash of ``(tile_x, tile_y)``.
     """
-    row_count = len(partition)
+    row_count = table.num_rows
     if row_count != expected_row_count:
         raise ValueError(f"Decoded source row group `{source_label}` does not match its validated row count.")
     if row_count == 0:
         return _annotated_meta()
-    if list(partition.columns) != [x_column, y_column, value_column]:
+    if table.column_names != [x_column, y_column, value_column]:
         raise ValueError(f"Decoded source row group `{source_label}` has unexpected columns or column order.")
     if point_id_start < 0 or point_id_start + row_count > validated_row_count:
         raise ValueError(f"Source row group `{source_label}` has an invalid point-ID interval.")
 
-    x = np.ascontiguousarray(partition[x_column].to_numpy(dtype=np.float64, na_value=np.nan))
-    y = np.ascontiguousarray(partition[y_column].to_numpy(dtype=np.float64, na_value=np.nan))
+    x = np.ascontiguousarray(
+        table[x_column].combine_chunks().to_numpy(zero_copy_only=False),
+        dtype=np.float64,
+    )
+    y = np.ascontiguousarray(
+        table[y_column].combine_chunks().to_numpy(zero_copy_only=False),
+        dtype=np.float64,
+    )
     if not bool(np.isfinite(x).all()) or not bool(np.isfinite(y).all()):
         raise ValueError(f"Source row group `{source_label}` contains nonfinite coordinates.")
 
@@ -555,7 +563,7 @@ def _annotate_source_partition(
         raise ValueError(f"Source row group `{source_label}` exceeds coordinate reconstruction tolerance.")
 
     value_id = _map_partition_value_ids(
-        partition[value_column],
+        table[value_column].combine_chunks(),
         value_labels_by_id=value_labels_by_id,
         source_label=source_label,
     )
@@ -582,25 +590,41 @@ def _annotate_source_partition(
 
 
 def _map_partition_value_ids(
-    values: pd.Series,
+    values: pa.Array,
     *,
     value_labels_by_id: tuple[str, ...],
     source_label: str,
 ) -> np.ndarray:
-    # Supplying the canonical physical type keeps an all-null Pandas partition
-    # from being inferred as Arrow's kernel-less ``null`` type. Nulls are then
-    # rejected by the same explicit normalization check as mixed partitions.
-    arrow_values = pa.array(values, type=pa.string(), from_pandas=True)
-    normalized = _normalized_row_values(arrow_values)
-    if normalized.null_count:
-        raise ValueError(f"Source row group `{source_label}` contains null normalized values.")
-    empty = pc.equal(normalized, "")
-    if bool(pc.any(empty).as_py()):
-        raise ValueError(f"Source row group `{source_label}` contains empty normalized values.")
-    indices = pc.index_in(
-        normalized,
-        value_set=pa.array(value_labels_by_id, type=pa.string()),
-    )
+    """Map one Arrow value array to canonical row-aligned ``uint32`` IDs.
+
+    Dictionary inputs remain encoded while their distinct labels are normalized
+    and mapped to the validated vocabulary. Taking those dictionary-level IDs by
+    the original row indices avoids materializing a row-aligned string array.
+    Plain UTF-8 inputs use the same normalization and vocabulary contract at row
+    level. In either representation, any row whose normalized value is null,
+    empty, or absent from ``value_labels_by_id`` fails construction.
+    """
+    value_set = pa.array(value_labels_by_id, type=pa.string())
+    if pa.types.is_dictionary(values.type):
+        if values.indices.null_count:
+            raise ValueError(f"Source row group `{source_label}` contains null normalized values.")
+        normalized_dictionary = _normalized_row_values(values.dictionary)
+        used_indices = pc.unique(values.indices)
+        used_values = pc.take(normalized_dictionary, used_indices)
+        if used_values.null_count:
+            raise ValueError(f"Source row group `{source_label}` contains null normalized values.")
+        if bool(pc.any(pc.equal(used_values, "")).as_py()):
+            raise ValueError(f"Source row group `{source_label}` contains empty normalized values.")
+        dictionary_ids = pc.index_in(normalized_dictionary, value_set=value_set)
+        indices = pc.take(dictionary_ids, values.indices)
+    else:
+        normalized = _normalized_row_values(values)
+        if normalized.null_count:
+            raise ValueError(f"Source row group `{source_label}` contains null normalized values.")
+        if bool(pc.any(pc.equal(normalized, "")).as_py()):
+            raise ValueError(f"Source row group `{source_label}` contains empty normalized values.")
+        indices = pc.index_in(normalized, value_set=value_set)
+
     if indices.null_count:
         raise ValueError(f"Source row group `{source_label}` contains a normalized value absent from validation.")
     return np.ascontiguousarray(
