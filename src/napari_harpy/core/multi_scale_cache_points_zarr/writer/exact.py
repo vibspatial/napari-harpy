@@ -259,6 +259,9 @@ def _write_exact_level(
     level_directory = staging_root / exact.relative_directory
     level_directory.mkdir(parents=True)
     finalizers = tuple(
+        # Each finalizer owns one side-effecting Zarr bucket write. Mark it
+        # impure so Dask does not reuse or deduplicate a call that must create
+        # its own store.
         dask.delayed(_finalize_exact_bucket, pure=False)(
             partition,
             bucket_id=bucket_id,
