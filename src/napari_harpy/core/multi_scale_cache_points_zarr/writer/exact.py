@@ -668,7 +668,11 @@ def _finalize_exact_bucket(
     tile_y = np.ascontiguousarray(ordered["tile_y"].to_numpy(dtype=np.uint32, copy=False))
     if int(tile_x.max()) >= grid_width or int(tile_y.max()) >= grid_height:
         raise ValueError(f"Dask output partition {bucket_id} contains tiles outside the Exact grid.")
-    boundaries = np.flatnonzero(
+    # Rows are ordered by (tile_y, tile_x), so a change in either adjacent
+    # coordinate marks the start of a new contiguous logical-tile run. Prepend
+    # True for the first run; these starts are reused both to build the complete
+    # bucket plan and to slice one payload per tile.
+    tile_starts = np.flatnonzero(
         np.concatenate(
             (
                 np.array([True], dtype=np.bool_),
@@ -676,18 +680,18 @@ def _finalize_exact_bucket(
             )
         )
     )
-    stops = np.concatenate((boundaries[1:], np.array([len(ordered)], dtype=np.int64)))
+    tile_stops = np.concatenate((tile_starts[1:], np.array([len(ordered)], dtype=np.int64)))
     tiles = tuple(
         _PlannedTile(
             tile_x=int(tile_x[start]),
             tile_y=int(tile_y[start]),
             n_points=int(stop - start),
         )
-        for start, stop in zip(boundaries, stops, strict=True)
+        for start, stop in zip(tile_starts, tile_stops, strict=True)
     )
     plan = _BucketPlan(level=0, bucket_id=bucket_id, tiles=tiles, settings=settings)
     with _BucketWriter(staging_root, plan) as writer:
-        for start, stop, tile in zip(boundaries, stops, tiles, strict=True):
+        for start, stop, tile in zip(tile_starts, tile_stops, tiles, strict=True):
             tile_rows = ordered.iloc[int(start) : int(stop)]
             payload = _PointPayload(
                 x_rel=np.ascontiguousarray(tile_rows["x_rel"].to_numpy(dtype=np.float32, copy=False)),
