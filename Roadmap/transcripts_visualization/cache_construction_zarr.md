@@ -2202,9 +2202,10 @@ _BridgeWriterConfig
 
 `max_open_exact_readers` is a positive bound on entered Exact bucket readers.
 Do not freeze a numeric default in Z4; the caller supplies the production
-candidate value and the full-Xenium Bridge evaluation records cache hits,
-misses, evictions, and build behavior. A value of one is valid and exercises
-the strictest handle bound.
+candidate value. A value of one is valid and exercises the strictest reader
+lifetime bound. Z4 does not compare cached and uncached construction, require a
+particular cache hit rate, or select this value through a standalone metadata
+benchmark.
 
 The construction entry point is:
 
@@ -2423,10 +2424,18 @@ and positive maximum size are fixed at construction.
   once;
 - callers never retain a reader beyond the immediate sequential tile operation.
 
-The cache contains Zarr metadata and handles only. It must not cache complete
-`_PointPayload` values or let point memory grow with the level. Keeping this
-cache generic allows Z5 to reuse the same bounded handle-lifetime policy for
-immediate-finer spatial reads.
+The primary contract is explicit, bounded reader lifetime. Reusing an entered
+reader also avoids repeating root-attribute validation and reconstruction of
+the Zarr array metadata objects when successive tiles revisit a bucket. Those
+operations are normally inexpensive on a local filesystem, so this is a
+modest reuse optimization rather than a performance-critical part of Bridge
+construction. In particular, a local Zarr reader is not an expensive
+database-style connection.
+
+The cache contains initialized readers and array metadata only. It must not
+cache decoded point chunks, complete `_PointPayload` values, or let point
+memory grow with the level. Keeping it generic allows Z5 to reuse the same
+bounded reader-lifetime policy for immediate-finer spatial reads.
 
 #### Per-tile read, sample, and write flow
 
@@ -2545,7 +2554,8 @@ Record:
 - expected and observed point, tile, bucket, range, shard, and filesystem-object
   counts;
 - largest Exact candidate tile and largest Bridge output tile;
-- reader-cache bound, hits, misses, evictions, and peak entered readers;
+- configured reader-cache bound and confirmation that the number of entered
+  readers remains within it;
 - compressed bytes by array and total Bridge output size.
 
 Reopen every Bridge bucket through `_validate_bucket`. For every logical tile,
@@ -2563,6 +2573,8 @@ This is a current-format engineering gate, not a comparison against the old
 Parquet-derived cache and not a fixed numerical benchmark threshold. It should
 complete with practical time, bounded memory, bounded open readers, and fully
 valid persisted membership before Z5 uses Bridge as its immediate-finer input.
+There is no separate cached-versus-uncached run, cache-hit target, or exhaustive
+metadata-cache benchmark: metadata reuse is not a Gate Z4 acceptance criterion.
 
 #### Exit criteria
 
