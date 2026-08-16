@@ -141,7 +141,30 @@ class _BucketWriter:
         return False
 
     def write_tile(self, tile_x: int, tile_y: int, payload: _PointPayload) -> None:
-        """Append the next planned logical tile to the bucket."""
+        """Append and canonicalize the next planned logical tile.
+
+        Parameters
+        ----------
+        tile_x
+            X index of the next tile in the bucket plan.
+        tile_y
+            Y index of the next tile in the bucket plan.
+        payload
+            Aligned point rows for exactly that complete logical tile. The
+            caller does not need to pre-sort its rows.
+
+        Notes
+        -----
+        The caller owns bucket-level tile grouping and submits tiles in the
+        plan's validated ``(tile_y, tile_x)`` order. This method verifies the
+        next planned identity and count, then canonicalizes rows inside the tile
+        by ``(value_id, point_id)`` before appending points and constructing the
+        aligned sparse value ranges.
+
+        Keeping these responsibilities separate prevents level writers from
+        repeating the per-tile value sort and gives every level the same final
+        physical ordering contract.
+        """
         self._require_open()
         try:
             _require_integer_in_range(tile_x, "tile_x", maximum=_UINT32_MAX)
@@ -322,9 +345,7 @@ class _BucketWriter:
         self._require_array(self._value_id, "value_id")[start:stop] = self._point_value_buffer[
             : self._point_buffer_count
         ]
-        self._require_array(self._point_id, "point_id")[start:stop] = self._point_id_buffer[
-            : self._point_buffer_count
-        ]
+        self._require_array(self._point_id, "point_id")[start:stop] = self._point_id_buffer[: self._point_buffer_count]
         self._point_write_cursor = stop
         self._point_buffer_count = 0
 
