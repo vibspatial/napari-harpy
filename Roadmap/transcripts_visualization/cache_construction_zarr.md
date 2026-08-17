@@ -2197,15 +2197,19 @@ Define a Bridge-specific physical configuration:
 ```text
 _BridgeWriterConfig
   zarr_settings: _ZarrWriteSettings
-  max_open_exact_readers: int
+  max_open_exact_readers: int | None = None
 ```
 
-`max_open_exact_readers` is a positive bound on entered Exact bucket readers.
-Do not freeze a numeric default in Z4; the caller supplies the production
-candidate value. A value of one is valid and exercises the strictest reader
-lifetime bound. Z4 does not compare cached and uncached construction, require a
-particular cache hit rate, or select this value through a standalone metadata
-benchmark.
+`None` means that Bridge construction retains one entered reader for every
+nonempty physical Exact bucket; the effective capacity is therefore derived
+from `exact_result.bucket_count` rather than from a hard-coded dataset-specific
+number. The full-Xenium profile observed 69 Exact buckets, a 99.05% reader-cache
+hit rate, and no evictions under this policy. An explicit positive integer
+remains available as a stricter metadata-lifetime bound for unusually large
+inputs, and is clamped to the actual nonempty Exact bucket count. A value of one
+is valid and exercises the strictest reader lifetime bound. The cache retains
+initialized Zarr readers and metadata, never decoded point chunks or complete
+point payloads.
 
 The construction entry point is:
 
