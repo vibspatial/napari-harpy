@@ -266,8 +266,9 @@ def _write_bridge_bucket(
             if retained.n_points != planned_tile.n_points:
                 raise ValueError("The sampled Bridge tile does not match its planned point count.")
             writer.write_tile(descriptor.tile_x, descriptor.tile_y, retained)
-            # The cache alone owns reader lifetime; point arrays and the caller's
-            # borrowed reader reference do not survive this tile operation.
+            # `write_tile` copied the retained rows into writer-owned buffers.
+            # Release tile-scoped arrays before the next tile or finalization;
+            # `reader_cache` alone retains and closes the entered reader.
             del reader, candidate, selected_indices, retained
         return writer.finalize()
 
