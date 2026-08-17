@@ -2611,47 +2611,322 @@ metadata-cache benchmark: metadata reuse is not a Gate Z4 acceptance criterion.
 
 #### Goal
 
-Build every coarser level through the uniform Zarr path.
+Build every planned coarser level through the same Zarr payload path, using the
+completed Bridge as the sole first input and each completed Spatial level as the
+sole input to its successor. Preserve nested membership without rereading the
+canonical source or introducing a second overview backend.
 
-#### Work
+The implementation is fresh and isolated under:
 
-- group one through four immediate-finer tile descriptors into each coarser
-  tile;
-- read complete finer tiles through the Zarr reader;
-- implement fresh coordinate-rebasing helpers inside the new package;
-- rebase coordinates into the coarser frame;
-- concatenate candidates and sample once at the coarser capacity;
-- leave retained-row `(value_id, point_id)` ordering to the common bucket
-  writer after membership selection;
-- plan and write every spatial bucket with the common bucket primitive;
-- use the same flow for the terminal overview;
-- build levels strictly from their immediate predecessor;
-- enforce per-tile capacities, nested `point_id` membership, and the overview
-  budget;
-- never reread the canonical source.
+```text
+src/napari_harpy/core/multi_scale_cache_points_zarr/writer/spatial.py
+tests/multi_scale_cache_points_zarr/test_spatial_writer.py
+```
+
+It may reuse only this package's build plans, descriptors, payload, sampler,
+hashing, reader cache, bucket reader/writer, and storage results. It must not
+import the Parquet-backed spatial writer or any existing writer-support module.
+
+#### Writer API and execution settings
+
+Define a Spatial-specific physical configuration:
+
+```text
+_SpatialWriterConfig
+  zarr_settings: _ZarrWriteSettings
+  max_open_finer_readers: int | None = None
+```
+
+`None` retains one entered reader for every nonempty physical bucket of the
+current immediate-finer level. An explicit positive integer imposes a stricter
+bound and is clamped to that level's actual nonempty bucket count. Reader caches
+are scoped to one level: every finer-level reader is closed before the next
+completed Spatial level becomes the input. The cache retains initialized Zarr
+readers and metadata only, never decoded chunks or point payloads.
+
+The construction entry point is:
+
+```text
+_write_spatial_levels(
+    bridge_result,
+    plan,
+    *,
+    staging_root,
+    config,
+) -> tuple[_LevelWriteResult, ...]
+```
+
+Return completed Spatial results in ascending serialized-level order. If Bridge
+is already the terminal planned level, require its observed count to fit
+`overview_point_budget` and return an empty tuple. An Exact-only plan is handled
+by the future end-to-end coordinator and does not call this entry point.
+
+Use a deterministic sequential coordinator. Do not introduce Dask, output-
+bucket threading, new chunk or shard settings, or intermediate point files in
+Z5. Process output buckets in numeric order and parent tiles within each bucket
+in `(tile_y, tile_x)` order. If later full-scale evidence warrants concurrency,
+add it as a separate explicit bounded policy.
+
+#### Required transition validation
+
+Before opening a finer bucket or creating a coarser directory, require:
+
+- `bridge_result` describes the planned nonempty level-one Bridge;
+- every planned level after Bridge has `_LevelKind.SPATIAL` and immediately
+  follows its finer level;
+- the coarser tile edge is exactly twice the finer edge;
+- each coarser grid dimension is `ceil(finer_dimension / 2)`;
+- both level results and descriptors lie inside their planned grids;
+- the coarser level has a positive per-tile capacity and a non-increasing
+  point-count upper bound;
+- `staging_root` and the complete finer-level directory exist;
+- the coarser output directory is absent.
+
+The build-plan dataclasses already reject these inconsistencies globally. The
+writer repeats the transition-local requirements at its trust boundary so a
+standalone internal call fails before opening input or creating output.
+
+#### Descriptor-only parent planning
+
+Introduce a small immutable planning record:
+
+```text
+_CoarserTileInput
+  tile_x: int
+  tile_y: int
+  finer_descriptors: tuple[_TileDescriptor, ...]
+
+  candidate_count = sum(descriptor.n_points)
+```
+
+Each nonempty finer descriptor maps to exactly one parent:
+
+```text
+coarser_tile_x = finer_tile_x // 2
+coarser_tile_y = finer_tile_y // 2
+```
+
+Group one through four nonempty immediate-finer descriptors per parent. Missing
+or empty edge tiles are absent rather than represented by placeholders. Require
+contributors to be unique, inside the finer grid, mapped to the stated parent,
+and ordered by `(tile_y, tile_x)`. This planning phase handles descriptors only;
+it does not open Zarr, allocate point arrays, rebase coordinates, or sample.
+
+Route the resulting parent records to coarser output buckets by hashing the
+parent `(tile_x, tile_y)` through the existing versioned tile hash and the
+coarser `_bucket_count_for_level`. Empty planned bucket IDs remain absent. Build
+one `_BucketPlan` per nonempty output bucket with each planned tile count equal
+to:
+
+```text
+min(coarser_tile.candidate_count, coarser_level.max_points_per_tile)
+```
+
+#### Coordinate rebasing contract
+
+Implement the rebasing logic fresh in `writer/spatial.py`. For a finer tile and
+its containing parent:
+
+```text
+quadrant_x = finer_tile_x - 2 * coarser_tile_x  # exactly 0 or 1
+quadrant_y = finer_tile_y - 2 * coarser_tile_y  # exactly 0 or 1
+
+coarser_x_rel = finer_x_rel + quadrant_x * finer_tile_size
+coarser_y_rel = finer_y_rel + quadrant_y * finer_tile_size
+```
+
+The four valid quadrants are:
+
+```text
+finer coordinates             one coarser tile
+
+(2x,   2y)   (2x+1, 2y)       +---------+---------+
+                                |  (0,0)  |  (1,0)  |
+(2x, 2y+1)   (2x+1,2y+1)      +---------+---------+
+                                |  (0,1)  |  (1,1)  |
+                                +---------+---------+
+```
+
+Require finite finer-relative coordinates in the closed interval
+`[0, finer_tile_size]`. Rebased coordinates must be C-contiguous `float32` in
+`[0, coarser_tile_size]`. Copy `value_id` and `point_id` without modification.
+Keep the pure coordinate/quadrant helper in the Spatial writer; do not broaden
+the general `_PointPayload` API solely for rebasing.
+
+#### Bounded tile assembly and sampling
+
+For each parent tile:
+
+1. acquire each contributor's reader from the current level-scoped
+   `_BucketReaderCache`;
+2. call `read_complete(descriptor)` once for each of its one through four
+   contributors;
+3. rebase every contributor into the shared coarser-relative frame;
+4. concatenate the aligned fields in deterministic finer-tile order;
+5. call the fresh value-neutral sampler exactly once with the coarser serialized
+   level, parent coordinates, coarser tile size, and coarser capacity;
+6. take the same selected rows from every aligned field;
+7. pass the retained `_PointPayload` to the common `_BucketWriter`.
+
+Assembly should preallocate the combined aligned arrays from the descriptor-
+derived `candidate_count`, fill them with a checked cursor, and release each
+complete finer payload after copying it. This avoids retaining four decoded
+finer payloads plus a second complete concatenation unnecessarily. The
+steady-state coordinator bound is therefore:
+
+```text
+one complete immediate-finer payload
+    + one combined parent-candidate payload
+    + one at-most-capacity retained payload
+    + one active output bucket writer and its shard buffers
+    + bounded entered-reader metadata
+```
+
+Do not materialize a complete finer or coarser level, a complete output bucket
+payload, one Python object per point, or any point-level shuffle. Contributor
+candidate counts are bounded by their planned capacities. The common sampler
+returns unique original candidate-row positions; nested construction from
+disjoint immediate-finer tiles preserves unique `point_id` membership, which
+focused tests and the Gate verify across every assembled parent.
+
+Membership selection remains independent of `value_id`. The sampler returns
+retained original row positions in canonical `point_id` order; `_BucketWriter`
+remains the sole owner of persisted tile-internal `(value_id, point_id)` ordering
+and sparse-range construction.
+
+#### Per-level construction and reconciliation
+
+For each planned Spatial level, perform:
+
+```text
+immediate-finer _LevelWriteResult
+    -> descriptor-only parent groups
+    -> deterministic destination buckets
+    -> one level-scoped finer-reader cache
+    -> read/rebase/assemble/sample one parent at a time
+    -> common Zarr bucket writers
+    -> reconciled coarser _LevelWriteResult
+    -> sole input to the next transition
+```
+
+Fast normal reconciliation operates on finalized results and descriptor facts;
+it does not replay every persisted point or call `_validate_bucket` for every
+bucket during ordinary construction. Require:
+
+- the output coordinate set equals the descriptor-derived nonempty parent set;
+- each parent count equals `min(sum(finer counts), coarser capacity)`;
+- every output descriptor belongs to the planned level and lies inside its grid;
+- bucket, tile, and bucket-local descriptor identities remain unique and
+  ordered through the common result contracts;
+- observed level rows equal the sum of expected parent counts, do not exceed the
+  coarser upper bound, and do not exceed the immediate-finer observed total;
+- the terminal observed count does not exceed `overview_point_budget`.
+
+Focused tests and the Gate independently prove that persisted output
+`point_id` values are a subset of the union of the contributing immediate-finer
+tiles and that coordinates and values agree after applying the specified
+rebasing. Normal reconciliation does not substitute a source-level equivalence
+scan for these bounded construction facts.
+
+#### Overview semantics
+
+Do not introduce `_LevelKind.OVERVIEW`, an overview-specific writer, or a second
+payload format. “Overview” is the role of the terminal planned level:
+
+- Exact is terminal when the validated source already fits the overview budget;
+- Bridge is terminal when its planned and observed output fits the budget;
+- otherwise the last Spatial level is terminal.
+
+The terminal Spatial level is built through the same parent grouping, rebasing,
+sampling, hashing, reader, and writer path as every preceding Spatial level. A
+one-tile terminal level may use the planner-clamped whole-dataset overview
+capacity.
+
+#### Failure and ownership behavior
+
+- `_BucketReaderCache` alone enters, retains, evicts, and closes finer readers.
+- `_BucketWriter` owns active-bucket cleanup and removes its partial Zarr store
+  after read, rebase, sampling, or write failure.
+- A failure in a later bucket or level may leave previously finalized buckets
+  and prerequisite levels in the isolated staging generation; no `COMPLETED`
+  marker exists, and the future end-to-end coordinator owns generation cleanup.
+- Do not delete or mutate the completed immediate-finer level.
+- No source object, Dask collection, or point-payload Parquet path is accepted by
+  a Spatial writer API.
 
 #### Focused tests
 
-- two- and multi-level pyramids;
-- sparse edge regions and every rebasing quadrant;
-- deterministic membership across repeated builds;
-- each level is a subset of its immediate predecessor;
-- all capacities and overview budget;
-- uniform array schemas and backend versions across all levels;
-- multiple buckets and bounded handle lifetime;
-- injected failure at each level.
+- pure quadrant and coordinate rebasing, including closed upper edges and
+  invalid coordinates;
+- parent grouping with one, two, three, and four nonempty contributors;
+- odd finer-grid dimensions, sparse edge regions, missing tiles, invalid parent
+  membership, and duplicate contributors;
+- descriptor-derived candidate counts and planned output counts;
+- deterministic routing with multiple input and output buckets, including empty
+  destination IDs;
+- real reader-cache reuse, bounded explicit capacity, all-bucket default, and
+  closure between successive levels;
+- sparse pass-through and over-capacity sampling with recomputed deterministic
+  membership;
+- exact field preservation by `point_id` after coordinate rebasing;
+- two- and multi-level pyramids whose every level is a subset of its immediate
+  predecessor;
+- terminal Bridge, terminal Spatial, and one-tile capacity-clamped overview
+  plans;
+- every per-tile capacity, level upper bound, and overview budget;
+- uniform array schema, codec, chunk, shard, offset, and sparse-range contracts
+  across Bridge and all Spatial levels;
+- preexisting output, invalid transitions, descriptor/count mismatches, and
+  injected read, rebase, sampling, write, and later-level failures;
+- active partial-bucket cleanup, prerequisite preservation, deterministic reader
+  closure, and absence of point Parquet and `COMPLETED`.
 
 #### Gate Z5
 
-Run a complete small pyramid and the new package's full focused logical and
-storage tests. Inspect the staged directory and prove that every point payload
-under every level is Zarr.
+Run the full focused logical and storage tests and construct one complete small
+pyramid with odd grids, sparse edges, several buckets, every rebasing quadrant,
+and at least two Spatial transitions. Reopen its buckets independently and prove
+the complete nested membership, field rebasing, capacities, overview budget,
+and uniform Zarr storage contract.
+
+Also provide one opt-in full-Xenium run that reuses or constructs current-tree
+Exact and Bridge prerequisites, then constructs all remaining Spatial levels
+once. Record per level:
+
+- construction time and peak incremental RSS;
+- input candidate, output point, nonempty tile, bucket, range, shard, and
+  filesystem-object counts;
+- maximum contributing parent-candidate count and maximum output tile count;
+- configured and peak entered finer readers;
+- compressed bytes by array and total level size.
+
+Reopen every Spatial bucket through `_validate_bucket`. Independently verify
+descriptor-derived parent coordinates and counts, immediate-predecessor
+`point_id` nesting, retained field equality under rebasing, deterministic
+sampler membership for representative sparse, dense, edge, and terminal tiles,
+and the final overview budget. Confirm that construction never reads the
+canonical source and writes no point Parquet.
+
+This is one current-format engineering gate, not a backward-compatibility run,
+a Parquet comparison, an exhaustive source-equivalence replay, or a fixed
+numerical benchmark threshold. The complete pyramid must be correct,
+deterministic, practically fast, and memory bounded before Z6 freezes final
+artifact contracts.
 
 #### Exit criteria
 
-- all planned levels are written by the fresh package;
-- the construction path contains no point-level Parquet reader or writer;
-- Exact, Bridge, spatial, and overview share one storage contract.
+- every planned Spatial level is built only from its completed immediate
+  predecessor and returned in serialized order;
+- parent grouping, rebasing, membership, capacities, and terminal overview
+  accounting are independently correct;
+- construction has explicit tile-memory and reader-lifetime bounds and closes
+  resources deterministically on success and failure;
+- the construction path contains no source reread or point-level Parquet reader
+  or writer;
+- Exact, Bridge, Spatial, and terminal overview payloads share one physical Zarr
+  contract;
+- the small-pyramid and full-Xenium gates establish that Z6 can freeze one
+  complete hybrid cache format without unresolved level-construction behavior.
 
 ### Slice Z6: freeze final cache-format and artifact contracts
 
