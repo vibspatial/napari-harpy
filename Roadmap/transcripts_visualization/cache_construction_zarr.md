@@ -2211,6 +2211,18 @@ is valid and exercises the strictest reader lifetime bound. The cache retains
 initialized Zarr readers and metadata, never decoded point chunks or complete
 point payloads.
 
+This reader reuse materially accelerates Bridge construction; it is not only a
+metadata convenience. Bridge output-bucket order revisits Exact buckets in an
+interleaved pattern. In the full-Xenium profile, retaining 16 readers caused
+5,597 reader misses and 5,581 evictions, while retaining all 69 Exact readers
+caused only the initial 69 misses and no evictions. Bridge construction fell
+from 139.05 seconds to 99.63 seconds (28.4%), and time attributed to reader-cache
+lookup and admission fell from 31.84 seconds to 2.12 seconds. These measurements
+justify the default policy; they are profiling observations, not numerical
+acceptance thresholds. The remaining read time is dominated by tile interval
+and point-payload access, which this metadata-reader cache does not attempt to
+store.
+
 The construction entry point is:
 
 ```text
