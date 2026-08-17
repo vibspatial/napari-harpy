@@ -3422,6 +3422,58 @@ Map every range to one typed scratch record:
 (level, value_id, manifest_index, n_points)
 ```
 
+The mapping is explicit rather than inferred from iteration order. Manifest
+construction creates an address map from
+`(level, bucket_id, bucket_tile_index)` to the global `manifest_index`. For
+bucket-local tile `i`, use `ranges/tile_indptr[i:i + 2]` to visit its range
+records. Each range record contributes:
+
+```text
+level          = bucket level
+value_id       = ranges/value_id[j]
+manifest_index = manifest address map[level, bucket_id, i]
+n_points       = ranges/row_count[j]
+```
+
+`ranges/row_start[j]` is not copied into `value_tiles`; it is used with
+`row_count` and `tile_offset` to validate that the range describes the expected
+contiguous physical point rows.
+
+For the three-tile example above, after assigning manifest rows `0`, `1`, and
+`2`, bucket traversal emits:
+
+```text
+tile 0: (level=0, value=0, manifest=0, count=10)
+        (level=0, value=2, manifest=0, count= 3)
+tile 1: (level=0, value=1, manifest=1, count= 8)
+        (level=0, value=2, manifest=1, count= 4)
+tile 2: (level=0, value=0, manifest=2, count= 6)
+```
+
+Sorting those records by `(level, value_id, manifest_index)` produces:
+
+```text
+(0, 0, 0, 10)
+(0, 0, 2,  6)
+(0, 1, 1,  8)
+(0, 2, 0,  3)
+(0, 2, 1,  4)
+```
+
+The final sequential write therefore yields:
+
+```text
+value_tiles/manifest_index = [0,  2, 1, 0, 1]
+value_tiles/n_points       = [10, 6, 8, 3, 4]
+value_tiles/indptr[0]      = [0,  2, 3, 5]
+```
+
+Bucket traversal naturally arrives in approximately
+`(level, bucket, tile, value)` order, while the inverted index requires
+`(level, value, manifest tile)` order. That global transpose is why construction
+uses bounded sorting rather than writing the final arrays directly during
+bucket traversal.
+
 Sort bounded batches by `(level, value_id, manifest_index)` and write temporary
 Zarr run stores with aligned numeric arrays. Temporary runs contain compact
 index records only; no construction stage writes point payload or catalog data
