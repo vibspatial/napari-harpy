@@ -45,7 +45,9 @@ class _BridgeWriterConfig:
         Positive maximum number of entered Exact bucket readers retained by
         Bridge construction. ``None`` retains all nonempty Exact bucket
         readers and is the default. Readers cache initialized metadata, not
-        point chunks or point payloads.
+        point chunks or point payloads. Bridge output order can revisit Exact
+        buckets in an interleaved pattern, so retaining their readers avoids
+        repeatedly reopening the same Zarr arrays and reloading their metadata.
     """
 
     zarr_settings: _ZarrWriteSettings
