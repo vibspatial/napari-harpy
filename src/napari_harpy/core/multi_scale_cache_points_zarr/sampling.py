@@ -147,7 +147,13 @@ def _select_sampled_tile_indices(
 
     # `np.lexsort` treats its final key as primary: group by cell, rank by
     # priority within that cell, and use point ID for an exact priority tie.
-    ordered = np.lexsort((point_id, candidate_priority, candidate_cell_id))
+    ordered = np.lexsort(
+        (
+            point_id,  # tertiary: deterministic tie-break for priority collisions
+            candidate_priority,  # secondary: rank candidates within each cell
+            candidate_cell_id,  # primary: make every cell's candidates contiguous
+        )
+    )
     # Sorting primarily by cell makes each cell contiguous, for example
     # [0, 0, 2, 2, 2]. Adjacent comparisons then produce group starts [0, 2].
     ordered_cell_id = candidate_cell_id[ordered]
@@ -221,9 +227,9 @@ def _allocate_cell_targets(
     )
     order = np.lexsort(
         (
-            occupied_cell_id,
-            cell_priority,
-            -remainders[occupied_cell_id.astype(np.intp)],
+            occupied_cell_id,  # third and final tie-breaker: numeric cell ID
+            cell_priority,  # second tie-breaker: versioned pseudo-random priority
+            -remainders[occupied_cell_id.astype(np.intp)],  # primary: largest remainder first
         )
     )
     base[occupied_cell_id[order[:remaining]].astype(np.intp)] += 1
