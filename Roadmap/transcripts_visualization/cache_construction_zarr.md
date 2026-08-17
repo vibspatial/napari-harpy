@@ -3496,6 +3496,31 @@ bucket range records
     -> write globally ordered final value_tiles arrays
 ```
 
+Combining runs is a buffered k-way merge, not concatenation. For example:
+
+```text
+run A: (value 0, manifest 0), (value 1, manifest 1), (value 2, manifest 0)
+run B: (value 0, manifest 2), (value 2, manifest 1)
+
+merged:
+       (value 0, manifest 0), (value 0, manifest 2),
+       (value 1, manifest 1),
+       (value 2, manifest 0), (value 2, manifest 1)
+```
+
+Each open run reader loads contiguous slices of at most
+`count_merge_batch_rows` into a memory buffer. A priority queue contains only
+the current unconsumed head key from each run, ordered by
+`(level, value_id, manifest_index, run_id)`. Pop the smallest head, append its
+record to the bounded output buffer, advance only that run, and insert its next
+head. Refill a run buffer with its next contiguous Zarr slice only when that
+buffer is exhausted. Flush a full output buffer as one sequential slice write.
+Intermediate passes preserve all four scratch fields in the next run; the final
+pass writes only `manifest_index` and `n_points`, while level/value boundaries
+become `indptr`. `run_id` makes queue ordering deterministic but is not
+persisted and cannot legitimize equal logical keys; an emitted key equal to the
+preceding key is a duplicate error.
+
 The merge never opens more than `max_open_count_runs` inputs at once. If there
 are more runs, first merge bounded groups into larger intermediate runs and
 repeat until one globally ordered stream remains. Memory is bounded by the
@@ -3507,12 +3532,14 @@ duplicate detection, strictly increasing manifest indexes within each
 
 The final array length `M` is known from the sum of finalized bucket
 `range_count` values. Preallocate final shapes once. While streaming the final
-merge, fill empty and nonempty `indptr` segments, require strictly increasing
-manifest indexes within each `(level, value_id)` segment, require pointer
-continuity between adjacent level rows, reject a duplicate
-`(level, value_id, manifest_index)` rather than combining it, and write aligned
-output batches sequentially. Multiple passes bound memory and open stores.
-Remove the unique scratch directory in `finally` on success and failure.
+merge, record the current output cursor whenever `(level, value_id)` changes.
+That cursor supplies both the preceding segment's stop and the next segment's
+start; skipped empty value segments receive the same cursor at both boundaries.
+Continue through all `L * G` keys so the resulting two-dimensional `indptr`
+also has continuous level-row boundaries. Require strictly increasing manifest
+indexes within each segment and write aligned output batches sequentially.
+Multiple passes bound memory and open stores. Remove the unique scratch
+directory in `finally` on success and failure.
 
 #### Reconciliation before final root attributes
 
