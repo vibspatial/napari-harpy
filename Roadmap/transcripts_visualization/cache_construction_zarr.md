@@ -3474,21 +3474,36 @@ Bucket traversal naturally arrives in approximately
 uses bounded sorting rather than writing the final arrays directly during
 bucket traversal.
 
-Sort bounded batches by `(level, value_id, manifest_index)` and write temporary
-Zarr run stores with aligned numeric arrays. Temporary runs contain compact
-index records only; no construction stage writes point payload or catalog data
-as Parquet.
+This is the principal out-of-core operation in Z6, not an unresolved format
+decision. A small cache could collect every scratch record and perform one
+in-memory `lexsort`, but a production cache may contain millions of nonempty
+tile/value combinations. Construction must not assume that all `M` records fit
+comfortably in RAM.
 
-Merge runs through bounded fan-in and batches:
+A *sorted run* is one bounded batch of at most `count_sort_run_rows` scratch
+records, sorted in memory and persisted as aligned temporary Zarr arrays. Runs
+contain compact index records only; no construction stage writes point payload
+or catalog data as Parquet. Once all bucket ranges have been consumed, merge the
+already sorted runs as streams:
 
 ```text
-bounded bucket-range batches
-    -> sorted temporary Zarr runs
-    -> at most max_open_count_runs per merge group
-    -> globally ordered records
-    -> sequential value_tiles array writes
-    -> value_tiles/indptr
+bucket range records
+    -> collect at most count_sort_run_rows records
+    -> sort one batch by (level, value_id, manifest_index)
+    -> write one temporary sorted Zarr run
+    -> repeat
+    -> merge sorted runs in bounded output batches
+    -> write globally ordered final value_tiles arrays
 ```
+
+The merge never opens more than `max_open_count_runs` inputs at once. If there
+are more runs, first merge bounded groups into larger intermediate runs and
+repeat until one globally ordered stream remains. Memory is bounded by the
+configured input/output batches, and handle use is bounded by the merge fan-in;
+neither grows with `M`. Correctness across run and batch boundaries includes
+duplicate detection, strictly increasing manifest indexes within each
+`(level, value_id)` segment, empty-value pointer filling, and cross-level
+`indptr` continuity.
 
 The final array length `M` is known from the sum of finalized bucket
 `range_count` values. Preallocate final shapes once. While streaming the final
