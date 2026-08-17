@@ -43,22 +43,24 @@ class _BridgeWriterConfig:
         output bucket.
     max_open_exact_readers
         Positive maximum number of entered Exact bucket readers retained by
-        Bridge construction. Readers cache initialized metadata, not point
-        chunks or point payloads.
+        Bridge construction. ``None`` retains all nonempty Exact bucket
+        readers and is the default. Readers cache initialized metadata, not
+        point chunks or point payloads.
     """
 
     zarr_settings: _ZarrWriteSettings
-    max_open_exact_readers: int
+    max_open_exact_readers: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.zarr_settings, _ZarrWriteSettings):
             raise ValueError("`zarr_settings` must be _ZarrWriteSettings.")
-        _require_integer_in_range(
-            self.max_open_exact_readers,
-            "max_open_exact_readers",
-            minimum=1,
-            maximum=_INT64_MAX,
-        )
+        if self.max_open_exact_readers is not None:
+            _require_integer_in_range(
+                self.max_open_exact_readers,
+                "max_open_exact_readers",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
 
 
 def _write_bridge_level(
@@ -144,9 +146,14 @@ def _write_bridge_level(
     )
     level_directory.mkdir(parents=True)
     bucket_results: list[_BucketWriteResult] = []
+    reader_capacity = (
+        exact_result.bucket_count
+        if config.max_open_exact_readers is None
+        else min(config.max_open_exact_readers, exact_result.bucket_count)
+    )
     with _BucketReaderCache(
         staging_root,
-        max_open_readers=config.max_open_exact_readers,
+        max_open_readers=reader_capacity,
     ) as reader_cache:
         for bucket_id in sorted(tiles_by_bucket):
             bucket_results.append(
