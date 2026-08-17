@@ -1,4 +1,4 @@
-# Independent hybrid Parquet/Zarr multiscale points cache
+# Independent Zarr multiscale points cache
 
 Status: implementation roadmap for an isolated production-quality Zarr-backed cache
 
@@ -16,7 +16,7 @@ src/napari_harpy/core/
 
 The new package borrows proven ideas and logical invariants from the existing
 implementation, but it is not a refactor of that implementation. It starts with
-fresh models, planning, writers, readers, validation, artifact construction, and
+fresh models, planning, writers, readers, validation, catalog construction, and
 orchestration.
 
 The existing `multi_scale_cache_points` package remains unchanged while the new
@@ -124,8 +124,8 @@ primitive and Xenium evidence establish what is required.
 6. Avoid scanning mixed-value point payloads for selected-value reads.
 7. Keep construction memory bounded at a materialized Exact bucket or a small
    number of immediate-finer tiles, never a complete level.
-8. Independently validate the final Zarr stores and compact Parquet indexes
-   before publication.
+8. Independently validate the complete Zarr hierarchy, catalog arrays, and
+   cross-index accounting before publication.
 9. Keep the new implementation understandable and maintainable in isolation,
    even when that duplicates logic from `multi_scale_cache_points`.
 
@@ -139,7 +139,7 @@ primitive and Xenium evidence establish what is required.
 - Do not create one Zarr store, group, array, or chunk per logical tile or gene.
 - Do not use a dense `n_tiles x (n_values + 1)` value-offset matrix initially.
 - Do not use `ZipStore`, experimental rectilinear chunks, or a level-global
-  mutable Zarr array.
+  mutable point-payload Zarr array. Fixed final catalog arrays are permitted.
 - Do not change value-neutral sampling into per-value sampling or clustering.
 - Do not implement the full Phase 2 napari scheduler, renderer, or CPU/GPU LRU
   cache here.
@@ -157,7 +157,7 @@ multi_scale_cache_points_zarr/
   hashing.py                # fresh deterministic tile/bucket helpers
   sampling.py               # fresh value-neutral sampler implementation
   payload.py                # storage-neutral in-memory point payload
-  cache_format.py           # metadata and final Parquet schemas
+  cache_format.py           # root attributes and catalog-array contracts
 
   storage/
     __init__.py
@@ -166,14 +166,16 @@ multi_scale_cache_points_zarr/
     bucket_writer.py        # create and finalize one Zarr bucket
     bucket_reader.py        # complete and selected tile reads
     bucket_validation.py    # independent structural bucket validation
+    catalog_writer.py       # fixed final cache-wide Zarr catalog arrays
+    catalog_reader.py       # strict root metadata and catalog-array reads
 
   writer/
     __init__.py
     exact.py                # canonical source -> Exact Zarr buckets
     bridge.py               # Exact Zarr -> Bridge Zarr
     spatial.py              # finer Zarr -> coarser Zarr
-    artifacts.py            # values/manifest/tile-value-count artifacts
-    staging_validation.py   # complete cross-artifact validation
+    catalog.py              # source/results -> root attributes and catalog
+    staging_validation.py   # complete hierarchy and cross-index validation
     build.py                # guards, staging, composition, publication
 ```
 
@@ -199,7 +201,7 @@ fresh logical construction     Zarr storage primitive
           |                        |
           +------------+-----------+
                        v
-              artifacts and validation
+               catalog and validation
                        |
                        v
                  guarded publication
@@ -252,7 +254,7 @@ imports.
 - Bridge and spatial level construction;
 - all writer-result and tile-descriptor models;
 - all Zarr read, write, and validation code;
-- final artifact construction;
+- final Zarr catalog construction;
 - staged validation, builder composition, and publication;
 - all tests of derived-cache behavior.
 
@@ -268,35 +270,53 @@ the new package and must not create cross-writer dependencies.
     <points_name>/
       points.parquet                         # canonical source, unchanged
       transcripts_vis_zarr/                  # Harpy-owned derived cache
-        metadata.json
-        values.parquet
-        manifest.parquet
-        tile_value_counts.parquet
+        zarr.json                            # root group + semantic attributes
+        values/
+          zarr.json
+          n_points/                          # exact source counts by value_id
+        manifest/
+          zarr.json
+          level_indptr/
+          bucket_id/
+          bucket_tile_index/
+          tile_x/
+          tile_y/
+          n_points/
+        value_tiles/
+          zarr.json
+          indptr/                            # (level, value_id) -> entries
+          manifest_index/                    # entry -> manifest row
+          n_points/                          # entry count
         levels/
+          zarr.json
           level_0/
+            zarr.json
             bucket-000.zarr/
             bucket-001.zarr/
           level_1/
+            zarr.json
             bucket-000.zarr/
           level_n/
+            zarr.json
             bucket-000.zarr/
         COMPLETED
 ```
 
 The final cache directory name is intentionally deferred until the public
 integration decision. During isolated development it must not collide with the
-existing derived-cache path. Every `bucket-<id>.zarr` is an independent Zarr v3
-`LocalStore`.
+existing derived-cache path. The cache root is one Zarr v3 group whose
+attributes contain the small semantic contract. `values`, `manifest`, and
+`value_tiles` are ordinary child groups containing typed numeric arrays.
 
-Parquet is used only for:
+Every `bucket-<id>.zarr` remains independently openable as a Zarr v3
+`LocalStore`, while its `zarr.json` also makes it a child group at that path when
+the complete cache root is opened as one hierarchy. Ancestor `levels` and
+`level_<n>` group metadata are written once; independent bucket writers never
+mutate shared parent metadata.
 
-- the canonical source;
-- `values.parquet`;
-- `manifest.parquet`;
-- `tile_value_counts.parquet`.
-
-There is no point-payload Parquet file and no construction-only point-payload
-Parquet stage.
+Parquet is used only for the canonical source. No derived-cache metadata,
+catalog, count index, or point payload is persisted as Parquet. `COMPLETED`
+remains a separate publication marker rather than a Zarr attribute.
 
 ## Storage-neutral point payload
 
@@ -320,9 +340,9 @@ Z1. The contract requires:
 - at least one row for a stored tile.
 
 Sampling and rebasing operate on this payload. The Zarr writer converts the two
-coordinate arrays to `location[:, 0:2]`. Arrow remains appropriate for the
-canonical value table and final compact Parquet indexes, but is not the point
-interchange boundary.
+coordinate arrays to `location[:, 0:2]`. Arrow remains the validated canonical
+source-table boundary but is neither the point interchange boundary nor a
+persisted derived-cache catalog format.
 
 ## Logical tile descriptor
 
@@ -346,7 +366,8 @@ only from `level` and `bucket_id`.
 point offset, chunk number, shard number, or Parquet row group. Physical point
 offsets remain inside the Zarr store.
 
-Descriptors are construction results and later become manifest rows. They must
+Descriptors are construction results and later become rows in the typed
+`manifest` catalog arrays. They must
 be unique by `(level, tile_x, tile_y)` and by
 `(bucket_path, bucket_tile_index)`. Within one bucket they are ordered by
 `(tile_y, tile_x)` and indexed exactly `0..K-1`.
@@ -395,8 +416,9 @@ codec_id               = "zstd-v1"
 ```
 
 These exact keys and value encodings are part of payload schema version 1.
-NumPy scalar objects are not written as attributes. Semantic cache metadata
-remains in `metadata.json`.
+NumPy scalar objects are not written as attributes. Cache-wide semantic
+metadata lives in the cache root group's Zarr v3 attributes, not in an external
+JSON sidecar.
 
 Chunk and shard shapes are deliberately not duplicated in the root attributes.
 Each array's Zarr v3 metadata is the authoritative source for its physical
@@ -427,13 +449,13 @@ Required invariants:
 - `tile_offset.shape == (K + 1,)`;
 - `tile_offset[0] == 0` and `tile_offset[-1] == N`;
 - offsets are strictly increasing because empty tiles are omitted;
-- the interval length equals the descriptor and manifest `n_points`;
-- the manifest coordinates for bucket-local index `i` equal `tile_x[i]` and
-  `tile_y[i]`.
+- the interval length equals the descriptor and manifest-catalog `n_points`;
+- the manifest-catalog coordinates for bucket-local index `i` equal `tile_x[i]`
+  and `tile_y[i]`.
 
-The coordinate arrays deliberately duplicate the manifest coordinates. This
-small duplication lets independent validation detect a permuted or mislabeled
-manifest.
+The coordinate arrays deliberately duplicate the manifest-catalog coordinates.
+This small duplication lets independent validation detect a permuted or
+mislabeled catalog row.
 
 ### Sparse value ranges and `tile_indptr`
 
@@ -492,7 +514,7 @@ Required invariants:
 - ranges cover the corresponding tile interval without gaps or overlaps;
 - the point-level `value_id` array is constant and equal to the range value over
   each range;
-- range counts reconcile with `tile_value_counts.parquet`.
+- range counts reconcile with the cache-wide `value_tiles` CSR arrays.
 
 This sparse representation is the Harpy equivalent of Xenium's gene-offset
 idea without a dense tile-by-gene matrix.
@@ -551,11 +573,13 @@ range_chunk_rows = 8,192
 range_shard_rows = 131,072       # 16 range chunks
 ```
 
-They are not frozen until Slice Z3 records Exact-level evidence. This is
-benchmark-guided configuration selection, not permission for a temporary or
-lower-quality implementation. At these values, the three aligned point shard
-buffers occupy approximately 2.5 MiB in aggregate, and the three aligned range
-shard buffers occupy approximately another 2.5 MiB.
+The Z3 through Z5 full-Xenium gates retained these values as the initial
+production defaults. Z6 records the actual common values in metadata and
+requires every bucket in a generation to agree; the numeric sizes remain a
+tunable physical profile rather than part of the logical cache-schema identity.
+At these values, the three aligned point shard buffers occupy approximately 2.5
+MiB in aggregate, and the three aligned range shard buffers occupy approximately
+another 2.5 MiB.
 
 Writers buffer aligned point fields across logical tile boundaries and flush
 complete `point_shard_rows` blocks where possible. The final partial shard is
@@ -602,64 +626,154 @@ zstd-v1
 Unknown codec IDs are rejected. The roadmap does not add or freeze a direct
 Zarr constraint in `pyproject.toml` at this stage.
 
-## Compact Parquet indexes
+## Cache-wide Zarr catalog
 
-### `values.parquet`
+The cache root is a Zarr v3 group. Small, generation-wide semantic facts live in
+its JSON-serializable attributes. Potentially large or sliceable indexes remain
+typed Zarr arrays rather than being embedded in attributes or written as JSON
+tables.
 
-```text
-value_id: uint32
-value: string
-n_points: uint64
-```
+This follows the useful Xenium distinction: versions, dataset identity, value
+labels, and grid summaries are attributes; scalable point, offset, and sparse
+index structures are arrays. A separate `manifest.json` would still require a
+complete verbose JSON parse and would not solve the much larger value-to-tile
+index.
 
-Rows are ordered by `value_id`. Counts are exact canonical-source totals.
+### Values
 
-### `manifest.parquet`
-
-One row describes one nonempty logical tile:
-
-```text
-level: int16
-bucket_id: uint32
-bucket_path: string
-bucket_tile_index: uint32
-tile_x: uint32
-tile_y: uint32
-n_points: int64
-```
-
-Rows are sorted by `(level, tile_y, tile_x)`. The manifest maps a logical tile
-to its bucket and bucket-local ordinal; it never exposes Zarr offsets, chunks,
-or shards. `bucket_path` is materialized from the descriptor's canonical
-property for direct lookup; it is never accepted as independent construction
-state. Validation recomputes it from `level` and `bucket_id` and requires exact
-equality.
-
-### `tile_value_counts.parquet`
+Canonical value labels are stored once in root attributes as `value_names`, in
+ascending implicit `value_id` order. With `G` values:
 
 ```text
-level: int16
-value_id: uint32
-tile_x: uint32
-tile_y: uint32
-n_points: uint64
+values/n_points       shape=(G,) dtype=uint64
 ```
 
-Rows are sorted by `(level, value_id, tile_y, tile_x)`. They are generated in a
-bounded pass over finalized Zarr range arrays. No construction-only point
-Parquet or per-bucket Parquet count fragment is required.
+`value_id` is the zero-based array position and is not redundantly stored.
+`n_points` contains exact canonical-source totals. Labels are unique, nonempty,
+canonically normalized, and ordered by ascending UTF-8 bytes; counts are
+positive and sum to the Exact point total.
 
-The two value indexes serve different query directions:
+### Manifest catalog
+
+For `L` levels and `T` nonempty logical tiles over all levels:
 
 ```text
-tile_value_counts.parquet
-    selected value -> positive tiles
-
-bucket ranges
-    bucket-local tile -> selected value -> point rows
+manifest/level_indptr         shape=(L + 1,) dtype=uint64
+manifest/bucket_id            shape=(T,)     dtype=uint32
+manifest/bucket_tile_index    shape=(T,)     dtype=uint32
+manifest/tile_x               shape=(T,)     dtype=uint32
+manifest/tile_y               shape=(T,)     dtype=uint32
+manifest/n_points             shape=(T,)     dtype=uint64
 ```
 
-Independent validation requires their keys and counts to agree exactly.
+Manifest rows are globally ordered by `(level, tile_y, tile_x)`.
+`level_indptr[level:level + 2]` gives the half-open manifest-row interval for
+one level, so the non-negative serialized level need not be repeated per row.
+Within that interval, coordinate pairs are unique and ordered by
+`(tile_y, tile_x)`.
+
+The aligned arrays map a logical tile to its bucket and bucket-local ordinal.
+They never expose point offsets, chunks, or shards. `bucket_path` is not stored
+as a string array: it remains the canonical derivation from serialized `level`
+and `bucket_id`. Validation requires every catalog address and coordinate to
+agree with the bucket's compact tile arrays.
+
+### Value-to-tile CSR index
+
+The bucket sparse ranges answer `tile -> value -> point rows`. Runtime planning
+also benefits from the inverse direction, `(level, value) -> positive tiles`,
+especially for selected-value count estimates before point chunks are read.
+
+For `M` nonempty `(level, value_id, tile)` combinations:
+
+```text
+value_tiles/indptr            shape=(L, G + 1)   dtype=uint64
+value_tiles/manifest_index    shape=(M,)         dtype=uint64
+value_tiles/n_points          shape=(M,)         dtype=uint64
+```
+
+For one level and value, entries are:
+
+```text
+start = value_tiles/indptr[level, value_id]
+stop  = value_tiles/indptr[level, value_id + 1]
+
+manifest rows = value_tiles/manifest_index[start:stop]
+counts        = value_tiles/n_points[start:stop]
+```
+
+Every level row is nondecreasing. The final pointer of level `l` equals the
+first pointer of level `l + 1`, because the aligned entry arrays are globally
+ordered by `(level, value_id, manifest_index)`. The first pointer is zero and
+the final pointer of the final level is `M`.
+
+Each segment is strictly ordered by its referenced manifest row. Every
+`manifest_index` points into the matching level interval, and every count is
+positive. This normalized representation does not repeat level, value, tile
+coordinates, or bucket paths on every sparse row.
+
+This cache-wide index does not replace the bucket-local `ranges/tile_indptr`,
+and it does not point directly into the point arrays. Reuse the three tiles from
+the bucket example above and assume that they are manifest rows `0`, `1`, and
+`2` of level `0`:
+
+```text
+manifest row 0 / tile 0: value 0 -> 10 points, value 2 -> 3 points
+manifest row 1 / tile 1: value 1 ->  8 points, value 2 -> 4 points
+manifest row 2 / tile 2: value 0 ->  6 points
+```
+
+Inverting those tile-local ranges gives:
+
+```text
+value 0 -> manifest rows [0, 2], counts [10, 6]
+value 1 -> manifest row  [1],    count  [8]
+value 2 -> manifest rows [0, 1], counts [3, 4]
+
+value_tiles/manifest_index = [0,  2, 1, 0, 1]
+value_tiles/n_points       = [10, 6, 8, 3, 4]
+value_tiles/indptr[0]      = [0,  2, 3, 5]
+```
+
+For example, value `2` at level `0` selects entries `3:5`, which identifies
+manifest rows `0` and `1` before either bucket's point arrays are read. For each
+visible selected manifest row, its `bucket_id` and `bucket_tile_index` locate
+the physical bucket and bucket-local tile. Only then does that bucket's
+`ranges/tile_indptr` locate the value-specific `row_start` and `row_count` in
+the point arrays.
+
+The two sparse pointer layers intentionally serve opposite query directions:
+
+```text
+(level, selected value)
+    -> value_tiles/indptr
+    -> positive manifest rows and counts
+    -> manifest bucket_id + bucket_tile_index
+    -> bucket ranges/tile_indptr
+    -> selected value's exact point rows
+```
+
+`value_tiles` is retained as a derived query accelerator, not because it is
+required for correctness. Without it, a viewport query must locate all visible
+manifest tiles, open their buckets, inspect each tile's sparse value ranges, and
+then discard tiles that do not contain a selected value. With it, the runtime
+can first intersect the visible manifest rows with the positive manifest rows
+for the selected values. Its aligned `n_points` also provides the selected-point
+count needed for LOD budgeting before point payloads or bucket range records are
+read.
+
+The expected benefit is strongest for sparse values across a large viewport,
+where many tiles and potentially entire buckets can be skipped. It is small for
+a zoomed-in viewport, a value present in nearly every tile, or an all-values
+query. The bucket-local sparse ranges remain the authoritative physical index;
+`value_tiles` may always be reconstructed from them and must never be the sole
+record of a tile/value relationship.
+
+Independent validation requires their keys and counts to agree exactly. The
+`value_tiles` arrays retain a Harpy-specific planning feature that is not
+publicly documented in Xenium's transcript store; Xenium can derive tile paths
+directly and inspect each tile's `gene_offset`, whereas Harpy groups logical
+tiles into buckets and performs selected-value-aware point-budget planning.
 
 ## End-to-end construction flow
 
@@ -672,16 +786,17 @@ ParquetPointsSource
   -> Exact Zarr buckets
   -> Bridge Zarr buckets read from Exact Zarr
   -> spatial/overview Zarr buckets read from immediate-finer Zarr
-  -> values.parquet
-  -> manifest.parquet
-  -> tile_value_counts.parquet derived from Zarr ranges
+  -> cache-root Zarr group and semantic attributes
+  -> values and manifest catalog arrays
+  -> value_tiles CSR arrays derived from bucket ranges
   -> independent staged validation
   -> final fresh source-signature guard
   -> COMPLETED
   -> atomic publication
 ```
 
-At no point does the derived point payload pass through Parquet.
+At no point does derived cache state pass through Parquet; only the canonical
+source remains Parquet.
 
 ## Construction flow by level
 
@@ -810,8 +925,8 @@ Any mismatch fails finalization and leaves the staging generation incomplete.
 
 The independent on-disk validator reopens the store without trusting
 `_BucketWriteResult`. It repeats the array-shape, root-attribute, offset, and
-pointer checks. Later cross-artifact validation additionally reconciles the
-manifest descriptor counts with these validated physical counts.
+pointer checks. Later cache-wide validation additionally reconciles the manifest
+catalog counts with these validated physical counts.
 
 Exact can derive its bucket plan from the materialized bucket. Bridge and
 spatial writers derive expected output tile counts from candidate counts and
@@ -823,8 +938,9 @@ level capacities before opening their output bucket.
 
 ```text
 (level, tile_x, tile_y)
-  -> manifest row
-  -> bucket_path, bucket_tile_index
+  -> manifest level interval and coordinate row
+  -> bucket_id, bucket_tile_index
+  -> derive canonical bucket_path
   -> verify bucket tile_x[i], tile_y[i]
   -> tile_offset[i:i+2]
   -> aligned location/value_id/point_id slices
@@ -834,9 +950,10 @@ level capacities before opening their output bucket.
 
 ```text
 selected labels
-  -> values.parquet -> value_ids
-  -> tile_value_counts.parquet -> positive visible tiles
-  -> manifest.parquet -> bucket path and tile index
+  -> root value_names attribute -> value_ids
+  -> value_tiles indptr -> positive manifest rows and counts
+  -> manifest arrays -> bucket ID and bucket-local tile index
+  -> derive canonical bucket path
   -> tile_indptr -> tile's sorted range records
   -> selected value range(s)
   -> only intersecting aligned point-array chunks
@@ -867,7 +984,7 @@ The dependency sequence is:
 | Z3 | Exact source-to-Zarr construction and Xenium Exact gate | Z1–Z2 |
 | Z4 | fresh sampler and Bridge Zarr construction | Z3 |
 | Z5 | fresh rebasing and all spatial/overview Zarr levels | Z4 |
-| Z6 | metadata and compact Parquet indexes | Z3–Z5 |
+| Z6 | root metadata and cache-wide Zarr catalog | Z3–Z5 |
 | Z7 | independent complete-generation validation | Z6 |
 | Z8 | guarded end-to-end build and publication | Z7 |
 | Z9 | acceptance reader and full-Xenium evaluation | Z8 |
@@ -1298,7 +1415,8 @@ range_count: int
 ```
 
 It represents a finalized nonempty store. The complete bucket identity remains
-on the standalone descriptors because they later become manifest rows.
+on the standalone descriptors because they later become aligned manifest
+catalog rows.
 `level` and `bucket_id` are taken from their shared descriptor identity, and
 `bucket_path` is derived canonically from those values. None is duplicated as
 stored result state. Descriptors must all have the same identity; their
@@ -1724,8 +1842,8 @@ existing writer code or intermediate point Parquet.
 
 Z3 owns source annotation, redistribution, Exact bucket planning, and
 coordination of the Z2 storage primitive. It does not implement Bridge or
-spatial sampling, cache indexes, metadata, completion markers, publication, or
-the final cross-artifact validator.
+spatial sampling, the cache-wide catalog, root attributes, completion markers,
+publication, or the final cross-index validator.
 
 #### Files and dependency boundary
 
@@ -2060,7 +2178,7 @@ or factors out its metadata/layout checks without rereading every point row.
   returns to the caller.
 - Z3 never writes `COMPLETED`, publishes a generation, repairs partial output, or
   deletes a caller-owned staging or temporary root.
-- No point-payload or intermediate tile/value-count Parquet file is created.
+- No derived-cache Parquet or standalone JSON sidecar is created.
 
 #### Focused tests
 
@@ -2095,8 +2213,8 @@ or factors out its metadata/layout checks without rereading every point row.
 - injected annotation, shuffle, bucket-write, finalizer, and reconciliation
   failures, with Dask scratch removed and the staging generation left
   unpublished;
-- inspection proving that no derived point Parquet or intermediate
-  tile/value-count file was created.
+- inspection proving that no derived-cache Parquet or standalone JSON sidecar
+  was created.
 
 #### Gate Z3: full-Xenium Exact evaluation
 
@@ -2148,7 +2266,7 @@ and performant, and produce independently valid Exact buckets.
 - construction is bounded by source-row-group, shuffled-bucket, logical-tile,
   shard-buffer, and configured-worker limits rather than complete-level size;
 - the next level can consume Exact only through the Zarr bucket reader;
-- no point-payload or intermediate tile/value-count Parquet artifact exists;
+- no derived-cache Parquet or standalone JSON sidecar exists;
 - Z3 leaves cache artifacts, publication, and complete-generation validation to
   their planned later slices.
 
@@ -2161,7 +2279,7 @@ Construct Bridge Zarr buckets directly from Exact Zarr buckets.
 Z4 owns fresh value-neutral sampling, deterministic Bridge bucket planning,
 bounded Exact-reader reuse, and coordination of the Z2 storage primitive. It
 does not reread the canonical source, implement coarser coordinate rebasing,
-write compact Parquet indexes, publish a generation, or import an existing
+write the cache-wide Zarr catalog, publish a generation, or import an existing
 Parquet-backed writer or sampler.
 
 #### Files and dependency boundary
@@ -2911,7 +3029,7 @@ This is one current-format engineering gate, not a backward-compatibility run,
 a Parquet comparison, an exhaustive source-equivalence replay, or a fixed
 numerical benchmark threshold. The complete pyramid must be correct,
 deterministic, practically fast, and memory bounded before Z6 freezes final
-artifact contracts.
+catalog contracts.
 
 #### Exit criteria
 
@@ -2926,53 +3044,516 @@ artifact contracts.
 - Exact, Bridge, Spatial, and terminal overview payloads share one physical Zarr
   contract;
 - the small-pyramid and full-Xenium gates establish that Z6 can freeze one
-  complete hybrid cache format without unresolved level-construction behavior.
+  complete Zarr cache format without unresolved level-construction behavior.
 
-### Slice Z6: freeze final cache-format and artifact contracts
+### Slice Z6: freeze final cache-format and catalog contracts
 
 #### Goal
 
-Define the complete hybrid cache contract and write its compact indexes.
+Freeze the first complete Zarr-only derived-cache contract and write its root
+attributes and cache-wide typed catalog arrays from validated source facts and
+completed level results. After this slice, one unpublished staging generation
+is self-describing without retaining writer objects or reading point payload
+arrays.
 
-#### Work
+Z6 owns root-group creation, cache-format models, catalog construction, and
+writer-time reconciliation. It does not own independent publication validation,
+completion, publication, runtime level selection, or runtime LOD/render-budget
+policy; those remain Z7 through Z9 responsibilities.
 
-- implement exact metadata and Arrow schemas in `cache_format.py`;
-- freeze the payload/backend identifiers and selected physical settings after
-  the Z3 evidence;
-- write `values.parquet` from the canonical validated value table;
-- write `manifest.parquet` from all level descriptors;
-- derive `tile_value_counts.parquet` in a bounded pass over finalized bucket
-  range arrays;
-- reject duplicate logical tiles and tile/value keys;
-- reconcile artifact totals with bucket attributes and offsets;
-- write deterministic `metadata.json` containing source signature, build plan,
-  level summaries, artifact paths, physical settings, and generation identity;
-- do not write `COMPLETED`.
-
-The first schema version is chosen only after verifying that no incompatible
-completed format used the same identifier. Metadata includes a required backend
-identifier such as:
+The implementation remains isolated under:
 
 ```text
-harpy-zarr-v3-bucket-sparse-value-ranges-v1
+src/napari_harpy/core/multi_scale_cache_points_zarr/
+  cache_format.py
+  storage/catalog_writer.py
+  storage/catalog_reader.py
+  writer/catalog.py
+
+tests/multi_scale_cache_points_zarr/
+  test_cache_format.py
+  test_catalog_writer.py
+  test_catalog_reader.py
 ```
+
+All Zarr opening, array creation, compact-index iteration, and physical layout
+validation remain storage responsibilities. `writer/catalog.py` coordinates
+validated facts and level results through those storage APIs; it must not reach
+through private Zarr group or array handles owned by another object.
+
+#### Xenium-aligned metadata policy
+
+Follow the same broad division used by Xenium's visualization store:
+
+- small versions, identities, semantic settings, value labels, and level
+  summaries are Zarr group attributes;
+- scalable, typed, or sliceable structures are Zarr arrays;
+- sparse indexes use `indptr` plus aligned data arrays;
+- Parquet remains a canonical analysis/source format, not an internal
+  visualization-catalog format.
+
+The public Xenium transcript-store specification places versions, dataset
+identity, gene names, grid keys, and grid counts in Zarr attributes, while
+transcript fields, `gene_offset`, and sparse density CSR structures are arrays:
+[10x Xenium Zarr output format](https://www.10xgenomics.com/support/software/xenium-onboard-analysis/latest/advanced/xoa-output-zarr).
+Zarr v3 stores a group's JSON-compatible user attributes in that group's
+`zarr.json`: [Zarr v3 core specification](https://zarr-specs.readthedocs.io/en/latest/v3/core/v3.0.html).
+
+Do not add `metadata.json` or `manifest.json`. Zarr v3 already serializes group
+attributes in `zarr.json`; a separate JSON manifest would be verbose, untyped,
+and all-or-nothing to parse. Do not add final derived-cache Parquet sidecars.
+
+#### Three independent version identities
+
+Do not use one version for three compatibility boundaries. Freeze:
+
+```text
+cache schema version
+    harpy-multiscale-points-zarr-cache-0.1
+
+backend identifier
+    harpy-zarr-v3-bucket-sparse-value-ranges-v1
+
+bucket payload schema version
+    1
+```
+
+The cache schema version identifies the root-attribute and catalog-array
+contract. The backend identifier selects the bucket family. The integer payload
+version remains the root-attribute contract of each bucket. The initial reader
+supports only these versions and fails closed on unknown values; it does not
+guess another cache family or fall back to the existing backend.
+
+#### Cache-format module boundary
+
+`cache_format.py` owns:
+
+- cache, backend, catalog, and group-path constants;
+- exact root-attribute keys and typed metadata models;
+- catalog array names, dtypes, dimensionality, ordering, and pointer semantics;
+- normalized cache-relative POSIX path validation;
+- version and supported-storage-profile validation.
+
+It performs no filesystem I/O, imports no level writer, and does not open Zarr.
+Zarr-Python owns JSON encoding of `zarr.json`; the application contract is the
+exact parsed attribute values, not byte ordering of the metadata document.
+
+#### Root-group attributes
+
+Create the staging root as a Zarr v3 group. Its `attributes` object has exactly
+these top-level keys:
+
+```text
+schema_version
+cache_generation_id
+created_by
+backend
+source
+geometry
+build
+levels
+value_names
+catalog
+```
+
+The nested value types and structure are:
+
+```json
+{
+  "schema_version": "harpy-multiscale-points-zarr-cache-0.1",
+  "cache_generation_id": "00000000-0000-0000-0000-000000000000",
+  "created_by": {
+    "package": "napari-harpy",
+    "version": "0.0.0"
+  },
+  "backend": {
+    "identifier": "harpy-zarr-v3-bucket-sparse-value-ranges-v1",
+    "zarr_format": 3,
+    "payload_schema_version": 1,
+    "point_order": ["tile_y", "tile_x", "value_id", "point_id"],
+    "coordinate_encoding": "tile-relative-xy-float32-v1",
+    "codec_id": "zstd-v1",
+    "point_chunk_rows": 4096,
+    "point_shard_rows": 131072,
+    "range_chunk_rows": 8192,
+    "range_shard_rows": 131072
+  },
+  "source": {
+    "points_name": "transcripts",
+    "element_path": "points/transcripts",
+    "row_count": 136578750,
+    "columns": {"x": "x", "y": "y", "value": "gene"},
+    "selected_schema": [
+      {
+        "role": "x",
+        "name": "x",
+        "nullable": false,
+        "type": {"kind": "float", "bit_width": 32}
+      },
+      {
+        "role": "y",
+        "name": "y",
+        "nullable": false,
+        "type": {"kind": "float", "bit_width": 32}
+      },
+      {
+        "role": "value",
+        "name": "gene",
+        "nullable": false,
+        "type": {"kind": "string", "offset_width": 32}
+      }
+    ],
+    "signature_method": "harpy-parquet-source-inventory-sha256-v1",
+    "signature": "...",
+    "value_normalization_method": "harpy-string-trim-unicode-white-space-case-sensitive-v1",
+    "point_id_policy": "harpy-source-file-row-offset-uint64-v1"
+  },
+  "geometry": {
+    "x_origin": 0.0,
+    "y_origin": 0.0,
+    "x_min": 0.0,
+    "x_max": 100000.0,
+    "y_min": 0.0,
+    "y_max": 100000.0,
+    "coordinate_axes": ["x", "y"],
+    "relative_coordinate_dtype": "float32"
+  },
+  "build": {
+    "leaf_tile_size": 512,
+    "overview_point_budget": 100000,
+    "target_points_per_bucket": 2000000,
+    "bucket_hash_method": "harpy-zarr-tile-splitmix64-v1",
+    "sampling_method": "harpy-value-neutral-stratified-splitmix64-v1",
+    "sampling_seed": 0,
+    "sampling_microgrid_edge": 16
+  },
+  "levels": [
+    {
+      "level": 0,
+      "kind": "exact",
+      "tile_size": 512,
+      "grid_width": 106,
+      "grid_height": 74,
+      "max_points_per_tile": null,
+      "point_count_upper_bound": 136578750,
+      "bucket_count": 69,
+      "tile_count": 7844,
+      "point_count": 136578750,
+      "range_count": 1000000,
+      "relative_directory": "levels/level_0"
+    }
+  ],
+  "value_names": ["ACTB", "EPCAM", "MALAT1"],
+  "catalog": {
+    "value_count": 3,
+    "level_count": 9,
+    "manifest_row_count": 20000,
+    "value_tile_row_count": 6000000,
+    "values_group": "values",
+    "manifest_group": "manifest",
+    "value_tiles_group": "value_tiles",
+    "manifest_row_order": ["level", "tile_y", "tile_x"],
+    "value_tile_key_order": ["level", "value_id"],
+    "manifest_chunk_rows": 65536,
+    "manifest_shard_rows": 262144,
+    "value_tile_chunk_rows": 65536,
+    "value_tile_shard_rows": 1048576
+  }
+}
+```
+
+Numeric values and labels are illustrative; keys, nesting, list order, and JSON
+types are normative. `levels` contains exactly one entry per planned and
+completed level in ascending order. It retains both planned bounds and actual
+bucket, tile, point, and range totals.
+
+`value_names` is the canonical label dictionary in implicit zero-based
+`value_id` order, matching Xenium's use of a root gene-name attribute. Labels
+are suitable for attributes at the expected vocabulary size; exact counts remain
+a typed array. If future vocabularies make the attribute materially large, that
+requires a versioned format decision rather than an implicit string-array
+change.
+
+`source.selected_schema` uses semantic role order `x`, `y`, `value` and the same
+normalized Arrow-type representation as the source signature. Exclude absolute
+host paths, scratch paths, Dask configuration, timings, RSS, and creation time.
+
+The backend records the actual common bucket settings. Every bucket must match.
+Numeric chunk and shard sizes are recorded and cross-validated but are not part
+of the cache schema identifier. `cache_generation_id` is a canonical lowercase
+hyphenated UUID created by Z8 and passed unchanged into Z6.
+
+Write all root attributes in one final `update_attributes` operation after the
+catalog arrays reconcile. The empty root group necessarily has a `zarr.json`
+during catalog construction; nonempty semantic attributes are not a completion
+marker, and `COMPLETED` remains absent.
+
+#### Exact catalog-array contract
+
+All catalog numeric arrays use little-endian core Zarr dtypes, zero fill values,
+default `/` chunk-key separation, and the declared `zstd-v1` profile. Arrays
+and the `values`, `manifest`, and `value_tiles` groups have no user attributes;
+their semantics are frozen centrally by cache schema and root attributes.
+
+Values, for `G` canonical labels:
+
+```text
+values/n_points              shape=(G,)         dtype=uint64
+```
+
+Manifest, for `L` levels and `T` nonempty tiles:
+
+```text
+manifest/level_indptr        shape=(L + 1,)     dtype=uint64
+manifest/bucket_id           shape=(T,)         dtype=uint32
+manifest/bucket_tile_index   shape=(T,)         dtype=uint32
+manifest/tile_x              shape=(T,)         dtype=uint32
+manifest/tile_y              shape=(T,)         dtype=uint32
+manifest/n_points            shape=(T,)         dtype=uint64
+```
+
+Value-to-tile index, for `M` nonempty `(level, value, tile)` combinations:
+
+```text
+value_tiles/indptr           shape=(L, G + 1)   dtype=uint64
+value_tiles/manifest_index   shape=(M,)         dtype=uint64
+value_tiles/n_points         shape=(M,)         dtype=uint64
+```
+
+`values/n_points`, `manifest/level_indptr`, and `value_tiles/indptr` each use
+one unsharded chunk because they are compact pointer/dictionary structures for
+the supported dimensions. The five row-aligned manifest arrays share one row
+chunk/shard layout. The two row-aligned `value_tiles` arrays share a separate
+row chunk/shard layout. Initial writer settings are:
+
+```text
+manifest_chunk_rows    = 65,536
+manifest_shard_rows    = 262,144
+value_tile_chunk_rows  = 65,536
+value_tile_shard_rows  = 1,048,576
+count_sort_run_rows    = 1,000,000
+count_merge_batch_rows = 65,536
+max_open_count_runs    = 32
+```
+
+Tests inject smaller positive multiples. These are tunable recorded physical
+settings, not logical schema identities. Gate Z6 records whether the initial
+values remain practical.
+
+#### Catalog-writer API and preconditions
+
+Implement one level-neutral operation shaped as:
+
+```text
+_write_staged_cache_catalog(
+    validated,
+    plan,
+    level_results,
+    *,
+    staging_root,
+    temporary_directory_root,
+    cache_generation_id,
+    config,
+) -> None
+```
+
+Require before creating root or catalog metadata:
+
+- exact validated source, build plan, level-result, and config contracts;
+- exactly one result per planned level in ascending order;
+- each result's descriptors, geometry, capacities, and totals satisfy its plan;
+- every completed bucket path exists and no additional bucket path is present;
+- bucket metadata and layouts expose one common supported settings profile;
+- staging and temporary roots are existing separate directory trees;
+- root `zarr.json`, `values`, `manifest`, `value_tiles`, `COMPLETED`, and the
+  unique catalog scratch child do not already exist.
+
+The staging root already contains finalized bucket directories. Create group
+metadata for the cache root, `levels`, every `level_<n>`, and the three catalog
+groups without overwriting any bucket. A bucket's existing root `zarr.json`
+simultaneously represents its independently openable `LocalStore` and its child
+group node in the complete hierarchy.
+
+The operation returns `None`. Persisted root attributes and catalog arrays, not
+an in-memory result, are the handoff to Z7.
+
+#### Values and manifest construction
+
+Copy canonical labels from `ValidatedPointsSource.value_table` into root
+`value_names` and exact counts into a fresh contiguous `uint64` array. Revalidate
+contiguous implicit IDs, UTF-8 label order, positive counts, and equality among
+their sum, validated source rows, and Exact points.
+
+Flatten all descriptors in `(level, tile_y, tile_x)` order and assign each one a
+zero-based global `manifest_index`. Reject duplicate logical tile keys and
+duplicate `(level, bucket_id, bucket_tile_index)` addresses. Write the aligned
+manifest arrays and `level_indptr`; do not store `level` or `bucket_path` per
+row because both are derived from pointers and integer identity.
+
+The complete manifest is small relative to payload data and may be assembled in
+memory. Reconcile every row with its result, plan, grid, canonical bucket path,
+bucket-local ordering, and point count before writing.
+
+#### Bounded `value_tiles` construction
+
+Do not materialize all sparse bucket ranges in one table. For each finalized
+bucket in `(level, bucket_id)` order, use a storage-owned bounded iterator that
+reads only:
+
+```text
+root attributes
+tile_x
+tile_y
+tile_offset
+ranges/tile_indptr
+ranges/value_id
+ranges/row_start
+ranges/row_count
+```
+
+It must not decode `location`, point-level `value_id`, or `point_id`. The
+iterator verifies compact identity, pointers, per-tile value order, positive
+counts, contiguous point-row coverage, and descriptor/catalog agreement while
+carrying boundary state across batches.
+
+Map every range to one typed scratch record:
+
+```text
+(level, value_id, manifest_index, n_points)
+```
+
+Sort bounded batches by `(level, value_id, manifest_index)` and write temporary
+Zarr run stores with aligned numeric arrays. Temporary runs contain compact
+index records only; no construction stage writes point payload or catalog data
+as Parquet.
+
+Merge runs through bounded fan-in and batches:
+
+```text
+bounded bucket-range batches
+    -> sorted temporary Zarr runs
+    -> at most max_open_count_runs per merge group
+    -> globally ordered records
+    -> sequential value_tiles array writes
+    -> value_tiles/indptr
+```
+
+The final array length `M` is known from the sum of finalized bucket
+`range_count` values. Preallocate final shapes once. While streaming the final
+merge, fill empty and nonempty `indptr` segments, require strictly increasing
+manifest indexes within each `(level, value_id)` segment, require pointer
+continuity between adjacent level rows, reject a duplicate
+`(level, value_id, manifest_index)` rather than combining it, and write aligned
+output batches sequentially. Multiple passes bound memory and open stores.
+Remove the unique scratch directory in `finally` on success and failure.
+
+#### Reconciliation before final root attributes
+
+Require:
+
+- every catalog group and array has exactly the frozen hierarchy, dtype, shape,
+  layout, codec, fill value, and empty attributes;
+- pointer arrays start at zero, are nondecreasing, and terminate at their
+  declared row totals;
+- every manifest level slice has unique ordered coordinates and valid grid,
+  bucket, and bucket-local identities;
+- every manifest tile has at least one value entry and no value entry references
+  an absent or wrong-level manifest row;
+- each manifest tile's value counts sum to its `n_points`;
+- every bucket contributes exactly its root and result `range_count` records;
+- each level's value counts equal its manifest and result point totals;
+- Exact per-value totals equal `values/n_points`;
+- sampled levels reconcile to their own totals without claiming canonical
+  per-value preservation;
+- level summaries and physical settings in the proposed root attributes equal
+  the reconciled arrays and stores exactly;
+- no final derived-cache Parquet or standalone JSON sidecar exists.
+
+This is writer-time accounting over compact structures. It is not the
+independent Z7 validation pass and does not read or compare every point row.
+
+#### Failure and ownership contract
+
+Z6 writes only inside the unique unpublished staging generation. It never
+overwrites a root/catalog node, writes `COMPLETED`, publishes a path, updates a
+public pointer, rereads canonical point rows, or removes an existing completed
+cache.
+
+The operation closes all catalog and bucket readers and removes its private
+temporary Zarr runs on every exit. A failure may leave an incomplete root group
+or catalog arrays in unpublished staging; Z8 owns removal of the entire failed
+generation. Z6 and Z7 do not repair or resume it.
 
 #### Focused tests
 
-- exact Parquet schemas, nullability, sort order, and deterministic bytes where
-  the writer guarantees them;
-- metadata roundtrip and deterministic JSON;
-- normalized contained paths;
-- manifest/bucket coordinate and count reconciliation;
-- tile/value-count/range equality;
-- unsupported versions and physical settings fail closed.
+- exact separation of cache, backend, and payload versions;
+- root-attribute exact-key parsing, canonical UUIDs, JSON-compatible scalar
+  types, value-label order, absent timestamps/host paths, and unknown versions;
+- root, ancestor, catalog, and existing independent bucket groups forming one
+  discoverable Zarr v3 hierarchy without bucket rewrites;
+- exact catalog group/array names, dtypes, shapes, chunks, shards, codecs, fill
+  values, dimension counts, and empty node attributes;
+- values with invalid labels, counts, implicit IDs, and Exact totals;
+- Exact-only, terminal Bridge, and multi-Spatial manifest pointers and rows;
+- duplicate tile identities, duplicate bucket-local addresses, wrong derived
+  paths, missing/extra buckets, out-of-grid tiles, and count mismatches;
+- compact range iteration across chunks and shards without a point-array read,
+  including batch boundaries inside and between tiles;
+- temporary Zarr run sorting and one- and multi-pass bounded merging with tiny
+  injected limits, duplicate rejection, empty `(level, value)` segments,
+  bounded handles, and scratch cleanup after injected failures;
+- equality among bucket ranges, `value_tiles`, manifest counts, level results,
+  root summaries, and canonical Exact value totals;
+- unsupported codec/payload/layout settings and mixed bucket settings fail
+  closed;
+- absence of derived Parquet, standalone metadata/manifest JSON, point-array
+  reads, `COMPLETED`, publication, and overwrite behavior.
+
+Use real small Z2 buckets for storage and lifecycle claims. Assert semantic root
+attributes and logical array content, not `zarr.json` key ordering or compressed
+bytes.
+
+#### Gate Z6: full-Xenium catalog evaluation
+
+Provide one opt-in current-tree full-Xenium run that constructs or reuses one
+complete valid staging pyramid and writes the Zarr root and catalog once.
+Measure Z6 separately from Exact, Bridge, Spatial, and Z7.
+
+Record:
+
+- catalog construction time and peak incremental and process RSS;
+- value count, manifest rows, and value-tile rows;
+- temporary run count, merge passes, peak simultaneously open stores, and peak
+  bounded batch sizes;
+- bytes, chunks, shards, and filesystem objects by catalog array and in total;
+- root `zarr.json` size, including the complete value-label attribute;
+- reconciled per-level bucket, tile, point, and range summaries;
+- confirmation that no source data page or Zarr point payload array was read and
+  no derived Parquet or standalone JSON sidecar was written;
+- cleanup of all scratch and closure of every Zarr handle.
+
+Reopen the cache root and catalog through the strict Z6 reader and repeat
+hierarchy, attributes, layout, ordering, uniqueness, pointer, and aggregate
+checks. Independently sample representative bucket compact indexes against
+their `value_tiles` entries. Exhaustive source/point equivalence remains an
+opt-in Z7 operation.
+
+This is one current-format engineering evaluation, not a comparison with the
+Parquet-backed cache, a fixed numerical threshold, or a runtime LOD benchmark.
+Catalog construction must be correct, practically fast, and memory bounded
+before Z7 treats it as the publication contract.
 
 #### Exit criteria
 
-- one staged generation is self-describing without writer objects;
-- all compact indexes can be regenerated from validated source facts,
-  descriptors, and finalized Zarr stores;
-- no format decision needed by independent validation remains implicit.
+- one exact versioned Zarr contract covers root metadata, values, manifest,
+  value-to-tile planning, and bucket payloads;
+- one staged generation is self-describing without writer objects or sidecars;
+- the catalog is reproducible from validated source facts, build plan, level
+  results, and compact bucket indexes without point-payload reads;
+- catalog sorting, memory, scratch space, and handles are bounded explicitly;
+- all catalog and physical totals reconcile before final root attributes;
+- no format decision needed by independent Z7 validation remains implicit;
+- the full-Xenium gate establishes that the Zarr-only catalog is viable.
 
 ### Slice Z7: implement independent staged validation
 
@@ -2997,11 +3578,11 @@ creation.
 Z7 therefore has two deliberately separate validation tiers:
 
 1. **Normal publication validation** is mandatory in the Z8 build flow. It
-   reopens and validates metadata, hierarchy, array layouts, compact pointer and
-   index arrays, artifact schemas, paths, counts, versions, and cross-artifact
+   reopens and validates root attributes, hierarchy, array layouts, compact
+   pointer and catalog arrays, paths, counts, versions, and cross-index
    accounting. It must not read every `location`, point-level `value_id`, and
-   `point_id` row, construct a global point-ID bitmap, or rescan canonical source
-   content.
+   `point_id` row, construct a global point-ID bitmap, or rescan canonical
+   source content.
 2. **Exhaustive acceptance/diagnostic validation** is opt-in. It may run the
    complete `_validate_bucket` scan, prove global Exact point-ID coverage with a
    bounded external structure, check cross-level point-ID membership, and
@@ -3018,19 +3599,19 @@ normal publication cost.
 
 Validate, in bounded batches:
 
-- enumerate the bucket stores referenced by the manifest and reopen every
+- enumerate the bucket stores referenced by the manifest catalog and reopen every
   expected physical bucket through a metadata/layout validation path that does
   not decode the complete point payload;
-- metadata, backend version, build plan, and artifact schemas;
-- exact equality between manifest bucket paths and physical stores;
+- root attributes, backend version, build plan, and catalog schema;
+- exact equality between catalog-derived bucket paths and physical stores;
 - Zarr v3 hierarchy, attributes, shapes, dtypes, chunks, shards, and codecs;
-- bucket tile coordinates, offsets, and manifest counts;
+- bucket tile coordinates, offsets, and manifest-catalog counts;
 - compact sparse range keys, ordering, counts, and pointer bounds without
   rereading point-level values during normal validation;
-- equality between range keys/counts and `tile_value_counts.parquet`;
-- Exact per-value totals and `values.parquet`;
+- equality between range keys/counts and `value_tiles` CSR entries;
+- Exact per-value totals and `values/n_points`;
 - level geometry, capacities, and overview budget;
-- absence of unreferenced stores, unexpected point Parquet files,
+- absence of unreferenced stores, unexpected derived Parquet/JSON sidecars,
   construction scratch, and premature `COMPLETED`.
 
 The optional exhaustive entry point additionally owns:
@@ -3052,10 +3633,10 @@ perform a complete point-payload or canonical-source scan.
 #### Focused tests
 
 - valid Exact-only and multilevel generations;
-- missing/extra buckets and artifacts;
+- missing/extra buckets, groups, and catalog arrays;
 - corrupted metadata and backend versions;
 - malformed arrays, offsets, ranges, and attributes;
-- manifest/bucket and range/index mismatches;
+- manifest-catalog/bucket and range/`value_tiles` mismatches;
 - normal-tier capacity, geometry, and overview violations detectable from
   compact persisted facts;
 - exhaustive-tier point-ID duplication, loss, nesting, coordinate, and
@@ -3067,7 +3648,7 @@ perform a complete point-payload or canonical-source scan.
 
 #### Exit criteria
 
-- corruption at every storage or cross-artifact layer fails closed in the
+- corruption at every storage or cross-index layer fails closed in the
   validation tier that owns that semantic check;
 - normal publication validation is memory bounded and avoids complete point and
   source scans;
@@ -3091,7 +3672,7 @@ ValidatedPointsSource
   -> Exact
   -> Bridge
   -> all spatial/overview levels
-  -> final artifacts and metadata
+  -> cache-root attributes and catalog arrays
   -> independent staged validation
   -> final fresh source guard
   -> write COMPLETED
@@ -3115,7 +3696,8 @@ ValidatedPointsSource
 
 - first build and successful replacement;
 - failures before staging and during every major construction phase;
-- failure during artifacts, validation, final guard, completion, and rename;
+- failure during catalog construction, validation, final guard, completion, and
+  rename;
 - preservation of an existing generation;
 - cleanup of incomplete stores and Dask scratch;
 - all handles closed before publication;
@@ -3148,7 +3730,7 @@ read_selected_viewport(level, tile_bounds, value_ids, include_point_id)
 
 The reader must:
 
-- use `tile_value_counts.parquet` to prune zero-count tiles;
+- use `value_tiles/indptr` and `manifest_index` to prune zero-count tiles;
 - group positive visible tiles by bucket and open each bucket once per request;
 - use sparse range records instead of scanning point-level values;
 - read only intersecting coordinate chunks and optional ID chunks;
@@ -3268,11 +3850,11 @@ Zarr primitive
 level writers
   Exact, Bridge, spatial membership and counts
 
-artifacts
-  metadata, manifest, values, tile/value counts
+cache-wide Zarr catalog
+  root attributes, values, manifest, value-to-tile CSR
 
 staged validation
-  independent cross-artifact reconciliation
+  independent hierarchy and cross-index reconciliation
 
 builder
   guards, cleanup, completion, publication
@@ -3302,6 +3884,8 @@ counts belong to opt-in benchmark scripts.
   point.
 - Range arrays may grow only in coarse shard-aligned blocks and are trimmed at
   finalization.
+- Cache-wide `value_tiles` construction uses bounded sorted Zarr runs and a
+  bounded fan-in merge; it never materializes all range records in memory.
 - Small consecutive tiles and their range records are buffered across tile
   boundaries so partially filled point or range shards are not repeatedly
   rewritten.
@@ -3316,7 +3900,8 @@ counts belong to opt-in benchmark scripts.
 - A failure in one bucket invalidates the whole staging generation.
 - This architecture deliberately does not resume or repair partial stores;
   failed staging generations are rebuilt from the canonical source.
-- Independent validation reopens all required artifacts after writers close.
+- Independent validation reopens the complete hierarchy and catalog after
+  writers close.
 - `COMPLETED` is absent throughout construction and validation.
 - The final source guard precedes `COMPLETED` and publication.
 - Readers reject missing completion, unsupported versions, missing stores, and
@@ -3356,9 +3941,17 @@ full-Xenium measurement.
 
 ### Duplicate indexes
 
-`tile_value_counts.parquet` and Zarr sparse ranges intentionally duplicate
-tile/value keys for opposite query directions. Derive the Parquet index from
-finalized ranges and independently validate equality.
+The cache-wide `value_tiles` CSR arrays and bucket sparse ranges intentionally
+duplicate tile/value keys for opposite query directions. Derive `value_tiles`
+from finalized ranges and independently validate exact key/count equality.
+
+### Root-attribute growth
+
+Root attributes contain only small semantic structures and the value-label
+dictionary. Tile rows and value-to-tile rows remain typed arrays. Gate Z6 records
+the root `zarr.json` size; if a future vocabulary makes `value_names` materially
+large, introduce a versioned string-storage contract rather than silently
+placing manifest-like tables in attributes.
 
 ### Zarr API and version stability
 
@@ -3368,13 +3961,15 @@ requirements.
 
 ### Nested Zarr stores inside SpatialData
 
-The derived stores are not SpatialData elements. Use a distinct Harpy-owned
-path, validate containment, and verify that SpatialData operations ignore the
-isolated cache directory.
+The cache root is a Harpy-owned Zarr group, not a SpatialData element. Its bucket
+directories are both independently openable stores and child groups in that
+hierarchy. Use a distinct contained path, validate every ancestor and bucket
+node, avoid consolidated metadata over the complete bucket hierarchy initially,
+and verify that SpatialData operations ignore the isolated cache group.
 
 ### Sparse values distributed everywhere
 
-`tile_value_counts.parquet` cannot prune a rare value present in every visible
+The `value_tiles` CSR index cannot prune a rare value present in every visible
 tile. Viewport clipping, pyramid selection, sparse ranges, and chunk caching
 still bound work, but Z9 must measure this case.
 
@@ -3388,9 +3983,10 @@ The production-candidate evaluation is complete when:
 - Exact contains every source point exactly once;
 - Bridge and spatial membership, nesting, capacities, coordinates, and overview
   budget are correct;
-- every manifest tile resolves to one verified Zarr interval;
+- every manifest-catalog tile resolves to one verified Zarr interval;
 - every nonempty tile/value key resolves to one verified sparse range;
-- final Parquet indexes reconcile with all Zarr stores;
+- root attributes and every cache-wide catalog array reconcile with all bucket
+  stores;
 - independent staged validation fails closed on corruption;
 - construction is bounded, failure-safe, and atomically published;
 - full-Xenium build and read measurements are recorded;
@@ -3398,7 +3994,7 @@ The production-candidate evaluation is complete when:
 
 ## Immediate next slice
 
-Z0, Z1, and Z2 are resolved. Implement Z3 against the standalone bucket
-primitive. Build Exact directly from the validated canonical source into Zarr;
-do not modify or adapt the existing Exact, Bridge, spatial, or writer-support
-modules, and do not introduce a transitional Parquet point reader.
+Z0 through Z5 and their current-tree Xenium construction gates are resolved.
+Implement Z6 as the cache-wide Zarr root and catalog described above. Do not add
+derived Parquet or standalone JSON sidecars, do not alter the completed bucket
+payload contract, and do not introduce runtime LOD behavior before Z9.
