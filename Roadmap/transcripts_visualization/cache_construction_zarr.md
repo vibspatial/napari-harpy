@@ -4140,12 +4140,165 @@ does not open the source. The machine-readable run report is retained at:
 #### Goal
 
 Expose one isolated candidate builder that creates only complete Zarr-backed
-generations.
+generations. Z8 is a lifecycle coordinator over the already implemented Z1--Z7
+primitives; it does not introduce a new point format, sampler, catalog, or
+validation algorithm.
+
+Keep the builder private until Z10 decides whether to adopt this architecture.
+Add:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points_zarr/
+  builder.py
+
+tests/multi_scale_cache_points_zarr/
+  test_builder.py
+```
+
+Do not expose a backend selector through the existing public API and do not
+import or invoke the existing Parquet-backed writer package.
+
+#### Builder API and configuration
+
+Implement one coordinator shaped as:
+
+```text
+_build_points_cache_zarr(
+    validated,
+    *,
+    output_path,
+    temporary_directory_root,
+    config,
+) -> Path
+```
+
+`validated` is the existing canonical `ValidatedPointsSource`. `output_path`
+is an explicit local `Path`; integration may later derive the isolated default
+`points/<points_name>/transcripts_vis_zarr`, but this candidate builder does
+not infer or select a backend. `temporary_directory_root` is an existing
+caller-owned local directory, separate from staging and published output. A
+successful call returns the exact published `output_path`.
+
+Define one frozen `_PointsCacheBuilderConfig` containing:
+
+```text
+leaf_tile_size: int
+overview_point_budget: int
+dask_worker_count: int
+zarr_settings: _ZarrWriteSettings
+catalog_settings: _CatalogWriteSettings
+max_open_exact_readers: int | None = None
+max_open_finer_readers: int | None = None
+```
+
+The logical tile size, overview budget, and Exact worker count remain explicit.
+The builder derives `_ExactWriterConfig`, `_BridgeWriterConfig`, and
+`_SpatialWriterConfig` so callers cannot accidentally provide different Zarr
+settings to different levels. Use the current evaluated defaults for physical
+storage:
+
+```text
+point_chunk_rows   = 4,096
+point_shard_rows   = 131,072
+range_chunk_rows   = 8,192
+range_shard_rows   = 131,072
+codec_id           = zstd-v1
+```
+
+`_CatalogWriteSettings()` retains its current catalog defaults. Reader bounds
+default to `None`, preserving the measured all-input-buckets metadata-cache
+policy. Validate the complete coordinator configuration before acquiring any
+output ownership or creating a staging directory.
+
+#### Metadata-only source guards
+
+Add one canonical reusable source-validation helper beside the existing source
+validation code:
+
+```text
+_require_parquet_source_unchanged(validated) -> None
+```
+
+This is the only narrow Z8 addition outside the isolated candidate package. It
+reuses `_read_parquet_source_inventory()` and the versioned source-signature
+builder; it does not decode a Parquet data page. Require the supplied object to
+use the supported signature method, reconstruct a fresh deterministic metadata
+inventory, calculate its signature, and compare it with
+`validated.source_signature`. A mismatch raises a dedicated
+`PointsSourceValidationError` code identifying that the source changed after
+content validation.
+
+The signature already covers the selected element and columns, normalized
+selected schema, relative file inventory, file sizes and modification times,
+file and row-group counts, compressed row-group sizes, and total rows. Do not
+duplicate those fields as a second coordinator-owned comparison contract.
+
+Call the guard twice:
+
+```text
+before planning or staging
+        and
+after independent staged validation, immediately before COMPLETED
+```
+
+The initial guard rejects an already-stale `ValidatedPointsSource`. The final
+guard detects a source change during construction. Exact row-group tasks retain
+their existing decoded-row checks as a third, local read-boundary defense.
+
+#### Output preflight, lock, and staging ownership
+
+Before construction, require:
+
+- exact `Path` inputs and an existing local `output_path.parent`;
+- an existing caller-owned `temporary_directory_root`;
+- output, staging, and temporary roots to be separate directory trees;
+- `output_path` not to be a symbolic link;
+- no unresolved parent creation, cross-filesystem copy, or remote-store
+  publication.
+
+Serialize builders targeting the same output through an atomically acquired
+unique sibling lock:
+
+```text
+<output-name>.build-lock
+```
+
+Acquire the lock before the first source guard and retain it through
+publication and cleanup. A competing or stale lock fails closed and reports its
+path; do not automatically delete an unknown lock. Implement the lock directly
+with an exclusive local-filesystem create primitive rather than relying on a
+transitive dependency. Remove the lock on every ordinary exit.
+
+While holding the lock, preflight an existing output before creating staging:
+
+- an absent output permits a first build;
+- a regular file, symlink, unsupported cache, or incomplete directory is
+  rejected without mutation;
+- a replaceable directory must contain a valid `COMPLETED` marker whose UUID
+  equals its parsed root `cache_generation_id`;
+- opening its root must validate the supported attributes, hierarchy, and
+  catalog array layouts, but need not repeat the complete compact-range scan;
+- suspected incomplete or foreign directories are never silently deleted or
+  repaired by the builder.
+
+Create one canonical lowercase UUID and one absent same-parent staging sibling:
+
+```text
+<output-name>.staging-<cache_generation_id>
+```
+
+Create the staging directory with exclusive semantics. The same parent keeps
+publication on one local filesystem. Pass the UUID unchanged to Z6 as
+`cache_generation_id`. Z8 owns the entire staging generation and removes it
+recursively if it still exists on every failed or successful unwind. Individual
+writers continue to own active partial buckets, readers, and private Dask
+scratch while they are running.
 
 #### Required flow
 
 ```text
 ValidatedPointsSource
+  -> acquire output build lock and preflight existing output
   -> fresh metadata-only source guard
   -> fresh Zarr-cache build plan
   -> unique sibling staging generation
@@ -4156,39 +4309,149 @@ ValidatedPointsSource
   -> independent staged validation
   -> final fresh source guard
   -> write COMPLETED
-  -> atomic local publication
+  -> generation-atomic staged replacement
+  -> release output build lock
 ```
 
-#### Work
+The construction branch is explicit:
 
-- own staging creation, cleanup, replacement, and publication in the new
-  package;
-- preserve an existing completed candidate generation on every failure;
-- close all Dask tasks, Zarr stores, memory maps, and file handles before
-  validation and rename;
-- make `COMPLETED` the final staged write;
-- reject incomplete generations when opening;
-- expose no public backend selector and do not call the existing builder;
-- treat derived cache data as regenerable while preserving product-quality
-  failure and publication guarantees.
+```text
+Exact-only plan
+  -> level_results = (exact_result,)
+
+multilevel plan
+  -> Exact
+  -> Bridge
+  -> zero or more Spatial levels
+  -> level_results = (exact_result, bridge_result, *spatial_results)
+```
+
+Never call the Bridge or Spatial entry points for an Exact-only plan. Build the
+catalog from the complete ordered result tuple, then release all construction
+graphs, readers, and writer scopes before calling `_validate_staged_cache()`.
+The normal validator receives only the staging path and reconstructs its own
+facts; Z8 must not pass writer results or the build plan into validation.
+
+#### Completion marker
+
+`COMPLETED` is the final mutation inside a successfully validated staging
+generation. Its exact UTF-8 contents are:
+
+```text
+<cache_generation_id>\n
+```
+
+Create it exclusively only after staged validation, closure of all storage and
+Dask work, and the successful final source guard. No catalog, Zarr metadata, or
+payload write may follow it. A completion preflight requires a regular file
+containing exactly one canonical UUID plus newline and equality with the root
+`cache_generation_id`; the filename alone is not evidence of completion.
+
+Z8 supplies this small completed-generation preflight for replacement safety.
+The runtime acceptance reader and its missing-marker rejection remain Z9 work.
+
+#### Publication semantics
+
+Use generation-atomic staged replacement, borrowing the proven lifecycle idea
+from the existing cache while implementing it independently in the candidate
+package:
+
+```text
+new staging is complete
+        -> existing output renamed to unique sibling backup, when present
+        -> staging renamed to output
+        -> backup removed after the install commits
+```
+
+Every rename is a same-parent local directory rename. A first publication into
+an absent output is one atomic rename. Portable replacement of an existing
+nonempty directory cannot provide uninterrupted old-or-new visibility through
+one POSIX rename: there is a short interval between the backup and install
+renames when `output_path` is absent. Therefore do not claim uninterrupted
+atomic replacement. The guaranteed property is that no partial or mixed
+generation is ever installed at `output_path`.
+
+If installation of staging fails after moving the old output, immediately
+restore the backup before propagating the error. If rollback itself fails,
+retain the complete old generation at the reported backup path, retain or clean
+the unpublished staging as safely possible, and report both filesystem errors;
+do not delete either recoverable generation. Once staging has successfully
+become `output_path`, publication is committed. A later backup-cleanup failure
+must not remove or roll back the new complete output; leave the complete backup
+with a clear cleanup warning.
+
+This direct-directory contract is preferred for the isolated experiment. True
+uninterrupted atomic switching would require a generation pointer, symlink, or
+platform-specific exchange operation and would change the cache-root contract;
+do not introduce that architecture implicitly in Z8.
+
+#### Failure and cleanup contract
+
+- any failure before publication leaves an existing completed output byte-for-
+  byte and path-for-path unchanged;
+- a failed staging generation is never repaired or resumed and is removed by
+  the coordinator after all nested writers unwind;
+- the caller-owned temporary root remains, while Exact's private shuffle child
+  and all candidate-owned scratch are absent after return or error;
+- all Dask computations are synchronous within the Exact writer, every reader
+  cache and Zarr store exits before validation, and validation closes every
+  reopened handle before the final guard and rename;
+- `COMPLETED` remains absent on every construction, catalog, validation, or
+  final-source-guard failure;
+- the canonical Parquet source is opened read-only and is never mutated;
+- cleanup acts only on the exact uniquely created staging, backup, and lock
+  paths owned by this invocation;
+- no broad glob, unresolved environment variable, or caller-owned directory is
+  a cleanup target.
+
+Derived cache data remain regenerable, but unknown existing outputs fail closed.
+Z8 does not resume partial output, publish in place, update a public backend
+selector, or call the existing builder.
 
 #### Focused tests
 
-- first build and successful replacement;
-- failures before staging and during every major construction phase;
-- failure during catalog construction, validation, final guard, completion, and
-  rename;
-- preservation of an existing generation;
-- cleanup of incomplete stores and Dask scratch;
-- all handles closed before publication;
-- canonical source remains unchanged.
+- builder configuration and path validation before any filesystem mutation;
+- metadata-only source guard accepting an unchanged source and rejecting file,
+  row-group, schema, size, timestamp, and inventory changes without decoding
+  data pages;
+- first Exact-only build and one complete small multilevel build through the
+  real Zarr writers, catalog, staged validator, marker, and rename;
+- successful replacement of a completed generation, UUID agreement among root,
+  marker, and staging identity, and normal backup removal;
+- rejection and preservation of an existing file, symlink, incomplete
+  directory, foreign directory, malformed marker, and marker/root UUID
+  mismatch;
+- competing build lock rejection and ordinary lock cleanup;
+- injected failure at the initial guard, Exact, Bridge, Spatial, catalog,
+  staged validation, final guard, marker creation, backup rename, and staging
+  install rename boundaries;
+- rollback restoring the old completed generation after install failure;
+- failure cleanup removing only the owned staging generation and private Dask
+  scratch while preserving the caller temporary root;
+- proof that all readers, stores, Dask work, and memory maps are closed before
+  validation and publication;
+- before/after canonical source inventory equality and absence of source writes;
+- absence of `COMPLETED` in every unpublished failure tree and absence of mixed
+  Parquet/Zarr derived payloads.
+
+Use real small Parquet sources and Zarr generations for both successful flows.
+Inject failures by replacing coordinator phase callables or rename boundaries;
+do not mock Zarr behavior central to a successful build. Publication helpers
+may be tested independently with small completed directory trees.
 
 #### Exit criteria
 
-- the isolated output path is absent or contains one complete independently
-  validated generation;
-- no mixed or incomplete payload is observable;
-- the end-to-end builder never imports or invokes the existing writer package.
+- after an ordinary return, the isolated output path contains one complete,
+  independently validated generation whose marker matches its root UUID;
+- after an ordinary pre-publication failure, output is absent or the previous
+  completed generation remains unchanged, with no staging or lock artifact;
+- no partial or mixed generation is installed at the public output path;
+- publication and rollback guarantees are named accurately rather than
+  claiming an unavailable portable one-rename replacement of a nonempty tree;
+- the source guard detects metadata changes before staging and immediately
+  before completion without repeating the content scan;
+- the end-to-end builder never imports or invokes existing derived-cache writer
+  code and exposes no public backend selector.
 
 ### Slice Z9: implement the acceptance reader and Xenium evaluation
 
