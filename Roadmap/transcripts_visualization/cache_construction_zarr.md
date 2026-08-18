@@ -175,8 +175,16 @@ multi_scale_cache_points_zarr/
     bridge.py               # Exact Zarr -> Bridge Zarr
     spatial.py              # finer Zarr -> coarser Zarr
     catalog.py              # source/results -> root attributes and catalog
-    staging_validation.py   # complete hierarchy and cross-index validation
+    staging_validation.py   # compact publication hierarchy and cross-index validation
     build.py                # guards, staging, composition, publication
+```
+
+Developer-only exhaustive acceptance tooling lives outside the installed
+package:
+
+```text
+scripts/
+  validate_multi_scale_cache_points_zarr_exhaustive.py
 ```
 
 Corresponding tests live under:
@@ -3762,6 +3770,11 @@ treats it as the publication contract.
 
 ### Slice Z7: implement independent staged validation
 
+**Status:** implemented with focused verification and accepted by the
+full-Xenium normal-publication gate on 2026-08-18. Exhaustive whole-cache and
+source-equivalence orchestration is retained only as non-packaged developer
+tooling under `scripts/`.
+
 #### Goal
 
 Validate the publication-critical structure and accounting of a complete
@@ -3780,7 +3793,8 @@ time and was predominantly single-threaded. This is valuable release and format
 evidence, but it is not an acceptable unconditional addition to normal cache
 creation.
 
-Z7 therefore has two deliberately separate validation tiers:
+Z7 therefore distinguishes the production publication gate from optional
+developer tooling:
 
 1. **Normal publication validation** is mandatory in the Z8 build flow. It
    reopens and validates root attributes, hierarchy, array layouts, compact
@@ -3788,17 +3802,18 @@ Z7 therefore has two deliberately separate validation tiers:
    accounting. It must not read every `location`, point-level `value_id`, and
    `point_id` row, construct a global point-ID bitmap, or rescan canonical
    source content.
-2. **Exhaustive acceptance/diagnostic validation** is opt-in. It may run the
-   complete `_validate_bucket` scan, prove global Exact point-ID coverage with a
-   bounded external structure, check cross-level point-ID membership, and
-   compare finalized values and reconstructed coordinates with the canonical
-   source. Use it for format or algorithm changes, release qualification,
-   benchmarks, and investigation of suspected corruption, not every cache
-   build.
+2. **Exhaustive acceptance/diagnostic validation** is a non-packaged script. It
+   may run the complete `_validate_bucket` scan, prove global Exact point-ID
+   coverage with a bounded external structure, check cross-level point-ID
+   membership, and compare finalized values and reconstructed coordinates with
+   the canonical source. Use it for format or algorithm changes, release
+   qualification, benchmarks, and investigation of suspected corruption, not
+   as a runtime or publication API.
 
 The tiers share low-level parsers and structural checks where useful, but they
-have distinct entry points so the exhaustive path cannot accidentally become a
-normal publication cost.
+have distinct ownership: only the compact validator is installed with
+`napari_harpy`, so the exhaustive path cannot accidentally become a normal
+publication cost or production maintenance contract.
 
 #### Entry points and ownership
 
@@ -3825,27 +3840,20 @@ mismatch raises and leaves the generation unpublished. Z8 is the first
 production consumer and calls this entry point before its final source guard
 and before writing `COMPLETED`.
 
-The separate opt-in entry point is:
+The optional whole-cache diagnostic is the repository script
+`scripts/validate_multi_scale_cache_points_zarr_exhaustive.py`. It first calls
+the installed normal validator, then composes private bucket readers and
+validation primitives. Without source arguments it checks complete on-cache
+payload, point-ID, and cross-level facts. Supplying the source SpatialData path,
+points name, and selected columns additionally enables freshly validated
+source-row equivalence.
 
-```python
-_validate_staged_cache_exhaustive(
-    staging_root: Path,
-    *,
-    validated: ValidatedPointsSource | None,
-    temporary_directory_root: Path,
-) -> None
-```
-
-`validated=None` permits complete on-cache payload, point-ID, and cross-level
-checks without canonical-source comparison. Supplying a freshly validated
-source additionally enables source-row equivalence. The exhaustive function
-may call the normal validator as its first step, but the normal validator must
-never call, dispatch to, or infer a request for the exhaustive function.
-
-Neither entry point writes, repairs, removes, or publishes anything. Both open
-all stores read-only and close every handle on success and failure. Keep storage
-layout parsing in `storage/`; keep complete-generation coordination and
-cross-index policy in `writer/staging_validation.py`.
+Neither the production validator nor the developer script writes, repairs,
+removes, or publishes the cache. Both open stores read-only and close every
+handle on success and failure. Keep storage layout parsing in `storage/`; keep
+publication-critical complete-generation coordination in
+`writer/staging_validation.py`; keep global payload/source acceptance
+orchestration in `scripts/` so it is not included in the wheel.
 
 #### Normal publication-validation flow
 
@@ -3933,8 +3941,8 @@ Root metadata and the manifest must independently describe one valid hierarchy:
   from zero in `(tile_y, tile_x)` order.
 
 These are compact catalog checks. They prove geometry and count consequences of
-construction, not sampled point membership; the exhaustive tier owns
-point-level membership.
+construction, not sampled point membership; the developer-only exhaustive tool
+owns point-level membership diagnostics.
 
 #### Exact compact cross-index comparison
 
@@ -3991,7 +3999,7 @@ Validate, in bounded batches:
 - absence of unreferenced stores, unexpected derived Parquet/JSON sidecars,
   construction scratch, and premature `COMPLETED`.
 
-The optional exhaustive entry point additionally owns:
+The optional exhaustive developer script additionally owns:
 
 - complete bucket payload validation, including sparse-range agreement with
   point-level values;
@@ -4003,16 +4011,17 @@ The optional exhaustive entry point additionally owns:
 
 Validation must not load a complete point-payload level or all Exact IDs into
 one Python collection. The normal tier may hold one complete compact
-range-record level as specified above. Use bounded scans, sorted merge checks,
-or temporary external data structures for complete point-ID and payload facts
-in the exhaustive tier. Normal publication validation must not perform a
-complete point-payload or canonical-source scan.
+range-record level as specified above. The developer script uses bounded scans
+and temporary external data structures for complete point-ID and payload facts.
+Normal publication validation must not perform a complete point-payload or
+canonical-source scan.
 
 #### Exhaustive acceptance/diagnostic flow
 
-After normal validation succeeds, the opt-in path may reuse `_validate_bucket`
-to decode and validate every complete bucket payload. Its additional checks are
-separate phases with explicit scratch ownership:
+This is an engineering-script contract, not an installed `napari_harpy` API.
+After normal validation succeeds, the opt-in script may reuse
+`_validate_bucket` to decode and validate every complete bucket payload. Its
+additional checks are separate phases with explicit scratch ownership:
 
 1. validate every point array and its agreement with the sparse range index;
 2. prove Exact `point_id` values are unique and cover exactly
@@ -4023,14 +4032,14 @@ separate phases with explicit scratch ownership:
    coordinates are unchanged;
 4. prove tile-relative coordinates are finite and inside the logical tile,
    including the defined upper-edge tolerance;
-5. when `validated` is supplied, freshly guard its source signature and compare
+5. when source arguments are supplied, freshly validate that source and compare
    Exact point IDs, normalized values, and reconstructed coordinates with the
    canonical source in bounded batches.
 
 Use only caller-owned `temporary_directory_root` for external runs or merge
 state. Remove private scratch and close all handles on every exit. A failed
-exhaustive check leaves the staged generation intact and unpublished for
-diagnosis; it does not attempt repair.
+script run leaves the staged generation intact for diagnosis; it does not
+attempt repair or participate in publication.
 
 #### Failure and artifact policy
 
@@ -4054,12 +4063,8 @@ more specific downstream error.
 - manifest-catalog/bucket and range/`value_tiles` mismatches;
 - normal-tier capacity, geometry, and overview violations detectable from
   compact persisted facts;
-- exhaustive-tier point-ID duplication, loss, nesting, coordinate, and
-  point/range-semantic violations;
 - proof that normal publication validation neither opens canonical point
   Parquet nor reads complete Zarr point arrays;
-- explicit invocation tests proving exhaustive checks cannot run implicitly
-  through the normal Z8 publication path.
 - a compact valid catalog whose `value_tiles` records cross validation batch
   boundaries;
 - exact compact cross-index corruption in `value_id`, `manifest_index`, and
@@ -4068,13 +4073,14 @@ more specific downstream error.
   offsets, local indexes, hashing, or physical root attributes;
 - proof, through guarded/missing payload shards and guarded source readers,
   that normal validation opens payload metadata but never decodes point rows or
-  opens canonical point Parquet;
-- bounded failure cleanup for every exhaustive scratch phase.
+  opens canonical point Parquet.
 
 Use real small Zarr v3 buckets for storage, missing-shard, codec, and lifecycle
 claims. Pure geometry, hierarchy, ordering, and accounting helpers may use
 small immutable arrays. Do not mock Zarr behavior that is central to the
-contract.
+contract. The low-level `_validate_bucket` tests remain the installed format
+coverage used by the developer script; the global exhaustive orchestration is
+not duplicated as a production-package unit-test contract.
 
 #### Gate Z7: full-Xenium normal publication validation
 
@@ -4098,9 +4104,26 @@ sizes, and modification times remain unchanged.
 This gate evaluates the normal publication tier only. Do not repeat the
 166.03-second full source-equivalence scan merely to accept Z7: the earlier Z3
 gate remains evidence for the exhaustive algorithm, while focused corruption
-tests qualify its current implementation. A new full-Xenium exhaustive run is
-opt-in for a format/algorithm change, release qualification, or suspected
-corruption.
+tests qualify the installed storage primitives it composes. A new full-Xenium
+exhaustive script run is opt-in for a format/algorithm change, release
+qualification, or suspected corruption.
+
+The accepted current-tree run used the retained Z6 generation and completed in
+25.74 seconds. It reopened 108 physical buckets across nine levels and compared
+29,787,508 compact sparse-range records; Exact was the largest individual
+workspace at 14,790,090 range records. Process RSS was 169,541,632 bytes before
+the measured call and peaked at 907,345,920 bytes, for an incremental peak of
+737,804,288 bytes. The before/after filesystem inventory was identical across
+10,940 entries, 7,059 files, and 1,690,639,035 file bytes. Focused tests with a
+missing point-payload shard and with removed canonical Parquet files establish
+that the normal path validates payload metadata without decoding point rows and
+does not open the source. The machine-readable run report is retained at:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/
+  sdata_xenium_full_data_core.transcripts-cache-workspace/
+    reports/gate-z7-20260818.json
+```
 
 #### Exit criteria
 
@@ -4108,7 +4131,8 @@ corruption.
   validation tier that owns that semantic check;
 - normal publication validation is memory bounded and avoids complete point and
   source scans;
-- exhaustive validation remains memory bounded and opt-in;
+- exhaustive engineering validation remains disk-bounded, opt-in, and outside
+  the installed package;
 - a successful staging result is safe to publish after the final source guard.
 
 ### Slice Z8: compose the guarded builder and publication
