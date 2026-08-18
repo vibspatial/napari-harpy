@@ -3062,8 +3062,8 @@ catalog contracts.
 
 ### Slice Z6: freeze final cache-format and catalog contracts — resolved
 
-**Status:** implemented with focused verification on 2026-08-17; the
-level-at-a-time full-Xenium Gate Z6 rerun remains pending.
+**Status:** implemented with focused verification on 2026-08-17 and accepted by
+the current level-at-a-time full-Xenium Gate Z6 run on 2026-08-18.
 
 The initial focused implementation suite completed with all 184 tests in
 `tests/multi_scale_cache_points_zarr` passing. The initial full-Xenium Gate Z6
@@ -3083,9 +3083,47 @@ A follow-up design review on 2026-08-17 replaced that external merge with the
 level-at-a-time NumPy sort specified below. The persisted catalog contract is
 unchanged, and all 183 focused tests in `tests/multi_scale_cache_points_zarr`
 pass after the refactor. The earlier 68.93-second and 58.28-MB observations
-describe the superseded constructor and remain only as historical evidence; the
-current constructor's full-Xenium timing and memory profile must be recorded by
-the next Gate Z6 rerun.
+describe the superseded constructor and remain only as historical evidence;
+they motivated the current-constructor full-Xenium timing and memory rerun
+recorded below.
+
+That current-format rerun completed on 2026-08-18. Catalog construction over
+29,787,508 value/tile rows took 21.08 seconds. The largest individual level
+contained 14,790,090 range records; its compact input arrays and NumPy order
+permutation were estimated at 295,801,800 and 118,320,720 bytes respectively.
+The catalog interval started at 1,553,907,712 bytes RSS, peaked at
+2,305,064,960 bytes RSS, and therefore added 751,157,248 bytes at peak. This is
+consistent with memory proportional to the largest level and remains practical
+on the 32-GiB evaluation machine.
+
+The strict reopened catalog validation and representative compact-index check
+took 7.76 seconds. It sampled one bucket from every level, covering 1,991,105
+range records and 1,049 manifest tiles. All 9 levels, 5,122 values, 17,149
+manifest rows, and 29,787,508 value/tile rows reconciled. The persisted catalog
+contract remained 44,162,968 bytes across 79 filesystem objects, with an
+84,723-byte root `zarr.json`. No point payload array or canonical source data
+page was read, and the source, evaluated buckets, and reusable pyramid remained
+unchanged. No derived Parquet, standalone cache JSON sidecar, catalog-sort
+scratch, or `COMPLETED` marker was produced.
+
+The retained engineering artifacts are:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/
+  sdata_xenium_full_data_core.transcripts-cache-workspace/
+    pyramid-base/
+    z6-20260818-current/
+    reports/gate-z6-20260818.json
+```
+
+The prerequisite build took 38.62 seconds for Exact, 107.02 seconds for Bridge,
+and 77.41 seconds for all Spatial levels. These prerequisite timings and the
+5.02-second hard-link tree creation are recorded separately and are not part of
+the 21.08-second Z6 catalog measurement. The catalog-free `pyramid-base`
+occupies approximately 1.6 GiB physically. The evaluated generation shares its
+immutable bucket files and adds approximately 42 MiB of private hierarchy and
+catalog data, so future Z6 experiments can reuse the pyramid without rerunning
+level construction.
 
 #### Goal
 
@@ -3645,6 +3683,42 @@ Provide one opt-in current-tree full-Xenium run that constructs or reuses one
 complete valid staging pyramid and writes the Zarr root and catalog once.
 Measure Z6 separately from Exact, Bridge, Spatial, and Z7.
 
+Retain this expensive engineering fixture beside, rather than inside, the
+canonical SpatialData store. The benchmark workspace has two distinct roles:
+
+```text
+sdata_xenium_full_data_core.transcripts-cache-workspace/
+  pyramid-base/
+    _benchmark_pyramid_inventory.json
+    levels/                         # Exact, Bridge, and every Spatial level
+  z6-<run-name>/
+    levels/                         # cheap local clone of pyramid-base/levels
+    values/
+    manifest/
+    value_tiles/
+    zarr.json
+  reports/
+    gate-z6-<run-name>.json
+```
+
+`pyramid-base` is a benchmark-owned, catalog-free prerequisite template. Its
+inventory records the validated source signature, logical plan, physical Zarr
+settings, and finalized level results needed to reconstruct the in-memory Z6
+input contracts. Reuse requires exact equality with the freshly validated
+source, plan, and settings, plus exact agreement between inventoried and
+physical bucket paths. The inventory is not copied into an evaluated cache and
+is not part of the persisted cache format.
+
+Each Z6 run creates a new evaluation generation from the immutable level
+template. On the local same-filesystem benchmark workspace, hard links avoid a
+second physical copy of the point payload while giving the run private root,
+ancestor, and catalog metadata. Z6 opens every bucket read-only and verifies
+that both the evaluation bucket snapshots and `pyramid-base` remain unchanged.
+Never rerun catalog construction in place: the production writer remains
+write-once and continues to reject existing root or catalog targets. Retain the
+evaluated generation for Z7 and later slices, while retaining `pyramid-base`
+for isolated catalog reruns.
+
 Record:
 
 - catalog construction time and peak incremental and process RSS;
@@ -3657,6 +3731,10 @@ Record:
 - confirmation that no source data page or Zarr point payload array was read and
   no derived Parquet or standalone JSON sidecar was written;
 - absence of catalog-sort scratch data and closure of every Zarr handle.
+- paths of the retained pyramid, evaluated generation, and report; whether the
+  prerequisite pyramid was built or reused; and the time required to clone its
+  level tree. Prerequisite construction and cloning remain outside the measured
+  Z6 catalog interval.
 
 Reopen the cache root and catalog through the strict Z6 reader and repeat
 hierarchy, attributes, layout, ordering, uniqueness, pointer, and aggregate
