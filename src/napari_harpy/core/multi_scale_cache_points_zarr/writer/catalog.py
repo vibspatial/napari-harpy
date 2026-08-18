@@ -227,17 +227,28 @@ def _build_manifest_arrays(
     Examples
     --------
     Suppose level 0 contains three tiles in global spatial order, but hashing
-    distributed them across two buckets::
+    distributed them across two buckets. The shared array position is the
+    implicit global manifest index::
 
-        manifest row    coordinate    bucket    bucket-local tile
-        0               (0, 0)        1         0
-        1               (1, 0)        0         0
-        2               (2, 0)        1         1
+        implicit       bucket_   bucket_tile_   tile_   tile_   n_
+        manifest_index id        index          x       y       points
+        ----------------------------------------------------------------
+        0              1         0              0       0       120
+        1              0         0              1       0        85
+        2              1         1              2       0       103
 
     The transient translations are then::
 
         bucket_manifest_indexes[(0, 0)] = [1]
+        #                         │  │     └─ local tile 0 maps to manifest row 1
+        #                         │  └─────── bucket 0
+        #                         └────────── level 0
+
         bucket_manifest_indexes[(0, 1)] = [0, 2]
+        #                         │  │     │  └─ local tile 1 maps to manifest row 2
+        #                         │  │     └──── local tile 0 maps to manifest row 0
+        #                         │  └────────── bucket 1
+        #                         └───────────── level 0
 
     A sparse range belonging to bucket 1's local tile 1 can therefore be
     recorded in ``value_tiles`` as global manifest row 2.
