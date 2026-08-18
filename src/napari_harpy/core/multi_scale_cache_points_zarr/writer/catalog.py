@@ -35,7 +35,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader impo
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_writer import (
     _CatalogWriter,
     _ValueTilesWriteSummary,
-    _write_value_tiles_by_level,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _LevelWriteResult,
@@ -138,9 +137,8 @@ def _write_staged_cache_catalog(
             )
             for result in level_results
         )
-        summary = _write_value_tiles_by_level(
+        summary = writer.write_value_tiles_by_level(
             batches_by_level,
-            writer,
             level_indptr=level_indptr,
             expected_level_row_counts=tuple(result.range_count for result in level_results),
             value_count=len(value_names),

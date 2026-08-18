@@ -191,7 +191,120 @@ class _CatalogWriter:
         self._array(MANIFEST_N_POINTS)[:] = n_points
         self._manifest_written = True
 
-    def append_value_tiles(self, manifest_index: np.ndarray, n_points: np.ndarray) -> None:
+    def write_value_tiles_by_level(
+        self,
+        batches_by_level: tuple[Iterable[_RangeRecordBatch], ...],
+        *,
+        level_indptr: np.ndarray,
+        expected_level_row_counts: tuple[int, ...],
+        value_count: int,
+        output_batch_rows: int,
+    ) -> _ValueTilesWriteSummary:
+        """Sort compact range records one level at a time and write the index.
+
+        The persisted key order is ``(level, value_id, manifest_index)``. Levels
+        occupy disjoint, ascending output regions, so sorting each complete level
+        by ``(value_id, manifest_index)`` is equivalent to one cache-wide sort.
+        Keeping only one level's three compact arrays and NumPy permutation in
+        memory bounds peak allocation by the largest level rather than the
+        complete cache.
+
+        Sorted output is emitted in small contiguous batches. The full ordered
+        ``manifest_index`` and ``n_points`` arrays are therefore never
+        materialized as additional level-sized copies.
+        """
+        if not isinstance(expected_level_row_counts, tuple):
+            raise ValueError("`expected_level_row_counts` must be a tuple.")
+        if not isinstance(batches_by_level, tuple) or len(batches_by_level) != len(expected_level_row_counts):
+            raise ValueError("`batches_by_level` must contain one iterable per expected level.")
+        level_count = len(expected_level_row_counts)
+        if level_count == 0:
+            raise ValueError("At least one cache level is required.")
+        for level, row_count in enumerate(expected_level_row_counts):
+            _require_integer_in_range(
+                row_count,
+                f"expected_level_row_counts[{level}]",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
+        _require_integer_in_range(value_count, "value_count", minimum=1, maximum=_INT64_MAX)
+        _require_integer_in_range(output_batch_rows, "output_batch_rows", minimum=1, maximum=_INT64_MAX)
+        if (
+            not isinstance(level_indptr, np.ndarray)
+            or level_indptr.dtype != np.dtype(np.uint64)
+            or level_indptr.shape != (level_count + 1,)
+            or not level_indptr.flags.c_contiguous
+            or int(level_indptr[0]) != 0
+            or bool((level_indptr[1:] <= level_indptr[:-1]).any())
+        ):
+            raise ValueError("`level_indptr` must be a valid C-contiguous uint64 manifest pointer array.")
+
+        manifest_row_count = int(level_indptr[-1])
+        manifest_counts = np.zeros(manifest_row_count, dtype=np.uint64)
+        level_counts = np.zeros(level_count, dtype=np.uint64)
+        exact_value_counts = np.zeros(value_count, dtype=np.uint64)
+        indptr = np.empty((level_count, value_count + 1), dtype=np.uint64)
+        rows_written = 0
+
+        for level, (batches, expected_row_count) in enumerate(
+            zip(batches_by_level, expected_level_row_counts, strict=True)
+        ):
+            value_id, manifest_index, n_points = _collect_level_range_records(
+                batches,
+                expected_row_count=expected_row_count,
+                value_count=value_count,
+                manifest_start=int(level_indptr[level]),
+                manifest_stop=int(level_indptr[level + 1]),
+            )
+            np.add.at(manifest_counts, manifest_index, n_points)
+            level_counts[level] = n_points.sum(dtype=np.uint64)
+            if level == 0:
+                np.add.at(exact_value_counts, value_id, n_points)
+
+            # Transpose bucket traversal order into value-major catalog order.
+            # For example:
+            #   value 2 → manifest 0 →  3 points
+            #   value 0 → manifest 2 →  6 points
+            #   value 0 → manifest 0 → 10 points
+            # become:
+            #   value 0 → manifest 0 → 10 points
+            #   value 0 → manifest 2 →  6 points
+            #   value 2 → manifest 0 →  3 points
+            # ``np.lexsort`` uses its last key as primary, so value groups come
+            # first and manifest rows increase inside each group. Only the
+            # manifest indexes and counts are persisted; ``indptr`` below
+            # encodes the omitted value ID for every resulting output interval.
+            order = np.lexsort((manifest_index, value_id))
+            self._write_ordered_level(
+                value_id=value_id,
+                manifest_index=manifest_index,
+                n_points=n_points,
+                order=order,
+                output_batch_rows=output_batch_rows,
+            )
+
+            entry_counts = np.bincount(value_id, minlength=value_count).astype(np.uint64, copy=False)
+            # Each pointer row addresses the global flat value-tile arrays, so
+            # it starts at the output cursor left by all preceding levels.
+            indptr[level, 0] = rows_written
+            np.cumsum(entry_counts, out=indptr[level, 1:])
+            indptr[level, 1:] += np.uint64(rows_written)
+            rows_written += expected_row_count
+            # Release this complete level before the next collector allocates
+            # its arrays; otherwise loop locals would overlap adjacent levels.
+            del value_id, manifest_index, n_points, order, entry_counts
+
+        summary = _ValueTilesWriteSummary(
+            indptr=np.ascontiguousarray(indptr),
+            manifest_n_points=np.ascontiguousarray(manifest_counts),
+            level_n_points=np.ascontiguousarray(level_counts),
+            exact_value_n_points=np.ascontiguousarray(exact_value_counts),
+            row_count=rows_written,
+        )
+        self._write_value_tile_indptr(summary.indptr)
+        return summary
+
+    def _append_value_tiles(self, manifest_index: np.ndarray, n_points: np.ndarray) -> None:
         """Append one aligned globally ordered value-to-tile output batch."""
         if not isinstance(manifest_index, np.ndarray) or not isinstance(n_points, np.ndarray):
             raise ValueError("Value-tile batches must be NumPy arrays.")
@@ -214,7 +327,7 @@ class _CatalogWriter:
         self._array(VALUE_TILES_N_POINTS)[self._value_tile_cursor : stop] = n_points
         self._value_tile_cursor = stop
 
-    def write_value_tile_indptr(self, indptr: np.ndarray) -> None:
+    def _write_value_tile_indptr(self, indptr: np.ndarray) -> None:
         """Write the final two-dimensional level/value pointer table once."""
         self._require_array(
             indptr,
@@ -226,6 +339,34 @@ class _CatalogWriter:
             raise RuntimeError("Value-tile pointers have already been written.")
         self._array(VALUE_TILES_INDPTR)[:, :] = indptr
         self._indptr_written = True
+
+    def _write_ordered_level(
+        self,
+        *,
+        value_id: np.ndarray,
+        manifest_index: np.ndarray,
+        n_points: np.ndarray,
+        order: np.ndarray,
+        output_batch_rows: int,
+    ) -> None:
+        """Write one sorted level without constructing full ordered array copies."""
+        previous_value: int | None = None
+        previous_manifest: int | None = None
+        for start in range(0, len(order), output_batch_rows):
+            indexes = order[start : start + output_batch_rows]
+            ordered_values = np.ascontiguousarray(value_id[indexes])
+            ordered_manifest = np.ascontiguousarray(manifest_index[indexes])
+            ordered_counts = np.ascontiguousarray(n_points[indexes])
+            same_value = ordered_values[1:] == ordered_values[:-1]
+            if bool((ordered_manifest[1:][same_value] <= ordered_manifest[:-1][same_value]).any()):
+                raise ValueError("Duplicate (level, value_id, manifest_index) record.")
+            first_value = int(ordered_values[0])
+            first_manifest = int(ordered_manifest[0])
+            if previous_value == first_value and previous_manifest is not None and first_manifest <= previous_manifest:
+                raise ValueError("Duplicate (level, value_id, manifest_index) record.")
+            self._append_value_tiles(ordered_manifest, ordered_counts)
+            previous_value = int(ordered_values[-1])
+            previous_manifest = int(ordered_manifest[-1])
 
     def finalize(self, attributes: _CacheAttributes) -> None:
         """Write semantic root attributes after every physical row is present."""
@@ -368,105 +509,6 @@ class _CatalogWriter:
         self._arrays = {}
 
 
-def _write_value_tiles_by_level(
-    batches_by_level: tuple[Iterable[_RangeRecordBatch], ...],
-    writer: _CatalogWriter,
-    *,
-    level_indptr: np.ndarray,
-    expected_level_row_counts: tuple[int, ...],
-    value_count: int,
-    output_batch_rows: int,
-) -> _ValueTilesWriteSummary:
-    """Sort compact range records one level at a time and write the index.
-
-    The persisted key order is ``(level, value_id, manifest_index)``. Levels
-    occupy disjoint, ascending output regions, so sorting each complete level by
-    ``(value_id, manifest_index)`` is equivalent to one cache-wide sort. Keeping
-    only one level's three compact arrays and NumPy permutation in memory avoids
-    temporary sorted stores while bounding peak allocation by the largest level
-    rather than the complete cache.
-
-    Sorted output is emitted in small contiguous batches. The full ordered
-    ``manifest_index`` and ``n_points`` arrays are therefore never materialized
-    as additional level-sized copies.
-    """
-    if not isinstance(writer, _CatalogWriter):
-        raise ValueError("`writer` must be _CatalogWriter.")
-    if not isinstance(expected_level_row_counts, tuple):
-        raise ValueError("`expected_level_row_counts` must be a tuple.")
-    if not isinstance(batches_by_level, tuple) or len(batches_by_level) != len(expected_level_row_counts):
-        raise ValueError("`batches_by_level` must contain one iterable per expected level.")
-    level_count = len(expected_level_row_counts)
-    if level_count == 0:
-        raise ValueError("At least one cache level is required.")
-    for level, row_count in enumerate(expected_level_row_counts):
-        _require_integer_in_range(row_count, f"expected_level_row_counts[{level}]", minimum=1, maximum=_INT64_MAX)
-    _require_integer_in_range(value_count, "value_count", minimum=1, maximum=_INT64_MAX)
-    _require_integer_in_range(output_batch_rows, "output_batch_rows", minimum=1, maximum=_INT64_MAX)
-    if (
-        not isinstance(level_indptr, np.ndarray)
-        or level_indptr.dtype != np.dtype(np.uint64)
-        or level_indptr.shape != (level_count + 1,)
-        or not level_indptr.flags.c_contiguous
-        or int(level_indptr[0]) != 0
-        or bool((level_indptr[1:] <= level_indptr[:-1]).any())
-    ):
-        raise ValueError("`level_indptr` must be a valid C-contiguous uint64 manifest pointer array.")
-
-    manifest_row_count = int(level_indptr[-1])
-    manifest_counts = np.zeros(manifest_row_count, dtype=np.uint64)
-    level_counts = np.zeros(level_count, dtype=np.uint64)
-    exact_value_counts = np.zeros(value_count, dtype=np.uint64)
-    indptr = np.empty((level_count, value_count + 1), dtype=np.uint64)
-    rows_written = 0
-
-    for level, (batches, expected_row_count) in enumerate(
-        zip(batches_by_level, expected_level_row_counts, strict=True)
-    ):
-        value_id, manifest_index, n_points = _collect_level_range_records(
-            batches,
-            expected_row_count=expected_row_count,
-            value_count=value_count,
-            manifest_start=int(level_indptr[level]),
-            manifest_stop=int(level_indptr[level + 1]),
-        )
-        np.add.at(manifest_counts, manifest_index, n_points)
-        level_counts[level] = n_points.sum(dtype=np.uint64)
-        if level == 0:
-            np.add.at(exact_value_counts, value_id, n_points)
-
-        # ``np.lexsort`` uses its last key as primary: value groups first,
-        # followed by strictly increasing manifest rows inside each group.
-        order = np.lexsort((manifest_index, value_id))
-        _write_ordered_level(
-            writer,
-            value_id=value_id,
-            manifest_index=manifest_index,
-            n_points=n_points,
-            order=order,
-            output_batch_rows=output_batch_rows,
-        )
-
-        entry_counts = np.bincount(value_id, minlength=value_count).astype(np.uint64, copy=False)
-        indptr[level, 0] = rows_written
-        np.cumsum(entry_counts, out=indptr[level, 1:])
-        indptr[level, 1:] += np.uint64(rows_written)
-        rows_written += expected_row_count
-        # Release this complete level before the next collector allocates its
-        # arrays; otherwise Python loop locals would overlap adjacent levels.
-        del value_id, manifest_index, n_points, order, entry_counts
-
-    summary = _ValueTilesWriteSummary(
-        indptr=np.ascontiguousarray(indptr),
-        manifest_n_points=np.ascontiguousarray(manifest_counts),
-        level_n_points=np.ascontiguousarray(level_counts),
-        exact_value_n_points=np.ascontiguousarray(exact_value_counts),
-        row_count=rows_written,
-    )
-    writer.write_value_tile_indptr(summary.indptr)
-    return summary
-
-
 def _collect_level_range_records(
     batches: Iterable[_RangeRecordBatch],
     *,
@@ -497,32 +539,3 @@ def _collect_level_range_records(
     if cursor != expected_row_count:
         raise ValueError("Range-record level does not match its declared total.")
     return value_id, manifest_index, n_points
-
-
-def _write_ordered_level(
-    writer: _CatalogWriter,
-    *,
-    value_id: np.ndarray,
-    manifest_index: np.ndarray,
-    n_points: np.ndarray,
-    order: np.ndarray,
-    output_batch_rows: int,
-) -> None:
-    """Write one sorted level without constructing full ordered array copies."""
-    previous_value: int | None = None
-    previous_manifest: int | None = None
-    for start in range(0, len(order), output_batch_rows):
-        indexes = order[start : start + output_batch_rows]
-        ordered_values = np.ascontiguousarray(value_id[indexes])
-        ordered_manifest = np.ascontiguousarray(manifest_index[indexes])
-        ordered_counts = np.ascontiguousarray(n_points[indexes])
-        same_value = ordered_values[1:] == ordered_values[:-1]
-        if bool((ordered_manifest[1:][same_value] <= ordered_manifest[:-1][same_value]).any()):
-            raise ValueError("Duplicate (level, value_id, manifest_index) record.")
-        first_value = int(ordered_values[0])
-        first_manifest = int(ordered_manifest[0])
-        if previous_value == first_value and previous_manifest is not None and first_manifest <= previous_manifest:
-            raise ValueError("Duplicate (level, value_id, manifest_index) record.")
-        writer.append_value_tiles(ordered_manifest, ordered_counts)
-        previous_value = int(ordered_values[-1])
-        previous_manifest = int(ordered_manifest[-1])
