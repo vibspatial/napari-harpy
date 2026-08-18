@@ -425,7 +425,6 @@ def _write_value_tiles_by_level(
     ):
         value_id, manifest_index, n_points = _collect_level_range_records(
             batches,
-            level=level,
             expected_row_count=expected_row_count,
             value_count=value_count,
             manifest_start=int(level_indptr[level]),
@@ -471,7 +470,6 @@ def _write_value_tiles_by_level(
 def _collect_level_range_records(
     batches: Iterable[_RangeRecordBatch],
     *,
-    level: int,
     expected_row_count: int,
     value_count: int,
     manifest_start: int,
@@ -485,8 +483,6 @@ def _collect_level_range_records(
     for batch in batches:
         if not isinstance(batch, _RangeRecordBatch):
             raise ValueError("Range-record iterator yielded an invalid batch.")
-        if not bool((batch.level == level).all()):
-            raise ValueError("Range-record batch belongs to the wrong cache level.")
         if int(batch.value_id.max()) >= value_count:
             raise ValueError("Range-record value ID is outside the catalog.")
         if bool(((batch.manifest_index < manifest_start) | (batch.manifest_index >= manifest_stop)).any()):

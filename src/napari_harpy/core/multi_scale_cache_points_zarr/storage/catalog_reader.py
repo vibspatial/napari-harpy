@@ -57,16 +57,18 @@ _CATALOG_ARRAY_PATHS = (
 
 @dataclass(frozen=True, eq=False)
 class _RangeRecordBatch:
-    """Hold one bounded batch of sortable cache-wide tile/value records."""
+    """Hold one bounded batch from one level's sortable tile/value records.
 
-    level: np.ndarray
+    Level identity belongs to the containing level stream rather than being
+    repeated for every record in the batch.
+    """
+
     value_id: np.ndarray
     manifest_index: np.ndarray
     n_points: np.ndarray
 
     def __post_init__(self) -> None:
         arrays = (
-            ("level", self.level, np.dtype(np.uint16)),
             ("value_id", self.value_id, np.dtype(np.uint32)),
             ("manifest_index", self.manifest_index, np.dtype(np.uint64)),
             ("n_points", self.n_points, np.dtype(np.uint64)),
@@ -95,7 +97,7 @@ class _RangeRecordBatch:
 
     @property
     def row_count(self) -> int:
-        return len(self.level)
+        return len(self.value_id)
 
 
 class _CatalogReader:
@@ -402,8 +404,9 @@ def _iter_bucket_range_batches(
     ``manifest_indexes[i]`` is the global manifest row assigned to bucket-local
     tile ``i``. Range rows are read in bounded contiguous slices, mapped through
     ``tile_indptr`` to that tile's manifest row, and returned as sortable
-    ``(level, value_id, manifest_index, n_points)`` records. Validation carries
-    value-order and row-coverage state across slice boundaries.
+    ``(value_id, manifest_index, n_points)`` records within the bucket's
+    validated level stream. Validation carries value-order and row-coverage
+    state across slice boundaries.
     """
     if not isinstance(cache_root, Path) or not cache_root.is_dir():
         raise ValueError("`cache_root` must be an existing pathlib.Path directory.")
@@ -528,7 +531,6 @@ def _iter_bucket_range_batches(
                     raise ValueError("Bucket range segment starts before its tile pointer.")
 
             yield _RangeRecordBatch(
-                level=np.full(len(values), bucket_result.level, dtype=np.uint16),
                 value_id=np.ascontiguousarray(values),
                 manifest_index=np.ascontiguousarray(manifest_indexes[tile_indexes]),
                 n_points=np.ascontiguousarray(row_counts),
