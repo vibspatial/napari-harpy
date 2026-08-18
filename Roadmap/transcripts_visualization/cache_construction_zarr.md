@@ -4263,11 +4263,36 @@ unique sibling lock:
 <output-name>.build-lock
 ```
 
+The lock and generation UUID have separate responsibilities:
+
+```text
+cache_generation_id / staging UUID
+  -> identifies one generation and keeps concurrent staging trees distinct
+
+<output-name>.build-lock
+  -> grants one builder exclusive ownership of the final output path
+```
+
+A unique staging UUID alone does not serialize publication. Without the lock,
+two builders could safely construct different staging generations and then
+race while installing, replacing, or restoring the same `output_path`. The
+lock is therefore required for a first build as well as replacement of an
+existing cache. Holding it for the complete operation also prevents two
+expensive generations for the same output from being built concurrently only
+for one to supersede the other.
+
 Acquire the lock before the first source guard and retain it through
 publication and cleanup. A competing or stale lock fails closed and reports its
 path; do not automatically delete an unknown lock. Implement the lock directly
 with an exclusive local-filesystem create primitive rather than relying on a
 transitive dependency. Remove the lock on every ordinary exit.
+
+Preserve this distinction in the implementation: the lock helper or context
+manager must have a docstring explaining that the UUID provides generation
+identity and staging-path uniqueness, whereas the sibling lock coordinates
+exclusive ownership of the final publication path. Its docstring must also
+state that file presence means a builder has claimed the path, not that its
+process is provably still alive; an unclean process exit can leave a stale lock.
 
 While holding the lock, preflight an existing output before creating staging:
 
