@@ -3046,7 +3046,32 @@ catalog contracts.
 - the small-pyramid and full-Xenium gates establish that Z6 can freeze one
   complete Zarr cache format without unresolved level-construction behavior.
 
-### Slice Z6: freeze final cache-format and catalog contracts
+### Slice Z6: freeze final cache-format and catalog contracts — resolved
+
+**Status:** implemented with focused verification on 2026-08-17; the
+level-at-a-time full-Xenium Gate Z6 rerun remains pending.
+
+The initial focused implementation suite completed with all 184 tests in
+`tests/multi_scale_cache_points_zarr` passing. The initial full-Xenium Gate Z6
+processed 136,578,750 source points, 9 cache levels, 5,122 values, 17,149
+manifest rows, and 29,787,508 nonempty tile/value rows. Its external-merge
+catalog constructor took 68.93 seconds with 58.28 MB incremental peak RSS.
+
+The persisted catalog occupied 44,162,968 bytes across 79 filesystem objects;
+the root `zarr.json`, including all value labels and level summaries, occupied
+84,723 bytes. Strict reopened validation plus an independent comparison of nine
+representative bucket indexes, covering 1,991,105 sparse range records and
+1,049 manifest tiles, completed in 9.03 seconds. Bucket stores and the canonical
+source remained unchanged, no point payload array or canonical source data page
+was read by Z6, and no derived Parquet or completion marker was written.
+
+A follow-up design review on 2026-08-17 replaced that external merge with the
+level-at-a-time NumPy sort specified below. The persisted catalog contract is
+unchanged, and all 183 focused tests in `tests/multi_scale_cache_points_zarr`
+pass after the refactor. The earlier 68.93-second and 58.28-MB observations
+describe the superseded constructor and remain only as historical evidence; the
+current constructor's full-Xenium timing and memory profile must be recorded by
+the next Gate Z6 rerun.
 
 #### Goal
 
@@ -3331,14 +3356,13 @@ manifest_chunk_rows    = 65,536
 manifest_shard_rows    = 262,144
 value_tile_chunk_rows  = 65,536
 value_tile_shard_rows  = 1,048,576
-count_sort_run_rows    = 1,000,000
-count_merge_batch_rows = 65,536
-max_open_count_runs    = 32
 ```
 
 Tests inject smaller positive multiples. These are tunable recorded physical
-settings, not logical schema identities. Gate Z6 records whether the initial
-values remain practical.
+settings, not logical schema identities. `value_tile_chunk_rows` also supplies
+the bounded batch size used while reading compact range metadata and writing
+ordered catalog rows; that transient use does not add another format setting.
+Gate Z6 records whether the initial values remain practical.
 
 #### Catalog-writer API and preconditions
 
@@ -3351,7 +3375,6 @@ _write_staged_cache_catalog(
     level_results,
     *,
     staging_root,
-    temporary_directory_root,
     cache_generation_id,
     config,
 ) -> None
@@ -3364,9 +3387,9 @@ Require before creating root or catalog metadata:
 - each result's descriptors, geometry, capacities, and totals satisfy its plan;
 - every completed bucket path exists and no additional bucket path is present;
 - bucket metadata and layouts expose one common supported settings profile;
-- staging and temporary roots are existing separate directory trees;
+- staging is an existing directory tree;
 - root `zarr.json`, `values`, `manifest`, `value_tiles`, `COMPLETED`, and the
-  unique catalog scratch child do not already exist.
+  catalog groups do not already exist.
 
 The staging root already contains finalized bucket directories. Create group
 metadata for the cache root, `levels`, every `level_<n>`, and the three catalog
@@ -3394,7 +3417,7 @@ The complete manifest is small relative to payload data and may be assembled in
 memory. Reconcile every row with its result, plan, grid, canonical bucket path,
 bucket-local ordering, and point count before writing.
 
-#### Bounded `value_tiles` construction
+#### Level-at-a-time `value_tiles` construction
 
 Do not materialize all sparse bucket ranges in one table. For each finalized
 bucket in `(level, bucket_id)` order, use a storage-owned bounded iterator that
@@ -3470,76 +3493,63 @@ value_tiles/indptr[0]      = [0,  2, 3, 5]
 
 Bucket traversal naturally arrives in approximately
 `(level, bucket, tile, value)` order, while the inverted index requires
-`(level, value, manifest tile)` order. That global transpose is why construction
-uses bounded sorting rather than writing the final arrays directly during
-bucket traversal.
+`(level, value, manifest tile)` order. That transpose requires sorting rather
+than writing the final arrays directly during bucket traversal.
 
-This is the principal out-of-core operation in Z6, not an unresolved format
-decision. A small cache could collect every scratch record and perform one
-in-memory `lexsort`, but a production cache may contain millions of nonempty
-tile/value combinations. Construction must not assume that all `M` records fit
-comfortably in RAM.
+The primary persisted key is `level`, and level results are already serialized
+in ascending order. Therefore sort one complete level at a time by
+`(value_id, manifest_index)` and concatenate those ordered level streams. This
+is exactly equivalent to one cache-wide sort by
+`(level, value_id, manifest_index)`; records from different levels never need to
+participate in the same NumPy sort.
 
-A *sorted run* is one bounded batch of at most `count_sort_run_rows` scratch
-records, sorted in memory and persisted as aligned temporary Zarr arrays. Runs
-contain compact index records only; no construction stage writes point payload
-or catalog data as Parquet. Once all bucket ranges have been consumed, merge the
-already sorted runs as streams:
+For level `l`, preallocate arrays at its already reconciled `range_count`:
 
 ```text
-bucket range records
-    -> collect at most count_sort_run_rows records
-    -> sort one batch by (level, value_id, manifest_index)
-    -> write one temporary sorted Zarr run
-    -> repeat
-    -> merge sorted runs in bounded output batches
-    -> write globally ordered final value_tiles arrays
+value_id       uint32
+manifest_index uint64
+n_points       uint64
 ```
 
-Combining runs is a buffered k-way merge, not concatenation. For example:
+Fill those arrays from the bounded compact-range iterator, requiring every
+batch to identify level `l`, reference only that level's manifest interval, and
+produce exactly the declared range count. Then calculate:
+
+```python
+order = np.lexsort((manifest_index, value_id))
+```
+
+`np.lexsort` treats the last key as primary, so this groups by value and orders
+manifest rows inside every value. Reject duplicate
+`(level, value_id, manifest_index)` keys, including duplicates crossing an
+output-batch boundary. Use `np.bincount(value_id, minlength=G)` and a cumulative
+sum to construct the level's complete `indptr` row, including empty values and
+the global cursor offset from preceding levels.
+
+Write `manifest_index[order]` and `n_points[order]` in slices of at most
+`value_tile_chunk_rows`. Materialize only each output slice as contiguous arrays;
+do not create full level-sized ordered copies. Release the three input arrays
+and the permutation before collecting the next level:
 
 ```text
-run A: (value 0, manifest 0), (value 1, manifest 1), (value 2, manifest 0)
-run B: (value 0, manifest 2), (value 2, manifest 1)
-
-merged:
-       (value 0, manifest 0), (value 0, manifest 2),
-       (value 1, manifest 1),
-       (value 2, manifest 0), (value 2, manifest 1)
+one level's compact bucket ranges
+    -> preallocate exactly range_count compact records
+    -> fill and reconcile those records
+    -> np.lexsort by (value_id, manifest_index)
+    -> validate and write ordered bounded slices
+    -> build this level's indptr row
+    -> release the level workspace
+    -> continue with the next level
 ```
 
-Each open run reader loads contiguous slices of at most
-`count_merge_batch_rows` into a memory buffer. A priority queue contains only
-the current unconsumed head key from each run, ordered by
-`(level, value_id, manifest_index, run_id)`. Pop the smallest head, append its
-record to the bounded output buffer, advance only that run, and insert its next
-head. Refill a run buffer with its next contiguous Zarr slice only when that
-buffer is exhausted. Flush a full output buffer as one sequential slice write.
-Intermediate passes preserve all four scratch fields in the next run; the final
-pass writes only `manifest_index` and `n_points`, while level/value boundaries
-become `indptr`. `run_id` makes queue ordering deterministic but is not
-persisted and cannot legitimize equal logical keys; an emitted key equal to the
-preceding key is a duplicate error.
-
-The merge never opens more than `max_open_count_runs` inputs at once. If there
-are more runs, first merge bounded groups into larger intermediate runs and
-repeat until one globally ordered stream remains. Memory is bounded by the
-configured input/output batches, and handle use is bounded by the merge fan-in;
-neither grows with `M`. Correctness across run and batch boundaries includes
-duplicate detection, strictly increasing manifest indexes within each
-`(level, value_id)` segment, empty-value pointer filling, and cross-level
-`indptr` continuity.
-
-The final array length `M` is known from the sum of finalized bucket
-`range_count` values. Preallocate final shapes once. While streaming the final
-merge, record the current output cursor whenever `(level, value_id)` changes.
-That cursor supplies both the preceding segment's stop and the next segment's
-start; skipped empty value segments receive the same cursor at both boundaries.
-Continue through all `L * G` keys so the resulting two-dimensional `indptr`
-also has continuous level-row boundaries. Require strictly increasing manifest
-indexes within each segment and write aligned output batches sequentially.
-Multiple passes bound memory and open stores. Remove the unique scratch
-directory in `finally` on success and failure.
+Peak catalog-sort memory therefore scales with the largest individual level,
+not with all `M` cache records. The input arrays require 20 bytes per range and
+the usual 64-bit NumPy permutation requires another 8 bytes per range, in
+addition to NumPy sorting workspace and small output slices. A few gigabytes of
+construction memory are acceptable for large production datasets; avoiding
+temporary Zarr runs, multipass I/O, open-run management, and a Python k-way
+merge is the preferred complexity and performance trade-off. This is a
+construction policy only and does not change the persisted catalog schema.
 
 #### Reconciliation before final root attributes
 
@@ -3593,9 +3603,9 @@ generation. Z6 and Z7 do not repair or resume it.
   paths, missing/extra buckets, out-of-grid tiles, and count mismatches;
 - compact range iteration across chunks and shards without a point-array read,
   including batch boundaries inside and between tiles;
-- temporary Zarr run sorting and one- and multi-pass bounded merging with tiny
-  injected limits, duplicate rejection, empty `(level, value)` segments,
-  bounded handles, and scratch cleanup after injected failures;
+- level-at-a-time sorting with deliberately unordered input, multiple bounded
+  output batches, duplicate rejection across output boundaries, empty
+  `(level, value)` segments, and continuous cross-level pointers;
 - equality among bucket ranges, `value_tiles`, manifest counts, level results,
   root summaries, and canonical Exact value totals;
 - unsupported codec/payload/layout settings and mixed bucket settings fail
@@ -3617,14 +3627,14 @@ Record:
 
 - catalog construction time and peak incremental and process RSS;
 - value count, manifest rows, and value-tile rows;
-- temporary run count, merge passes, peak simultaneously open stores, and peak
-  bounded batch sizes;
+- largest per-level range count, estimated compact input/permutation bytes, and
+  observed peak incremental and process RSS;
 - bytes, chunks, shards, and filesystem objects by catalog array and in total;
 - root `zarr.json` size, including the complete value-label attribute;
 - reconciled per-level bucket, tile, point, and range summaries;
 - confirmation that no source data page or Zarr point payload array was read and
   no derived Parquet or standalone JSON sidecar was written;
-- cleanup of all scratch and closure of every Zarr handle.
+- absence of catalog-sort scratch data and closure of every Zarr handle.
 
 Reopen the cache root and catalog through the strict Z6 reader and repeat
 hierarchy, attributes, layout, ordering, uniqueness, pointer, and aggregate
@@ -3634,8 +3644,9 @@ opt-in Z7 operation.
 
 This is one current-format engineering evaluation, not a comparison with the
 Parquet-backed cache, a fixed numerical threshold, or a runtime LOD benchmark.
-Catalog construction must be correct, practically fast, and memory bounded
-before Z7 treats it as the publication contract.
+Catalog construction must be correct and practically fast, with peak memory
+proportional to the largest level rather than the complete cache, before Z7
+treats it as the publication contract.
 
 #### Exit criteria
 
@@ -3822,6 +3833,37 @@ read_selected_values(level, tile_x, tile_y, value_ids, include_point_id)
 read_selected_viewport(level, tile_bounds, value_ids, include_point_id)
 ```
 
+The high-level selected-value reader owns the complete two-index lookup below.
+Keep this scheme in its implementation docstring so the distinction between
+cache-wide tile discovery and bucket-local point-row resolution remains explicit:
+
+```text
+selected value and level
+        ↓
+value_tiles/indptr
+        ↓
+manifest indexes of tiles containing the value
+        ↓
+manifest
+        ↓
+bucket_id + bucket_tile_index
+        ↓
+ranges/tile_indptr
+        ↓
+range record for the selected value
+        ↓
+row_start + row_count
+        ↓
+exact point rows
+```
+
+The `value_tiles` half prunes tiles and buckets before point payloads are read.
+The bucket-range half starts only after a manifest tile has been resolved and
+maps that tile/value pair to half-open rows in the aligned `location`,
+point-level `value_id`, and `point_id` arrays. `_BucketReader.read_selected`
+owns only this second half; the high-level reader must not collapse the two
+responsibilities into one undocumented lookup.
+
 The reader must:
 
 - use `value_tiles/indptr` and `manifest_index` to prune zero-count tiles;
@@ -3978,8 +4020,9 @@ counts belong to opt-in benchmark scripts.
   point.
 - Range arrays may grow only in coarse shard-aligned blocks and are trimmed at
   finalization.
-- Cache-wide `value_tiles` construction uses bounded sorted Zarr runs and a
-  bounded fan-in merge; it never materializes all range records in memory.
+- Cache-wide `value_tiles` construction materializes and sorts one level's
+  compact range records at a time, writes ordered bounded slices, and releases
+  that workspace before advancing to the next level.
 - Small consecutive tiles and their range records are buffered across tile
   boundaries so partially filled point or range shards are not repeatedly
   rewritten.
@@ -4088,7 +4131,9 @@ The production-candidate evaluation is complete when:
 
 ## Immediate next slice
 
-Z0 through Z5 and their current-tree Xenium construction gates are resolved.
-Implement Z6 as the cache-wide Zarr root and catalog described above. Do not add
-derived Parquet or standalone JSON sidecars, do not alter the completed bucket
-payload contract, and do not introduce runtime LOD behavior before Z9.
+Z0 through Z6 and their current-tree Xenium construction gates are resolved.
+Implement Z7 as the independent staged validator described above. Normal cache
+creation must validate publication-critical structure and aggregate accounting
+without replaying the earlier exhaustive source/point equivalence check. Do not
+publish a generation or introduce runtime LOD behavior before their dedicated
+later slices.
