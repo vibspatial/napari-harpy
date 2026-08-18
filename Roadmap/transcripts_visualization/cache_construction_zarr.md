@@ -3454,11 +3454,17 @@ iterator verifies compact identity, pointers, per-tile value order, positive
 counts, contiguous point-row coverage, and descriptor/catalog agreement while
 carrying boundary state across batches.
 
-Map every range to one typed scratch record:
+Map every range to one typed scratch record inside the containing level stream:
 
 ```text
-(level, value_id, manifest_index, n_points)
+(value_id, manifest_index, n_points)
 ```
+
+The level is structural context supplied once by the stream's position in the
+level-ordered input tuple; do not allocate or repeat a level value for every
+range record. Processing streams in ascending level order and sorting each
+stream by `(value_id, manifest_index)` still produces the cache-wide persisted
+key order `(level, value_id, manifest_index)`.
 
 The mapping is explicit rather than inferred from iteration order. Manifest
 construction creates an address map from
@@ -3467,10 +3473,10 @@ bucket-local tile `i`, use `ranges/tile_indptr[i:i + 2]` to visit its range
 records. Each range record contributes:
 
 ```text
-level          = bucket level
-value_id       = ranges/value_id[j]
-manifest_index = manifest address map[level, bucket_id, i]
-n_points       = ranges/row_count[j]
+containing stream level = bucket level
+record value_id         = ranges/value_id[j]
+record manifest_index   = manifest address map[level, bucket_id, i]
+record n_points         = ranges/row_count[j]
 ```
 
 `ranges/row_start[j]` is not copied into `value_tiles`; it is used with
@@ -3478,17 +3484,18 @@ n_points       = ranges/row_count[j]
 contiguous physical point rows.
 
 For the three-tile example above, after assigning manifest rows `0`, `1`, and
-`2`, bucket traversal emits:
+`2`, traversal of the level 0 stream emits:
 
 ```text
-tile 0: (level=0, value=0, manifest=0, count=10)
-        (level=0, value=2, manifest=0, count= 3)
-tile 1: (level=0, value=1, manifest=1, count= 8)
-        (level=0, value=2, manifest=1, count= 4)
-tile 2: (level=0, value=0, manifest=2, count= 6)
+tile 0: (value=0, manifest=0, count=10)
+        (value=2, manifest=0, count= 3)
+tile 1: (value=1, manifest=1, count= 8)
+        (value=2, manifest=1, count= 4)
+tile 2: (value=0, manifest=2, count= 6)
 ```
 
-Sorting those records by `(level, value_id, manifest_index)` produces:
+Sorting the level 0 stream by `(value_id, manifest_index)` produces these
+conceptual cache-wide rows, with level supplied by the stream:
 
 ```text
 (0, 0, 0, 10)
