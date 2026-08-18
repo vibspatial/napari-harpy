@@ -666,6 +666,20 @@ manifest/tile_y               shape=(T,)     dtype=uint32
 manifest/n_points             shape=(T,)     dtype=uint64
 ```
 
+The five length-`T` arrays are parallel. Their shared zero-based array position
+is the global `manifest_index`; it is not stored as a separate manifest array.
+`manifest/level_indptr` is a level-boundary pointer array, not a sixth
+row-aligned column. For example:
+
+```text
+implicit       bucket_   bucket_tile_   tile_   tile_   n_
+manifest_index id        index          x       y       points
+----------------------------------------------------------------
+0              1         0              0       0       120
+1              0         0              1       0        85
+2              1         1              2       0       103
+```
+
 Manifest rows are globally ordered by `(level, tile_y, tile_x)`.
 `level_indptr[level:level + 2]` gives the half-open manifest-row interval for
 one level, so the non-negative serialized level need not be repeated per row.
@@ -3376,13 +3390,14 @@ _write_staged_cache_catalog(
     *,
     staging_root,
     cache_generation_id,
-    config,
+    settings,
 ) -> None
 ```
 
 Require before creating root or catalog metadata:
 
-- exact validated source, build plan, level-result, and config contracts;
+- exact validated source, build plan, level-result, and catalog-settings
+  contracts;
 - exactly one result per planned level in ascending order;
 - each result's descriptors, geometry, capacities, and totals satisfy its plan;
 - every completed bucket path exists and no additional bucket path is present;
