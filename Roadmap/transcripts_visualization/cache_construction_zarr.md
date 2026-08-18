@@ -3800,6 +3800,178 @@ The tiers share low-level parsers and structural checks where useful, but they
 have distinct entry points so the exhaustive path cannot accidentally become a
 normal publication cost.
 
+#### Entry points and ownership
+
+Add the orchestration module already reserved by the package boundary:
+
+```text
+multi_scale_cache_points_zarr/
+  writer/
+    staging_validation.py
+```
+
+Its mandatory normal entry point is:
+
+```python
+_validate_staged_cache(staging_root: Path) -> None
+```
+
+The path is the only input. Do not accept `ValidatedPointsSource`,
+`_PointsCacheBuildPlan`, `_LevelWriteResult`, `_BucketWriteResult`, an open
+writer, or any caller-supplied catalog facts. The validator reconstructs every
+expected fact from the reopened root attributes, catalog arrays, and physical
+bucket stores. Success returns `None`; any structural, logical, or accounting
+mismatch raises and leaves the generation unpublished. Z8 is the first
+production consumer and calls this entry point before its final source guard
+and before writing `COMPLETED`.
+
+The separate opt-in entry point is:
+
+```python
+_validate_staged_cache_exhaustive(
+    staging_root: Path,
+    *,
+    validated: ValidatedPointsSource | None,
+    temporary_directory_root: Path,
+) -> None
+```
+
+`validated=None` permits complete on-cache payload, point-ID, and cross-level
+checks without canonical-source comparison. Supplying a freshly validated
+source additionally enables source-row equivalence. The exhaustive function
+may call the normal validator as its first step, but the normal validator must
+never call, dispatch to, or infer a request for the exhaustive function.
+
+Neither entry point writes, repairs, removes, or publishes anything. Both open
+all stores read-only and close every handle on success and failure. Keep storage
+layout parsing in `storage/`; keep complete-generation coordination and
+cross-index policy in `writer/staging_validation.py`.
+
+#### Normal publication-validation flow
+
+The mandatory path is:
+
+```text
+staging_root only
+  -> open a fresh read-only _CatalogReader
+  -> parse and validate root attributes, hierarchy, and catalog layouts
+  -> _CatalogReader.validate_contents()
+  -> reconstruct manifest descriptors grouped by physical bucket
+  -> enumerate and validate the exact physical bucket inventory
+  -> reopen every bucket through the compact validation path
+  -> validate persisted geometry, hierarchy, capacities, and bucket hashing
+  -> compare compact bucket ranges exactly with value_tiles, one level at a time
+  -> reject forbidden staging artifacts and premature COMPLETED
+  -> close all handles
+  -> return None
+```
+
+`_CatalogReader.validate_contents()` is the cache-wide catalog primitive owned
+by Z6. It validates value totals, manifest pointers and ordering, bucket-local
+addresses, `value_tiles` pointers and ordering, and per-manifest, per-level, and
+Exact per-value totals. Z7 consumes it; it does not duplicate those checks in
+the staging coordinator. It then adds the physical-bucket and cross-index facts
+that the catalog alone cannot establish.
+
+#### Compact bucket-validation primitive
+
+Do not use `_validate_bucket` in normal validation. That existing exhaustive
+primitive decodes every `location`, point-level `value_id`, and `point_id` row.
+Add or factor a separate read-only compact path that:
+
+- accepts bucket identity and the expected ordered manifest descriptors
+  reconstructed by Z7, never a writer result;
+- validates the exact bucket hierarchy, root attributes, array dtypes, shapes,
+  chunks, shards, codecs, fill values, and chunk-key encoding;
+- reads `tile_x`, `tile_y`, `tile_offset`, and `ranges/tile_indptr` completely;
+- requires tile coordinates and point counts to equal the corresponding
+  manifest rows at every `bucket_tile_index`;
+- requires pointer origins, strict monotonicity, and terminals to agree with
+  physical point and range shapes;
+- streams only `ranges/value_id`, `ranges/row_start`, and `ranges/row_count` in
+  bounded batches;
+- validates strictly increasing values per tile, positive counts, contiguous
+  range-row coverage, tile boundaries, and final point/range totals;
+- yields or exposes compact `(value_id, manifest_index, n_points)` batches for
+  the level cross-index comparison;
+- opens point payload arrays only far enough to validate their metadata and
+  layouts, with `read_missing_chunks=False`, but never indexes or decodes their
+  data in the normal tier.
+
+The current `_iter_bucket_range_batches` behavior already establishes most of
+the compact logical invariants, but its construction-time
+`_BucketWriteResult` input must not become a trust dependency for Z7. Factor or
+wrap the storage logic so expected descriptors originate from the reopened
+manifest and observed range totals originate from the reopened bucket.
+
+#### Reconstruct and validate the persisted build plan
+
+Root metadata and the manifest must independently describe one valid hierarchy:
+
+- the Exact origin is the aligned floor of the stored source bounds at
+  `leaf_tile_size`, and its grid is the exact covering grid for those bounds;
+- Exact tile size equals `leaf_tile_size` and Exact point count equals the
+  stored source row count;
+- when present, Bridge has the Exact tile size, grid, and exact nonempty tile
+  coordinate set;
+- every Spatial tile size doubles its immediate finer tile size and every grid
+  dimension is `ceil(finer / 2)`;
+- every Spatial nonempty coordinate is present exactly when at least one finer
+  coordinate maps to it through `(finer_x // 2, finer_y // 2)`;
+- every sampled tile stores exactly
+  `min(sum(contributing_finer_n_points), max_points_per_tile)` points; Bridge
+  uses its same-coordinate Exact tile as the sole contributor;
+- all tile coordinates lie inside their stated grids, every sampled tile obeys
+  its capacity, level point totals are nonincreasing, and the terminal level's
+  point total does not exceed `overview_point_budget`;
+- stored point-count upper bounds, capacities, level kinds, and level numbering
+  follow the versioned build policy;
+- the planned bucket count is derived from the stored upper bound and
+  `target_points_per_bucket`, and every manifest `bucket_id` equals the result
+  of the stored versioned tile-hash policy for that level and coordinate;
+- within each bucket, manifest `bucket_tile_index` values are exactly contiguous
+  from zero in `(tile_y, tile_x)` order.
+
+These are compact catalog checks. They prove geometry and count consequences of
+construction, not sampled point membership; the exhaustive tier owns
+point-level membership.
+
+#### Exact compact cross-index comparison
+
+Require exact equality between the bucket sparse-range records and the
+persisted `value_tiles` inverted index. Do not use an order-independent checksum
+or probabilistic multiset hash, and do not perform one random Zarr lookup per
+range record.
+
+Use the level-at-a-time policy accepted and measured in Z6:
+
+```text
+compact bucket ranges for one level, in bounded input batches
+  -> materialize value_id, manifest_index, n_points for that level
+  -> reconcile observed row count with root level.range_count
+  -> np.lexsort by (value_id, manifest_index)
+  -> stream-compare ordered slices with that level's value_tiles interval
+  -> require exact key and n_points equality
+  -> release all level arrays and the permutation
+  -> continue with the next level
+```
+
+The comparison must also require every manifest row to receive exactly its
+stored `manifest/n_points`, every level to receive exactly its root point total,
+and Exact per-value totals to equal `values/n_points`. Some of these totals are
+already checked by `validate_contents()`; retaining them at the independently
+derived bucket side is intentional cross-index reconciliation.
+
+Normal validation may therefore materialize one complete level of compact
+range records and its NumPy permutation. It must never materialize one complete
+level of point payloads. Peak memory scales with the largest individual
+`level.range_count`, not the complete cache. The current full-Xenium Z6 gate
+measured the same largest-level policy at 14,790,090 compact records and
+751,157,248 bytes incremental peak RSS, which is the accepted initial bound for
+this professional validation path. If a future dataset makes that policy
+impractical, revisit an external exact merge without changing the persisted
+format.
+
 #### Work
 
 Validate, in bounded batches:
@@ -3829,11 +4001,49 @@ The optional exhaustive entry point additionally owns:
   tolerance;
 - canonical source-row value and coordinate equivalence when requested.
 
-Validation must not load a complete level or all Exact IDs into one Python
-collection. Use bounded scans, sorted merge checks, or temporary external data
-structures where necessary in the exhaustive tier. Normal publication
-validation must remain bounded by compact metadata/index batches and must not
-perform a complete point-payload or canonical-source scan.
+Validation must not load a complete point-payload level or all Exact IDs into
+one Python collection. The normal tier may hold one complete compact
+range-record level as specified above. Use bounded scans, sorted merge checks,
+or temporary external data structures for complete point-ID and payload facts
+in the exhaustive tier. Normal publication validation must not perform a
+complete point-payload or canonical-source scan.
+
+#### Exhaustive acceptance/diagnostic flow
+
+After normal validation succeeds, the opt-in path may reuse `_validate_bucket`
+to decode and validate every complete bucket payload. Its additional checks are
+separate phases with explicit scratch ownership:
+
+1. validate every point array and its agreement with the sparse range index;
+2. prove Exact `point_id` values are unique and cover exactly
+   `0..source.row_count - 1` using a bounded external representation rather
+   than a Python set or full in-memory bitmap;
+3. prove every immediate-coarser level's point IDs are a subset of its
+   immediate finer level and that retained `value_id` and reconstructed source
+   coordinates are unchanged;
+4. prove tile-relative coordinates are finite and inside the logical tile,
+   including the defined upper-edge tolerance;
+5. when `validated` is supplied, freshly guard its source signature and compare
+   Exact point IDs, normalized values, and reconstructed coordinates with the
+   canonical source in bounded batches.
+
+Use only caller-owned `temporary_directory_root` for external runs or merge
+state. Remove private scratch and close all handles on every exit. A failed
+exhaustive check leaves the staged generation intact and unpublished for
+diagnosis; it does not attempt repair.
+
+#### Failure and artifact policy
+
+Normal validation requires `COMPLETED` to be absent because Z8 writes it only
+after validation and its final source guard. Reject missing or unreferenced
+buckets, additional level or catalog nodes, derived Parquet, standalone JSON
+sidecars, known construction scratch, and unexpected generation-level files.
+Do not mistake valid Zarr metadata and chunk/shard objects for sidecars.
+
+Every failure is fail-closed and names the violated layer and relevant logical
+identity where practical: root/catalog, level, bucket, tile, value, pointer, or
+manifest row. Z7 does not weaken the exact layout checks merely to produce a
+more specific downstream error.
 
 #### Focused tests
 
@@ -3850,6 +4060,47 @@ perform a complete point-payload or canonical-source scan.
   Parquet nor reads complete Zarr point arrays;
 - explicit invocation tests proving exhaustive checks cannot run implicitly
   through the normal Z8 publication path.
+- a compact valid catalog whose `value_tiles` records cross validation batch
+  boundaries;
+- exact compact cross-index corruption in `value_id`, `manifest_index`, and
+  `n_points`, including corruption that preserves aggregate totals;
+- manifest-derived bucket descriptors disagreeing with tile coordinates,
+  offsets, local indexes, hashing, or physical root attributes;
+- proof, through guarded/missing payload shards and guarded source readers,
+  that normal validation opens payload metadata but never decodes point rows or
+  opens canonical point Parquet;
+- bounded failure cleanup for every exhaustive scratch phase.
+
+Use real small Zarr v3 buckets for storage, missing-shard, codec, and lifecycle
+claims. Pure geometry, hierarchy, ordering, and accounting helpers may use
+small immutable arrays. Do not mock Zarr behavior that is central to the
+contract.
+
+#### Gate Z7: full-Xenium normal publication validation
+
+Run the mandatory normal validator once against the retained current-format Z6
+generation:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/
+  sdata_xenium_full_data_core.transcripts-cache-workspace/
+    z6-20260818-current/
+```
+
+Record total time, baseline/peak/incremental RSS, largest compact level and
+per-level comparison times, bucket and range records scanned, Zarr objects and
+bytes read where observable, and closure of every handle. Confirm independently
+that no `location`, point-level `value_id`, or `point_id` chunk is decoded; no
+canonical Parquet data page is opened; no scratch or output artifact is
+created; and the generation's bucket and catalog filesystem inventories, file
+sizes, and modification times remain unchanged.
+
+This gate evaluates the normal publication tier only. Do not repeat the
+166.03-second full source-equivalence scan merely to accept Z7: the earlier Z3
+gate remains evidence for the exhaustive algorithm, while focused corruption
+tests qualify its current implementation. A new full-Xenium exhaustive run is
+opt-in for a format/algorithm change, release qualification, or suspected
+corruption.
 
 #### Exit criteria
 
