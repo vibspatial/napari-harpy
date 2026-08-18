@@ -28,7 +28,14 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _CacheAttributes,
     _parse_cache_attributes,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+    _INT16_MAX,
+    _INT64_MAX,
+    _UINT32_MAX,
+    _bucket_path,
+    _require_integer_in_range,
+    _TileDescriptor,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import _parse_root_attributes
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
     _strict_array,
@@ -156,13 +163,45 @@ class _CatalogReader:
             raise ValueError(f"Unknown or unopened catalog array: {name}.") from error
 
     def validate_contents(self) -> None:
-        """Stream and reconcile logical catalog contents without reading points."""
+        """Validate the logical catalog without reading point payload arrays.
+
+        Within staged validation, this method establishes that the catalog
+        arrays are internally consistent.
+
+        Validation proceeds in four layers:
+
+        1. Canonical values: require every value to have a positive Exact count
+           and require their sum to equal the validated source row count.
+        2. Manifest: validate per-level slices, tile ordering and coordinates,
+           bucket-local addresses, bucket inventory, and point-count agreement
+           with the level metadata stored in the root attributes.
+        3. Value-tile index: validate the CSR-style pointers, then stream the
+           compact value-tile records to check their counts, manifest references,
+           level membership, and ordering by ``(level, value_id, manifest_index)``.
+        4. Cross-catalog reconciliation: aggregate the streamed value-tile counts
+           by manifest tile, cache level, and Exact value, and compare those
+           independently derived totals with ``manifest/n_points``, root level
+           point counts, and ``values/n_points``, respectively.
+
+        Opening the reader has already validated the root hierarchy and catalog
+        array layouts. This method checks their logical contents and the bucket
+        names referenced by the manifest; it does not open bucket stores or
+        decode their ``location``, ``value_id``, or ``point_id`` arrays. Physical
+        bucket validation is a separate staged-validation step.
+        """
         attributes = self.attributes
         catalog = attributes.catalog
+
+        # 1. Canonical values
+        # -------------------
+        # Reconcile their Exact totals with the source.
         value_counts = np.asarray(self.array(VALUES_N_POINTS)[:], dtype=np.uint64)
         if bool((value_counts == 0).any()) or int(value_counts.sum(dtype=np.uint64)) != attributes.source.row_count:
             raise ValueError("Catalog value totals do not reconcile to Exact source rows.")
 
+        # 2. Manifest
+        # -----------
+        # Validate its level slices, logical tiles, and bucket inventory.
         level_indptr = np.asarray(self.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
         if (
             int(level_indptr[0]) != 0
@@ -170,6 +209,21 @@ class _CatalogReader:
             or bool((level_indptr[1:] <= level_indptr[:-1]).any())
         ):
             raise ValueError("Manifest level pointers are invalid.")
+        # Materialize the complete compact manifest as parallel arrays. Array
+        # position ``i`` is the implicit global manifest index shared by every
+        # field: it identifies one nonempty logical tile and records that tile's
+        # physical bucket address, grid coordinate, and total point count. The
+        # manifest is tile metadata rather than point payload, so reading it in
+        # full is bounded by the number of nonempty tiles.
+        #
+        # For example, the shared positions of the five stored arrays represent::
+        #
+        #     implicit        bucket_  bucket_tile_  tile_  tile_  n_
+        #     manifest_index  id       index         x      y      points
+        #     -----------------------------------------------------------
+        #     0               1        0             0      0      120
+        #     1               0        0             1      0       85
+        #     2               1        1             2      0      103
         manifest = {
             name: np.asarray(self.array(name)[:], dtype=CATALOG_ARRAY_DTYPES[name])
             for name in (
@@ -180,6 +234,10 @@ class _CatalogReader:
                 MANIFEST_N_POINTS,
             )
         }
+        # First reject empty manifest tiles globally. The level loop below then
+        # validates each row in its level context, together with cross-row
+        # spatial ordering, uniqueness, bucket-address, physical-inventory, and
+        # aggregate-count invariants.
         if bool((manifest[MANIFEST_N_POINTS] == 0).any()):
             raise ValueError("Manifest point counts must be positive.")
         addresses: set[tuple[int, int, int]] = set()
@@ -237,11 +295,30 @@ class _CatalogReader:
             ):
                 raise ValueError("Serialized level bucket children do not match the manifest.")
 
+        # 3. Value-tile index
+        # -------------------
+        # Validate its pointers and streamed records.
+        # Each ``indptr[level]`` row maps value IDs to half-open slices in the
+        # global ``value_tiles/manifest_index`` and ``value_tiles/n_points``
+        # arrays. For two levels and three values, for example::
+        #
+        #     indptr = [[0, 2, 2, 3],
+        #               [3, 4, 6, 6]]
+        #
+        # Level 0 values occupy slices ``0:2``, ``2:2`` (empty), and ``2:3``;
+        # level 1 continues with ``3:4``, ``4:6``, and ``6:6`` (empty). Thus
+        # pointers may remain equal within a level, but may never move backward.
+        # Every level must start exactly where its predecessor ended, and the
+        # final pointer must equal the complete value-tile row count.
         indptr = np.asarray(self.array(VALUE_TILES_INDPTR)[:], dtype=np.uint64)
         if int(indptr[0, 0]) != 0 or int(indptr[-1, -1]) != catalog.value_tile_row_count:
             raise ValueError("Value-tile pointers have invalid terminals.")
         if bool((indptr[:, 1:] < indptr[:, :-1]).any()) or bool((indptr[1:, 0] != indptr[:-1, -1]).any()):
             raise ValueError("Value-tile pointers are not nondecreasing and level-continuous.")
+        # This loop performs no additional validation. It flattens the already
+        # validated two-dimensional pointer table into one lookup structure for
+        # the streamed ``value_tiles`` records below. Adjacent level rows
+        # intentionally overlap at their equal end/start boundary.
         flat_indptr = np.empty(catalog.level_count * catalog.value_count + 1, dtype=np.uint64)
         for level in range(catalog.level_count):
             start = level * catalog.value_count
@@ -253,6 +330,12 @@ class _CatalogReader:
         previous_key = -1
         previous_manifest = -1
         batch_rows = catalog.settings.value_tile_chunk_rows
+        # Stream the parallel value-tile arrays in chunk-sized batches. For
+        # every row, recover its implicit ``(level, value_id)`` from the global
+        # row position and ``flat_indptr``; validate its positive count,
+        # manifest reference, level membership, and strict manifest ordering
+        # within that key (including across batch boundaries); then accumulate
+        # independent per-manifest, per-level, and Exact per-value totals.
         for batch_start in range(0, catalog.value_tile_row_count, batch_rows):
             batch_stop = min(batch_start + batch_rows, catalog.value_tile_row_count)
             manifest_index = np.asarray(
@@ -282,6 +365,14 @@ class _CatalogReader:
             exact = levels == 0
             np.add.at(exact_value_totals, values[exact], n_points[exact])
 
+        # 4. Cross-catalog reconciliation
+        # -------------------------------
+        # Compare independently derived totals.
+        # Reconcile the summaries independently derived from ``value_tiles``::
+        #
+        #     derived manifest totals     == manifest/n_points
+        #     derived level totals        == root level point counts
+        #     derived Exact value totals  == values/n_points
         if not np.array_equal(manifest_totals, manifest[MANIFEST_N_POINTS]):
             raise ValueError("Value-tile counts do not reconcile to manifest tile totals.")
         if not np.array_equal(
@@ -408,29 +499,81 @@ def _iter_bucket_range_batches(
     validated level stream. Validation carries value-order and row-coverage
     state across slice boundaries.
     """
-    if not isinstance(cache_root, Path) or not cache_root.is_dir():
-        raise ValueError("`cache_root` must be an existing pathlib.Path directory.")
     if not isinstance(bucket_result, _BucketWriteResult):
         raise ValueError("`bucket_result` must be _BucketWriteResult.")
+    yield from _iter_compact_bucket_range_batches(
+        cache_root,
+        level=bucket_result.level,
+        bucket_id=bucket_result.bucket_id,
+        expected_descriptors=bucket_result.tile_descriptors,
+        manifest_indexes=manifest_indexes,
+        batch_rows=batch_rows,
+        expected_settings=expected_settings,
+        expected_range_count=bucket_result.range_count,
+    )
+
+
+def _iter_compact_bucket_range_batches(
+    cache_root: Path,
+    *,
+    level: int,
+    bucket_id: int,
+    expected_descriptors: tuple[_TileDescriptor, ...],
+    manifest_indexes: np.ndarray,
+    batch_rows: int,
+    expected_settings: _ZarrWriteSettings,
+    expected_range_count: int | None = None,
+) -> Iterator[_RangeRecordBatch]:
+    """Validate and stream one bucket from reopened manifest expectations.
+
+    Unlike the construction compatibility wrapper above, this primitive does
+    not accept or trust a ``_BucketWriteResult``. The expected tile identities
+    come from the persisted manifest, while physical point and range totals
+    come from the reopened bucket. Point arrays are opened only for layout
+    validation and are never indexed or decoded.
+    """
+    if not isinstance(cache_root, Path) or not cache_root.is_dir():
+        raise ValueError("`cache_root` must be an existing pathlib.Path directory.")
+    _require_integer_in_range(level, "level", maximum=_INT16_MAX)
+    _require_integer_in_range(bucket_id, "bucket_id", maximum=_UINT32_MAX)
+    if not isinstance(expected_descriptors, tuple) or not expected_descriptors:
+        raise ValueError("`expected_descriptors` must be a nonempty tuple.")
+    if not all(isinstance(descriptor, _TileDescriptor) for descriptor in expected_descriptors):
+        raise ValueError("Every expected descriptor must be a _TileDescriptor.")
+    if any((descriptor.level, descriptor.bucket_id) != (level, bucket_id) for descriptor in expected_descriptors):
+        raise ValueError("Expected descriptors do not belong to the requested bucket.")
+    if tuple(descriptor.bucket_tile_index for descriptor in expected_descriptors) != tuple(
+        range(len(expected_descriptors))
+    ):
+        raise ValueError("Expected bucket-local tile indexes must be contiguous from zero.")
+    if expected_descriptors != tuple(sorted(expected_descriptors, key=lambda tile: (tile.tile_y, tile.tile_x))):
+        raise ValueError("Expected descriptors must follow (tile_y, tile_x) order.")
     if not isinstance(expected_settings, _ZarrWriteSettings):
         raise ValueError("`expected_settings` must be _ZarrWriteSettings.")
     _require_integer_in_range(batch_rows, "batch_rows", minimum=1, maximum=_INT64_MAX)
+    if expected_range_count is not None:
+        _require_integer_in_range(
+            expected_range_count,
+            "expected_range_count",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
     if (
         not isinstance(manifest_indexes, np.ndarray)
         or manifest_indexes.dtype != np.dtype(np.uint64)
-        or manifest_indexes.shape != (len(bucket_result.tile_descriptors),)
+        or manifest_indexes.shape != (len(expected_descriptors),)
         or not manifest_indexes.flags.c_contiguous
     ):
         raise ValueError("`manifest_indexes` must align with the bucket's tile descriptors.")
 
-    store = LocalStore(cache_root / bucket_result.bucket_path, read_only=True)
+    store = LocalStore(cache_root / _bucket_path(level=level, bucket_id=bucket_id), read_only=True)
     try:
         root = zarr.open_group(store=store, mode="r", zarr_format=3, use_consolidated=False)
         _validate_hierarchy(root)
         attributes = _parse_root_attributes(
             dict(root.attrs),
-            expected_level=bucket_result.level,
-            expected_bucket_id=bucket_result.bucket_id,
+            expected_level=level,
+            expected_bucket_id=bucket_id,
         )
         arrays = {
             name: _strict_array(root, name)
@@ -460,17 +603,18 @@ def _iter_bucket_range_batches(
         )
         if observed_settings != expected_settings:
             raise ValueError("Bucket physical settings do not match the cache-wide backend profile.")
-        if (attributes.point_count, attributes.range_count) != (
-            bucket_result.point_count,
-            bucket_result.range_count,
-        ):
-            raise ValueError("Bucket physical totals do not match its finalized result.")
+        if attributes.tile_count != len(expected_descriptors):
+            raise ValueError("Bucket physical tile count does not match the manifest descriptors.")
+        if attributes.point_count != sum(descriptor.n_points for descriptor in expected_descriptors):
+            raise ValueError("Bucket physical point count does not match the manifest descriptors.")
+        if expected_range_count is not None and attributes.range_count != expected_range_count:
+            raise ValueError("Bucket physical range count does not match its finalized result.")
 
         tile_x = np.asarray(arrays["tile_x"][:], dtype=np.uint32)
         tile_y = np.asarray(arrays["tile_y"][:], dtype=np.uint32)
         tile_offset = np.asarray(arrays["tile_offset"][:], dtype=np.uint64)
         tile_indptr = np.asarray(arrays["ranges/tile_indptr"][:], dtype=np.uint64)
-        descriptors = bucket_result.tile_descriptors
+        descriptors = expected_descriptors
         if tile_offset[0] != 0 or tile_offset[-1] != attributes.point_count:
             raise ValueError("Bucket tile offsets have invalid terminals.")
         if tile_indptr[0] != 0 or tile_indptr[-1] != attributes.range_count:
