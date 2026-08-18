@@ -203,8 +203,13 @@ def _validate_array_layout(
     compressors = _compressors(codec_id)
     inner_codecs = (BytesCodec(endian="little"), *compressors)
     if shards is None:
+        # An unsharded array stores each logical chunk directly, so its
+        # serializer and compressor are the complete top-level codec pipeline.
         expected_codecs = inner_codecs
     else:
+        # With ``chunks=`` and ``shards=`` Zarr wraps those inner-chunk codecs
+        # in one ShardingCodec. Its trailing index maps every inner chunk to a
+        # byte offset and length; CRC32C detects corruption of that index.
         expected_codecs = (
             ShardingCodec(
                 chunk_shape=chunks,
