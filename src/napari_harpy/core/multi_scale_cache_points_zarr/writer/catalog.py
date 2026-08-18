@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from itertools import chain
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +30,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _iter_bucket_range_batches,
-    _RangeRecordBatch,
     _read_bucket_storage_settings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_writer import (
@@ -124,13 +123,18 @@ def _write_staged_cache_catalog(
             tile_y=tile_y,
             n_points=manifest_n_points,
         )
+        # Keep one lazy stream per level while concatenating its bucket streams;
+        # only the currently consumed bucket store is opened by the reader.
         batches_by_level = tuple(
-            _iter_level_range_batches(
-                staging_root,
-                result,
-                bucket_manifest_indexes,
-                batch_rows=settings.value_tile_chunk_rows,
-                zarr_settings=zarr_settings,
+            chain.from_iterable(
+                _iter_bucket_range_batches(
+                    staging_root,
+                    bucket,
+                    bucket_manifest_indexes[(bucket.level, bucket.bucket_id)],
+                    batch_rows=settings.value_tile_chunk_rows,
+                    expected_settings=zarr_settings,
+                )
+                for bucket in result.buckets
             )
             for result in level_results
         )
@@ -160,25 +164,6 @@ def _write_staged_cache_catalog(
             catalog_metadata=catalog_metadata,
         )
         writer.finalize(attributes)
-
-
-def _iter_level_range_batches(
-    staging_root: Path,
-    result: _LevelWriteResult,
-    bucket_manifest_indexes: dict[tuple[int, int], np.ndarray],
-    *,
-    batch_rows: int,
-    zarr_settings: _ZarrWriteSettings,
-) -> Iterator[_RangeRecordBatch]:
-    """Yield one level's compact bucket ranges without reading point payloads."""
-    for bucket in result.buckets:
-        yield from _iter_bucket_range_batches(
-            staging_root,
-            bucket,
-            bucket_manifest_indexes[(bucket.level, bucket.bucket_id)],
-            batch_rows=batch_rows,
-            expected_settings=zarr_settings,
-        )
 
 
 def _build_manifest_arrays(
