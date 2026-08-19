@@ -42,6 +42,7 @@ classifiers = [
 
 dependencies = [
     "dask[dataframe]",
+    "filelock>=3.20.1",
     "harpy-analysis>=0.4.4",
     "spatialdata>=0.7.2",
     "joblib",
