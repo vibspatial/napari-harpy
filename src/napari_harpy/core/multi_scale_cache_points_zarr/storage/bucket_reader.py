@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
@@ -20,10 +21,55 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _BucketAttributes,
     _parse_root_attributes,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
+    _validate_array_layouts,
+    _validate_hierarchy,
+)
+
+
+@dataclass(frozen=True)
+class _PointDisplayPayload:
+    """Return the aligned point arrays needed for visualization."""
+
+    location: npt.NDArray[np.float32]
+    value_id: npt.NDArray[np.uint32]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.location, np.ndarray)
+            or self.location.dtype != np.dtype(np.float32)
+            or self.location.ndim != 2
+            or self.location.shape[1:] != (2,)
+            or not self.location.flags.c_contiguous
+        ):
+            raise ValueError("`location` must be a C-contiguous (N, 2) float32 array.")
+        if (
+            not isinstance(self.value_id, np.ndarray)
+            or self.value_id.dtype != np.dtype(np.uint32)
+            or self.value_id.ndim != 1
+            or not self.value_id.flags.c_contiguous
+            or len(self.value_id) != len(self.location)
+            or len(self.value_id) == 0
+        ):
+            raise ValueError("`value_id` must be a nonempty aligned C-contiguous uint32 array.")
+        location = self.location.view()
+        location.flags.writeable = False
+        value_id = self.value_id.view()
+        value_id.flags.writeable = False
+        object.__setattr__(self, "location", location)
+        object.__setattr__(self, "value_id", value_id)
+
+
+@dataclass(frozen=True)
+class _PointReadPlan:
+    """Describe exact rows and minimal coalesced Zarr read envelopes."""
+
+    intervals: tuple[tuple[int, int], ...]
+    blocks: tuple[tuple[int, int], ...]
 
 
 class _BucketReader:
-    """Reuse strict read-only handles for complete and selected bucket reads.
+    """Reuse strict read-only handles for construction and display payloads.
 
     Parameters
     ----------
@@ -37,9 +83,10 @@ class _BucketReader:
     Notes
     -----
     The context opens one bucket once and configures every array to fail on a
-    missing chunk or shard. Complete reads use ``tile_offset``. Selected reads
-    resolve sparse ranges through ``tile_indptr`` and deduplicate the touched
-    inner point chunks before constructing a complete ``_PointPayload``.
+    missing chunk or shard. Construction payloads read every tile row including
+    mandatory point IDs. Display payloads omit point IDs and either read every
+    row through ``tile_offset`` or resolve selected values through sparse
+    ``tile_indptr`` ranges.
     """
 
     def __init__(self, cache_root: str | Path, *, level: int, bucket_id: int) -> None:
@@ -70,6 +117,7 @@ class _BucketReader:
                 zarr_format=3,
                 use_consolidated=False,
             )
+            _validate_hierarchy(self._root)
             self._attributes = _parse_root_attributes(
                 dict(self._root.attrs),
                 expected_level=self._level,
@@ -90,6 +138,7 @@ class _BucketReader:
                     "ranges/row_count",
                 )
             }
+            _validate_array_layouts(self._arrays, self._attributes)
         except Exception:
             self._close()
             raise
@@ -106,28 +155,31 @@ class _BucketReader:
         self._close()
         return False
 
-    def read_complete(self, descriptor: _TileDescriptor) -> _PointPayload:
-        """Read all aligned rows for one verified logical tile."""
-        start, stop = self._tile_interval(descriptor)
-        location = np.asarray(self._array("location")[start:stop, :], dtype=np.float32)
+    def read_construction_payload(self, descriptor: _TileDescriptor) -> _PointPayload:
+        """Read all aligned rows and mandatory point IDs for cache construction."""
+        plan = self._complete_read_plan(descriptor)
+        location, value_id, point_id = self._read_aligned_rows(plan, include_point_id=True)
+        if point_id is None:
+            raise RuntimeError("Construction reads must include point IDs.")
         return _PointPayload(
             x_rel=np.ascontiguousarray(location[:, 0]),
             y_rel=np.ascontiguousarray(location[:, 1]),
-            value_id=np.ascontiguousarray(self._array("value_id")[start:stop], dtype=np.uint32),
-            point_id=np.ascontiguousarray(self._array("point_id")[start:stop], dtype=np.uint64),
+            value_id=value_id,
+            point_id=point_id,
         )
 
-    def read_selected(
+    def read_display_payload(
         self,
         descriptor: _TileDescriptor,
-        selected_value_ids: npt.NDArray[np.uint32],
-    ) -> _PointPayload | None:
-        """Read exact selected value runs while decoding touched chunks once.
+        selected_value_ids: npt.NDArray[np.uint32] | None = None,
+    ) -> _PointDisplayPayload | None:
+        """Read exact display rows while decoding each touched chunk once.
 
-        Sparse range records identify the exact bucket-global point rows for the
-        requested values, but Zarr decompresses data at inner-chunk granularity.
-        Reading every exact range separately could therefore decode the same
-        chunk repeatedly. This method performs the following conversion::
+        ``None`` reads every point row in the logical tile. For selected values,
+        sparse range records identify the exact bucket-global rows, while Zarr
+        decompresses at inner-chunk granularity. Reading every range separately
+        could therefore decode the same chunk repeatedly. The selected path
+        performs the following conversion::
 
             selected sparse ranges
                 -> exact point-row intervals
@@ -138,21 +190,47 @@ class _BucketReader:
 
         A coalesced read may include unselected rows between selected intervals,
         but its outer bounds remain the first and last exact selected rows. Only
-        the exact sparse-range intervals are included in the returned payload.
+        exact selected rows enter the returned arrays. Complete and selected
+        reads slice only aligned ``location`` and ``value_id`` arrays; the
+        point-ID payload is never read or decoded.
 
         Parameters
         ----------
         descriptor
             Identity and expected point count of the logical tile.
         selected_value_ids
-            Strictly increasing unique value IDs to retrieve.
+            Optional strictly increasing unique value IDs to retrieve. ``None``
+            reads every value in the tile.
 
         Returns
         -------
-        _PointPayload or None
-            Selected aligned point rows, or ``None`` when the tile contains no
-            requested value.
+        _PointDisplayPayload or None
+            Exact aligned display rows, or ``None`` when a selected-value
+            request finds no requested value in the tile.
         """
+        if selected_value_ids is None:
+            plan = self._complete_read_plan(descriptor)
+        else:
+            plan = self._selected_read_plan(descriptor, selected_value_ids)
+            if plan is None:
+                return None
+        location, value_id, point_id = self._read_aligned_rows(plan, include_point_id=False)
+        if point_id is not None:
+            raise RuntimeError("Visualization reads must not include point IDs.")
+        return _PointDisplayPayload(
+            location=location,
+            value_id=value_id,
+        )
+
+    def _complete_read_plan(self, descriptor: _TileDescriptor) -> _PointReadPlan:
+        start, stop = self._tile_interval(descriptor)
+        return self._point_read_plan(((start, stop),))
+
+    def _selected_read_plan(
+        self,
+        descriptor: _TileDescriptor,
+        selected_value_ids: npt.NDArray[np.uint32],
+    ) -> _PointReadPlan | None:
         self._require_selected_value_ids(selected_value_ids)
         tile_start, tile_stop = self._tile_interval(descriptor)
         tile_index = descriptor.bucket_tile_index
@@ -185,48 +263,81 @@ class _BucketReader:
             dtype=np.uint64,
         )[selected_positions]
         # Each selected sparse range becomes a half-open, bucket-global row
-        # interval into the aligned ``location``, point-level ``value_id``, and
-        # ``point_id`` arrays. These are neither range-array indexes nor
-        # tile-local offsets.
-        intervals = tuple(
-            (int(start), int(start + count))
-            for start, count in zip(row_starts, row_counts, strict=True)
-        )
+        # interval into the aligned point arrays. These are neither range-array
+        # indexes nor tile-local offsets.
+        intervals = tuple((int(start), int(start + count)) for start, count in zip(row_starts, row_counts, strict=True))
         if any(start < tile_start or stop > tile_stop or start >= stop for start, stop in intervals):
             raise ValueError("Selected sparse ranges are outside the logical tile interval.")
+        return self._point_read_plan(intervals)
 
-        blocks = _coalesced_read_blocks_for_intervals(
-            intervals,
-            # ``location``, ``point_id``, and point-level ``value_id`` share
-            # identical row chunk boundaries. Use the one-dimensional
-            # ``value_id`` metadata as the canonical source for that row size.
-            chunk_rows=self._array("value_id").chunks[0],
+    def _point_read_plan(self, intervals: tuple[tuple[int, int], ...]) -> _PointReadPlan:
+        """Plan aligned Zarr reads for exact bucket-global row intervals.
+
+        The caller supplies the exact nonempty point rows that must be returned
+        from one logical tile. This method coalesces intervals whose touched
+        chunks overlap or are consecutive into minimal Zarr slice envelopes,
+        preventing repeated decoding of the same inner chunk while leaving
+        gaps containing untouched chunks unread.
+
+        The returned ``intervals`` remain the exact output rows, whereas
+        ``blocks`` are the physical slices consumed by ``_read_aligned_rows``.
+        No point payload arrays are read here.
+
+        Parameters
+        ----------
+        intervals
+            Exact half-open row bounds into the aligned bucket-wide point
+            arrays. Callers have already verified that they are nonempty and
+            lie inside one logical tile.
+
+        Returns
+        -------
+        _PointReadPlan
+            Exact output intervals and coalesced physical read blocks.
+        """
+        value_array = self._array("value_id")
+        chunk_rows = value_array.chunks[0]
+        blocks = _coalesced_read_blocks_for_intervals(intervals, chunk_rows=chunk_rows)
+        return _PointReadPlan(
+            intervals=intervals,
+            blocks=blocks,
         )
-        x_parts: list[np.ndarray] = []
-        y_parts: list[np.ndarray] = []
+
+    def _read_aligned_rows(
+        self,
+        plan: _PointReadPlan,
+        *,
+        include_point_id: bool,
+    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint32], npt.NDArray[np.uint64] | None]:
+        location_parts: list[np.ndarray] = []
         value_parts: list[np.ndarray] = []
-        point_parts: list[np.ndarray] = []
+        point_parts: list[np.ndarray] | None = [] if include_point_id else None
         # Read each coalesced envelope once to avoid repeated Zarr chunk
         # decoding, then append only its exact selected intervals.
-        for block_start, block_stop in blocks:
+        for block_start, block_stop in plan.blocks:
             location = np.asarray(self._array("location")[block_start:block_stop, :], dtype=np.float32)
             values = np.asarray(self._array("value_id")[block_start:block_stop], dtype=np.uint32)
-            points = np.asarray(self._array("point_id")[block_start:block_stop], dtype=np.uint64)
-            for interval_start, interval_stop in intervals:
+            points = (
+                np.asarray(self._array("point_id")[block_start:block_stop], dtype=np.uint64)
+                if include_point_id
+                else None
+            )
+            for interval_start, interval_stop in plan.intervals:
                 if interval_stop <= block_start or interval_start >= block_stop:
                     continue
                 local_start = max(interval_start, block_start) - block_start
                 local_stop = min(interval_stop, block_stop) - block_start
-                x_parts.append(np.ascontiguousarray(location[local_start:local_stop, 0]))
-                y_parts.append(np.ascontiguousarray(location[local_start:local_stop, 1]))
+                location_parts.append(np.ascontiguousarray(location[local_start:local_stop, :]))
                 value_parts.append(np.ascontiguousarray(values[local_start:local_stop]))
-                point_parts.append(np.ascontiguousarray(points[local_start:local_stop]))
+                if point_parts is not None:
+                    if points is None:
+                        raise RuntimeError("Point-ID rows were not read for a construction payload.")
+                    point_parts.append(np.ascontiguousarray(points[local_start:local_stop]))
 
-        return _PointPayload(
-            x_rel=_concatenate_parts(x_parts, np.float32),
-            y_rel=_concatenate_parts(y_parts, np.float32),
-            value_id=_concatenate_parts(value_parts, np.uint32),
-            point_id=_concatenate_parts(point_parts, np.uint64),
+        return (
+            _concatenate_location_parts(location_parts),
+            _concatenate_parts(value_parts, np.uint32),
+            None if point_parts is None else _concatenate_parts(point_parts, np.uint64),
         )
 
     def _tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
@@ -364,3 +475,9 @@ def _concatenate_parts(parts: list[np.ndarray], dtype: npt.DTypeLike) -> np.ndar
     if len(parts) == 1:
         return np.ascontiguousarray(parts[0], dtype=dtype)
     return np.ascontiguousarray(np.concatenate(parts), dtype=dtype)
+
+
+def _concatenate_location_parts(parts: list[np.ndarray]) -> npt.NDArray[np.float32]:
+    if len(parts) == 1:
+        return np.ascontiguousarray(parts[0], dtype=np.float32)
+    return np.ascontiguousarray(np.concatenate(parts, axis=0), dtype=np.float32)
