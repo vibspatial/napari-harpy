@@ -138,6 +138,31 @@ def validate_parquet_points_source(
     )
 
 
+def _require_parquet_source_unchanged(validated: ValidatedPointsSource) -> None:
+    """Require the canonical Parquet metadata inventory to match validation.
+
+    This guard rebuilds and hashes only the deterministic Parquet metadata
+    inventory. It does not decode point columns or repeat content validation.
+    Cache builders call it before construction and immediately before marking a
+    staged generation complete so a source change cannot silently cross the
+    publication boundary.
+    """
+    if not isinstance(validated, ValidatedPointsSource):
+        raise ValueError("`validated` must be ValidatedPointsSource.")
+    if validated.source_signature_method != SOURCE_SIGNATURE_METHOD:
+        raise PointsSourceValidationError(
+            "The validated source uses an unsupported source-signature method.",
+            code="unsupported_source_signature_method",
+        )
+
+    current_inventory = _read_parquet_source_inventory(validated.source)
+    if build_source_signature(current_inventory) != validated.source_signature:
+        raise PointsSourceValidationError(
+            "The Parquet points source changed after content validation.",
+            code="source_changed_after_validation",
+        )
+
+
 def _scan_points_content(
     inventory: _ParquetSourceInventory,
     *,
