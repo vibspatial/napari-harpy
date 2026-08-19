@@ -38,6 +38,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _Zarr
 CACHE_SCHEMA_VERSION: Final = "harpy-multiscale-points-zarr-cache-0.1"
 BACKEND_IDENTIFIER: Final = "harpy-zarr-v3-bucket-sparse-value-ranges-v1"
 CREATED_BY_PACKAGE: Final = "napari-harpy"
+PUBLICATION_STATE_STAGING: Final = "staging"
+PUBLICATION_STATE_COMPLETE: Final = "complete"
 
 VALUES_GROUP: Final = "values"
 MANIFEST_GROUP: Final = "manifest"
@@ -72,6 +74,7 @@ _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
     {
         "schema_version",
         "cache_generation_id",
+        "publication_state",
         "created_by",
         "backend",
         "source",
@@ -346,6 +349,7 @@ class _CatalogMetadata:
 @dataclass(frozen=True)
 class _CacheAttributes:
     cache_generation_id: str
+    publication_state: str
     created_by_version: str
     zarr_settings: _ZarrWriteSettings
     source: _SourceMetadata
@@ -364,6 +368,8 @@ class _CacheAttributes:
             raise ValueError("`cache_generation_id` must be a canonical UUID string.") from error
         if str(parsed_uuid) != self.cache_generation_id:
             raise ValueError("`cache_generation_id` must be a canonical lowercase UUID string.")
+        if self.publication_state not in {PUBLICATION_STATE_STAGING, PUBLICATION_STATE_COMPLETE}:
+            raise ValueError("`publication_state` must be 'staging' or 'complete'.")
         _require_nonempty_string(self.created_by_version, "created_by.version")
         if not isinstance(self.zarr_settings, _ZarrWriteSettings):
             raise ValueError("`zarr_settings` must be _ZarrWriteSettings.")
@@ -409,6 +415,7 @@ class _CacheAttributes:
         return {
             "schema_version": CACHE_SCHEMA_VERSION,
             "cache_generation_id": self.cache_generation_id,
+            "publication_state": self.publication_state,
             "created_by": {"package": CREATED_BY_PACKAGE, "version": self.created_by_version},
             "backend": {
                 "identifier": BACKEND_IDENTIFIER,
@@ -640,6 +647,7 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
 
     return _CacheAttributes(
         cache_generation_id=_require_string(root["cache_generation_id"], "cache_generation_id"),
+        publication_state=_require_string(root["publication_state"], "publication_state"),
         created_by_version=_require_string(created_by["version"], "created_by.version"),
         zarr_settings=zarr_settings,
         source=source,
