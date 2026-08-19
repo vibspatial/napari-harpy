@@ -8,7 +8,10 @@ import zarr
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    PUBLICATION_STATE_COMPLETE,
+    _CatalogWriteSettings,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
@@ -103,13 +106,15 @@ def test_normal_staged_validation_accepts_complete_multilevel_generation(
     _validate_staged_cache(catalog_exact_fixture.staging_root)
 
 
-def test_normal_staged_validation_rejects_premature_completed(
+def test_normal_staged_validation_rejects_complete_publication_state(
     catalog_exact_fixture: CatalogExactFixture,
 ) -> None:
     _write_catalog(catalog_exact_fixture)
-    (catalog_exact_fixture.staging_root / "COMPLETED").write_text("complete\n")
+    with LocalStore(catalog_exact_fixture.staging_root, read_only=False) as store:
+        root = zarr.open_group(store=store, mode="r+", zarr_format=3, use_consolidated=False)
+        root.update_attributes({"publication_state": PUBLICATION_STATE_COMPLETE})
 
-    with pytest.raises(ValueError, match="premature COMPLETED"):
+    with pytest.raises(ValueError, match="publication_state='staging'"):
         _validate_staged_cache(catalog_exact_fixture.staging_root)
 
 
