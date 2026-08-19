@@ -15,7 +15,10 @@ from napari_harpy.core.multi_scale_cache_points import (
 )
 from napari_harpy.core.multi_scale_cache_points.errors import PointContentValidationError
 from napari_harpy.core.multi_scale_cache_points.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
-from napari_harpy.core.multi_scale_cache_points.validation import VALUE_NORMALIZATION_METHOD
+from napari_harpy.core.multi_scale_cache_points.validation import (
+    VALUE_NORMALIZATION_METHOD,
+    _require_parquet_source_unchanged,
+)
 
 
 def _source(tmp_path: Path) -> ParquetPointsSource:
@@ -132,6 +135,41 @@ def test_validate_rejects_source_signature_change(
         validate_parquet_points_source(source, max_batch_rows=2)
 
     assert error.value.code == "source_changed_during_validation"
+
+
+def test_source_unchanged_guard_accepts_current_metadata_inventory(tmp_path: Path) -> None:
+    validated = validate_parquet_points_source(_source(tmp_path), max_batch_rows=2)
+
+    _require_parquet_source_unchanged(validated)
+
+
+def test_source_unchanged_guard_rejects_changed_metadata_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validated = validate_parquet_points_source(_source(tmp_path), max_batch_rows=2)
+    source_file = validated.files[0]
+    changed_inventory = validation_module._ParquetSourceInventory(
+        source=validated.source,
+        files=(replace(source_file, modified_time_ns=source_file.modified_time_ns + 1),),
+        selected_schema=validated.selected_schema,
+        row_count=validated.row_count,
+    )
+    monkeypatch.setattr(validation_module, "_read_parquet_source_inventory", lambda _source: changed_inventory)
+
+    with pytest.raises(PointsSourceValidationError, match="changed after content validation") as error:
+        _require_parquet_source_unchanged(validated)
+
+    assert error.value.code == "source_changed_after_validation"
+
+
+def test_source_unchanged_guard_rejects_unsupported_signature_method(tmp_path: Path) -> None:
+    validated = validate_parquet_points_source(_source(tmp_path), max_batch_rows=2)
+
+    with pytest.raises(PointsSourceValidationError, match="unsupported source-signature method") as error:
+        _require_parquet_source_unchanged(replace(validated, source_signature_method="future-method"))
+
+    assert error.value.code == "unsupported_source_signature_method"
 
 
 def test_validate_propagates_content_error_without_second_inventory(
