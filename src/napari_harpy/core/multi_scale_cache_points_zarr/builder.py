@@ -300,7 +300,23 @@ def _publish_staged_generation(
     *,
     expected_existing_generation_id: str | None,
 ) -> Path:
-    """Install one completed staging tree and restore the old tree on failure."""
+    """Install one completed staging tree and restore the old tree on failure.
+
+    The directory transitions are::
+
+        first build:
+            staging(new) -> output(new)
+
+        replacement:
+            output(old)  -> backup(old)
+            staging(new) -> output(new)
+            delete backup(old)
+
+        failed replacement:
+            output(old)  -> backup(old)
+            staging rename fails
+            backup(old)  -> output(old)
+    """
     _require_complete_cache_generation_id(staging_root)
     observed_existing_generation_id = _get_existing_complete_cache_generation_id(output_path)
     if observed_existing_generation_id != expected_existing_generation_id:
