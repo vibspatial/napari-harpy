@@ -4710,7 +4710,7 @@ used for LOD and benchmark accounting together without mutable reader-global
 ```text
 read_tile(level, tile_x, tile_y, *, value_ids=None)
 read_viewport(level, viewport, *, value_ids=None)
-select_level(viewport, render_point_budget, *, value_ids=None)
+select_level(viewport, point_budget, *, value_ids=None)
 ```
 
 Use one high-level operation per spatial request rather than exposing the
@@ -4730,6 +4730,26 @@ all-values path or sparse value-range path. The existing low-level
 `_BucketReader.read_complete()` and `_BucketReader.read_selected()` names remain
 appropriate because those private construction-facing methods explicitly model
 the two different physical operations.
+
+`point_budget` is a positive caller-computed effective limit, not a napari
+canvas policy embedded in the cache reader. Z9 accepts and tests that one number
+without importing napari or introducing separate maximum-render and
+screen-density parameters. The later Phase 2 napari adapter owns the dynamic
+calculation:
+
+```text
+hard maximum render points
+        +
+canvas size, projected marker size, and visual-density policy
+        -> screen-density budget
+        -> min(hard maximum, screen-density budget)
+        -> point_budget
+        -> select_level(viewport, point_budget, value_ids=...)
+```
+
+This keeps screen pixels and display policy outside the storage-neutral reader
+while allowing a fully zoomed-out request to target materially fewer points
+than the hard rendering maximum. Do not add a second fixed reader budget in Z9.
 
 Do not conflate the viewport's spatial bounds with the bucket's sparse value
 ranges. They address two different stages of a request:
@@ -4781,7 +4801,7 @@ points strictly inside the viewport rectangle.
 `select_level()` follows the same optional `value_ids` contract as the read
 methods. It chooses the finest serialized level whose estimated visible point
 count is at most the positive
-`render_point_budget`:
+`point_budget`:
 
 - all-values estimates sum `manifest/n_points` for intersecting manifest rows;
 - value-filtered estimates sum the corresponding positive `value_tiles/n_points`
@@ -4789,7 +4809,31 @@ count is at most the positive
 - unique selected values are disjoint point categories, so their counts may be
   summed without point-level deduplication;
 - a disjoint viewport selects Exact and produces no tile results;
-- when no level fits, select the terminal overview level.
+- when no level fits for an all-values request, select the terminal overview
+  and set `within_budget` from its actual estimate rather than assuming the
+  construction overview limit also fits this runtime budget.
+
+The construction and runtime limits are different contracts. For example, a
+cache built with `overview_point_budget = 100_000` may have an 82,000-point
+terminal overview, while a small canvas produces `point_budget = 25_000`:
+
+```text
+level                 estimated viewport rows    fits point_budget=25,000
+Exact                              12,000,000     no
+Bridge                              2,000,000     no
+Spatial                               500,000     no
+terminal overview                       82,000     no
+
+selected level      = terminal overview
+estimated rows      = 82,000
+within_budget       = False
+```
+
+The terminal overview is still the smallest available all-values
+representation, but returning it does not mean that `select_level()` satisfied
+the caller's effective budget. If its estimate were 18,000 instead,
+`within_budget` would be `True`. Z9 reports this state truthfully; it does not
+thin the 82,000 rows at read time.
 
 The last fallback applies only to all-values selection. Value-neutral sampling
 does not preserve every gene, so a zero count at a sampled level must not be
@@ -4807,12 +4851,12 @@ this decision. Then:
 2. consider a sampled level selection-preserving only when every active value
    has a positive count at that level;
 3. choose the finest selection-preserving level whose summed selected count is
-   at most the render budget and set `within_budget = True`;
+   at most `point_budget` and set `within_budget = True`;
 4. if no selection-preserving level fits, choose the coarsest
    selection-preserving level and set `within_budget = False`.
 
 Exact is always selection-preserving for the active values, so the fourth case
-always has a defined fallback. It may exceed the render budget, but it must not
+always has a defined fallback. It may exceed `point_budget`, but it must not
 silently substitute an empty sampled level. `_LevelSelection.within_budget`
 makes this exceptional result explicit to the caller and benchmark. A later
 viewer integration may add deterministic query-time decimation when this
@@ -4922,7 +4966,7 @@ runtime correctness must not depend on instrumentation.
 Add focused real-Zarr tests for:
 
 - rejection of staging publication state, unsupported roots, invalid levels,
-  tiles, viewports, render budgets, and value-ID arrays;
+  tiles, viewports, point budgets, and value-ID arrays;
 - all-values and value-filtered `read_tile()` calls, empty logical tiles, absent
   requested values, multiple values, deterministic row order, and coordinate
   reconstruction;
@@ -4937,6 +4981,8 @@ Add focused real-Zarr tests for:
   payload-chunk read, including when such a chunk is deliberately unavailable;
 - Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
   no-level-fits LOD decisions from catalog counts only;
+- an all-values `point_budget` below the terminal overview count selecting that
+  terminal level with `within_budget = False` rather than claiming a fit;
 - a selected value that exceeds the budget at Exact and disappears at sampled
   levels, including the explicit coarsest preserving `within_budget = False`
   fallback;
@@ -4956,13 +5002,15 @@ compressed-byte, or operating-system cache thresholds to unit tests.
 #### Full-Xenium scenarios
 
 Run one current-tree baseline build through `_build_points_cache_zarr()` with
-`TARGET_POINTS_PER_BUCKET = 2_000_000`. Time source content validation
-separately; the measured build interval begins with the validated source and
-includes planning, every level writer, catalog construction, normal staged
-validation, the final source guard, publication-state transition, and directory
-publication. Retain the published cache and machine-readable report under the
-existing sibling workspace rather than modifying the canonical SpatialData
-source:
+`TARGET_POINTS_PER_BUCKET = 2_000_000` and the retained
+`overview_point_budget = 100_000` construction policy. Do not lower the
+construction overview budget merely to anticipate a Phase 2 canvas-density
+policy. Time source content validation separately; the measured build interval
+begins with the validated source and includes planning, every level writer,
+catalog construction, normal staged validation, the final source guard,
+publication-state transition, and directory publication. Retain the published
+cache and machine-readable report under the existing sibling workspace rather
+than modifying the canonical SpatialData source:
 
 ```text
 /Users/arne.defauw/VIB/DATA/test_data/
@@ -5012,6 +5060,15 @@ generation, and verify that level selection does not treat its zero count as a
 successful fit. If the dataset contains no such combination, record that fact
 rather than manufacturing one for the full-scale timing run; the focused test
 still freezes the behavior.
+
+Exercise several caller-supplied `point_budget` values below and at the retained
+100,000-point overview limit, including budgets derived from documented example
+canvas sizes and screen-space densities. Report when the terminal overview is
+the best available all-values level but still has `within_budget = False`.
+These calculations provide evidence for whether a later construction-policy
+experiment should lower `overview_point_budget`; Z9 does not change that policy,
+claim visual acceptance without a napari integration, or implement runtime
+display thinning.
 
 Record:
 
