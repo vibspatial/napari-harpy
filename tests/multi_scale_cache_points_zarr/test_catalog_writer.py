@@ -8,7 +8,10 @@ import pytest
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    PUBLICATION_STATE_STAGING,
+    _CatalogWriteSettings,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CatalogReader,
     _iter_bucket_range_batches,
@@ -53,6 +56,7 @@ def test_catalog_coordinator_writes_exact_zarr_hierarchy_and_inverted_index(
 
     with _CatalogReader(fixture.staging_root) as reader:
         assert reader.attributes.cache_generation_id == _GENERATION_ID
+        assert reader.attributes.publication_state == PUBLICATION_STATE_STAGING
         assert reader.attributes.value_names == ("A", "B")
         assert reader.array("values/n_points")[:].tolist() == [3, 3]
         assert reader.array("manifest/level_indptr")[:].tolist() == [0, 2]
@@ -67,7 +71,6 @@ def test_catalog_coordinator_writes_exact_zarr_hierarchy_and_inverted_index(
 
     assert (fixture.staging_root / "levels/level_0/zarr.json").is_file()
     assert (fixture.staging_root / "levels/level_0/bucket-000.zarr/zarr.json").is_file()
-    assert not (fixture.staging_root / "COMPLETED").exists()
     assert not list(fixture.staging_root.rglob("*.parquet"))
     assert not list(fixture.temporary_root.iterdir())
 
