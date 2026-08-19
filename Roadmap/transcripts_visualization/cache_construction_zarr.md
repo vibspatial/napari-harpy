@@ -4527,8 +4527,8 @@ scripts/benchmark_multi_scale_cache_points_zarr_acceptance.py
 `reader.py` owns the high-level cache, tile, viewport, and level-selection
 contracts. It composes the existing strict `_CatalogReader`, `_BucketReader`,
 and `_BucketReaderCache`; it does not duplicate Zarr schema parsing or import
-the existing Parquet-backed cache reader. Low-level optional-ID point reads may
-be added to `storage/bucket_reader.py`, but existing construction-facing
+the existing Parquet-backed cache reader. Low-level visualization reads may be
+added to `storage/bucket_reader.py`, but existing construction-facing
 `_PointPayload` methods and writer behavior remain unchanged.
 
 The benchmark script owns timing, RSS, filesystem-object accounting, scenario
@@ -4644,10 +4644,32 @@ finite intrinsic-source `x_min`, `y_min`, `x_max`, and `y_max`. Bounds are
 half-open, must have positive width and height, and are clipped to the cache
 geometry. A disjoint viewport has no positive tiles.
 
-Selected value IDs are a one-dimensional C-contiguous `uint32` array, strictly
-increasing, unique, nonempty, and inside the serialized value vocabulary. The
-reader exposes the immutable `value_names` tuple so callers can map labels to
-their implicit IDs; it does not repeat source-value normalization at read time.
+`_IntrinsicViewport` is deliberately a storage-neutral cache-reader contract,
+not a napari viewport or camera object. Napari does not pass such a rectangle to
+an external point backend. The later Phase 2 napari adapter is responsible for
+observing the camera, canvas size, displayed dimensions, and relevant layer or
+SpatialData transforms; calculating the visible world-coordinate rectangle;
+and transforming that rectangle back into the transcript source's intrinsic
+coordinates before calling this reader:
+
+```text
+napari camera + canvas size + displayed axes
+                    -> napari-specific adapter
+                    -> visible world rectangle
+                    -> inverse layer/SpatialData transform
+                    -> _IntrinsicViewport(x_min, y_min, x_max, y_max)
+                    -> read_viewport(level, viewport, value_ids=selected_value_ids)
+```
+
+Consequently, Z9 tests and benchmarks construct `_IntrinsicViewport` directly
+and do not need a napari viewer. The acceptance reader must not import napari or
+infer a viewport from camera state; that integration remains a Phase 2 concern.
+
+When provided, value IDs are a one-dimensional C-contiguous `uint32` array,
+strictly increasing, unique, nonempty, and inside the serialized value
+vocabulary. The reader exposes the immutable `value_names` tuple so callers can
+map labels to their implicit IDs; it does not repeat source-value normalization
+at read time.
 
 Return one immutable `_TileReadResult` per positive tile. It contains:
 
@@ -4655,7 +4677,6 @@ Return one immutable `_TileReadResult` per positive tile. It contains:
 level, tile_x, tile_y, tile_size
 location       (N, 2) float32, stored tile-relative (x, y) coordinates
 value_id       (N,)   uint32
-point_id       (N,)   uint64 or None
 statistics     immutable per-tile read accounting
 ```
 
@@ -4669,9 +4690,11 @@ y = root.y_origin + tile_y * tile_size + location[:, 1]
 
 This result is deliberately separate from construction `_PointPayload`, whose
 mandatory `point_id` and four-array construction invariants must not be weakened
-to support an optional display field. When `include_point_id=False`, the bucket
-reader may validate `point_id` array metadata as part of the strict bucket open,
-but it must not slice or decode any `point_id` payload chunk.
+for display. The acceptance reader never returns or reads point IDs. A strict
+bucket open may validate `point_id` array metadata as part of the frozen bucket
+layout, but no viewer tile, viewport, selection, panning, or LOD request may
+slice or decode a `point_id` payload chunk. Construction, validation, and opt-in
+diagnostics continue to use the existing mandatory-ID bucket-reader methods.
 
 Viewport methods return one immutable `_ViewportReadResult` containing the
 selected level, the tuple of positive `_TileReadResult` objects in manifest
@@ -4685,12 +4708,58 @@ state.
 #### Reader operations
 
 ```text
-read_complete_tile(level, tile_x, tile_y, include_point_id=False)
-read_selected_tile(level, tile_x, tile_y, value_ids, include_point_id=False)
-read_complete_viewport(level, viewport, include_point_id=False)
-read_selected_viewport(level, viewport, value_ids, include_point_id=False)
-select_level(viewport, render_point_budget, value_ids=None)
+read_tile(level, tile_x, tile_y, *, value_ids=None)
+read_viewport(level, viewport, *, value_ids=None)
+select_level(viewport, render_point_budget, *, value_ids=None)
 ```
+
+Use one high-level operation per spatial request rather than exposing the
+physical all-row versus sparse-range distinction in method names. For all three
+operations, `value_ids=None` means all values. A supplied `value_ids` array
+follows the strict contract above and restricts the result or estimate to those
+values. Keep `value_ids` keyword-only so a caller cannot pass an unexplained
+positional array:
+
+```python
+reader.read_viewport(level, viewport)
+reader.read_viewport(level, viewport, value_ids=selected_value_ids)
+```
+
+`read_tile()` and `read_viewport()` dispatch internally to the contiguous
+all-values path or sparse value-range path. The existing low-level
+`_BucketReader.read_complete()` and `_BucketReader.read_selected()` names remain
+appropriate because those private construction-facing methods explicitly model
+the two different physical operations.
+
+Do not conflate the viewport's spatial bounds with the bucket's sparse value
+ranges. They address two different stages of a request:
+
+```text
+viewport x_min, y_min, x_max, y_max
+    -> identify intersecting logical tiles
+
+selected value_ids
+    -> identify sparse point-row intervals inside those tiles
+```
+
+A logical tile is the cache's smallest spatially indexed unit. An all-values
+request resolves `tile_offset[i:i + 2]` and reads every stored point row for an
+intersecting positive tile. A selected-value request instead resolves that
+tile's `ranges/tile_indptr` records and reads only the `row_start:row_stop`
+intervals belonging to requested values. Thus “complete tile” means all rows of
+one logical tile, not all rows of its physical bucket.
+
+There is no additional coordinate index inside a tile: its point rows are
+value-major rather than ordered by `x` or `y`. A viewport cutting through part
+of a tile therefore cannot skip the points outside the exact viewport boundary
+without first reading and filtering the applicable tile rows. Z9 deliberately
+does not add that second spatial index or point-level clipping step.
+
+Logical tiles must also not be confused with Zarr chunks. A tile defines the
+smallest spatial lookup and reuse boundary, whereas a chunk is the smallest
+physical decoding unit. A tile can span several chunks, and a boundary chunk
+can contain rows adjacent to the requested logical interval. Chunk-aligned
+read amplification is accounted for separately from the logical result rows.
 
 Direct tile reads return `_TileReadResult | None`; an empty manifest tile or a
 tile with none of the selected values returns `None`. Viewport reads return
@@ -4709,9 +4778,9 @@ remains possible. Consequently, LOD estimates and accounting use complete
 positive-tile rows and may conservatively exceed the number of points strictly
 inside the viewport rectangle.
 
-For `select_level()`, `value_ids=None` means all values; otherwise it follows
-the selected-value contract above. It chooses the finest serialized level whose
-estimated visible point count is at most the positive
+`select_level()` follows the same optional `value_ids` contract as the read
+methods. It chooses the finest serialized level whose estimated visible point
+count is at most the positive
 `render_point_budget`:
 
 - all-values estimates sum `manifest/n_points` for intersecting manifest rows;
@@ -4728,9 +4797,10 @@ Spatial are not preferred merely because they are sampled.
 
 #### Tile discovery, bucket grouping, and ordering
 
-The high-level selected-value reader owns the complete two-index lookup below.
-Keep this scheme in its implementation docstring so the distinction between
-cache-wide tile discovery and bucket-local point-row resolution remains explicit:
+The high-level value-filtered read path owns the complete two-index lookup
+below. Keep this scheme in its implementation docstring so the distinction
+between cache-wide tile discovery and bucket-local point-row resolution remains
+explicit:
 
 ```text
 selected value and level
@@ -4768,31 +4838,31 @@ per request even when several selected values or tiles resolve to it; the
 reader-scoped cache additionally reuses that entered reader across later
 requests.
 
-Complete viewport reads discover positive tiles directly from the resident
-manifest lookup and do not touch `value_tiles`. Both complete and selected
-paths preserve manifest tile order in returned results and bucket-local
-value-major, then `point_id`, row order inside each tile.
+All-values viewport reads discover positive tiles directly from the resident
+manifest lookup and do not touch `value_tiles`. Both all-values and
+value-filtered paths preserve manifest tile order in returned results and
+bucket-local value-major, then `point_id`, row order inside each tile.
 
 The reader must therefore:
 
 - use `value_tiles/indptr` and `manifest_index` to prune zero-count tiles;
 - group positive visible tiles by bucket and open each bucket once per request;
 - use sparse range records instead of scanning point-level values;
-- read only intersecting coordinate chunks and optional ID chunks;
+- read only intersecting `location` and point-level `value_id` chunks;
 - coalesce adjacent ranges where practical;
 - distinguish metadata/index work from point-payload work;
 - report logical rows, positive tiles, buckets, chunks touched, and decoded-row
   estimates.
 
-#### Optional-ID bucket primitive
+#### Visualization bucket primitive
 
-Factor the aligned point-array reading inside `_BucketReader` so acceptance
-reads can request `location` and `value_id` without `point_id`. Preserve the
-existing `read_complete()` and `read_selected()` construction contracts as
-mandatory-ID wrappers used by Bridge, Spatial, validation, and their tests.
+Factor the aligned point-array reading inside `_BucketReader` so the acceptance
+path reads only `location` and `value_id`. Preserve the existing
+`read_complete()` and `read_selected()` construction contracts as mandatory-ID
+operations used by Bridge, Spatial, validation, diagnostics, and their tests.
 Shared private planning continues to own sparse-range lookup, exact intervals,
 inner-chunk deduplication, and coalesced minimal envelopes; do not fork a second
-selected-range algorithm for the acceptance reader.
+selected-range algorithm merely to omit the point-ID payload read.
 
 #### Read accounting
 
@@ -4806,7 +4876,6 @@ bucket_stores_opened
 unique_inner_point_chunks_touched
 coalesced_envelope_rows_materialized
 estimated_inner_chunk_rows_decoded
-point_id_was_read
 ```
 
 Chunk accounting is deterministic from exact intervals, common row-chunk
@@ -4822,22 +4891,22 @@ Add focused real-Zarr tests for:
 
 - rejection of staging publication state, unsupported roots, invalid levels,
   tiles, viewports, render budgets, and value-ID arrays;
-- complete and selected single-tile reads, empty logical tiles, absent selected
-  values, multiple values, deterministic row order, and coordinate
+- all-values and value-filtered `read_tile()` calls, empty logical tiles, absent
+  requested values, multiple values, deterministic row order, and coordinate
   reconstruction;
-- complete and selected viewports across sparse rows, bucket boundaries, and
-  level boundaries without duplicate tiles or points;
+- all-values and value-filtered `read_viewport()` calls across sparse rows,
+  bucket boundaries, and level boundaries without duplicate tiles or points;
 - exact `value_tiles` pruning, including proof that a zero-count tile's bucket
   and point payload are not opened;
 - several values and tiles sharing one bucket, with one open per request and
   reader-cache reuse across requests, lazy admission, and no eager opening of
   untouched buckets;
-- `include_point_id=False` succeeding without a point-ID chunk read and
-  `include_point_id=True` returning aligned IDs;
+- all-values and value-filtered visualization reads succeeding without a point-ID
+  payload-chunk read, including when such a chunk is deliberately unavailable;
 - Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
   no-level-fits LOD decisions from catalog counts only;
-- exact statistics for complete, selected, coalesced, partial-final-chunk, and
-  optional-ID reads;
+- exact statistics for complete, selected, coalesced, and partial-final-chunk
+  reads;
 - deterministic closure after successful reads and injected catalog, bucket,
   sparse-range, and payload failures.
 
@@ -4870,15 +4939,15 @@ created or replaced that generation and its `cache_generation_id`. Subsequent
 read scenarios reuse this exact published output without rebuilding it.
 
 First establish reader correctness on representative Exact, Bridge, Spatial,
-and overview tiles by comparing selected reads with value filtering of the
-corresponding complete read, comparing viewport results with the ordered union
-of their tile results, and reconciling returned counts with manifest and
-`value_tiles` counts. Do not repeat the complete canonical-source equivalence
-scan merely to qualify runtime reads.
+and overview tiles by comparing a value-filtered read with an in-memory value
+filter of the corresponding all-values read, comparing viewport results with
+the ordered union of their tile results, and reconciling returned counts with
+manifest and `value_tiles` counts. Do not repeat the complete canonical-source
+equivalence scan merely to qualify runtime reads.
 
 Then measure at Exact, Bridge, representative spatial levels, and overview:
 
-- dense and average complete tiles;
+- dense and average all-values tiles;
 - all-values viewports at several zoom levels;
 - common, median, rare-localized, and rare-distributed values;
 - several selected values with adjacent and separated ranges;
@@ -4905,7 +4974,7 @@ Record:
   and publication result;
 - total bytes and filesystem-object count;
 - reader-open latency and resident compact-index bytes;
-- complete-tile and viewport latency;
+- all-values tile and viewport latency;
 - selected-value latency;
 - logical selected rows;
 - complete positive-tile rows;
@@ -4915,7 +4984,7 @@ Record:
 - tile- and chunk-read amplification;
 - application-cold and application-warm reader-cache hits, misses, and retained
   handle counts;
-- proof that optional-ID reads did or did not access `point_id` as requested;
+- proof that no acceptance-reader request accesses a `point_id` payload chunk;
 - chosen LOD, estimated point count, and actual returned point count.
 
 #### Bucket-target decision
@@ -4928,7 +4997,7 @@ experiment after the complete two-million baseline is accepted as correct; do
 not overwrite the retained baseline or change inner chunk/shard sizes at the
 same time. The decision must account for both sides of the tradeoff:
 
-- complete and selected viewport latency, especially the number of distinct
+- all-values and value-filtered viewport latency, especially the number of distinct
   bucket stores opened for common and rare-distributed values;
 - metadata/open-handle work per request;
 - Exact and multilevel construction peak RSS with the configured worker count;
@@ -4948,9 +5017,9 @@ format profile support only the chosen target and fail closed on the other.
 #### Acceptance assessment
 
 Correctness is mandatory. Review build reliability, bounded memory, construction
-speed, storage behavior, object count, complete reads, and selected reads as one
-engineering decision without fixed numerical thresholds and without requiring a
-Parquet comparison run.
+speed, storage behavior, object count, all-values reads, and value-filtered reads
+as one engineering decision without fixed numerical thresholds and without
+requiring a Parquet comparison run.
 
 If the evidence supports adoption, record the format and physical settings as
 the recommended Phase 2 input. If it does not, record the measured reason and
@@ -4964,9 +5033,9 @@ case.
 - a published cache is built once end to end through Z8 at full Xenium scale;
 - the reader rejects incomplete generations and closes all catalog and bucket
   handles deterministically;
-- complete and selected tile and viewport results reconcile with the frozen
-  catalog and each other;
-- optional-ID reads demonstrably avoid point-ID payload access;
+- all-values and value-filtered tile and viewport results reconcile with the
+  frozen catalog and each other;
+- acceptance reads demonstrably avoid point-ID payload access;
 - catalog-only LOD selection is correct for all-values and selected-value
   requests;
 - direct sparse-range lookup is demonstrated at full scale;
