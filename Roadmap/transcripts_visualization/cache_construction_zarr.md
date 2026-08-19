@@ -4700,10 +4700,10 @@ Viewport methods return one immutable `_ViewportReadResult` containing the
 selected level, the tuple of positive `_TileReadResult` objects in manifest
 order, and one aggregate `_ReadStatistics`. `select_level()` returns an
 immutable `_LevelSelection` containing the chosen level, estimated point count,
-and positive visible-tile count rather than returning an unexplained integer.
-These small wrappers keep payload data and the evidence used for LOD and
-benchmark accounting together without mutable reader-global “last request”
-state.
+positive visible-tile count, and `within_budget` flag rather than returning an
+unexplained integer. These small wrappers keep payload data and the evidence
+used for LOD and benchmark accounting together without mutable reader-global
+“last request” state.
 
 #### Reader operations
 
@@ -4766,17 +4766,17 @@ tile with none of the selected values returns `None`. Viewport reads return
 positive tile results in deterministic manifest order `(tile_y, tile_x)` and
 never create placeholder results for empty grid cells. They materialize only
 the selected level and viewport, never a complete cache level. The caller uses
-`select_level()` before normal viewport rendering to choose a fitting level
-when one exists and the terminal overview otherwise; explicit-level methods
-remain available for correctness tests and physical benchmarks.
+`select_level()` before normal viewport rendering and follows the all-values or
+selection-preserving policy below; explicit-level methods remain available for
+correctness tests and physical benchmarks.
 
 A viewport selects logical tiles whose half-open spatial extent intersects the
-clipped viewport. It returns all complete or selected rows stored in those
-tiles; it does not apply a second point-coordinate clip at the viewport edge.
-The napari layer can clip rendered points, while tile reuse during small pans
-remains possible. Consequently, LOD estimates and accounting use complete
-positive-tile rows and may conservatively exceed the number of points strictly
-inside the viewport rectangle.
+clipped viewport. It returns all applicable all-values or value-filtered rows
+stored in those tiles; it does not apply a second point-coordinate clip at the
+viewport edge. The napari layer can clip rendered points, while tile reuse
+during small pans remains possible. Consequently, LOD estimates and accounting
+use complete positive-tile rows and may conservatively exceed the number of
+points strictly inside the viewport rectangle.
 
 `select_level()` follows the same optional `value_ids` contract as the read
 methods. It chooses the finest serialized level whose estimated visible point
@@ -4784,12 +4784,44 @@ count is at most the positive
 `render_point_budget`:
 
 - all-values estimates sum `manifest/n_points` for intersecting manifest rows;
-- selected estimates sum the corresponding positive `value_tiles/n_points`
+- value-filtered estimates sum the corresponding positive `value_tiles/n_points`
   entries after viewport intersection;
 - unique selected values are disjoint point categories, so their counts may be
   summed without point-level deduplication;
 - a disjoint viewport selects Exact and produces no tile results;
 - when no level fits, select the terminal overview level.
+
+The last fallback applies only to all-values selection. Value-neutral sampling
+does not preserve every gene, so a zero count at a sampled level must not be
+treated as a successful budget fit when the requested value is present at
+Exact. Otherwise a gene that exceeds the budget at Exact but disappears during
+sampling would incorrectly select the first empty coarser level and render as
+if it were absent from the source.
+
+For a value-filtered request, first calculate the per-value visible-tile count
+at Exact. Requested values with a positive Exact count are the active values for
+this decision. Then:
+
+1. if no requested value is active, select Exact with an empty result and
+   `within_budget = True`;
+2. consider a sampled level selection-preserving only when every active value
+   has a positive count at that level;
+3. choose the finest selection-preserving level whose summed selected count is
+   at most the render budget and set `within_budget = True`;
+4. if no selection-preserving level fits, choose the coarsest
+   selection-preserving level and set `within_budget = False`.
+
+Exact is always selection-preserving for the active values, so the fourth case
+always has a defined fallback. It may exceed the render budget, but it must not
+silently substitute an empty sampled level. `_LevelSelection.within_budget`
+makes this exceptional result explicit to the caller and benchmark. A later
+viewer integration may add deterministic query-time decimation when this
+fallback proves too large; Z9 does not add that separate sampling path.
+
+For multiple requested values, selection preservation is per value rather than
+merely requiring a positive combined count. A sampled level containing Gene B
+but having lost active Gene A is ineligible even though its summed selected
+count is nonzero.
 
 Level selection reads only catalog metadata and must not open a bucket or point
 payload array. Exact remains eligible when its visible count fits; Bridge and
@@ -4905,6 +4937,14 @@ Add focused real-Zarr tests for:
   payload-chunk read, including when such a chunk is deliberately unavailable;
 - Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
   no-level-fits LOD decisions from catalog counts only;
+- a selected value that exceeds the budget at Exact and disappears at sampled
+  levels, including the explicit coarsest preserving `within_budget = False`
+  fallback;
+- multiple requested values where one active value disappears while another
+  remains, proving that a positive combined count does not make that level
+  eligible;
+- requested values absent at Exact selecting an empty Exact result rather than
+  points introduced only by a coarser tile's larger intersecting footprint;
 - exact statistics for complete, selected, coalesced, and partial-final-chunk
   reads;
 - deterministic closure after successful reads and injected catalog, bucket,
@@ -4966,7 +5006,12 @@ Exercise automatic `select_level()` for realistic all-values and selected-value
 viewports, while also using explicit-level methods to expose the physical Exact,
 Bridge, Spatial, and overview read behavior. Include a rare-distributed value
 that is positive in many visible tiles so the limits of `value_tiles` pruning
-are measured rather than inferred.
+are measured rather than inferred. Also identify at least one value/viewport
+combination that disappears at a sampled level, when present in the retained
+generation, and verify that level selection does not treat its zero count as a
+successful fit. If the dataset contains no such combination, record that fact
+rather than manufacturing one for the full-scale timing run; the focused test
+still freezes the behavior.
 
 Record:
 
@@ -4985,7 +5030,8 @@ Record:
 - application-cold and application-warm reader-cache hits, misses, and retained
   handle counts;
 - proof that no acceptance-reader request accesses a `point_id` payload chunk;
-- chosen LOD, estimated point count, and actual returned point count.
+- chosen LOD, estimated point count, actual returned point count, and
+  `within_budget` decision.
 
 #### Bucket-target decision
 
@@ -5038,6 +5084,9 @@ case.
 - acceptance reads demonstrably avoid point-ID payload access;
 - catalog-only LOD selection is correct for all-values and selected-value
   requests;
+- value-filtered LOD never treats loss of an Exact-present requested value as a
+  successful zero-count budget fit, and reports any preserving over-budget
+  fallback explicitly;
 - direct sparse-range lookup is demonstrated at full scale;
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
