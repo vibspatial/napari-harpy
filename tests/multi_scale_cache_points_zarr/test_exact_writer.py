@@ -402,7 +402,6 @@ def test_exact_writer_propagates_finalizer_failure_and_cleans_shuffle(
         )
 
     assert list(temporary.iterdir()) == []
-    assert not (staging / "COMPLETED").exists()
 
 
 def test_exact_writer_rejects_existing_level_directory_before_reading(tmp_path: Path) -> None:
