@@ -10,6 +10,7 @@ from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSou
 from napari_harpy.core.multi_scale_cache_points.signature import _normalized_arrow_type
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _PointsCacheBuildPlan
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    PUBLICATION_STATE_STAGING,
     _BuildMetadata,
     _CacheAttributes,
     _CatalogMetadata,
@@ -358,6 +359,7 @@ def _build_cache_attributes(
     )
     return _CacheAttributes(
         cache_generation_id=cache_generation_id,
+        publication_state=PUBLICATION_STATE_STAGING,
         created_by_version=napari_harpy_version,
         zarr_settings=zarr_settings,
         source=source,
@@ -442,9 +444,9 @@ def _require_bucket_inventory_matches_results(
 
 
 def _require_catalog_targets_absent(staging_root: Path) -> None:
-    for relative_path in ("zarr.json", "values", "manifest", "value_tiles", "COMPLETED"):
+    for relative_path in ("zarr.json", "values", "manifest", "value_tiles"):
         if (staging_root / relative_path).exists():
-            raise FileExistsError(f"Catalog or completion target already exists: {relative_path}.")
+            raise FileExistsError(f"Catalog target already exists: {relative_path}.")
 
 
 def _require_existing_staging_root(staging_root: Path) -> None:
