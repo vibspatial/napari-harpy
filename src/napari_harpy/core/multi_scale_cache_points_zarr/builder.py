@@ -241,11 +241,14 @@ def _build_points_cache_zarr(
             # completion so a cache built while Parquet changed is not published.
             _require_parquet_source_unchanged(validated)
             _mark_cache_generation_complete(staging_root, cache_generation_id=cache_generation_id)
-            return _publish_staged_generation(
-                staging_root,
-                output_path,
-                expected_existing_generation_id=existing_generation_id,
-            )
+            # Confirm that the output observed before construction is still the
+            # generation about to be replaced before any directory is renamed.
+            observed_existing_generation_id = _get_existing_complete_cache_generation_id(output_path)
+            if observed_existing_generation_id != existing_generation_id:
+                raise RuntimeError(
+                    "Cache output changed after the builder's initial output check; refusing publication."
+                )
+            return _publish_staged_generation(staging_root, output_path)
         except Exception as error:
             build_error = error
             raise
@@ -297,8 +300,6 @@ def _mark_cache_generation_complete(staging_root: Path, *, cache_generation_id: 
 def _publish_staged_generation(
     staging_root: Path,
     output_path: Path,
-    *,
-    expected_existing_generation_id: str | None,
 ) -> Path:
     """Install one completed staging tree and restore the old tree on failure.
 
@@ -318,12 +319,9 @@ def _publish_staged_generation(
             backup(old)  -> output(old)
     """
     _require_complete_cache_generation_id(staging_root)
-    observed_existing_generation_id = _get_existing_complete_cache_generation_id(output_path)
-    if observed_existing_generation_id != expected_existing_generation_id:
-        raise RuntimeError("Cache output changed after the builder's initial output check; refusing publication.")
 
     backup_path: Path | None = None
-    if observed_existing_generation_id is not None:
+    if output_path.exists():
         backup_path = _unique_sibling_path(output_path, label="backup")
         output_path.rename(backup_path)
     try:
