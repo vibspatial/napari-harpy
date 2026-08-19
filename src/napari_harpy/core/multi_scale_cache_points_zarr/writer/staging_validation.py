@@ -32,6 +32,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     MANIFEST_N_POINTS,
     MANIFEST_TILE_X,
     MANIFEST_TILE_Y,
+    PUBLICATION_STATE_STAGING,
     VALUE_TILES_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
@@ -69,8 +70,7 @@ class _ManifestBucket:
         if not all(isinstance(descriptor, _TileDescriptor) for descriptor in self.descriptors):
             raise ValueError("Every manifest-bucket descriptor must be a _TileDescriptor.")
         if any(
-            (descriptor.level, descriptor.bucket_id) != (self.level, self.bucket_id)
-            for descriptor in self.descriptors
+            (descriptor.level, descriptor.bucket_id) != (self.level, self.bucket_id) for descriptor in self.descriptors
         ):
             raise ValueError("Every manifest-bucket descriptor must belong to the stated bucket.")
         if tuple(descriptor.bucket_tile_index for descriptor in self.descriptors) != tuple(
@@ -164,6 +164,8 @@ def _validate_staged_cache(staging_root: Path) -> None:
     _require_staging_root(staging_root)
     _validate_staging_artifacts(staging_root)
     with _CatalogReader(staging_root) as reader:
+        if reader.attributes.publication_state != PUBLICATION_STATE_STAGING:
+            raise ValueError("Staged validation requires publication_state='staging'.")
         reader.validate_contents()
         inventory = _read_manifest_inventory(reader)
         _validate_persisted_build(reader.attributes, inventory)
@@ -464,9 +466,7 @@ def _validate_bucket_ranges_against_catalog(
             positions = np.arange(expected_start + local_start, expected_start + local_stop, dtype=np.uint64)
             expected_values = np.searchsorted(value_indptr[level], positions, side="right") - 1
             expected_manifest = np.asarray(
-                reader.array(VALUE_TILES_MANIFEST_INDEX)[
-                    expected_start + local_start : expected_start + local_stop
-                ],
+                reader.array(VALUE_TILES_MANIFEST_INDEX)[expected_start + local_start : expected_start + local_stop],
                 dtype=np.uint64,
             )
             expected_counts = np.asarray(
@@ -498,15 +498,13 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
           value_tiles/
 
     Descendants must be Zarr groups or arrays identified by ``zarr.json``, or
-    numeric chunk/shard keys below a ``c/`` directory. Reject ``COMPLETED``,
-    sidecars, construction scratch, symbolic links, and unexplained nodes.
+    numeric chunk/shard keys below a ``c/`` directory. Reject sidecars,
+    construction scratch, symbolic links, and unexplained nodes.
     Logical Zarr contents and array layouts are validated by their dedicated
     readers rather than by this filesystem-level check.
     """
     allowed_root_entries = {"zarr.json", "levels", "values", "manifest", "value_tiles"}
     observed_root_entries = {path.name for path in staging_root.iterdir()}
-    if "COMPLETED" in observed_root_entries:
-        raise ValueError("A staged cache must not contain a premature COMPLETED marker.")
     if observed_root_entries != allowed_root_entries:
         raise ValueError("Staged cache root contains missing or unexpected artifacts.")
 
