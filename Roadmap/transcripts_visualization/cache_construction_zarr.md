@@ -71,8 +71,8 @@ The following source and semantic requirements remain authoritative:
 - level capacities and the terminal overview budget are enforced;
 - all construction happens under staging and is published only after independent
   validation;
-- `COMPLETED` is written only after the final source guard and successful staged
-  validation.
+- the root `publication_state` changes from `"staging"` to `"complete"` only
+  after the final source guard and successful staged validation.
 
 The new implementation may reproduce algorithms to satisfy those requirements.
 It does not need to call the corresponding implementation in the existing
@@ -307,7 +307,6 @@ the new package and must not create cross-writer dependencies.
           level_n/
             zarr.json
             bucket-000.zarr/
-        COMPLETED
 ```
 
 The final cache directory name is intentionally deferred until the public
@@ -323,8 +322,9 @@ the complete cache root is opened as one hierarchy. Ancestor `levels` and
 mutate shared parent metadata.
 
 Parquet is used only for the canonical source. No derived-cache metadata,
-catalog, count index, or point payload is persisted as Parquet. `COMPLETED`
-remains a separate publication marker rather than a Zarr attribute.
+catalog, count index, point payload, or publication marker is persisted outside
+the Zarr hierarchy. Publication state is a root Zarr attribute, so generic Zarr
+tools see no unrelated root sidecar.
 
 ## Storage-neutral point payload
 
@@ -813,7 +813,7 @@ ParquetPointsSource
   -> value_tiles CSR arrays derived from bucket ranges
   -> independent staged validation
   -> final fresh source-signature guard
-  -> COMPLETED
+  -> root publication_state = "complete"
   -> atomic publication
 ```
 
@@ -1596,8 +1596,9 @@ NEW -> OPEN -> FINALIZED -> CLOSED
 - an ordinary write/finalization exception marks the writer failed, closes its
   handles, and removes that exact partial bucket from the isolated staging
   generation;
-- a process crash may leave a partial bucket, but the enclosing generation has
-  no `COMPLETED` marker and cannot be published or read as a valid cache.
+- a process crash may leave a partial bucket, but the enclosing generation
+  cannot satisfy the completed root-attribute contract and cannot be published
+  or read as a valid cache.
 
 #### Point writes and shard buffering
 
@@ -1864,7 +1865,7 @@ existing writer code or intermediate point Parquet.
 
 Z3 owns source annotation, redistribution, Exact bucket planning, and
 coordination of the Z2 storage primitive. It does not implement Bridge or
-spatial sampling, the cache-wide catalog, root attributes, completion markers,
+spatial sampling, the cache-wide catalog, root attributes, publication state,
 publication, or the final cross-index validator.
 
 #### Files and dependency boundary
@@ -2198,8 +2199,8 @@ or factors out its metadata/layout checks without rereading every point row.
   `_write_exact_level` returns or raises.
 - All Dask tasks, Zarr stores, and source handles are closed before control
   returns to the caller.
-- Z3 never writes `COMPLETED`, publishes a generation, repairs partial output, or
-  deletes a caller-owned staging or temporary root.
+- Z3 never marks a generation complete, publishes a generation, repairs partial
+  output, or deletes a caller-owned staging or temporary root.
 - No derived-cache Parquet or standalone JSON sidecar is created.
 
 #### Focused tests
@@ -2665,8 +2666,8 @@ rereads the canonical Parquet source, and never creates Dask scratch.
 failure. The reader cache closes all input stores on every exit. Previously
 finalized Bridge buckets may remain inside the isolated unpublished staging
 generation; the later top-level builder owns removal of that complete failed
-generation rather than Z4 attempting partial repair or resume. `COMPLETED` is
-never created by Z4.
+generation rather than Z4 attempting partial repair or resume. Z4 never marks
+the generation complete.
 
 #### Focused tests
 
@@ -2692,7 +2693,7 @@ never created by Z4.
   matching the corresponding Exact `point_id` subsets;
 - preexisting output, invalid level transitions, descriptor/count mismatch,
   injected read, sampling, and write failures, current partial-bucket cleanup,
-  reader closure, and absence of `COMPLETED`.
+  reader closure, and absence of a completed publication state.
 
 Tests use small chunks, shards, capacities, and reader-cache bounds so every
 physical and lifecycle boundary is exercised without depending on the
@@ -2988,8 +2989,8 @@ capacity.
 - `_BucketWriter` owns active-bucket cleanup and removes its partial Zarr store
   after read, rebase, sampling, or write failure.
 - A failure in a later bucket or level may leave previously finalized buckets
-  and prerequisite levels in the isolated staging generation; no `COMPLETED`
-  marker exists, and the future end-to-end coordinator owns generation cleanup.
+  and prerequisite levels in the isolated staging generation; it is not marked
+  complete, and the future end-to-end coordinator owns generation cleanup.
 - Do not delete or mutate the completed immediate-finer level.
 - No source object, Dask collection, or point-payload Parquet path is accepted by
   a Spatial writer API.
@@ -3019,7 +3020,7 @@ capacity.
 - preexisting output, invalid transitions, descriptor/count mismatches, and
   injected read, rebase, sampling, write, and later-level failures;
 - active partial-bucket cleanup, prerequisite preservation, deterministic reader
-  closure, and absence of point Parquet and `COMPLETED`.
+  closure, and absence of point Parquet and a completed publication state.
 
 #### Gate Z5
 
@@ -3085,7 +3086,8 @@ the root `zarr.json`, including all value labels and level summaries, occupied
 representative bucket indexes, covering 1,991,105 sparse range records and
 1,049 manifest tiles, completed in 9.03 seconds. Bucket stores and the canonical
 source remained unchanged, no point payload array or canonical source data page
-was read by Z6, and no derived Parquet or completion marker was written.
+was read by Z6, no derived Parquet was written, and the generation remained in
+the staging publication state.
 
 A follow-up design review on 2026-08-17 replaced that external merge with the
 level-at-a-time NumPy sort specified below. The persisted catalog contract is
@@ -3112,7 +3114,8 @@ contract remained 44,162,968 bytes across 79 filesystem objects, with an
 84,723-byte root `zarr.json`. No point payload array or canonical source data
 page was read, and the source, evaluated buckets, and reusable pyramid remained
 unchanged. No derived Parquet, standalone cache JSON sidecar, catalog-sort
-scratch, or `COMPLETED` marker was produced.
+scratch was produced, and the generation remained in the staging publication
+state.
 
 The retained engineering artifacts are:
 
@@ -3231,6 +3234,7 @@ these top-level keys:
 ```text
 schema_version
 cache_generation_id
+publication_state
 created_by
 backend
 source
@@ -3247,6 +3251,7 @@ The nested value types and structure are:
 {
   "schema_version": "harpy-multiscale-points-zarr-cache-0.1",
   "cache_generation_id": "00000000-0000-0000-0000-000000000000",
+  "publication_state": "staging",
   "created_by": {
     "package": "napari-harpy",
     "version": "0.0.0"
@@ -3368,10 +3373,11 @@ Numeric chunk and shard sizes are recorded and cross-validated but are not part
 of the cache schema identifier. `cache_generation_id` is a canonical lowercase
 hyphenated UUID created by Z8 and passed unchanged into Z6.
 
-Write all root attributes in one final `update_attributes` operation after the
-catalog arrays reconcile. The empty root group necessarily has a `zarr.json`
-during catalog construction; nonempty semantic attributes are not a completion
-marker, and `COMPLETED` remains absent.
+Write all root attributes, including `publication_state = "staging"`, in one
+final `update_attributes` operation after the catalog arrays reconcile. The
+empty root group necessarily has a `zarr.json` during catalog construction. Z8
+later changes only this root attribute to `"complete"` after validation and the
+final source guard; no non-Zarr completion sidecar is part of the format.
 
 #### Exact catalog-array contract
 
@@ -3449,8 +3455,8 @@ Require before creating root or catalog metadata:
 - every completed bucket path exists and no additional bucket path is present;
 - bucket metadata and layouts expose one common supported settings profile;
 - staging is an existing directory tree;
-- root `zarr.json`, `values`, `manifest`, `value_tiles`, `COMPLETED`, and the
-  catalog groups do not already exist.
+- root `zarr.json`, `values`, `manifest`, `value_tiles`, and the catalog groups
+  do not already exist.
 
 The staging root already contains finalized bucket directories. Create group
 metadata for the cache root, `levels`, every `level_<n>`, and the three catalog
@@ -3646,10 +3652,10 @@ independent Z7 validation pass and does not read or compare every point row.
 
 #### Failure and ownership contract
 
-Z6 writes only inside the unique unpublished staging generation. It never
-overwrites a root/catalog node, writes `COMPLETED`, publishes a path, updates a
-public pointer, rereads canonical point rows, or removes an existing completed
-cache.
+Z6 writes only inside the unique unpublished staging generation. It records the
+root as `publication_state = "staging"`; it never marks that state complete,
+publishes a path, updates a public pointer, rereads canonical point rows, or
+removes an existing completed cache.
 
 The operation closes all catalog and bucket readers and removes its private
 temporary Zarr runs on every exit. A failure may leave an incomplete root group
@@ -3679,7 +3685,7 @@ generation. Z6 and Z7 do not repair or resume it.
 - unsupported codec/payload/layout settings and mixed bucket settings fail
   closed;
 - absence of derived Parquet, standalone metadata/manifest JSON, point-array
-  reads, `COMPLETED`, publication, and overwrite behavior.
+  reads, completed publication state, publication, and overwrite behavior.
 
 Use real small Z2 buckets for storage and lifecycle claims. Assert semantic root
 attributes and logical array content, not `zarr.json` key ordering or compressed
@@ -3838,7 +3844,7 @@ expected fact from the reopened root attributes, catalog arrays, and physical
 bucket stores. Success returns `None`; any structural, logical, or accounting
 mismatch raises and leaves the generation unpublished. Z8 is the first
 production consumer and calls this entry point before its final source guard
-and before writing `COMPLETED`.
+and before changing the root publication state to `"complete"`.
 
 The optional whole-cache diagnostic is the repository script
 `scripts/validate_multi_scale_cache_points_zarr_exhaustive.py`. It first calls
@@ -3869,7 +3875,7 @@ staging_root only
   -> reopen every bucket through the compact validation path
   -> validate persisted geometry, hierarchy, capacities, and bucket hashing
   -> compare compact bucket ranges exactly with value_tiles, one level at a time
-  -> reject forbidden staging artifacts and premature COMPLETED
+  -> require root publication_state = "staging" and reject forbidden artifacts
   -> close all handles
   -> return None
 ```
@@ -3997,7 +4003,7 @@ Validate, in bounded batches:
 - Exact per-value totals and `values/n_points`;
 - level geometry, capacities, and overview budget;
 - absence of unreferenced stores, unexpected derived Parquet/JSON sidecars,
-  construction scratch, and premature `COMPLETED`.
+  construction scratch, and a premature completed publication state.
 
 The optional exhaustive developer script additionally owns:
 
@@ -4043,11 +4049,12 @@ attempt repair or participate in publication.
 
 #### Failure and artifact policy
 
-Normal validation requires `COMPLETED` to be absent because Z8 writes it only
-after validation and its final source guard. Reject missing or unreferenced
-buckets, additional level or catalog nodes, derived Parquet, standalone JSON
-sidecars, known construction scratch, and unexpected generation-level files.
-Do not mistake valid Zarr metadata and chunk/shard objects for sidecars.
+Normal validation requires root `publication_state = "staging"` because Z8
+changes it to `"complete"` only after validation and its final source guard.
+Reject missing or unreferenced buckets, additional level or catalog nodes,
+derived Parquet, standalone JSON sidecars, known construction scratch, and
+unexpected generation-level files. Do not mistake valid Zarr metadata and
+chunk/shard objects for sidecars.
 
 Every failure is fail-closed and names the violated layer and relevant logical
 identity where practical: root/catalog, level, bucket, tile, value, pointer, or
@@ -4136,6 +4143,9 @@ does not open the source. The machine-readable run report is retained at:
 - a successful staging result is safe to publish after the final source guard.
 
 ### Slice Z8: compose the guarded builder and publication
+
+**Status:** implemented with focused verification on 2026-08-18. The full
+Xenium acceptance and interactive-read evaluation remain the explicit Z9 gate.
 
 #### Goal
 
@@ -4238,7 +4248,7 @@ Call the guard twice:
 ```text
 before planning or staging
         and
-after independent staged validation, immediately before COMPLETED
+after independent staged validation, immediately before marking the root complete
 ```
 
 The initial guard rejects an already-stale `ValidatedPointsSource`. The final
@@ -4256,8 +4266,8 @@ Before construction, require:
 - no unresolved parent creation, cross-filesystem copy, or remote-store
   publication.
 
-Serialize builders targeting the same output through an atomically acquired
-unique sibling lock:
+Serialize builders targeting the same output through a non-blocking,
+platform-aware inter-process lock on one sibling coordination path:
 
 ```text
 <output-name>.build-lock
@@ -4282,25 +4292,29 @@ expensive generations for the same output from being built concurrently only
 for one to supersede the other.
 
 Acquire the lock before the first source guard and retain it through
-publication and cleanup. A competing or stale lock fails closed and reports its
-path; do not automatically delete an unknown lock. Implement the lock directly
-with an exclusive local-filesystem create primitive rather than relying on a
-transitive dependency. Remove the lock on every ordinary exit.
+publication and cleanup. Declare `filelock>=3.20.1` as a direct dependency
+rather than relying on its transitive presence, and use `FileLock` with an
+immediate timeout. Failure to acquire the active lock reports the coordination
+path and aborts before planning or staging. The platform lock is released on
+ordinary exit and when the holding process terminates unexpectedly.
 
 Preserve this distinction in the implementation: the lock helper or context
 manager must have a docstring explaining that the UUID provides generation
 identity and staging-path uniqueness, whereas the sibling lock coordinates
-exclusive ownership of the final publication path. Its docstring must also
-state that file presence means a builder has claimed the path, not that its
-process is provably still alive; an unclean process exit can leave a stale lock.
+exclusive ownership of the final publication path. The `.build-lock` pathname
+is only a coordination object and may remain after active ownership is
+released. Its presence is therefore not evidence that a builder is running;
+only a failed non-blocking acquisition establishes contention. Do not unlink
+the path independently of `FileLock`, because pathname removal can race a new
+holder using that same coordination object.
 
 While holding the lock, preflight an existing output before creating staging:
 
 - an absent output permits a first build;
 - a regular file, symlink, unsupported cache, or incomplete directory is
   rejected without mutation;
-- a replaceable directory must contain a valid `COMPLETED` marker whose UUID
-  equals its parsed root `cache_generation_id`;
+- a replaceable directory must have root `publication_state = "complete"` and a
+  valid parsed root `cache_generation_id`;
 - opening its root must validate the supported attributes, hierarchy, and
   catalog array layouts, but need not repeat the complete compact-range scan;
 - suspected incomplete or foreign directories are never silently deleted or
@@ -4333,7 +4347,7 @@ ValidatedPointsSource
   -> cache-root attributes and catalog arrays
   -> independent staged validation
   -> final fresh source guard
-  -> write COMPLETED
+  -> set root publication_state = "complete"
   -> generation-atomic staged replacement
   -> release output build lock
 ```
@@ -4357,23 +4371,25 @@ graphs, readers, and writer scopes before calling `_validate_staged_cache()`.
 The normal validator receives only the staging path and reconstructs its own
 facts; Z8 must not pass writer results or the build plan into validation.
 
-#### Completion marker
+#### Publication-state attribute
 
-`COMPLETED` is the final mutation inside a successfully validated staging
-generation. Its exact UTF-8 contents are:
+Root `publication_state` is the Zarr-native publication signal. Z6 initially
+writes `"staging"`. Z8 changes it to `"complete"` as the final content mutation
+inside a successfully validated staging generation, only after staged
+validation, closure of all storage and Dask work, and the successful final
+source guard. No catalog, Zarr metadata, or payload write may follow it.
 
-```text
-<cache_generation_id>\n
-```
-
-Create it exclusively only after staged validation, closure of all storage and
-Dask work, and the successful final source guard. No catalog, Zarr metadata, or
-payload write may follow it. A completion preflight requires a regular file
-containing exactly one canonical UUID plus newline and equality with the root
-`cache_generation_id`; the filename alone is not evidence of completion.
+The root `cache_generation_id` remains the single canonical generation UUID;
+publication state does not duplicate it. A completion preflight parses the root
+attributes and requires both a supported cache contract and
+`publication_state = "complete"`. A directory name or lock pathname alone is
+not evidence of completion. Keeping the signal in `zarr.json` avoids an
+unrecognized root sidecar and the warnings generic Zarr hierarchy traversal can
+otherwise produce.
 
 Z8 supplies this small completed-generation preflight for replacement safety.
-The runtime acceptance reader and its missing-marker rejection remain Z9 work.
+The runtime acceptance reader and its incomplete-publication-state rejection
+remain Z9 work.
 
 #### Publication semantics
 
@@ -4421,11 +4437,11 @@ do not introduce that architecture implicitly in Z8.
 - all Dask computations are synchronous within the Exact writer, every reader
   cache and Zarr store exits before validation, and validation closes every
   reopened handle before the final guard and rename;
-- `COMPLETED` remains absent on every construction, catalog, validation, or
-  final-source-guard failure;
+- the root publication state never becomes `"complete"` on a construction,
+  catalog, validation, or final-source-guard failure;
 - the canonical Parquet source is opened read-only and is never mutated;
-- cleanup acts only on the exact uniquely created staging, backup, and lock
-  paths owned by this invocation;
+- cleanup acts only on the exact uniquely created staging and backup paths
+  owned by this invocation; lock ownership is released through `FileLock`;
 - no broad glob, unresolved environment variable, or caller-owned directory is
   a cleanup target.
 
@@ -4440,24 +4456,27 @@ selector, or call the existing builder.
   row-group, schema, size, timestamp, and inventory changes without decoding
   data pages;
 - first Exact-only build and one complete small multilevel build through the
-  real Zarr writers, catalog, staged validator, marker, and rename;
-- successful replacement of a completed generation, UUID agreement among root,
-  marker, and staging identity, and normal backup removal;
+  real Zarr writers, catalog, staged validator, publication-state transition,
+  and rename;
+- successful replacement of a completed generation, UUID agreement between the
+  root and staging identity, and normal backup removal;
 - rejection and preservation of an existing file, symlink, incomplete
-  directory, foreign directory, malformed marker, and marker/root UUID
-  mismatch;
-- competing build lock rejection and ordinary lock cleanup;
+  directory, foreign directory, malformed root publication state, and invalid
+  root generation UUID;
+- competing held-lock rejection and successful lock reacquisition after both
+  ordinary return and failure; tests must not infer ownership from pathname
+  presence;
 - injected failure at the initial guard, Exact, Bridge, Spatial, catalog,
-  staged validation, final guard, marker creation, backup rename, and staging
-  install rename boundaries;
+  staged validation, final guard, publication-state update, backup rename, and
+  staging install rename boundaries;
 - rollback restoring the old completed generation after install failure;
 - failure cleanup removing only the owned staging generation and private Dask
   scratch while preserving the caller temporary root;
 - proof that all readers, stores, Dask work, and memory maps are closed before
   validation and publication;
 - before/after canonical source inventory equality and absence of source writes;
-- absence of `COMPLETED` in every unpublished failure tree and absence of mixed
-  Parquet/Zarr derived payloads.
+- absence of a completed root publication state in every unpublished failure
+  tree and absence of mixed Parquet/Zarr derived payloads.
 
 Use real small Parquet sources and Zarr generations for both successful flows.
 Inject failures by replacing coordinator phase callables or rename boundaries;
@@ -4466,10 +4485,12 @@ may be tested independently with small completed directory trees.
 
 #### Exit criteria
 
-- after an ordinary return, the isolated output path contains one complete,
-  independently validated generation whose marker matches its root UUID;
+- after an ordinary return, the isolated output path contains one independently
+  validated generation with root `publication_state = "complete"` and the UUID
+  assigned to its unique staging identity;
 - after an ordinary pre-publication failure, output is absent or the previous
-  completed generation remains unchanged, with no staging or lock artifact;
+  completed generation remains unchanged, with no staging artifact and with
+  the publication lock available for immediate reacquisition;
 - no partial or mixed generation is installed at the public output path;
 - publication and rollback guarantees are named accurately rather than
   claiming an unavailable portable one-rename replacement of a nonempty tree;
@@ -4702,10 +4723,12 @@ counts belong to opt-in benchmark scripts.
   failed staging generations are rebuilt from the canonical source.
 - Independent validation reopens the complete hierarchy and catalog after
   writers close.
-- `COMPLETED` is absent throughout construction and validation.
-- The final source guard precedes `COMPLETED` and publication.
-- Readers reject missing completion, unsupported versions, missing stores, and
-  inconsistent indexes.
+- Root `publication_state` remains `"staging"` throughout construction and
+  validation.
+- The final source guard precedes the transition to `"complete"` and
+  publication.
+- Readers reject an incomplete publication state, unsupported versions, missing
+  stores, and inconsistent indexes.
 - Existing completed candidate generations survive failed replacements.
 
 ## Risks and mitigations
