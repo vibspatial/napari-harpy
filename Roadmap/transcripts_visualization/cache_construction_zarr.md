@@ -4543,9 +4543,34 @@ Implement one private `_PointsCacheReader` context manager. On entry it:
    root, hierarchy, and catalog array layouts;
 2. requires root `publication_state = "complete"` and rejects a staging or
    unsupported generation;
-3. enters one bounded `_BucketReaderCache`, with a configurable positive
-   `max_open_readers` and an initial default of 32;
+3. enters one `_BucketReaderCache` whose capacity is the sum of the physical
+   bucket counts declared by all levels;
 4. loads only the compact runtime indexes described below.
+
+Bucket readers are admitted lazily when a request first touches their bucket;
+the acceptance reader does not eagerly open every store. Once opened, retain a
+reader for the lifetime of `_PointsCacheReader`. This keeps repeated panning and
+selection changes from reopening bucket metadata while bounding retained
+readers by the cache's finite physical bucket inventory. Do not expose a
+speculative smaller `max_open_readers` setting in Z9. Reconsider a stricter LRU
+bound only if the full-Xenium evaluation demonstrates a material handle or
+metadata-resource problem.
+
+Reader identity is the composite key `(level, bucket_id)`: bucket zero at Exact
+is distinct from bucket zero at Bridge or a Spatial level. The one reader cache
+therefore retains lazily opened readers from all levels together, up to the sum
+of their declared bucket counts. This supports metadata reuse when navigation
+changes LOD and later returns to a previously visited level:
+
+```text
+Exact buckets opened
+    -> zoom out and open Spatial buckets
+    -> zoom in and reuse the retained Exact readers
+```
+
+Only the entered store/group/array reader objects and their initialized Zarr
+metadata are retained. Point payloads and decoded chunks are not stored in
+`_BucketReaderCache`; operating-system and codec caching remain separate.
 
 Opening an accepted published cache must not call
 `_CatalogReader.validate_contents()` or `_validate_staged_cache()`. Publication
@@ -4740,7 +4765,8 @@ accumulate the requested value IDs per positive tile. Deduplicate manifest rows
 across values, group positive tiles by `(level, bucket_id)`, and process each
 bucket as one contiguous request group. This guarantees at most one bucket open
 per request even when several selected values or tiles resolve to it; the
-reader-scoped LRU may additionally reuse that entered reader across requests.
+reader-scoped cache additionally reuses that entered reader across later
+requests.
 
 Complete viewport reads discover positive tiles directly from the resident
 manifest lookup and do not touch `value_tiles`. Both complete and selected
@@ -4804,7 +4830,8 @@ Add focused real-Zarr tests for:
 - exact `value_tiles` pruning, including proof that a zero-count tile's bucket
   and point payload are not opened;
 - several values and tiles sharing one bucket, with one open per request and
-  reader-cache reuse and eviction across requests;
+  reader-cache reuse across requests, lazy admission, and no eager opening of
+  untouched buckets;
 - `include_point_id=False` succeeding without a point-ID chunk read and
   `include_point_id=True` returning aligned IDs;
 - Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
@@ -4859,12 +4886,12 @@ Then measure at Exact, Bridge, representative spatial levels, and overview:
 - panning with overlapping tiles, buckets, and chunks.
 
 For this gate, **application-cold** means a newly entered `_PointsCacheReader`
-with an empty reader-scoped bucket LRU. **Application-warm** means repeating the
-request through the same entered reader. Do not claim that either state clears
-or controls the operating-system page cache, Zarr/codec internals, or filesystem
-cache; record that limitation explicitly. Repeated measurements report their
-individual observations or a stated summary, without fixed pass/fail latency
-thresholds.
+with an empty reader-scoped bucket cache. **Application-warm** means repeating
+the request through the same entered reader. Do not claim that either state
+clears or controls the operating-system page cache, Zarr/codec internals, or
+filesystem cache; record that limitation explicitly. Repeated measurements
+report their individual observations or a stated summary, without fixed
+pass/fail latency thresholds.
 
 Exercise automatic `select_level()` for realistic all-values and selected-value
 viewports, while also using explicit-level methods to expose the physical Exact,
