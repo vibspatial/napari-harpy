@@ -4501,21 +4501,207 @@ may be tested independently with small completed directory trees.
 
 ### Slice Z9: implement the acceptance reader and Xenium evaluation
 
+**Status:** implementation specifications ready; reader implementation and the
+full-Xenium acceptance gate remain pending.
+
 #### Goal
 
 Measure whether the physical design provides useful selected-value access while
 keeping normal all-values navigation practical.
 
 This slice implements a small backend-level reader, not the complete Phase 2
-napari store.
+napari store. It also runs the first complete full-Xenium build through the Z8
+coordinator and retains that published generation for repeatable read
+evaluation. Do not introduce a public backend selector or a Parquet fallback.
+
+#### Files and dependency boundary
+
+Create:
+
+```text
+src/napari_harpy/core/multi_scale_cache_points_zarr/reader.py
+tests/multi_scale_cache_points_zarr/test_reader.py
+scripts/benchmark_multi_scale_cache_points_zarr_acceptance.py
+```
+
+`reader.py` owns the high-level cache, tile, viewport, and level-selection
+contracts. It composes the existing strict `_CatalogReader`, `_BucketReader`,
+and `_BucketReaderCache`; it does not duplicate Zarr schema parsing or import
+the existing Parquet-backed cache reader. Low-level optional-ID point reads may
+be added to `storage/bucket_reader.py`, but existing construction-facing
+`_PointPayload` methods and writer behavior remain unchanged.
+
+The benchmark script owns timing, RSS, filesystem-object accounting, scenario
+selection, and retained-run reporting. No benchmark-only counters, machine
+paths, or pass/fail timings become cache-format metadata.
+
+#### Reader lifecycle and publication contract
+
+Implement one private `_PointsCacheReader` context manager. On entry it:
+
+1. opens the cache through `_CatalogReader` and therefore validates the frozen
+   root, hierarchy, and catalog array layouts;
+2. requires root `publication_state = "complete"` and rejects a staging or
+   unsupported generation;
+3. enters one bounded `_BucketReaderCache`, with a configurable positive
+   `max_open_readers` and an initial default of 32;
+4. loads only the compact runtime indexes described below.
+
+Opening an accepted published cache must not call
+`_CatalogReader.validate_contents()` or `_validate_staged_cache()`. Publication
+already ran the independent complete-generation validator; replaying its full
+compact reconciliation on every viewer open would add seconds of unnecessary
+startup work. Runtime reads still fail closed on malformed root/layout metadata
+and on any bucket or sparse-range inconsistency encountered while reading.
+
+The runtime trust boundary is:
+
+```text
+cache construction
+    -> build every level and catalog
+    -> run independent staged validation once
+    -> set publication_state = "complete"
+    -> publish
+
+viewer runtime
+    -> require publication_state = "complete"
+    -> parse supported root, catalog, and bucket layouts
+    -> perform only the requested catalog/index lookup
+    -> read only the requested point chunks
+```
+
+Once published, the cache's globally reconciled semantic contents are trusted.
+Neither reader entry nor any tile, viewport, selection, panning, or LOD request
+may revalidate the canonical Parquet source, call `_validate_staged_cache()`,
+call `_CatalogReader.validate_contents()`, reconcile the complete manifest and
+`value_tiles`, scan all bucket ranges, or scan a complete point payload.
+
+“Trusted” does not disable cheap defensive checks local to data being opened or
+requested. Runtime readers still require supported versions and array layouts,
+validate requested identifiers and sparse-range bounds, and fail on a missing
+chunk or other inconsistency they encounter. This work must remain proportional
+to reader metadata plus the requested indexes, buckets, and point rows, never to
+the complete cache.
+
+The reader closes the catalog store and every retained bucket reader on normal
+exit and on any failed open or read. It is entered once and is not thread-safe;
+Phase 2 may later define per-worker or synchronized ownership.
+
+#### Runtime metadata residency
+
+At reader entry, materialize these compact arrays and build immutable lookup
+state:
+
+```text
+manifest/level_indptr
+manifest/bucket_id
+manifest/bucket_tile_index
+manifest/tile_x
+manifest/tile_y
+manifest/n_points
+value_tiles/indptr
+values/n_points
+```
+
+Also retain root level metadata and `value_names`, and build a mapping from
+`(level, tile_x, tile_y)` to the implicit manifest row. The complete manifest
+and two-dimensional pointer table are small relative to point payloads and make
+tile and viewport planning independent of bucket opens.
+
+Do not materialize complete `value_tiles/manifest_index` or
+`value_tiles/n_points`; the Xenium generation has tens of millions of those
+rows. Read only the half-open slices selected by `value_tiles/indptr`.
+
+#### Input and result contracts
+
+Represent a spatial viewport with a small immutable `_IntrinsicViewport` using
+finite intrinsic-source `x_min`, `y_min`, `x_max`, and `y_max`. Bounds are
+half-open, must have positive width and height, and are clipped to the cache
+geometry. A disjoint viewport has no positive tiles.
+
+Selected value IDs are a one-dimensional C-contiguous `uint32` array, strictly
+increasing, unique, nonempty, and inside the serialized value vocabulary. The
+reader exposes the immutable `value_names` tuple so callers can map labels to
+their implicit IDs; it does not repeat source-value normalization at read time.
+
+Return one immutable `_TileReadResult` per positive tile. It contains:
+
+```text
+level, tile_x, tile_y, tile_size
+location       (N, 2) float32, stored tile-relative (x, y) coordinates
+value_id       (N,)   uint32
+point_id       (N,)   uint64 or None
+statistics     immutable per-tile read accounting
+```
+
+Arrays are aligned, C-contiguous, read-only, and nonempty. Tile identity and the
+root origin provide the unambiguous intrinsic-coordinate reconstruction:
+
+```text
+x = root.x_origin + tile_x * tile_size + location[:, 0]
+y = root.y_origin + tile_y * tile_size + location[:, 1]
+```
+
+This result is deliberately separate from construction `_PointPayload`, whose
+mandatory `point_id` and four-array construction invariants must not be weakened
+to support an optional display field. When `include_point_id=False`, the bucket
+reader may validate `point_id` array metadata as part of the strict bucket open,
+but it must not slice or decode any `point_id` payload chunk.
+
+Viewport methods return one immutable `_ViewportReadResult` containing the
+selected level, the tuple of positive `_TileReadResult` objects in manifest
+order, and one aggregate `_ReadStatistics`. `select_level()` returns an
+immutable `_LevelSelection` containing the chosen level, estimated point count,
+and positive visible-tile count rather than returning an unexplained integer.
+These small wrappers keep payload data and the evidence used for LOD and
+benchmark accounting together without mutable reader-global “last request”
+state.
 
 #### Reader operations
 
 ```text
-read_complete_tile(level, tile_x, tile_y)
-read_selected_values(level, tile_x, tile_y, value_ids, include_point_id)
-read_selected_viewport(level, tile_bounds, value_ids, include_point_id)
+read_complete_tile(level, tile_x, tile_y, include_point_id=False)
+read_selected_tile(level, tile_x, tile_y, value_ids, include_point_id=False)
+read_complete_viewport(level, viewport, include_point_id=False)
+read_selected_viewport(level, viewport, value_ids, include_point_id=False)
+select_level(viewport, render_point_budget, value_ids=None)
 ```
+
+Direct tile reads return `_TileReadResult | None`; an empty manifest tile or a
+tile with none of the selected values returns `None`. Viewport reads return
+positive tile results in deterministic manifest order `(tile_y, tile_x)` and
+never create placeholder results for empty grid cells. They materialize only
+the selected level and viewport, never a complete cache level. The caller uses
+`select_level()` before normal viewport rendering to choose a fitting level
+when one exists and the terminal overview otherwise; explicit-level methods
+remain available for correctness tests and physical benchmarks.
+
+A viewport selects logical tiles whose half-open spatial extent intersects the
+clipped viewport. It returns all complete or selected rows stored in those
+tiles; it does not apply a second point-coordinate clip at the viewport edge.
+The napari layer can clip rendered points, while tile reuse during small pans
+remains possible. Consequently, LOD estimates and accounting use complete
+positive-tile rows and may conservatively exceed the number of points strictly
+inside the viewport rectangle.
+
+For `select_level()`, `value_ids=None` means all values; otherwise it follows
+the selected-value contract above. It chooses the finest serialized level whose
+estimated visible point count is at most the positive
+`render_point_budget`:
+
+- all-values estimates sum `manifest/n_points` for intersecting manifest rows;
+- selected estimates sum the corresponding positive `value_tiles/n_points`
+  entries after viewport intersection;
+- unique selected values are disjoint point categories, so their counts may be
+  summed without point-level deduplication;
+- a disjoint viewport selects Exact and produces no tile results;
+- when no level fits, select the terminal overview level.
+
+Level selection reads only catalog metadata and must not open a bucket or point
+payload array. Exact remains eligible when its visible count fits; Bridge and
+Spatial are not preferred merely because they are sampled.
+
+#### Tile discovery, bucket grouping, and ordering
 
 The high-level selected-value reader owns the complete two-index lookup below.
 Keep this scheme in its implementation docstring so the distinction between
@@ -4548,7 +4734,20 @@ point-level `value_id`, and `point_id` arrays. `_BucketReader.read_selected`
 owns only this second half; the high-level reader must not collapse the two
 responsibilities into one undocumented lookup.
 
-The reader must:
+For each selected `(level, value_id)`, read its exact `value_tiles` slice,
+intersect the strictly ordered manifest indexes with visible manifest rows, and
+accumulate the requested value IDs per positive tile. Deduplicate manifest rows
+across values, group positive tiles by `(level, bucket_id)`, and process each
+bucket as one contiguous request group. This guarantees at most one bucket open
+per request even when several selected values or tiles resolve to it; the
+reader-scoped LRU may additionally reuse that entered reader across requests.
+
+Complete viewport reads discover positive tiles directly from the resident
+manifest lookup and do not touch `value_tiles`. Both complete and selected
+paths preserve manifest tile order in returned results and bucket-local
+value-major, then `point_id`, row order inside each tile.
+
+The reader must therefore:
 
 - use `value_tiles/indptr` and `manifest_index` to prune zero-count tiles;
 - group positive visible tiles by bucket and open each bucket once per request;
@@ -4559,9 +4758,98 @@ The reader must:
 - report logical rows, positive tiles, buckets, chunks touched, and decoded-row
   estimates.
 
+#### Optional-ID bucket primitive
+
+Factor the aligned point-array reading inside `_BucketReader` so acceptance
+reads can request `location` and `value_id` without `point_id`. Preserve the
+existing `read_complete()` and `read_selected()` construction contracts as
+mandatory-ID wrappers used by Bridge, Spatial, validation, and their tests.
+Shared private planning continues to own sparse-range lookup, exact intervals,
+inner-chunk deduplication, and coalesced minimal envelopes; do not fork a second
+selected-range algorithm for the acceptance reader.
+
+#### Read accounting
+
+Define immutable per-tile and request summaries. Accumulate at least:
+
+```text
+logical_point_rows
+positive_manifest_tiles
+value_tile_index_rows_read
+bucket_stores_opened
+unique_inner_point_chunks_touched
+coalesced_envelope_rows_materialized
+estimated_inner_chunk_rows_decoded
+point_id_was_read
+```
+
+Chunk accounting is deterministic from exact intervals, common row-chunk
+boundaries, and physical array shapes. It is an estimate of Zarr inner-chunk
+decoding and must not be presented as exact filesystem bytes or operating-system
+I/O. For sharded arrays, separately report unique shards touched where practical.
+The benchmark may instrument store operations for supporting evidence, but
+runtime correctness must not depend on instrumentation.
+
+#### Focused tests
+
+Add focused real-Zarr tests for:
+
+- rejection of staging publication state, unsupported roots, invalid levels,
+  tiles, viewports, render budgets, and value-ID arrays;
+- complete and selected single-tile reads, empty logical tiles, absent selected
+  values, multiple values, deterministic row order, and coordinate
+  reconstruction;
+- complete and selected viewports across sparse rows, bucket boundaries, and
+  level boundaries without duplicate tiles or points;
+- exact `value_tiles` pruning, including proof that a zero-count tile's bucket
+  and point payload are not opened;
+- several values and tiles sharing one bucket, with one open per request and
+  reader-cache reuse and eviction across requests;
+- `include_point_id=False` succeeding without a point-ID chunk read and
+  `include_point_id=True` returning aligned IDs;
+- Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
+  no-level-fits LOD decisions from catalog counts only;
+- exact statistics for complete, selected, coalesced, partial-final-chunk, and
+  optional-ID reads;
+- deterministic closure after successful reads and injected catalog, bucket,
+  sparse-range, and payload failures.
+
+Use small real buckets and catalogs for physical claims. Do not add timing,
+compressed-byte, or operating-system cache thresholds to unit tests.
+
 #### Full-Xenium scenarios
 
-Measure at Exact, Bridge, representative spatial levels, and overview:
+Run one current-tree baseline build through `_build_points_cache_zarr()` with
+`TARGET_POINTS_PER_BUCKET = 2_000_000`. Time source content validation
+separately; the measured build interval begins with the validated source and
+includes planning, every level writer, catalog construction, normal staged
+validation, the final source guard, publication-state transition, and directory
+publication. Retain the published cache and machine-readable report under the
+existing sibling workspace rather than modifying the canonical SpatialData
+source:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/
+  sdata_xenium_full_data_core.transcripts-cache-workspace/
+    z9-current/
+      transcripts_vis_zarr/
+    reports/
+      gate-z9-current.json
+```
+
+Remove or replace only the explicitly named candidate output through the Z8
+builder contract; do not delete the workspace broadly. Record whether the run
+created or replaced that generation and its `cache_generation_id`. Subsequent
+read scenarios reuse this exact published output without rebuilding it.
+
+First establish reader correctness on representative Exact, Bridge, Spatial,
+and overview tiles by comparing selected reads with value filtering of the
+corresponding complete read, comparing viewport results with the ordered union
+of their tile results, and reconciling returned counts with manifest and
+`value_tiles` counts. Do not repeat the complete canonical-source equivalence
+scan merely to qualify runtime reads.
+
+Then measure at Exact, Bridge, representative spatial levels, and overview:
 
 - dense and average complete tiles;
 - all-values viewports at several zoom levels;
@@ -4570,24 +4858,48 @@ Measure at Exact, Bridge, representative spatial levels, and overview:
 - repeated selection changes with cold and warm caches;
 - panning with overlapping tiles, buckets, and chunks.
 
+For this gate, **application-cold** means a newly entered `_PointsCacheReader`
+with an empty reader-scoped bucket LRU. **Application-warm** means repeating the
+request through the same entered reader. Do not claim that either state clears
+or controls the operating-system page cache, Zarr/codec internals, or filesystem
+cache; record that limitation explicitly. Repeated measurements report their
+individual observations or a stated summary, without fixed pass/fail latency
+thresholds.
+
+Exercise automatic `select_level()` for realistic all-values and selected-value
+viewports, while also using explicit-level methods to expose the physical Exact,
+Bridge, Spatial, and overview read behavior. Include a rare-distributed value
+that is positive in many visible tiles so the limits of `value_tiles` pruning
+are measured rather than inferred.
+
 Record:
 
-- complete build time and peak RSS;
+- source-validation time, complete builder time, baseline/peak/incremental RSS,
+  and publication result;
 - total bytes and filesystem-object count;
+- reader-open latency and resident compact-index bytes;
 - complete-tile and viewport latency;
 - selected-value latency;
 - logical selected rows;
 - complete positive-tile rows;
 - positive visible tiles and buckets opened;
-- chunks touched and estimated decoded rows;
-- tile- and chunk-read amplification.
+- value-tile index rows read, chunks and shards touched, coalesced envelope rows,
+  and estimated decoded rows;
+- tile- and chunk-read amplification;
+- application-cold and application-warm reader-cache hits, misses, and retained
+  handle counts;
+- proof that optional-ID reads did or did not access `point_id` as requested;
+- chosen LOD, estimated point count, and actual returned point count.
 
 #### Bucket-target decision
 
 Retain `TARGET_POINTS_PER_BUCKET = 2_000_000` through construction and use its
 completed Xenium measurements as the baseline physical configuration. Evaluate
 `10_000_000` as the single leading alternative rather than opening an unbounded
-parameter sweep. The decision must account for both sides of the tradeoff:
+parameter sweep. Run that alternative only as a separately identified Z9
+experiment after the complete two-million baseline is accepted as correct; do
+not overwrite the retained baseline or change inner chunk/shard sizes at the
+same time. The decision must account for both sides of the tradeoff:
 
 - complete and selected viewport latency, especially the number of distinct
   bucket stores opened for common and rare-distributed values;
@@ -4601,25 +4913,40 @@ Choose ten million only if the reduced store-open and metadata work is material
 for realistic navigation and its larger construction unit remains practically
 memory bounded. Otherwise retain two million. Record the chosen target and
 evidence as a versioned construction policy before the format is proposed for
-Phase 2.
+Phase 2. The alternative may use an explicitly isolated experiment change; do
+not generalize the production reader to arbitrary bucket targets or retain two
+supported construction policies after the decision. The adopted code and
+format profile support only the chosen target and fail closed on the other.
 
-#### Acceptance decision
+#### Acceptance assessment
 
 Correctness is mandatory. Review build reliability, bounded memory, construction
 speed, storage behavior, object count, complete reads, and selected reads as one
 engineering decision without fixed numerical thresholds and without requiring a
 Parquet comparison run.
 
-If adopted, record the format and physical settings as the proposed Phase 2
-input. If not adopted, stop work on this package and retain the existing cache
-implementation. Do not add a fallback path.
+If the evidence supports adoption, record the format and physical settings as
+the recommended Phase 2 input. If it does not, record the measured reason and
+recommend retaining the existing implementation. Z9 produces the evidence and
+recommendation; Z10 owns the explicit architecture-adoption decision and any
+follow-up archival or integration plan. Do not add a fallback path in either
+case.
 
 #### Exit criteria
 
+- a published cache is built once end to end through Z8 at full Xenium scale;
+- the reader rejects incomplete generations and closes all catalog and bucket
+  handles deterministically;
+- complete and selected tile and viewport results reconcile with the frozen
+  catalog and each other;
+- optional-ID reads demonstrably avoid point-ID payload access;
+- catalog-only LOD selection is correct for all-values and selected-value
+  requests;
 - direct sparse-range lookup is demonstrated at full scale;
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
-- the candidate architecture has an explicit adoption decision.
+- baseline and optional bucket-target evidence are isolated and reproducible;
+- one evidence-backed recommendation is ready for the explicit Z10 decision.
 
 ### Slice Z10: architecture-adoption decision
 
@@ -4811,15 +5138,16 @@ The production-candidate evaluation is complete when:
 - root attributes and every cache-wide catalog array reconcile with all bucket
   stores;
 - independent staged validation fails closed on corruption;
-- construction is bounded, failure-safe, and atomically published;
+- construction is bounded, failure-safe, and published with the documented
+  generation-replacement and rollback semantics;
 - full-Xenium build and read measurements are recorded;
 - the project explicitly adopts or does not adopt the candidate architecture.
 
 ## Immediate next slice
 
-Z0 through Z6 and their current-tree Xenium construction gates are resolved.
-Implement Z7 as the independent staged validator described above. Normal cache
-creation must validate publication-critical structure and aggregate accounting
-without replaying the earlier exhaustive source/point equivalence check. Do not
-publish a generation or introduce runtime LOD behavior before their dedicated
-later slices.
+Z0 through Z8 are implemented; the construction primitives through Z7 have
+full-Xenium evidence, while Z8 has focused end-to-end verification. Implement
+the Z9 acceptance reader and its focused tests first. Then run the one retained
+full-Xenium baseline through the complete Z8 builder, followed by the specified
+correctness and read scenarios. Do not begin public napari integration or make
+the architecture-adoption decision before that evidence is recorded.
