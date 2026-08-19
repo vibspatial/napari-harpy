@@ -109,11 +109,6 @@ class _PointsCacheBuilderConfig:
 def _acquire_output_build_lock(path: Path) -> Generator[None]:
     """Hold non-blocking inter-process ownership of one publication path.
 
-    The generation UUID identifies a staged cache and makes its staging path
-    unique. This sibling lock independently prevents participating builders
-    from concurrently installing, replacing, or restoring the same final
-    output, during a first build as well as replacement.
-
     ``FileLock`` uses a platform-aware inter-process lock and releases active
     ownership when the process exits. The coordination pathname may remain on
     disk after release, so its presence is not evidence of an active builder;
@@ -172,8 +167,13 @@ def _build_points_cache_zarr(
     ):
         raise ValueError("Cache output and temporary roots must be separate directory trees.")
 
+    # The lock path is stable for this final output and serializes participating
+    # builders. The UUID instead identifies only this cache generation: it makes
+    # the staging path unique and is later persisted in root metadata and the
+    # COMPLETED marker so those artifacts can be reconciled.
     cache_generation_id = str(uuid.uuid4())
     lock_path = output_path.with_name(f"{output_path.name}{_LOCK_SUFFIX}")
+    staging_root = output_path.with_name(f"{output_path.name}.staging-{cache_generation_id}")
 
     with _acquire_output_build_lock(lock_path):
         existing_generation_id = _preflight_existing_output(output_path)
@@ -183,7 +183,6 @@ def _build_points_cache_zarr(
             leaf_tile_size=config.leaf_tile_size,
             overview_point_budget=config.overview_point_budget,
         )
-        staging_root = output_path.with_name(f"{output_path.name}.staging-{cache_generation_id}")
         staging_root.mkdir()
 
         build_error: Exception | None = None
