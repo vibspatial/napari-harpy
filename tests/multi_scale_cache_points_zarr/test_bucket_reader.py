@@ -50,17 +50,41 @@ def test_reader_roundtrips_complete_and_selected_payloads(tmp_path: Path) -> Non
     result = _build_bucket(tmp_path)
     first, second = result.tile_descriptors
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-        complete = reader.read_complete(first)
+        complete = reader.read_construction_payload(first)
         assert complete.value_id.tolist() == [0, 0, 1, 2, 2]
         assert complete.point_id.tolist() == [1, 4, 3, 2, 5]
         assert complete.x_rel.tolist() == [0, 3, 2, 1, 4]
         assert complete.y_rel.tolist() == [4, 1, 2, 3, 0]
 
-        selected = reader.read_selected(first, np.array([0, 2], dtype=np.uint32))
+        selected = reader.read_display_payload(first, np.array([0, 2], dtype=np.uint32))
         assert selected is not None
         assert selected.value_id.tolist() == [0, 0, 2, 2]
-        assert selected.point_id.tolist() == [1, 4, 2, 5]
-        assert reader.read_selected(second, np.array([2], dtype=np.uint32)) is None
+        assert selected.location.tolist() == [[0, 4], [3, 1], [1, 3], [4, 0]]
+        assert not selected.location.flags.writeable
+        assert not selected.value_id.flags.writeable
+        assert reader.read_display_payload(second, np.array([2], dtype=np.uint32)) is None
+
+
+def test_visualization_reader_never_requires_point_id_payload_chunks(tmp_path: Path) -> None:
+    result = _build_bucket(tmp_path)
+    first = result.tile_descriptors[0]
+    point_id_objects = [path for path in (tmp_path / first.bucket_path / "point_id" / "c").rglob("*") if path.is_file()]
+    assert point_id_objects
+    point_id_objects[0].unlink()
+
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+        complete = reader.read_display_payload(first)
+        assert complete is not None
+        assert complete.value_id.tolist() == [0, 0, 1, 2, 2]
+        assert complete.location.tolist() == [[0, 4], [3, 1], [2, 2], [1, 3], [4, 0]]
+
+        selected = reader.read_display_payload(first, np.array([0, 2], dtype=np.uint32))
+        assert selected is not None
+        assert selected.value_id.tolist() == [0, 0, 2, 2]
+        assert len(selected.location) == len(selected.value_id) == 4
+
+        with pytest.raises(Exception, match="chunk|Chunk|shard|Shard"):
+            reader.read_construction_payload(first)
 
 
 @pytest.mark.parametrize(
@@ -76,10 +100,22 @@ def test_selected_read_planner_coalesces_by_chunk_without_expanding_outer_bounds
     intervals: tuple[tuple[int, int], ...],
     expected: tuple[tuple[int, int], ...],
 ) -> None:
-    assert _coalesced_read_blocks_for_intervals(
-        intervals,
-        chunk_rows=4,
-    ) == expected
+    assert (
+        _coalesced_read_blocks_for_intervals(
+            intervals,
+            chunk_rows=4,
+        )
+        == expected
+    )
+
+
+def test_point_read_plan_keeps_exact_intervals_and_coalesced_blocks(tmp_path: Path) -> None:
+    _build_bucket(tmp_path)
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+        plan = reader._point_read_plan(((1, 2), (3, 4), (6, 7)))
+
+    assert plan.intervals == ((1, 2), (3, 4), (6, 7))
+    assert plan.blocks == ((1, 4), (6, 7))
 
 
 @pytest.mark.parametrize(
@@ -96,26 +132,26 @@ def test_reader_rejects_invalid_selected_value_ids(tmp_path: Path, selected: np.
     descriptor = _build_bucket(tmp_path).tile_descriptors[0]
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
         with pytest.raises(ValueError, match="selected_value_ids"):
-            reader.read_selected(descriptor, selected)  # type: ignore[arg-type]
+            reader.read_display_payload(descriptor, selected)  # type: ignore[arg-type]
 
 
 def test_reader_rejects_unknown_descriptor_and_calls_after_close(tmp_path: Path) -> None:
     descriptor = _build_bucket(tmp_path).tile_descriptors[0]
     reader = _BucketReader(tmp_path, level=1, bucket_id=3)
     with pytest.raises(RuntimeError, match="not open"):
-        reader.read_complete(descriptor)
+        reader.read_construction_payload(descriptor)
     with reader:
         wrong_bucket = _TileDescriptor(1, 4, 0, 0, 0, 5)
         with pytest.raises(ValueError, match="different bucket"):
-            reader.read_complete(wrong_bucket)
+            reader.read_construction_payload(wrong_bucket)
         wrong_coordinate = _TileDescriptor(1, 3, 0, 2, 0, 5)
         with pytest.raises(ValueError, match="coordinates"):
-            reader.read_complete(wrong_coordinate)
+            reader.read_construction_payload(wrong_coordinate)
         wrong_count = _TileDescriptor(1, 3, 0, 0, 0, 4)
         with pytest.raises(ValueError, match="count"):
-            reader.read_complete(wrong_count)
+            reader.read_construction_payload(wrong_count)
     with pytest.raises(RuntimeError, match="not open"):
-        reader.read_complete(descriptor)
+        reader.read_construction_payload(descriptor)
     with pytest.raises(RuntimeError, match="entered only once"):
         with reader:
             pass
