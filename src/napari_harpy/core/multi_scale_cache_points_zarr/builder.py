@@ -10,12 +10,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import zarr
 from filelock import FileLock, Timeout
+from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points.validation import _require_parquet_source_unchanged
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    PUBLICATION_STATE_COMPLETE,
+    PUBLICATION_STATE_STAGING,
+    _CatalogWriteSettings,
+    _parse_cache_attributes,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
@@ -34,7 +41,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.writer.spatial import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import _validate_staged_cache
 
-_COMPLETION_MARKER = "COMPLETED"
 _LOCK_SUFFIX = ".build-lock"
 
 
@@ -169,14 +175,15 @@ def _build_points_cache_zarr(
 
     # The lock path is stable for this final output and serializes participating
     # builders. The UUID instead identifies only this cache generation: it makes
-    # the staging path unique and is later persisted in root metadata and the
-    # COMPLETED marker so those artifacts can be reconciled.
+    # the staging path unique and is later persisted in root metadata.
     cache_generation_id = str(uuid.uuid4())
     lock_path = output_path.with_name(f"{output_path.name}{_LOCK_SUFFIX}")
     staging_root = output_path.with_name(f"{output_path.name}.staging-{cache_generation_id}")
 
     with _acquire_output_build_lock(lock_path):
-        existing_generation_id = _preflight_existing_output(output_path)
+        existing_generation_id = _get_existing_complete_cache_generation_id(output_path)
+        # Reject a validated source whose Parquet metadata changed before this
+        # build began. This checks only metadata; it does not reread every point row.
         _require_parquet_source_unchanged(validated)
         plan = _plan_points_cache(
             validated,
@@ -230,8 +237,10 @@ def _build_points_cache_zarr(
             )
             del exact_result, level_results, plan
             _validate_staged_cache(staging_root)
+            # Construction may be long-running. Check the source again before
+            # completion so a cache built while Parquet changed is not published.
             _require_parquet_source_unchanged(validated)
-            _write_completion_marker(staging_root, cache_generation_id=cache_generation_id)
+            _mark_cache_generation_complete(staging_root, cache_generation_id=cache_generation_id)
             return _publish_staged_generation(
                 staging_root,
                 output_path,
@@ -251,7 +260,9 @@ def _build_points_cache_zarr(
                         "Cache construction and staging cleanup both failed.",
                         (build_error, cleanup_error),
                     ) from None
-def _preflight_existing_output(output_path: Path) -> str | None:
+
+
+def _get_existing_complete_cache_generation_id(output_path: Path) -> str | None:
     """Return the generation ID of a replaceable output, or ``None`` if absent."""
     if output_path.is_symlink():
         raise ValueError("Cache output path must not be a symbolic link.")
@@ -259,41 +270,28 @@ def _preflight_existing_output(output_path: Path) -> str | None:
         return None
     if not output_path.is_dir():
         raise ValueError("Cache output path exists but is not a directory.")
-    return _require_completed_generation(output_path)
+    return _require_complete_cache_generation_id(output_path)
 
 
-def _require_completed_generation(cache_root: Path) -> str:
-    """Validate a completion marker and the reopened root/catalog layouts."""
-    marker_path = cache_root / _COMPLETION_MARKER
-    if marker_path.is_symlink() or not marker_path.is_file():
-        raise ValueError(f"Cache generation `{cache_root}` has no valid `{_COMPLETION_MARKER}` marker.")
-    try:
-        marker_bytes = marker_path.read_bytes()
-        marker_text = marker_bytes.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise ValueError(f"Cache generation `{cache_root}` has an unreadable completion marker.") from error
-    if not marker_text.endswith("\n") or marker_text.count("\n") != 1:
-        raise ValueError("Cache completion marker must contain exactly one canonical UUID plus newline.")
-    marker_generation_id = marker_text[:-1]
-    try:
-        parsed = uuid.UUID(marker_generation_id)
-    except (ValueError, AttributeError) as error:
-        raise ValueError("Cache completion marker does not contain a canonical UUID.") from error
-    if str(parsed) != marker_generation_id:
-        raise ValueError("Cache completion marker does not contain a canonical lowercase UUID.")
-
+def _require_complete_cache_generation_id(cache_root: Path) -> str:
+    """Require complete root metadata and return its cache-generation UUID."""
     with _CatalogReader(cache_root) as reader:
-        root_generation_id = reader.attributes.cache_generation_id
-    if marker_generation_id != root_generation_id:
-        raise ValueError("Cache completion marker UUID does not match the root cache-generation UUID.")
-    return marker_generation_id
+        attributes = reader.attributes
+        if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
+            raise ValueError("Cache root publication_state is not 'complete'.")
+        return attributes.cache_generation_id
 
 
-def _write_completion_marker(staging_root: Path, *, cache_generation_id: str) -> None:
-    """Write the final staged-generation mutation with exclusive semantics."""
-    marker_path = staging_root / _COMPLETION_MARKER
-    with marker_path.open("x", encoding="utf-8", newline="") as marker:
-        marker.write(f"{cache_generation_id}\n")
+def _mark_cache_generation_complete(staging_root: Path, *, cache_generation_id: str) -> None:
+    """Make publication state the final mutation of a validated generation."""
+    with LocalStore(staging_root, read_only=False) as store:
+        root = zarr.open_group(store=store, mode="r+", zarr_format=3, use_consolidated=False)
+        attributes = _parse_cache_attributes(dict(root.attrs))
+        if attributes.cache_generation_id != cache_generation_id:
+            raise ValueError("Staged root cache-generation UUID changed before completion.")
+        if attributes.publication_state != PUBLICATION_STATE_STAGING:
+            raise ValueError("Only a staging generation can be marked complete.")
+        root.update_attributes({"publication_state": PUBLICATION_STATE_COMPLETE})
 
 
 def _publish_staged_generation(
@@ -303,10 +301,10 @@ def _publish_staged_generation(
     expected_existing_generation_id: str | None,
 ) -> Path:
     """Install one completed staging tree and restore the old tree on failure."""
-    _require_completed_generation(staging_root)
-    observed_existing_generation_id = _preflight_existing_output(output_path)
+    _require_complete_cache_generation_id(staging_root)
+    observed_existing_generation_id = _get_existing_complete_cache_generation_id(output_path)
     if observed_existing_generation_id != expected_existing_generation_id:
-        raise RuntimeError("Cache output changed after builder preflight; refusing publication.")
+        raise RuntimeError("Cache output changed after the builder's initial output check; refusing publication.")
 
     backup_path: Path | None = None
     if observed_existing_generation_id is not None:
@@ -330,8 +328,7 @@ def _publish_staged_generation(
             shutil.rmtree(backup_path)
         except OSError as cleanup_error:
             warnings.warn(
-                f"Published cache successfully but could not remove completed backup `{backup_path}`: "
-                f"{cleanup_error}",
+                f"Published cache successfully but could not remove completed backup `{backup_path}`: {cleanup_error}",
                 RuntimeWarning,
                 stacklevel=2,
             )
