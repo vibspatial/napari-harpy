@@ -5431,6 +5431,42 @@ prevents an unbounded queue, but it does not make a 70--80 ms catalog operation
 appropriate for a viewport hot path. The backend contract must make the I/O
 boundary explicit before napari integration.
 
+#### Relationship to Z10
+
+Z11 does not replace the Z10 physical lookup work. It moves that work from
+every viewport change to one explicit selection-preparation boundary:
+
+```text
+Z10 interval resolution + shard-bounded block reading
+        |
+        | run once when selected value IDs change
+        v
+Z11 immutable prepared selection
+        |
+        | reuse for every accepted viewport change
+        v
+in-memory LOD planning + positive-tile discovery
+```
+
+Retain and reuse the Z10 contracts that:
+
+- resolve selected values to exact `value_tiles` intervals;
+- split intervals at physical shard boundaries;
+- coalesce connected touched chunks without crossing a shard;
+- read each block once from both parallel catalog arrays;
+- discard rows that belong only to the coalesced envelope rather than an exact
+  selected interval.
+
+Refactor the current Z10 block-reading portion into a viewport-independent
+preparation primitive where necessary. The existing on-disk
+`_value_filtered_manifest_summary()` and `_value_filtered_manifest()` flows must not
+remain as alternative viewport-time paths: their logical aggregation and
+tile-mapping responsibilities move to operations over the prepared arrays.
+After Z11, there is one selected-value runtime architecture, not a prepared fast
+path alongside a synchronous fallback. A raw-value convenience helper may exist
+only when it is explicitly named and documented as performing preparation I/O;
+it must not be callable accidentally from camera-driven planning.
+
 #### Explicit preparation boundary
 
 Separate selection-dependent catalog I/O from viewport-dependent policy:
