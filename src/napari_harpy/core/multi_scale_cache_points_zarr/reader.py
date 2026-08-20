@@ -372,15 +372,19 @@ class _PointsCacheReader:
 
         Notes
         -----
-        Evaluate serialized levels from Exact toward the coarsest level. At each
-        level, sum visible points for the requested values represented there and
-        return the first estimate at most ``point_budget``. Sampling may omit one
-        or more requested values without making the level ineligible. If no level
-        fits, return the coarsest level with ``within_budget=False``.
+        **Level-choice policy.** Evaluate serialized levels from Exact toward the
+        coarsest level. At each level, sum visible points for the requested values
+        represented there. Return the first estimate at most ``point_budget``;
+        sampled omission of a requested value does not make a level ineligible.
+        If no level fits, return the coarsest level with
+        ``within_budget=False``.
 
-        A requested value can be absent from the Exact tiles intersecting the
-        viewport yet occur in a larger coarser tile intersecting the same
-        viewport. For example, along one spatial axis::
+        **Why a value count can reappear at a coarser level.** Level estimates
+        count complete logical tiles that intersect the viewport; they do not
+        clip individual points to the viewport. Coarser tiles cover larger
+        spatial footprints, so one can contain an existing value from an Exact
+        tile that did not intersect the viewport. The one-dimensional example
+        below makes that tile-footprint effect explicit::
 
             Exact tiles, size 10
 
@@ -402,11 +406,15 @@ class _PointsCacheReader:
             +---------------------+
             0                    20
 
-        The pyramid has not created A. The complete coarser tile merely includes
-        an existing A outside the Exact visible-tile footprint. Consequently,
-        selected counts need not change monotonically with level. Level selection
-        reads catalog metadata only; it does not open bucket stores or point
-        payloads.
+        At Exact, the viewport intersects only tile 0, where A is absent. At the
+        coarser level, the same viewport intersects one tile assembled from both
+        Exact footprints, including the existing A from tile 1. The pyramid has
+        not created A; the complete-tile estimate has widened. This is why
+        selected counts need not change monotonically with level and why a
+        coarser appearance is not treated as catalog corruption.
+
+        Level selection performs all of this work from catalog metadata. It does
+        not open bucket stores or read point payloads.
         """
         _require_integer_in_range(point_budget, "point_budget", minimum=1, maximum=_INT64_MAX)
         value_ids = self._require_value_ids(value_ids)
