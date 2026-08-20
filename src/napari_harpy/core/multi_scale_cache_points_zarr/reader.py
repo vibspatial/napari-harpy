@@ -9,8 +9,10 @@ access.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 from types import TracebackType
 
@@ -189,6 +191,59 @@ class _LevelSelection:
         object.__setattr__(self, "omitted_value_ids", omitted_value_ids)
 
 
+@dataclass(frozen=True)
+class _ValueTileInterval:
+    """Identify one requested value's exact half-open catalog rows."""
+
+    selected_value_position: int
+    value_id: int
+    start: int
+    stop: int
+
+
+@dataclass(frozen=True)
+class _ValueTileCatalogEnvelope:
+    """Describe one shard-bounded contiguous catalog read.
+
+    The first interval's start and final interval's stop define the shared row
+    envelope sliced once from each parallel ``value_tiles`` array. Unselected
+    gaps between the exact fragments are discarded after the read.
+    """
+
+    intervals: tuple[_ValueTileInterval, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.intervals, tuple) or not self.intervals:
+            raise ValueError("`intervals` must be a nonempty tuple.")
+        if not all(isinstance(interval, _ValueTileInterval) for interval in self.intervals):
+            raise ValueError("Every catalog-envelope interval must be a _ValueTileInterval.")
+        if any(
+            interval.selected_value_position < 0
+            or interval.value_id < 0
+            or interval.start < 0
+            or interval.start >= interval.stop
+            for interval in self.intervals
+        ):
+            raise ValueError("Catalog-envelope intervals must contain valid nonnegative half-open rows.")
+        if any(
+            current.selected_value_position <= previous.selected_value_position
+            or current.value_id <= previous.value_id
+            or current.start < previous.stop
+            for previous, current in pairwise(self.intervals)
+        ):
+            raise ValueError("Catalog-envelope intervals must be ordered and nonoverlapping.")
+
+    @property
+    def start(self) -> int:
+        """Return the first exact fragment's catalog-row start."""
+        return self.intervals[0].start
+
+    @property
+    def stop(self) -> int:
+        """Return the final exact fragment's catalog-row stop."""
+        return self.intervals[-1].stop
+
+
 class _PointsCacheReader:
     """Read one trusted, completed Zarr cache generation.
 
@@ -332,9 +387,8 @@ class _PointsCacheReader:
         else:
             # Use the cache-wide value_tiles index to discard visible tiles
             # containing none of the selection and identify the requested values
-            # present in each retained tile. Per-value counts are needed for LOD,
-            # not payload reading.
-            value_ids_by_manifest_row, _ = self._value_filtered_manifest(level, visible_rows, value_ids)
+            # present in each retained tile.
+            value_ids_by_manifest_row = self._value_filtered_manifest(level, visible_rows, value_ids)
             requests = tuple(
                 (manifest_row, value_ids_by_manifest_row[manifest_row])
                 for manifest_row in sorted(value_ids_by_manifest_row)
@@ -448,7 +502,7 @@ class _PointsCacheReader:
         fallback: _LevelSelection | None = None
         for metadata in attributes.levels:
             rows = self._visible_manifest_rows(metadata.level, viewport)
-            value_ids_by_manifest_row, point_count_by_value = self._value_filtered_manifest(
+            point_count_by_value, positive_visible_tile_count = self._value_filtered_manifest_summary(
                 metadata.level,
                 rows,
                 value_ids,
@@ -460,7 +514,7 @@ class _PointsCacheReader:
             candidate = _LevelSelection(
                 level=metadata.level,
                 estimated_point_count=point_count,
-                positive_visible_tile_count=len(value_ids_by_manifest_row),
+                positive_visible_tile_count=positive_visible_tile_count,
                 within_budget=point_count <= point_budget,
                 omitted_value_ids=omitted_value_ids,
             )
@@ -607,7 +661,7 @@ class _PointsCacheReader:
         level: int,
         visible_rows: npt.NDArray[np.int64],
         value_ids: npt.NDArray[np.uint32],
-    ) -> tuple[dict[int, npt.NDArray[np.uint32]], npt.NDArray[np.uint64]]:
+    ) -> dict[int, npt.NDArray[np.uint32]]:
         """Resolve value-to-tile discovery before bucket-local sparse ranges.
 
         The two-index flow is::
@@ -627,8 +681,6 @@ class _PointsCacheReader:
         -------
         value_ids_by_manifest_row : dict[int, numpy.ndarray]
             Requested value IDs present in each positive visible manifest row.
-        point_count_by_value : numpy.ndarray
-            Visible point totals aligned with the requested ``value_ids`` order.
 
         Examples
         --------
@@ -651,50 +703,273 @@ class _PointsCacheReader:
                 102: np.array([0], dtype=np.uint32),
                 104: np.array([0, 1], dtype=np.uint32),
             }
-            point_count_by_value = np.array([9, 8], dtype=np.uint64)
-
-        ``point_count_by_value`` remains aligned with the requested value-ID
-        order: value ``0`` has ``8 + 1`` visible points and value ``1`` has
-        ``6 + 2``.
         """
-        pointers = self._value_tiles_indptr_or_raise()
-        catalog = self._catalog_or_raise()
         visible = np.asarray(visible_rows, dtype=np.uint64)
         by_row: dict[int, list[int]] = {}
+        for selected_value_positions, visible_positions, _ in self._iter_value_tile_matches(
+            level,
+            visible,
+            value_ids,
+        ):
+            matched_value_ids = value_ids[selected_value_positions]
+            for position, value_id in zip(visible_positions.tolist(), matched_value_ids.tolist(), strict=True):
+                by_row.setdefault(int(visible[position]), []).append(value_id)
+
+        return {row: np.ascontiguousarray(values, dtype=np.uint32) for row, values in by_row.items()}
+
+    def _value_filtered_manifest_summary(
+        self,
+        level: int,
+        visible_rows: npt.NDArray[np.int64],
+        value_ids: npt.NDArray[np.uint32],
+    ) -> tuple[npt.NDArray[np.uint64], int]:
+        """Return counts and the positive-tile union needed for LOD choice.
+
+        Unlike viewport reading, level selection does not need to retain which
+        values occur in each tile. Keep that per-tile mapping and its many small
+        arrays out of the summary-only path.
+
+        Returns
+        -------
+        counts_by_value : numpy.ndarray
+            Visible point totals aligned with the requested ``value_ids``.
+        positive_visible_tile_count : int
+            Number of distinct visible manifest tiles containing at least one
+            requested value. A tile containing several requested values is
+            counted once.
+
+        Examples
+        --------
+        Suppose requested value IDs ``[0, 1]`` have these records and the
+        viewport intersects manifest rows ``[101, 102, 104]``:
+
+        | Value | Manifest row | Points |
+        |---:|---:|---:|
+        | 0 | 100 | 3 |
+        | 0 | 102 | 8 |
+        | 0 | 104 | 1 |
+        | 1 | 101 | 6 |
+        | 1 | 104 | 2 |
+
+        Row ``100`` is outside the viewport. The returned summary is equivalent
+        to::
+
+            counts_by_value = np.array([9, 8], dtype=np.uint64)
+            positive_visible_tile_count = 3
+
+        Value ``0`` contributes ``8 + 1`` points and value ``1`` contributes
+        ``6 + 2``. Manifest row ``104`` contains both requested values, but it
+        contributes only once to the positive-tile union ``{101, 102, 104}``.
+        """
+        visible = np.asarray(visible_rows, dtype=np.uint64)
         counts_by_value = np.zeros(len(value_ids), dtype=np.uint64)
+        positive_visible = np.zeros(len(visible), dtype=np.bool_)
+        for selected_value_positions, visible_positions, n_points in self._iter_value_tile_matches(
+            level,
+            visible,
+            value_ids,
+        ):
+            np.add.at(counts_by_value, selected_value_positions, n_points)
+            positive_visible[visible_positions] = True
+        return np.ascontiguousarray(counts_by_value), int(np.count_nonzero(positive_visible))
+
+    def _iter_value_tile_matches(
+        self,
+        level: int,
+        visible: npt.NDArray[np.uint64],
+        value_ids: npt.NDArray[np.uint32],
+    ) -> Iterator[tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.uint64]]]:
+        """Yield selected-value positions, visible-row positions, and counts.
+
+        Resolve all requested value intervals up front and read their connected
+        catalog chunks in shard-bounded envelopes. Each envelope is intersected with
+        the resident visible-manifest rows once, rather than repeating one Zarr
+        selection and one viewport search for every requested value.
+
+        Parameters
+        ----------
+        level
+            Cache level whose value-to-tile catalog records are queried.
+        visible
+            Sorted global manifest rows for logical tiles intersecting the
+            viewport. Positions in this array identify visible tiles within the
+            current request.
+        value_ids
+            Sorted unique requested value IDs. Positions in this array preserve
+            caller order for per-value count accumulation.
+
+        Yields
+        ------
+        selected_value_positions : numpy.ndarray
+            ``int64`` positions into ``value_ids``, one for every matching
+            value/tile catalog record in the yielded envelope.
+        visible_positions : numpy.ndarray
+            Aligned ``int64`` positions into ``visible``.
+        n_points : numpy.ndarray
+            Aligned positive ``uint64`` point counts for those value/tile
+            records.
+
+        Notes
+        -----
+        The three arrays in each yielded tuple are row-aligned. Physical Zarr
+        envelope boundaries may split one logical result across several yields;
+        concatenating corresponding arrays produces the complete result.
+
+        Examples
+        --------
+        Suppose the method receives::
+
+            level = 2
+            visible = np.array([101, 102, 104], dtype=np.uint64)
+            value_ids = np.array([10, 42], dtype=np.uint32)
+
+        and level 2 contains these catalog records:
+
+        | Value ID | Manifest row | Points |
+        |---:|---:|---:|
+        | 10 | 100 | 3 |
+        | 10 | 102 | 8 |
+        | 10 | 104 | 1 |
+        | 42 | 101 | 6 |
+        | 42 | 104 | 2 |
+
+        Manifest row ``100`` is not visible and is discarded. Ignoring possible
+        physical envelope boundaries, the yielded arrays are equivalent to::
+
+            selected_value_positions = np.array([0, 0, 1, 1], dtype=np.int64)
+            visible_positions = np.array([1, 2, 0, 2], dtype=np.int64)
+            n_points = np.array([8, 1, 6, 2], dtype=np.uint64)
+
+        For example, the first aligned record resolves as::
+
+            value_ids[selected_value_positions[0]] == 10
+            visible[visible_positions[0]] == 102
+            n_points[0] == 8
+
+        It therefore means that value ``10`` occurs in visible manifest tile
+        ``102`` with eight points. Manifest tile ``104`` appears twice because
+        it contains both requested values.
+        """
+        if len(visible) == 0:
+            return
+        intervals = self._value_tile_intervals(level, value_ids)
+        if not intervals:
+            return
+        attributes = self._attributes_or_raise()
+        settings = attributes.catalog.settings
+        envelopes = _value_tile_catalog_envelopes(
+            intervals,
+            chunk_rows=settings.value_tile_chunk_rows,
+            shard_rows=settings.value_tile_shard_rows,
+        )
+        catalog = self._catalog_or_raise()
+        manifest_array = catalog.array(VALUE_TILES_MANIFEST_INDEX)
+        point_count_array = catalog.array(VALUE_TILES_N_POINTS)
         level_start = int(self._manifest_level_indptr_or_raise()[level])
         level_stop = int(self._manifest_level_indptr_or_raise()[level + 1])
-        for selected_index, value_id in enumerate(value_ids):
-            start = int(pointers[level, int(value_id)])
-            stop = int(pointers[level, int(value_id) + 1])
-            if not 0 <= start <= stop <= self._attributes_or_raise().catalog.value_tile_row_count:
-                raise ValueError("Value-tile pointers are outside the catalog arrays.")
-            if start == stop or len(visible) == 0:
-                continue
+        relative_visible = visible.astype(np.int64, copy=False) - level_start
+        if bool((relative_visible < 0).any()) or bool((relative_visible >= level_stop - level_start).any()):
+            raise ValueError("Visible manifest rows lie outside the requested level.")
+        # One manifest level is compact (one row per nonempty logical tile),
+        # whereas many value records can refer to each tile. Build this small
+        # direct map once so every envelope can intersect its records in O(N)
+        # instead of repeatedly binary-searching the visible rows.
+        visible_position_by_level_row = np.full(level_stop - level_start, -1, dtype=np.int64)
+        visible_position_by_level_row[relative_visible] = np.arange(len(visible), dtype=np.int64)
+        previous_manifest = np.zeros(len(value_ids), dtype=np.uint64)
+        has_previous = np.zeros(len(value_ids), dtype=np.bool_)
+
+        for envelope in envelopes:
             manifest_index = np.asarray(
-                catalog.array(VALUE_TILES_MANIFEST_INDEX)[start:stop],
+                manifest_array[envelope.start : envelope.stop],
                 dtype=np.uint64,
             )
-            n_points = np.asarray(catalog.array(VALUE_TILES_N_POINTS)[start:stop], dtype=np.uint64)
-            if (
-                bool((n_points == 0).any())
-                or bool((manifest_index < level_start).any())
-                or bool((manifest_index >= level_stop).any())
-                or bool((manifest_index[1:] <= manifest_index[:-1]).any())
-            ):
-                raise ValueError("Encountered invalid value-tile records during lookup.")
-            positions = np.searchsorted(visible, manifest_index)
-            in_bounds = positions < len(visible)
-            matches = np.zeros(len(manifest_index), dtype=np.bool_)
-            matches[in_bounds] = visible[positions[in_bounds]] == manifest_index[in_bounds]
-            if not bool(matches.any()):
-                continue
-            counts_by_value[selected_index] = n_points[matches].sum(dtype=np.uint64)
-            for row in manifest_index[matches].tolist():
-                by_row.setdefault(int(row), []).append(int(value_id))
+            n_points = np.asarray(
+                point_count_array[envelope.start : envelope.stop],
+                dtype=np.uint64,
+            )
+            interval_lengths = np.empty(len(envelope.intervals), dtype=np.int64)
+            for interval_index, interval in enumerate(envelope.intervals):
+                local_start = interval.start - envelope.start
+                local_stop = interval.stop - envelope.start
+                interval_manifest = manifest_index[local_start:local_stop]
+                interval_counts = n_points[local_start:local_stop]
+                selected_value_position = interval.selected_value_position
+                if (
+                    bool((interval_counts == 0).any())
+                    or bool((interval_manifest < level_start).any())
+                    or bool((interval_manifest >= level_stop).any())
+                    or bool((interval_manifest[1:] <= interval_manifest[:-1]).any())
+                    or (
+                        has_previous[selected_value_position]
+                        and int(interval_manifest[0]) <= int(previous_manifest[selected_value_position])
+                    )
+                ):
+                    raise ValueError("Encountered invalid value-tile records during lookup.")
+                previous_manifest[selected_value_position] = interval_manifest[-1]
+                has_previous[selected_value_position] = True
+                interval_lengths[interval_index] = local_stop - local_start
 
-        value_ids_by_row = {row: np.ascontiguousarray(values, dtype=np.uint32) for row, values in by_row.items()}
-        return value_ids_by_row, np.ascontiguousarray(counts_by_value)
+            selected_value_positions = np.repeat(
+                np.fromiter(
+                    (interval.selected_value_position for interval in envelope.intervals),
+                    dtype=np.int64,
+                    count=len(envelope.intervals),
+                ),
+                interval_lengths,
+            )
+            selected_row_count = int(interval_lengths.sum(dtype=np.int64))
+            if selected_row_count == len(manifest_index):
+                selected_manifest = manifest_index
+                selected_counts = n_points
+            else:
+                selected_manifest = np.concatenate(
+                    tuple(
+                        manifest_index[interval.start - envelope.start : interval.stop - envelope.start]
+                        for interval in envelope.intervals
+                    )
+                )
+                selected_counts = np.concatenate(
+                    tuple(
+                        n_points[interval.start - envelope.start : interval.stop - envelope.start]
+                        for interval in envelope.intervals
+                    )
+                )
+
+            positions = visible_position_by_level_row[selected_manifest - np.uint64(level_start)]
+            matches = positions >= 0
+            if bool(matches.any()):
+                yield (
+                    np.ascontiguousarray(selected_value_positions[matches], dtype=np.int64),
+                    np.ascontiguousarray(positions[matches], dtype=np.int64),
+                    np.ascontiguousarray(selected_counts[matches], dtype=np.uint64),
+                )
+
+    def _value_tile_intervals(
+        self,
+        level: int,
+        value_ids: npt.NDArray[np.uint32],
+    ) -> tuple[_ValueTileInterval, ...]:
+        """Resolve requested values to nonempty exact catalog intervals."""
+        pointers = self._value_tiles_indptr_or_raise()
+        indexes = value_ids.astype(np.int64, copy=False)
+        starts = pointers[level, indexes]
+        stops = pointers[level, indexes + 1]
+        row_count = self._attributes_or_raise().catalog.value_tile_row_count
+        if bool((starts > stops).any()) or bool((stops > row_count).any()):
+            raise ValueError("Value-tile pointers are outside the catalog arrays.")
+        return tuple(
+            _ValueTileInterval(
+                selected_value_position=selected_value_position,
+                value_id=int(value_id),
+                start=int(start),
+                stop=int(stop),
+            )
+            for selected_value_position, (value_id, start, stop) in enumerate(
+                zip(value_ids.tolist(), starts.tolist(), stops.tolist(), strict=True)
+            )
+            if start < stop
+        )
 
     def _read_manifest_requests(
         self,
@@ -831,6 +1106,112 @@ def _read_only_array(catalog: _CatalogReader, name: str) -> np.ndarray:
     array = np.ascontiguousarray(np.asarray(catalog.array(name)[:], dtype=CATALOG_ARRAY_DTYPES[name]))
     array.flags.writeable = False
     return array
+
+
+def _value_tile_catalog_envelopes(
+    intervals: tuple[_ValueTileInterval, ...],
+    *,
+    chunk_rows: int,
+    shard_rows: int,
+) -> tuple[_ValueTileCatalogEnvelope, ...]:
+    """Plan minimal connected catalog envelopes within physical shards.
+
+    Split logical value intervals at shard boundaries, then combine fragments
+    whose touched inner chunks overlap or are consecutive inside the same shard.
+    Returned envelopes retain their first and last exact row bounds rather than
+    expanding to complete chunk or shard edges.
+
+    Notes
+    -----
+    Zarr can correctly serve a slice spanning several shards. The one-shard
+    boundary is instead a deliberate resource policy. A cross-shard slice must
+    still access each independent shard, consult its index, and decode the
+    relevant inner chunks from that shard. Zarr then assembles the extracted
+    rows into one returned array, so crossing the boundary can create a larger
+    temporary result without eliminating the underlying shard accesses or
+    chunk decoding. Keeping each envelope inside one shard gives every individual
+    Zarr slice a deterministic base bound. With the default 1,048,576-row
+    shards, the two parallel ``uint64`` result arrays contain at most 16 MiB for
+    one envelope before exact-fragment indexes, masks, and other working arrays are
+    considered. This is not a strict process-peak bound: generator loop locals
+    from the preceding envelope may remain referenced until they are overwritten,
+    and consumer output has its own memory cost.
+
+    This bound applies to temporary decoded catalog envelopes, not to any
+    retained output assembled from their exact selected fragments. Blocks are
+    also not padded to shard edges. For a shard boundary at row 8, one logical
+    interval ``[7:10]`` becomes exact fragments ``[7:8]`` and ``[8:10]``.
+    Processing them as successive envelopes avoids one cross-shard returned slice
+    without changing the logical interval.
+    """
+    _require_integer_in_range(chunk_rows, "chunk_rows", minimum=1, maximum=_INT64_MAX)
+    _require_integer_in_range(shard_rows, "shard_rows", minimum=1, maximum=_INT64_MAX)
+    if shard_rows % chunk_rows:
+        raise ValueError("`shard_rows` must be a multiple of `chunk_rows`.")
+    if not intervals:
+        return ()
+    if any(
+        not isinstance(interval, _ValueTileInterval)
+        or interval.selected_value_position < 0
+        or interval.value_id < 0
+        or interval.start < 0
+        or interval.start >= interval.stop
+        for interval in intervals
+    ):
+        raise ValueError("Catalog intervals must contain valid nonnegative half-open rows.")
+    if any(
+        current.selected_value_position <= previous.selected_value_position
+        or current.value_id <= previous.value_id
+        or current.start < previous.stop
+        for previous, current in pairwise(intervals)
+    ):
+        raise ValueError("Catalog intervals must follow selected-value and nonoverlapping row order.")
+
+    fragments: list[_ValueTileInterval] = []
+    for interval in intervals:
+        cursor = interval.start
+        while cursor < interval.stop:
+            shard_stop = ((cursor // shard_rows) + 1) * shard_rows
+            fragment_stop = min(interval.stop, shard_stop)
+            fragments.append(
+                _ValueTileInterval(
+                    selected_value_position=interval.selected_value_position,
+                    value_id=interval.value_id,
+                    start=cursor,
+                    stop=fragment_stop,
+                )
+            )
+            cursor = fragment_stop
+
+    block_stop = fragments[0].stop
+    block_shard = fragments[0].start // shard_rows
+    last_chunk = (block_stop - 1) // chunk_rows
+    block_intervals = [fragments[0]]
+    envelopes: list[_ValueTileCatalogEnvelope] = []
+    for fragment in fragments[1:]:
+        fragment_shard = fragment.start // shard_rows
+        first_chunk = fragment.start // chunk_rows
+        fragment_last_chunk = (fragment.stop - 1) // chunk_rows
+        if fragment_shard != block_shard or first_chunk > last_chunk + 1:
+            envelopes.append(
+                _ValueTileCatalogEnvelope(
+                    intervals=tuple(block_intervals),
+                )
+            )
+            block_stop = fragment.stop
+            block_shard = fragment_shard
+            last_chunk = fragment_last_chunk
+            block_intervals = [fragment]
+            continue
+        block_stop = max(block_stop, fragment.stop)
+        last_chunk = max(last_chunk, fragment_last_chunk)
+        block_intervals.append(fragment)
+    envelopes.append(
+        _ValueTileCatalogEnvelope(
+            intervals=tuple(block_intervals),
+        )
+    )
+    return tuple(envelopes)
 
 
 def _require_display_arrays(location: object, value_id: object) -> None:
