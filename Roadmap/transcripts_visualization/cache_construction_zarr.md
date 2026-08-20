@@ -1010,7 +1010,8 @@ The dependency sequence is:
 | Z7 | independent complete-generation validation | Z6 |
 | Z8 | guarded end-to-end build and publication | Z7 |
 | Z9 | acceptance reader and full-Xenium evaluation | Z8 |
-| Z10 | explicit architecture-adoption decision | Z9 |
+| Z10 | batched multi-value catalog lookup | Z9 |
+| Z11 | explicit architecture-adoption decision | Z10 |
 
 No slice depends on an adapted Parquet point writer or a compatibility reader.
 
@@ -4156,7 +4157,7 @@ generations. Z8 is a lifecycle coordinator over the already implemented Z1--Z7
 primitives; it does not introduce a new point format, sampler, catalog, or
 validation algorithm.
 
-Keep the builder private until Z10 decides whether to adopt this architecture.
+Keep the builder private until Z11 decides whether to adopt this architecture.
 Add:
 
 ```text
@@ -5127,7 +5128,7 @@ requiring a Parquet comparison run.
 If the evidence supports adoption, record the format and physical settings as
 the recommended Phase 2 input. If it does not, record the measured reason and
 recommend retaining the existing implementation. Z9 produces the evidence and
-recommendation; Z10 owns the explicit architecture-adoption decision and any
+recommendation; Z11 owns the explicit architecture-adoption decision and any
 follow-up archival or integration plan. Do not add a fallback path in either
 case.
 
@@ -5210,7 +5211,7 @@ The two-million-point bucket target remains the recommendation for this
 baseline. Store-open work was visible but practical: one application-cold
 selected request opened one bucket, and its repeat saved about 9 ms. The
 observed metadata and handle behavior does not justify paying for a second
-full-scale ten-million-point build before Z10. Inner-chunk amplification, not
+full-scale ten-million-point build before Z11. Inner-chunk amplification, not
 the number of bucket directories alone, dominates the smallest sparse reads;
 for example, a single selected row still decodes one 4,096-row inner chunk.
 
@@ -5219,7 +5220,7 @@ the builder completed with bounded memory, the published artifact reopened
 quickly, normal all-values access remained practical for representative tiles
 and viewports, sparse selection avoided unrelated point rows and point IDs, and
 LOD behavior remained truthful under both overview-budget overflow and sampled
-gene loss. Z10 still owns the explicit architecture-adoption decision.
+gene loss. Z11 still owns the explicit architecture-adoption decision.
 
 #### Exit criteria
 
@@ -5238,9 +5239,107 @@ gene loss. Z10 still owns the explicit architecture-adoption decision.
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
 - baseline and optional bucket-target evidence are isolated and reproducible;
-- one evidence-backed recommendation is ready for the explicit Z10 decision.
+- one evidence-backed recommendation is ready for the explicit Z11 decision.
 
-### Slice Z10: architecture-adoption decision
+### Slice Z10: batch and coalesce multi-value catalog lookup
+
+#### Goal
+
+Make selected-value planning scale with the compact catalog chunks touched,
+rather than issuing two Zarr reads for every `(level, value_id)` pair. Keep this
+physical lookup optimization separate from the product policy that decides
+whether one level may omit requested values.
+
+The current `_value_filtered_manifest()` loops over every requested value. For
+each nonempty value interval at each evaluated level it independently slices
+both `value_tiles/manifest_index` and `value_tiles/n_points`. A request for `G`
+values over `L` levels can therefore issue up to `2 * G * L` Zarr selections,
+even when many intervals occupy the same inner chunks. The retained Xenium
+generation demonstrated that this is acceptable for one value but not a
+scalable many-value query plan.
+
+#### Lookup plan
+
+For one level and one sorted unique `value_ids` request:
+
+1. use the resident `(L, G + 1)` `value_tiles/indptr` array to resolve every
+   requested value to its half-open catalog interval;
+2. retain the requested-value position with each nonempty interval so results
+   remain aligned with caller order;
+3. map the intervals to inner catalog chunks, deduplicate shared chunks, and
+   coalesce overlapping or adjacent chunk work into bounded read blocks;
+4. read each block once from `value_tiles/manifest_index` and once from
+   `value_tiles/n_points`;
+5. recover each value's exact interval from the in-memory blocks, intersect its
+   ordered manifest indexes with the ordered visible manifest rows, and derive
+   its visible count and positive tiles;
+6. process large dense selections in bounded sequential blocks rather than
+   materializing a complete cache-wide `value_tiles` array.
+
+Do not merge across large unselected gaps merely to reduce the number of Zarr
+calls. The read planner must balance call count against decoded and materialized
+row amplification. Reuse the established minimal-envelope principle: values
+sharing a touched chunk may share one read, while widely separated chunks
+remain separate or are handled in bounded consecutive runs.
+
+#### Separate result needs
+
+Expose two internal consumers over the same batched lookup primitive:
+
+- level selection needs only per-requested-value visible counts and the number
+  of positive visible tiles;
+- viewport reading additionally needs the selected value IDs present in every
+  positive manifest row.
+
+The summary path must not build the per-manifest-row dictionary or thousands of
+small value-ID arrays. The viewport path may build that mapping after the
+batched catalog records are in memory. This separation changes neither the
+persisted format nor point-payload reading.
+
+#### Correctness and resource constraints
+
+- preserve sorted unique input validation and caller-order count alignment;
+- preserve exact half-open `indptr` semantics, manifest-level bounds, positive
+  counts, and strictly increasing manifest indexes within every value interval;
+- produce the same logical counts and tile/value mapping as the current
+  per-value implementation for any fixed level-selection policy;
+- do not open bucket stores or point arrays during catalog-only LOD planning;
+- keep temporary memory explicitly bounded for dense value selections;
+- do not add an unbounded decoded catalog cache as part of this slice;
+- do not change the Zarr catalog schema or chunk dimensions in this slice.
+
+#### Focused tests
+
+Use real sharded Zarr catalog arrays and cover:
+
+- one value, several adjacent values, and widely separated values;
+- several value intervals sharing one inner chunk;
+- intervals spanning adjacent and nonadjacent chunks;
+- empty value intervals and values with no visible manifest rows;
+- multi-value counts and per-tile mappings matching the existing logical
+  result;
+- bounded processing of a dense selection;
+- proof at the read-plan or instrumented-store boundary that shared catalog
+  chunks are not independently fetched once per selected value.
+
+#### Xenium evaluation
+
+Measure full- and partial-viewport planning for one, ten, one hundred, and all
+available values. Record latency, peak temporary memory, requested intervals,
+coalesced read blocks, and touched inner chunks. This is a single current-tree
+evaluation rather than a strict pass/fail benchmark. Retain the current catalog
+format unless the measurements separately justify a future format revision.
+
+#### Exit criteria
+
+- many-value lookup no longer performs two independent Zarr selections per
+  nonempty `(level, value_id)` interval;
+- summary-only level planning avoids constructing the viewport tile mapping;
+- focused tests prove logical equivalence and bounded behavior;
+- the full-Xenium evaluation documents whether many-value planning is practical
+  for viewer integration.
+
+### Slice Z11: architecture-adoption decision
 
 #### Goal
 
