@@ -4703,9 +4703,13 @@ Viewport methods return one immutable `_ViewportReadResult` containing the
 selected level and the tuple of positive `_TileReadResult` objects in manifest
 order. `select_level()` returns an immutable `_LevelSelection` containing the
 chosen level, estimated point count, positive visible-tile count, and
-`within_budget` flag rather than returning an unexplained integer. The LOD
-evidence is part of that decision contract; physical-read diagnostics are not
-part of tile or viewport payloads.
+`within_budget` flag rather than returning an unexplained integer. For a
+value-filtered request it also returns read-only sorted `omitted_value_ids`:
+requested values with a positive Exact visible count and zero count at the
+selected level. The field is an empty `uint32` array when none were omitted and
+`None` when no value filter was supplied. The LOD evidence is part of that
+decision contract; physical-read diagnostics are not part of tile or viewport
+payloads.
 
 #### Reader operations
 
@@ -4789,8 +4793,8 @@ tile with none of the selected values returns `None`. Viewport reads return
 positive tile results in deterministic manifest order `(tile_y, tile_x)` and
 never create placeholder results for empty grid cells. They materialize only
 the selected level and viewport, never a complete cache level. The caller uses
-`select_level()` before normal viewport rendering and follows the all-values or
-selection-preserving policy below; explicit-level methods remain available for
+`select_level()` before normal viewport rendering and follows the budget-first
+policy below; explicit-level methods remain available for
 correctness tests and physical benchmarks.
 
 A viewport selects logical tiles whose half-open spatial extent intersects the
@@ -4838,45 +4842,39 @@ the caller's effective budget. If its estimate were 18,000 instead,
 `within_budget` would be `True`. Z9 reports this state truthfully; it does not
 thin the 82,000 rows at read time.
 
-The last fallback applies only to all-values selection. Value-neutral sampling
-does not preserve every gene, so a zero count at a sampled level must not be
-treated as a successful budget fit when the requested value is present at
-Exact. Otherwise a gene that exceeds the budget at Exact but disappears during
-sampling would incorrectly select the first empty coarser level and render as
-if it were absent from the source.
+Use the same budget-first policy for all-values and value-filtered requests:
 
-For a value-filtered request, first calculate the per-value visible-tile count
-at Exact. Requested values with a positive Exact count are the active values for
-this decision. Then:
-
-1. if no requested value is active, select Exact with an empty result and
+1. evaluate serialized levels incrementally from Exact toward the coarsest
+   level;
+2. for a value-filtered request, sum visible points only for requested values
+   represented at that level;
+3. return the first level whose estimate is at most `point_budget`, with
    `within_budget = True`;
-2. consider a sampled level selection-preserving only when every active value
-   has a positive count at that level;
-3. choose the finest selection-preserving level whose summed selected count is
-   at most `point_budget` and set `within_budget = True`;
-4. if no selection-preserving level fits, choose the coarsest
-   selection-preserving level and set `within_budget = False`.
+4. do not make a sampled level ineligible because it omits one or more requested
+   values;
+5. if no serialized level fits, return the coarsest level with
+   `within_budget = False`.
 
-Exact is always selection-preserving for the active values, so the fourth case
-always has a defined fallback. It may exceed `point_budget`, but it must not
-silently substitute an empty sampled level. `_LevelSelection.within_budget`
-makes this exceptional result explicit to the caller and benchmark. A later
-viewer integration may add deterministic query-time decimation when this
-fallback proves too large; Z9 does not add that separate sampling path.
+This makes the render budget authoritative for a multi-value request: one rare
+value lost during sampling cannot force every other selected value back to
+Exact. The accepted trade-off is that a coarse LOD may omit selected values.
+For a rare value selected alone, Exact still wins whenever its visible Exact
+count fits the budget. If a sampled level has zero rows for every requested
+value, its zero estimate is a valid fit; level selection does not replace it
+with an unbounded Exact read.
 
-Evaluate these candidates incrementally from Exact toward the coarsest level.
-Return as soon as the first selection-preserving candidate fits the budget, so
-the ordinary path does not slice `value_tiles` or construct per-tile value
-selections for levels that cannot affect the answer. Continue through all
-remaining levels only when no fit has yet been found, because a value absent
-from one sampled level may occur again in a coarser tile footprint; this full
-scan is also required to identify the coarsest selection-preserving fallback.
+Report that trade-off without changing eligibility. `_LevelSelection` stores
+the sorted IDs that were visible at Exact but have zero visible count at the
+selected level. The viewer can derive their count or map them through the
+canonical value table for optional messaging. Values already absent from the
+Exact viewport are not reported as LOD omissions, and computing this evidence
+must not trigger additional catalog reads.
 
-For multiple requested values, selection preservation is per value rather than
-merely requiring a positive combined count. A sampled level containing Gene B
-but having lost active Gene A is ineligible even though its summed selected
-count is nonzero.
+Return as soon as the first fit is known, so the ordinary path does not slice
+`value_tiles` or construct per-tile value selections for coarser levels that
+cannot affect the answer. A value count need not be monotonic across levels:
+complete coarser tiles have larger spatial footprints and may include an
+existing requested value outside the Exact tiles intersecting the viewport.
 
 Level selection reads only catalog metadata and must not open a bucket or point
 payload array. Exact remains eligible when its visible count fits; Bridge and
@@ -4988,12 +4986,10 @@ Add focused real-Zarr tests for:
   no-level-fits LOD decisions from catalog counts only;
 - an all-values `point_budget` below the terminal overview count selecting that
   terminal level with `within_budget = False` rather than claiming a fit;
-- a selected value that exceeds the budget at Exact and disappears at sampled
-  levels, including the explicit coarsest preserving `within_budget = False`
-  fallback;
-- multiple requested values where one active value disappears while another
-  remains, proving that a positive combined count does not make that level
-  eligible;
+- a selected value that exceeds the budget at Exact and disappears at the next
+  sampled level, proving that the zero-count sampled level is a valid fit;
+- multiple requested values where one disappears while another remains,
+  proving that represented values alone determine the level estimate;
 - requested values absent at Exact selecting an empty Exact result rather than
   points introduced only by a coarser tile's larger intersecting footprint;
 - exact returned rows for complete, selected, coalesced, and partial-final-chunk
@@ -5061,10 +5057,10 @@ Bridge, Spatial, and overview read behavior. Include a rare-distributed value
 that is positive in many visible tiles so the limits of `value_tiles` pruning
 are measured rather than inferred. Also identify at least one value/viewport
 combination that disappears at a sampled level, when present in the retained
-generation, and verify that level selection does not treat its zero count as a
-successful fit. If the dataset contains no such combination, record that fact
-rather than manufacturing one for the full-scale timing run; the focused test
-still freezes the behavior.
+generation, and verify that level selection treats its zero count according to
+the budget-first policy. If the dataset contains no such combination, record
+that fact rather than manufacturing one for the full-scale timing run; the
+focused test still freezes the behavior.
 
 Exercise several caller-supplied `point_budget` values below and at the retained
 100,000-point overview limit, including budgets derived from documented example
@@ -5201,11 +5197,12 @@ common selected value it chose L4 with 78,789 estimated points; median,
 rare-distributed, and rare-localized examples fit at Exact.
 
 The generation contains sampled value loss. `FGF9` (`value_id = 1591`) has
-per-level counts `[11627, 1011, 552, 285, 154, 76, 43, 22, 0]`. With a runtime
-budget of one point, selection rejected the empty terminal overview, returned
-the coarsest preserving level L7 with 22 points, and set
-`within_budget = False`. This confirms the selection-preservation policy on the
-real Xenium catalog rather than only in a focused fixture.
+per-level counts `[11627, 1011, 552, 285, 154, 76, 43, 22, 0]`. The original Z9
+run used the earlier value-preserving policy and returned L7 for a one-point
+runtime budget. A later multi-value design review made the budget authoritative:
+the current policy selects the empty terminal L8 because its zero represented
+rows fit. This deliberate revision prevents one omitted rare value from forcing
+all other values in a large selection into an unbounded finer-level read.
 
 The two-million-point bucket target remains the recommendation for this
 baseline. Store-open work was visible but practical: one application-cold
@@ -5218,9 +5215,9 @@ for example, a single selected row still decodes one 4,096-row inner chunk.
 These results satisfy the Z9 engineering gate without fixed latency thresholds:
 the builder completed with bounded memory, the published artifact reopened
 quickly, normal all-values access remained practical for representative tiles
-and viewports, sparse selection avoided unrelated point rows and point IDs, and
-LOD behavior remained truthful under both overview-budget overflow and sampled
-gene loss. Z11 still owns the explicit architecture-adoption decision.
+and viewports, and sparse selection avoided unrelated point rows and point IDs.
+The subsequent budget-first selected-value revision is frozen by focused tests.
+Z11 still owns the explicit architecture-adoption decision.
 
 #### Exit criteria
 
@@ -5232,9 +5229,9 @@ gene loss. Z11 still owns the explicit architecture-adoption decision.
 - acceptance reads demonstrably avoid point-ID payload access;
 - catalog-only LOD selection is correct for all-values and selected-value
   requests;
-- value-filtered LOD never treats loss of an Exact-present requested value as a
-  successful zero-count budget fit, and reports any preserving over-budget
-  fallback explicitly;
+- value-filtered LOD treats only represented selected rows as budget consumers,
+  permits sampled value loss, and reports a coarsest over-budget fallback only
+  when no serialized level fits;
 - direct sparse-range lookup is demonstrated at full scale;
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
