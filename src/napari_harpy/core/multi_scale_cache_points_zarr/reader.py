@@ -319,7 +319,62 @@ class _PointsCacheReader:
         *,
         value_ids: npt.NDArray[np.uint32] | None = None,
     ) -> _LevelSelection:
-        """Choose a level using only resident and sliced catalog metadata."""
+        """Choose the finest eligible visible level within the point budget.
+
+        Parameters
+        ----------
+        viewport
+            Intrinsic-coordinate viewport used to identify intersecting tiles.
+        point_budget
+            Maximum estimated visible point count for a successful selection.
+        value_ids
+            Optional sorted unique value IDs. When omitted, every level is
+            eligible and the first level within budget is selected.
+
+        Returns
+        -------
+        _LevelSelection
+            Selected level, its catalog-derived visible point and positive-tile
+            estimates, and whether the estimate satisfies ``point_budget``.
+
+        Notes
+        -----
+        For a value-filtered request, Exact defines the active requested values:
+        those with a positive visible count at Exact. A sampled level is eligible
+        only when every active value remains present. Return the finest eligible
+        level within budget. If none fits, return the coarsest eligible level with
+        ``within_budget=False``. If no requested value is active at Exact, return
+        an empty Exact selection with ``within_budget=True``.
+
+        Requested values absent from the Exact tiles intersecting the viewport
+        are not active, even if they occur in a larger coarser tile intersecting
+        the same viewport. For example, along one spatial axis::
+
+            Exact tiles, size 10
+
+            viewport [0, 5)
+            [--------)
+            +----------+----------+
+            | tile 0   | tile 1   |
+            | no A     | A exists |
+            +----------+----------+
+            0         10         20
+
+            coarser tile, size 20
+
+            viewport [0, 5)
+            [--------)
+            +---------------------+
+            | coarser tile        |
+            | includes sampled A  |
+            +---------------------+
+            0                    20
+
+        The pyramid has not created A. The complete coarser tile merely includes
+        an existing A outside the Exact visible-tile footprint. Level selection
+        reads catalog metadata only; it does not open bucket stores or point
+        payloads.
+        """
         _require_integer_in_range(point_budget, "point_budget", minimum=1, maximum=_INT64_MAX)
         value_ids = self._require_value_ids(value_ids)
         attributes = self._attributes_or_raise()
@@ -340,7 +395,8 @@ class _PointsCacheReader:
                     return candidate
             return candidates[-1]
 
-        per_level: list[tuple[_LevelSelection, npt.NDArray[np.uint64]]] = []
+        active_values: npt.NDArray[np.bool_] | None = None
+        preserving_fallback: _LevelSelection | None = None
         for metadata in attributes.levels:
             rows = self._visible_manifest_rows(metadata.level, viewport)
             value_ids_by_manifest_row, point_count_by_value = self._value_filtered_manifest(
@@ -349,32 +405,35 @@ class _PointsCacheReader:
                 value_ids,
             )
             point_count = int(point_count_by_value.sum(dtype=np.uint64))
-            per_level.append(
-                (
-                    _LevelSelection(
-                        level=metadata.level,
-                        estimated_point_count=point_count,
-                        positive_visible_tile_count=len(value_ids_by_manifest_row),
-                        within_budget=point_count <= point_budget,
-                    ),
-                    point_count_by_value,
-                )
+            candidate = _LevelSelection(
+                level=metadata.level,
+                estimated_point_count=point_count,
+                positive_visible_tile_count=len(value_ids_by_manifest_row),
+                within_budget=point_count <= point_budget,
             )
 
-        active = per_level[0][1] > 0
-        if not bool(active.any()):
-            return _LevelSelection(0, 0, 0, True)
-        preserving: list[_LevelSelection] = []
-        for candidate, value_counts in per_level:
-            if bool((value_counts[active] > 0).all()):
-                preserving.append(candidate)
-                if candidate.within_budget:
+            if active_values is None:
+                # Exact defines which requested values are present in the
+                # source viewport; sampled levels cannot introduce new active
+                # values into the selection decision.
+                active_values = point_count_by_value > 0
+                if not bool(active_values.any()):
                     return candidate
-        fallback = preserving[-1]
+
+            if not bool((point_count_by_value[active_values] > 0).all()):
+                continue
+            preserving_fallback = candidate
+            if candidate.within_budget:
+                # Avoid slicing value_tiles and constructing tile selections
+                # for coarser levels once the finest valid fit is known.
+                return candidate
+
+        if preserving_fallback is None:
+            raise RuntimeError("Exact did not preserve its own active selected values.")
         return _LevelSelection(
-            level=fallback.level,
-            estimated_point_count=fallback.estimated_point_count,
-            positive_visible_tile_count=fallback.positive_visible_tile_count,
+            level=preserving_fallback.level,
+            estimated_point_count=preserving_fallback.estimated_point_count,
+            positive_visible_tile_count=preserving_fallback.positive_visible_tile_count,
             within_budget=False,
         )
 
