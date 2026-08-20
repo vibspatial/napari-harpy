@@ -133,12 +133,30 @@ class _ViewportReadResult:
 
 @dataclass(frozen=True)
 class _LevelSelection:
-    """Return one catalog-only LOD decision together with its evidence."""
+    """Return one catalog-only LOD decision together with its evidence.
+
+    Parameters
+    ----------
+    level
+        Selected serialized cache level.
+    estimated_point_count
+        Complete positive-tile rows estimated for the request at ``level``.
+    positive_visible_tile_count
+        Intersecting manifest tiles contributing at least one estimated row.
+    within_budget
+        Whether ``estimated_point_count`` satisfies the runtime point budget.
+    omitted_value_ids
+        For a value-filtered request, sorted IDs that had a positive Exact
+        visible count but zero visible count at ``level``. An empty array means
+        no Exact-visible selected value was omitted. ``None`` means no value
+        filter was supplied.
+    """
 
     level: int
     estimated_point_count: int
     positive_visible_tile_count: int
     within_budget: bool
+    omitted_value_ids: npt.NDArray[np.uint32] | None
 
     def __post_init__(self) -> None:
         _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
@@ -156,6 +174,19 @@ class _LevelSelection:
             raise ValueError("Estimated points and positive tiles must be empty together.")
         if not isinstance(self.within_budget, bool):
             raise ValueError("`within_budget` must be bool.")
+        if self.omitted_value_ids is None:
+            return
+        if (
+            not isinstance(self.omitted_value_ids, np.ndarray)
+            or self.omitted_value_ids.ndim != 1
+            or self.omitted_value_ids.dtype != np.dtype(np.uint32)
+        ):
+            raise ValueError("`omitted_value_ids` must be a one-dimensional uint32 array or None.")
+        if bool((self.omitted_value_ids[1:] <= self.omitted_value_ids[:-1]).any()):
+            raise ValueError("`omitted_value_ids` must be strictly increasing.")
+        omitted_value_ids = np.ascontiguousarray(self.omitted_value_ids).view()
+        omitted_value_ids.flags.writeable = False
+        object.__setattr__(self, "omitted_value_ids", omitted_value_ids)
 
 
 class _PointsCacheReader:
@@ -328,27 +359,28 @@ class _PointsCacheReader:
         point_budget
             Maximum estimated visible point count for a successful selection.
         value_ids
-            Optional sorted unique value IDs. When omitted, every level is
-            eligible and the first level within budget is selected.
+            Optional sorted unique value IDs. When supplied, only represented
+            requested values contribute to each level's estimate; missing
+            values do not make that level ineligible.
 
         Returns
         -------
         _LevelSelection
             Selected level, its catalog-derived visible point and positive-tile
-            estimates, and whether the estimate satisfies ``point_budget``.
+            estimates, whether the estimate satisfies ``point_budget``, and any
+            Exact-visible selected value IDs omitted at that level.
 
         Notes
         -----
-        For a value-filtered request, Exact defines the active requested values:
-        those with a positive visible count at Exact. A sampled level is eligible
-        only when every active value remains present. Return the finest eligible
-        level within budget. If none fits, return the coarsest eligible level with
-        ``within_budget=False``. If no requested value is active at Exact, return
-        an empty Exact selection with ``within_budget=True``.
+        Evaluate serialized levels from Exact toward the coarsest level. At each
+        level, sum visible points for the requested values represented there and
+        return the first estimate at most ``point_budget``. Sampling may omit one
+        or more requested values without making the level ineligible. If no level
+        fits, return the coarsest level with ``within_budget=False``.
 
-        Requested values absent from the Exact tiles intersecting the viewport
-        are not active, even if they occur in a larger coarser tile intersecting
-        the same viewport. For example, along one spatial axis::
+        A requested value can be absent from the Exact tiles intersecting the
+        viewport yet occur in a larger coarser tile intersecting the same
+        viewport. For example, along one spatial axis::
 
             Exact tiles, size 10
 
@@ -371,7 +403,8 @@ class _PointsCacheReader:
             0                    20
 
         The pyramid has not created A. The complete coarser tile merely includes
-        an existing A outside the Exact visible-tile footprint. Level selection
+        an existing A outside the Exact visible-tile footprint. Consequently,
+        selected counts need not change monotonically with level. Level selection
         reads catalog metadata only; it does not open bucket stores or point
         payloads.
         """
@@ -389,14 +422,17 @@ class _PointsCacheReader:
                     estimated_point_count=point_count,
                     positive_visible_tile_count=len(rows),
                     within_budget=point_count <= point_budget,
+                    omitted_value_ids=None,
                 )
                 candidates.append(candidate)
                 if candidate.within_budget:
                     return candidate
             return candidates[-1]
 
-        active_values: npt.NDArray[np.bool_] | None = None
-        preserving_fallback: _LevelSelection | None = None
+        exact_present_values: npt.NDArray[np.bool_] | None = None
+        # Retain the most recently evaluated candidate. If no level fits, the
+        # completed loop leaves this pointing to the coarsest serialized level.
+        fallback: _LevelSelection | None = None
         for metadata in attributes.levels:
             rows = self._visible_manifest_rows(metadata.level, viewport)
             value_ids_by_manifest_row, point_count_by_value = self._value_filtered_manifest(
@@ -405,37 +441,25 @@ class _PointsCacheReader:
                 value_ids,
             )
             point_count = int(point_count_by_value.sum(dtype=np.uint64))
+            if exact_present_values is None:
+                exact_present_values = point_count_by_value > 0
+            omitted_value_ids = np.ascontiguousarray(value_ids[exact_present_values & (point_count_by_value == 0)])
             candidate = _LevelSelection(
                 level=metadata.level,
                 estimated_point_count=point_count,
                 positive_visible_tile_count=len(value_ids_by_manifest_row),
                 within_budget=point_count <= point_budget,
+                omitted_value_ids=omitted_value_ids,
             )
-
-            if active_values is None:
-                # Exact defines which requested values are present in the
-                # source viewport; sampled levels cannot introduce new active
-                # values into the selection decision.
-                active_values = point_count_by_value > 0
-                if not bool(active_values.any()):
-                    return candidate
-
-            if not bool((point_count_by_value[active_values] > 0).all()):
-                continue
-            preserving_fallback = candidate
+            fallback = candidate
             if candidate.within_budget:
                 # Avoid slicing value_tiles and constructing tile selections
                 # for coarser levels once the finest valid fit is known.
                 return candidate
 
-        if preserving_fallback is None:
-            raise RuntimeError("Exact did not preserve its own active selected values.")
-        return _LevelSelection(
-            level=preserving_fallback.level,
-            estimated_point_count=preserving_fallback.estimated_point_count,
-            positive_visible_tile_count=preserving_fallback.positive_visible_tile_count,
-            within_budget=False,
-        )
+        if fallback is None:
+            raise RuntimeError("Cache has no serialized levels.")
+        return fallback
 
     def _load_runtime_indexes(self) -> None:
         """Materialize the compact catalog state needed for runtime planning.
