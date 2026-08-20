@@ -499,7 +499,7 @@ def _assemble_coarser_candidates(
     cursor = 0
     for descriptor in coarser_tile.finer_descriptors:
         reader = reader_cache.get(level=descriptor.level, bucket_id=descriptor.bucket_id)
-        payload = reader.read_complete(descriptor)
+        payload = reader.read_construction_payload(descriptor)
         rebased_x, rebased_y = _rebase_finer_coordinates(
             payload,
             finer_tile_x=descriptor.tile_x,

@@ -251,7 +251,7 @@ def _write_bridge_bucket(
     with _BucketWriter(staging_root, bucket_plan) as writer:
         for descriptor, planned_tile in zip(exact_descriptors, planned_tiles, strict=True):
             reader = reader_cache.get(level=descriptor.level, bucket_id=descriptor.bucket_id)
-            candidate = reader.read_complete(descriptor)
+            candidate = reader.read_construction_payload(descriptor)
             selected_indices = _select_sampled_tile_indices(
                 candidate.x_rel,
                 candidate.y_rel,
