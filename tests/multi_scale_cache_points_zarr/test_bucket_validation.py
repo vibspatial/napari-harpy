@@ -69,7 +69,7 @@ def test_all_zero_inner_chunks_are_physical_and_validate_strictly(tmp_path: Path
     actual = _validate_bucket(tmp_path, level=0, bucket_id=0)
     assert actual == expected
     with _BucketReader(tmp_path, level=0, bucket_id=0) as reader:
-        payload = reader.read_complete(expected.tile_descriptors[0])
+        payload = reader.read_construction_payload(expected.tile_descriptors[0])
     assert not payload.x_rel.any()
     assert not payload.value_id.any()
     assert not payload.point_id.any()
@@ -144,11 +144,7 @@ def test_validator_rejects_parallel_array_with_misaligned_chunk_rows(tmp_path: P
 
 def test_missing_shard_fails_strict_reader_and_validator(tmp_path: Path) -> None:
     plan, result = _build_bucket(tmp_path, all_zero=True)
-    shard_files = [
-        path
-        for path in (tmp_path / plan.bucket_path / "location" / "c").rglob("*")
-        if path.is_file()
-    ]
+    shard_files = [path for path in (tmp_path / plan.bucket_path / "location" / "c").rglob("*") if path.is_file()]
     assert shard_files
     shard_files[0].unlink()
 
@@ -156,7 +152,7 @@ def test_missing_shard_fails_strict_reader_and_validator(tmp_path: Path) -> None
         _validate_bucket(tmp_path, level=0, bucket_id=0)
     with _BucketReader(tmp_path, level=0, bucket_id=0) as reader:
         with pytest.raises(Exception, match="chunk|Chunk|shard|Shard"):
-            reader.read_complete(result.tile_descriptors[0])
+            reader.read_construction_payload(result.tile_descriptors[0])
 
 
 def test_validator_rejects_wrong_requested_identity_and_missing_bucket(tmp_path: Path) -> None:
