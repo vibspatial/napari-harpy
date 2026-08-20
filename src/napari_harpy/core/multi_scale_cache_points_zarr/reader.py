@@ -376,8 +376,13 @@ class _PointsCacheReader:
         coarsest level. At each level, sum visible points for the requested values
         represented there. Return the first estimate at most ``point_budget``;
         sampled omission of a requested value does not make a level ineligible.
-        If no level fits, return the coarsest level with
-        ``within_budget=False``.
+        This is deliberate: if every Exact-visible value had to survive, one rare
+        value lost during sampling could invalidate every coarser level and force
+        the entire multi-value request back to Exact. That would make the render
+        budget ineffective and could require reading millions of points merely
+        to retain one rare value. The selected level therefore follows the budget,
+        while ``omitted_value_ids`` reports the values sacrificed at that LOD. If
+        no level fits, return the coarsest level with ``within_budget=False``.
 
         **Why a value count can reappear at a coarser level.** Level estimates
         count complete logical tiles that intersect the viewport; they do not
