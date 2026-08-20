@@ -5264,7 +5264,7 @@ For one level and one sorted unique `value_ids` request:
 2. retain the requested-value position with each nonempty interval so results
    remain aligned with caller order;
 3. map the intervals to inner catalog chunks, deduplicate shared chunks, and
-   coalesce overlapping or adjacent chunk work into bounded read blocks;
+   coalesce overlapping or adjacent chunk work into shard-bounded read blocks;
 4. read each block once from `value_tiles/manifest_index` and once from
    `value_tiles/n_points`;
 5. recover each value's exact interval from the in-memory blocks, intersect its
@@ -5272,6 +5272,25 @@ For one level and one sorted unique `value_ids` request:
    its visible count and positive tiles;
 6. process large dense selections in bounded sequential blocks rather than
    materializing a complete cache-wide `value_tiles` array.
+
+Use the physical catalog shard boundary as the explicit maximum read-block
+boundary. A block may combine connected touched inner chunks only while they
+remain inside one `value_tiles` shard. Split an interval or connected chunk run
+that crosses a shard boundary and recover the logical value interval across the
+successive blocks. Do not introduce a separate runtime block-size setting.
+
+With the current defaults, one maximum block reads at most 1,048,576 rows from
+each of two `uint64` arrays:
+
+```text
+1,048,576 rows * 8 bytes * 2 arrays = 16 MiB
+```
+
+This is the maximum uncompressed payload of the two catalog result arrays for
+one block, not a claim about total process RSS: Zarr decoding, masks, exact
+interval fragments, and consumer output require additional bounded or
+output-proportional memory. Both `value_tiles` arrays have already passed strict
+layout validation and share the same inner-chunk and shard row boundaries.
 
 Do not merge across large unselected gaps merely to reduce the number of Zarr
 calls. The read planner must balance call count against decoded and materialized
