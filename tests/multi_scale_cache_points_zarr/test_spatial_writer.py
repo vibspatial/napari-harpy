@@ -169,7 +169,7 @@ def _payloads_by_tile(result: _LevelWriteResult, staging_root: Path) -> dict[tup
             if reader is None:
                 reader = _BucketReader(staging_root, level=descriptor.level, bucket_id=descriptor.bucket_id)
                 readers[descriptor.bucket_id] = reader.__enter__()
-            payloads[(descriptor.tile_x, descriptor.tile_y)] = reader.read_complete(descriptor)
+            payloads[(descriptor.tile_x, descriptor.tile_y)] = reader.read_construction_payload(descriptor)
     finally:
         for reader in readers.values():
             reader.__exit__(None, None, None)
@@ -495,7 +495,7 @@ def test_spatial_failure_removes_active_bucket_and_preserves_bridge(
     if failure == "read":
         monkeypatch.setattr(
             _BucketReader,
-            "read_complete",
+            "read_construction_payload",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected read failure")),
         )
     elif failure == "rebase":

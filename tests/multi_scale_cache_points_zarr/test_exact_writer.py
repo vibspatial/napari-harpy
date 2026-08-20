@@ -124,7 +124,7 @@ def _decoded_points(
     for bucket in result.buckets:
         with _BucketReader(staging, level=0, bucket_id=bucket.bucket_id) as reader:
             for descriptor in bucket.tile_descriptors:
-                payload = reader.read_complete(descriptor)
+                payload = reader.read_construction_payload(descriptor)
                 for index in range(payload.n_points):
                     rows.append(
                         {
@@ -236,10 +236,10 @@ def test_exact_writer_builds_deterministic_validated_zarr_from_row_groups(
         assert _validate_bucket(first_staging, level=0, bucket_id=bucket.bucket_id) == bucket
         with _BucketReader(first_staging, level=0, bucket_id=bucket.bucket_id) as reader:
             for descriptor in bucket.tile_descriptors:
-                complete = reader.read_complete(descriptor)
+                complete = reader.read_construction_payload(descriptor)
                 order = np.lexsort((complete.point_id, complete.value_id))
                 np.testing.assert_array_equal(order, np.arange(complete.n_points))
-                selected = reader.read_selected(
+                selected = reader.read_display_payload(
                     descriptor,
                     np.array([expected_values["A"]], dtype=np.uint32),
                 )

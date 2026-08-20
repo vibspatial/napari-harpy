@@ -36,12 +36,12 @@ def _build_bucket(root: Path, *, level: int, bucket_id: int, tile_x: int) -> _Ti
 
 
 def _assert_open(reader: _BucketReader, descriptor: _TileDescriptor) -> None:
-    assert reader.read_complete(descriptor).n_points == descriptor.n_points
+    assert reader.read_construction_payload(descriptor).n_points == descriptor.n_points
 
 
 def _assert_closed(reader: _BucketReader, descriptor: _TileDescriptor) -> None:
     with pytest.raises(RuntimeError, match="not open"):
-        reader.read_complete(descriptor)
+        reader.read_construction_payload(descriptor)
 
 
 def test_reader_cache_reuses_hits_and_evicts_least_recently_used(tmp_path: Path) -> None:
