@@ -1682,17 +1682,19 @@ array handles:
 
 ```text
 with _BucketReader(cache_root, level, bucket_id) as reader:
-    complete = reader.read_complete(descriptor)
-    selected = reader.read_selected(descriptor, selected_value_ids)
+    construction = reader.read_construction_payload(descriptor)
+    selected = reader.read_display_payload(descriptor, selected_value_ids)
 ```
 
 Both methods verify descriptor bucket identity, bucket-local index, stored tile
 coordinates, and descriptor count before reading point data. Calls after close
 fail.
 
-`read_complete` resolves `tile_offset[i:i+2]` and returns an exact
-`_PointPayload`. `read_selected` requires a nonempty, one-dimensional,
-strictly increasing unique `uint32` ID array and performs:
+`read_construction_payload` resolves `tile_offset[i:i+2]` and returns an exact
+construction `_PointPayload` including `point_id`. `read_display_payload` reads
+either all display rows when value IDs are `None` or a nonempty,
+one-dimensional, strictly increasing unique `uint32` selection. Its selected
+path performs:
 
 ```text
 tile_indptr[i:i+2]
@@ -1705,12 +1707,12 @@ tile_indptr[i:i+2]
 ```
 
 It does not scan the tile's point-level `value_id` slice. It returns `None` when
-no requested value is present because `_PointPayload` deliberately cannot be
-empty. Otherwise it returns a complete payload including `point_id`. Splitting
-the stored `(N, 2)` `location` slice into contiguous `x_rel` and `y_rel` arrays
-is an accepted Z2 conversion cost and is measured rather than optimized now.
-The inner chunk remains the selected-read granularity even though several
-chunks share one physical shard.
+no requested value is present and otherwise returns only aligned `location` and
+point-level `value_id` arrays. Visualization never slices or decodes `point_id`.
+Splitting the stored `(N, 2)` `location`
+slice into contiguous `x_rel` and `y_rel` arrays remains a construction-only
+conversion in `read_construction_payload`. The inner chunk remains the selected-read
+granularity even though several chunks share one physical shard.
 
 #### Independent bucket validation
 
@@ -2599,7 +2601,7 @@ bounded reader-lifetime policy for immediate-finer spatial reads.
 For every Exact descriptor in the current Bridge bucket:
 
 1. obtain its Exact bucket reader from the bounded cache;
-2. call `read_complete(descriptor)` exactly once;
+2. call `read_construction_payload(descriptor)` exactly once;
 3. pass only `x_rel`, `y_rel`, and `point_id` to the fresh sampler with Bridge's
    level, unchanged tile coordinates, unchanged tile size, and capacity;
 4. call `_PointPayload.take(selected_indices)` so all four fields remain
@@ -2900,7 +2902,7 @@ For each parent tile:
 
 1. acquire each contributor's reader from the current level-scoped
    `_BucketReaderCache`;
-2. call `read_complete(descriptor)` once for each of its one through four
+2. call `read_construction_payload(descriptor)` once for each of its one through four
    contributors;
 3. rebase every contributor into the shared coarser-relative frame;
 4. concatenate the aligned fields in deterministic finer-tile order;
@@ -4501,8 +4503,9 @@ may be tested independently with small completed directory trees.
 
 ### Slice Z9: implement the acceptance reader and Xenium evaluation
 
-**Status:** implementation specifications ready; reader implementation and the
-full-Xenium acceptance gate remain pending.
+**Status:** implemented and evaluated on the full 136,578,750-point Xenium
+dataset on 2026-08-19. The retained generation and machine-readable report are
+listed under **Gate Z9 results** below.
 
 #### Goal
 
@@ -4677,7 +4680,6 @@ Return one immutable `_TileReadResult` per positive tile. It contains:
 level, tile_x, tile_y, tile_size
 location       (N, 2) float32, stored tile-relative (x, y) coordinates
 value_id       (N,)   uint32
-statistics     immutable per-tile read accounting
 ```
 
 Arrays are aligned, C-contiguous, read-only, and nonempty. Tile identity and the
@@ -4697,13 +4699,12 @@ slice or decode a `point_id` payload chunk. Construction, validation, and opt-in
 diagnostics continue to use the existing mandatory-ID bucket-reader methods.
 
 Viewport methods return one immutable `_ViewportReadResult` containing the
-selected level, the tuple of positive `_TileReadResult` objects in manifest
-order, and one aggregate `_ReadStatistics`. `select_level()` returns an
-immutable `_LevelSelection` containing the chosen level, estimated point count,
-positive visible-tile count, and `within_budget` flag rather than returning an
-unexplained integer. These small wrappers keep payload data and the evidence
-used for LOD and benchmark accounting together without mutable reader-global
-“last request” state.
+selected level and the tuple of positive `_TileReadResult` objects in manifest
+order. `select_level()` returns an immutable `_LevelSelection` containing the
+chosen level, estimated point count, positive visible-tile count, and
+`within_budget` flag rather than returning an unexplained integer. The LOD
+evidence is part of that decision contract; physical-read diagnostics are not
+part of tile or viewport payloads.
 
 #### Reader operations
 
@@ -4725,11 +4726,11 @@ reader.read_viewport(level, viewport)
 reader.read_viewport(level, viewport, value_ids=selected_value_ids)
 ```
 
-`read_tile()` and `read_viewport()` dispatch internally to the contiguous
-all-values path or sparse value-range path. The existing low-level
-`_BucketReader.read_complete()` and `_BucketReader.read_selected()` names remain
-appropriate because those private construction-facing methods explicitly model
-the two different physical operations.
+`read_tile()` and `read_viewport()` dispatch internally through
+`_BucketReader.read_display_payload()` to the contiguous all-values path or sparse
+value-range path. `_BucketReader.read_construction_payload()` remains the distinct
+construction-facing operation because Bridge and Spatial require mandatory
+point IDs; there is no selected construction consumer.
 
 `point_budget` is a positive caller-computed effective limit, not a napari
 canvas policy embedded in the cache reader. Z9 accepts and tests that one number
@@ -4778,8 +4779,9 @@ does not add that second spatial index or point-level clipping step.
 Logical tiles must also not be confused with Zarr chunks. A tile defines the
 smallest spatial lookup and reuse boundary, whereas a chunk is the smallest
 physical decoding unit. A tile can span several chunks, and a boundary chunk
-can contain rows adjacent to the requested logical interval. Chunk-aligned
-read amplification is accounted for separately from the logical result rows.
+can contain rows adjacent to the requested logical interval. This physical
+read amplification may be investigated with opt-in diagnostics, but is not
+returned with normal display payloads.
 
 Direct tile reads return `_TileReadResult | None`; an empty manifest tile or a
 tile with none of the selected values returns `None`. Viewport reads return
@@ -4794,9 +4796,9 @@ A viewport selects logical tiles whose half-open spatial extent intersects the
 clipped viewport. It returns all applicable all-values or value-filtered rows
 stored in those tiles; it does not apply a second point-coordinate clip at the
 viewport edge. The napari layer can clip rendered points, while tile reuse
-during small pans remains possible. Consequently, LOD estimates and accounting
-use complete positive-tile rows and may conservatively exceed the number of
-points strictly inside the viewport rectangle.
+during small pans remains possible. Consequently, LOD estimates use complete
+positive-tile rows and may conservatively exceed the number of points strictly
+inside the viewport rectangle.
 
 `select_level()` follows the same optional `value_ids` contract as the read
 methods. It chooses the finest serialized level whose estimated visible point
@@ -4862,6 +4864,14 @@ makes this exceptional result explicit to the caller and benchmark. A later
 viewer integration may add deterministic query-time decimation when this
 fallback proves too large; Z9 does not add that separate sampling path.
 
+Evaluate these candidates incrementally from Exact toward the coarsest level.
+Return as soon as the first selection-preserving candidate fits the budget, so
+the ordinary path does not slice `value_tiles` or construct per-tile value
+selections for levels that cannot affect the answer. Continue through all
+remaining levels only when no fit has yet been found, because a value absent
+from one sampled level may occur again in a coarser tile footprint; this full
+scan is also required to identify the coarsest selection-preserving fallback.
+
 For multiple requested values, selection preservation is per value rather than
 merely requiring a positive combined count. A sampled level containing Gene B
 but having lost active Gene A is ineligible even though its summed selected
@@ -4900,9 +4910,9 @@ exact point rows
 
 The `value_tiles` half prunes tiles and buckets before point payloads are read.
 The bucket-range half starts only after a manifest tile has been resolved and
-maps that tile/value pair to half-open rows in the aligned `location`,
-point-level `value_id`, and `point_id` arrays. `_BucketReader.read_selected`
-owns only this second half; the high-level reader must not collapse the two
+maps that tile/value pair to half-open rows in the aligned `location` and
+point-level `value_id` arrays. `_BucketReader.read_display_payload()` owns only
+this second half; the high-level reader must not collapse the two
 responsibilities into one undocumented lookup.
 
 For each selected `(level, value_id)`, read its exact `value_tiles` slice,
@@ -4926,40 +4936,34 @@ The reader must therefore:
 - use sparse range records instead of scanning point-level values;
 - read only intersecting `location` and point-level `value_id` chunks;
 - coalesce adjacent ranges where practical;
-- distinguish metadata/index work from point-payload work;
-- report logical rows, positive tiles, buckets, chunks touched, and decoded-row
-  estimates.
+- distinguish metadata/index work from point-payload work.
 
 #### Visualization bucket primitive
 
 Factor the aligned point-array reading inside `_BucketReader` so the acceptance
 path reads only `location` and `value_id`. Preserve the existing
-`read_complete()` and `read_selected()` construction contracts as mandatory-ID
-operations used by Bridge, Spatial, validation, diagnostics, and their tests.
-Shared private planning continues to own sparse-range lookup, exact intervals,
-inner-chunk deduplication, and coalesced minimal envelopes; do not fork a second
-selected-range algorithm merely to omit the point-ID payload read.
+`read_construction_payload()` contract as the mandatory-ID operation used by
+Bridge, Spatial, validation, diagnostics, and their tests. `read_display_payload()`
+owns both complete and selected display reads without point IDs. Shared private
+planning continues to own sparse-range lookup, exact intervals, inner-chunk
+deduplication, and coalesced minimal envelopes.
 
-#### Read accounting
+#### Minimal display payloads
 
-Define immutable per-tile and request summaries. Accumulate at least:
+Keep physical-read accounting outside the production result contract.
+`_PointDisplayPayload` contains only `location` and `value_id`; the private read
+plan contains only the exact output intervals and coalesced physical blocks
+needed to perform the read. `_TileReadResult` and `_ViewportReadResult` do not
+carry benchmark statistics.
 
-```text
-logical_point_rows
-positive_manifest_tiles
-value_tile_index_rows_read
-bucket_stores_opened
-unique_inner_point_chunks_touched
-coalesced_envelope_rows_materialized
-estimated_inner_chunk_rows_decoded
-```
-
-Chunk accounting is deterministic from exact intervals, common row-chunk
-boundaries, and physical array shapes. It is an estimate of Zarr inner-chunk
-decoding and must not be presented as exact filesystem bytes or operating-system
-I/O. For sharded arrays, separately report unique shards touched where practical.
-The benchmark may instrument store operations for supporting evidence, but
-runtime correctness must not depend on instrumentation.
+Logical point and positive-tile counts remain directly derivable from the
+returned arrays and tile tuple. Timing, chunk, shard, and decoded-row
+investigations belong in opt-in benchmark or profiling instrumentation. The
+original Z9 evaluation used such information to assess the format, but normal
+viewer requests must not calculate and propagate it when no product consumer
+requires it. The reader cache retains `open_reader_count` for its bounded
+resource-lifetime contract, but does not maintain cumulative hit or miss
+counters.
 
 #### Focused tests
 
@@ -4991,7 +4995,7 @@ Add focused real-Zarr tests for:
   eligible;
 - requested values absent at Exact selecting an empty Exact result rather than
   points introduced only by a coarser tile's larger intersecting footprint;
-- exact statistics for complete, selected, coalesced, and partial-final-chunk
+- exact returned rows for complete, selected, coalesced, and partial-final-chunk
   reads;
 - deterministic closure after successful reads and injected catalog, bucket,
   sparse-range, and payload failures.
@@ -5080,12 +5084,8 @@ Record:
 - selected-value latency;
 - logical selected rows;
 - complete positive-tile rows;
-- positive visible tiles and buckets opened;
-- value-tile index rows read, chunks and shards touched, coalesced envelope rows,
-  and estimated decoded rows;
-- tile- and chunk-read amplification;
-- application-cold and application-warm reader-cache hits, misses, and retained
-  handle counts;
+- positive visible tiles and retained bucket-reader handles;
+- application-cold and application-warm request timings;
 - proof that no acceptance-reader request accesses a `point_id` payload chunk;
 - chosen LOD, estimated point count, actual returned point count, and
   `within_budget` decision.
@@ -5106,7 +5106,7 @@ same time. The decision must account for both sides of the tradeoff:
 - Exact and multilevel construction peak RSS with the configured worker count;
 - largest materialized shuffled bucket and finalizer duration;
 - total object count and storage bytes;
-- unchanged inner-chunk decoded-row amplification.
+- opt-in inner-chunk amplification diagnostics if the alternative is run.
 
 Choose ten million only if the reduced store-open and metadata work is material
 for realistic navigation and its larger construction unit remains practically
@@ -5130,6 +5130,96 @@ recommend retaining the existing implementation. Z9 produces the evidence and
 recommendation; Z10 owns the explicit architecture-adoption decision and any
 follow-up archival or integration plan. Do not add a fallback path in either
 case.
+
+#### Gate Z9 results
+
+One current-tree run built and published all nine levels through the Z8
+coordinator. The retained artifacts are:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/
+  sdata_xenium_full_data_core.transcripts-cache-workspace/
+    z9-current/
+      transcripts_vis_zarr/
+    reports/
+      gate-z9-current.json
+```
+
+The run created generation `bebfadbc-bb8b-4858-bd5e-811801a8a837` with the
+frozen two-million-point bucket target, 4,096-row inner point chunks,
+131,072-row point shards, and a 100,000-point construction overview budget.
+Observed build and storage results were:
+
+- source content validation: 2.34 seconds;
+- complete guarded build, staged validation, and publication: 243.35 seconds;
+- baseline process RSS: 353 MB; peak RSS: 4.33 GB; incremental peak: 3.98 GB;
+- published storage: 1,690,639,072 bytes in 7,059 files;
+- nine levels, with the terminal overview containing exactly 100,000 points.
+
+Reader entry took 87.4 ms and retained 821,488 bytes of compact NumPy catalog
+indexes. Representative all-values tile observations included:
+
+| request | rows | first request | repeat through same reader |
+| --- | ---: | ---: | ---: |
+| Exact dense tile | 108,598 | 44.3 ms | 11.1 ms |
+| Exact average tile | 18,698 | 42.3 ms | 5.15 ms |
+| Bridge dense tile | 4,096 | 41.7 ms | 3.71 ms |
+| representative spatial L5 tile | 65,536 | 59.1 ms | 10.5 ms |
+| terminal overview tile | 100,000 | 38.1 ms | 11.0 ms |
+
+The detailed chunk and shard observations below were captured by the original
+acceptance instrumentation. They remain historical evidence, but the later
+minimal-payload refactor deliberately removed them from production read
+results.
+
+An application-cold selected-value request opened one Exact bucket and returned
+3,514 logical rows in 19.4 ms after a separate 56.7 ms reader entry. Repeating
+the request through that entered reader took 10.1 ms. It read 6,375 compact
+`value_tiles` rows, touched two inner point chunks in one shard, and had an
+estimated decoded-row amplification of 2.33. “Cold” and “warm” here describe
+only the reader-scoped bucket metadata cache; operating-system, filesystem, and
+codec caches were not controlled.
+
+The explicit all-values pan scenarios returned four positive Exact tiles and
+360,291 rows in 94.0 ms, then nine positive tiles and 804,187 rows in 190.0 ms.
+The second viewport was spatially offset and overlapped the first; the retained
+reader reused previously opened bucket metadata while admitting newly touched
+buckets.
+
+Sparse lookup was exercised for common, median, rare-localized,
+rare-distributed, adjacent, and separated values. The physical omission test
+proved that visualization reads succeed when the requested `point_id` payload
+shard is unavailable, while construction reads fail, freezing that acceptance
+requests slice only `location` and point-level `value_id`.
+
+Catalog-only LOD selection chose the terminal 100,000-point overview for a
+full-dataset all-values viewport. It reported `within_budget = True` for a
+100,000 runtime budget and `False` for 50,000 and 25,000, rather than claiming
+that the terminal level satisfied those smaller screen-derived budgets. For a
+common selected value it chose L4 with 78,789 estimated points; median,
+rare-distributed, and rare-localized examples fit at Exact.
+
+The generation contains sampled value loss. `FGF9` (`value_id = 1591`) has
+per-level counts `[11627, 1011, 552, 285, 154, 76, 43, 22, 0]`. With a runtime
+budget of one point, selection rejected the empty terminal overview, returned
+the coarsest preserving level L7 with 22 points, and set
+`within_budget = False`. This confirms the selection-preservation policy on the
+real Xenium catalog rather than only in a focused fixture.
+
+The two-million-point bucket target remains the recommendation for this
+baseline. Store-open work was visible but practical: one application-cold
+selected request opened one bucket, and its repeat saved about 9 ms. The
+observed metadata and handle behavior does not justify paying for a second
+full-scale ten-million-point build before Z10. Inner-chunk amplification, not
+the number of bucket directories alone, dominates the smallest sparse reads;
+for example, a single selected row still decodes one 4,096-row inner chunk.
+
+These results satisfy the Z9 engineering gate without fixed latency thresholds:
+the builder completed with bounded memory, the published artifact reopened
+quickly, normal all-values access remained practical for representative tiles
+and viewports, sparse selection avoided unrelated point rows and point IDs, and
+LOD behavior remained truthful under both overview-budget overflow and sampled
+gene loss. Z10 still owns the explicit architecture-adoption decision.
 
 #### Exit criteria
 
