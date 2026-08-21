@@ -1014,7 +1014,8 @@ The dependency sequence is:
 | Z11 | resident selected-value runtime index | Z10 |
 | Z12 | resident bucket lookup indexes and eager reader initialization | Z11 |
 | Z13 | bucket-wide batched point-payload reads | Z12 |
-| Z14 | explicit architecture-adoption decision | Z13 |
+| Z14 | exact per-level selected-value catalog reads | Z13 |
+| Z15 | explicit architecture-adoption decision | Z14 |
 
 No slice depends on an adapted Parquet point writer or a compatibility reader.
 
@@ -4160,7 +4161,7 @@ generations. Z8 is a lifecycle coordinator over the already implemented Z1--Z7
 primitives; it does not introduce a new point format, sampler, catalog, or
 validation algorithm.
 
-Keep the builder private until Z14 decides whether to adopt this architecture.
+Keep the builder private until Z15 decides whether to adopt this architecture.
 Add:
 
 ```text
@@ -5127,7 +5128,7 @@ requiring a Parquet comparison run.
 If the evidence supports adoption, record the format and physical settings as
 the recommended Phase 2 input. If it does not, record the measured reason and
 recommend retaining the existing implementation. Z9 produces the evidence and
-recommendation; Z14 owns the explicit architecture-adoption decision and any
+recommendation; Z15 owns the explicit architecture-adoption decision and any
 follow-up archival or integration plan. Do not add a fallback path in either
 case.
 
@@ -5211,7 +5212,7 @@ The two-million-point bucket target remains the recommendation for this
 baseline. Store-open work was visible but practical: one application-cold
 selected request opened one bucket, and its repeat saved about 9 ms. The
 observed metadata and handle behavior does not justify paying for a second
-full-scale ten-million-point build before Z14. Inner-chunk amplification, not
+full-scale ten-million-point build before Z15. Inner-chunk amplification, not
 the number of bucket directories alone, dominates the smallest sparse reads;
 for example, a single selected row still decodes one 4,096-row inner chunk.
 
@@ -5220,7 +5221,7 @@ the builder completed with bounded memory, the published artifact reopened
 quickly, normal all-values access remained practical for representative tiles
 and viewports, and sparse selection avoided unrelated point rows and point IDs.
 The subsequent budget-first selected-value revision is frozen by focused tests.
-Z14 still owns the explicit architecture-adoption decision.
+Z15 still owns the explicit architecture-adoption decision.
 
 #### Exit criteria
 
@@ -5239,7 +5240,7 @@ Z14 still owns the explicit architecture-adoption decision.
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
 - baseline and optional bucket-target evidence are isolated and reproducible;
-- one evidence-backed recommendation is ready for the explicit Z14 decision.
+- one evidence-backed recommendation is ready for the explicit Z15 decision.
 
 ### Slice Z10: batch and coalesce multi-value catalog lookup — resolved
 
@@ -6439,16 +6440,168 @@ counts in this gate. Record observations without numerical pass/fail thresholds.
 - selector, decoded-chunk, output-memory, and retained-Xenium latency evidence
   are documented for the final adoption decision.
 
-### Slice Z14: architecture-adoption decision
+### Slice Z14: replace catalog envelopes with exact per-level Zarr selections
+
+#### Goal
+
+Apply the maintainability decision established for Z13 point payloads to the
+one-time selected-value catalog load. Replace application-planned,
+shard-bounded contiguous envelopes with one exact basic or orthogonal selection
+per nonempty serialized level and parallel `value_tiles` array.
+
+This changes only construction of the in-memory `_SelectedValueIndex` when a
+value selection changes. Repeated `select_level()` and `read_viewport()` calls
+remain catalog-I/O-free and continue to consume the same immutable index
+contracts.
+
+#### Motivation and measured evidence
+
+The current Z11 path resolves one contiguous catalog interval per selected
+value, splits intervals at shard boundaries, coalesces fragments whose touched
+chunks are connected, reads each resulting basic-slice envelope, and then
+discards unselected gap rows. It is correct and bounds each individual returned
+envelope, but it retains application-level knowledge of chunk and shard
+geometry and can materialize many unrelated catalog rows.
+
+For the retained Xenium cache, the 100-abundant-value index contains 1,307,246
+exact records while the current envelope path returns 9,905,147 temporary
+envelope rows. A same-process warm-cache diagnostic compared the current code
+with one exact orthogonal selection per level; outputs agreed record for record:
+
+| selected values | current envelopes | per-level exact selection |
+|---:|---:|---:|
+| 1 | 23.9 ms | 23.5 ms |
+| 10 | 85.0 ms | 42.8 ms |
+| 100 | 335.3 ms | 164.9 ms |
+
+These observations motivate the design and are not acceptance thresholds. They
+do not represent application-cold latency and must be rerun after the production
+refactor.
+
+#### Exact per-level selection contract
+
+For each serialized level, use resident `value_tiles/indptr` to resolve every
+selected value to its exact half-open interval in the two aligned catalog
+arrays. Selected IDs and their intervals are already ordered by value, so the
+physical selector and returned records preserve value-major order:
+
+```text
+selected value IDs for one level
+        -> exact value_tiles intervals
+        -> merge only intervals whose boundaries touch
+        -> one resulting interval?
+             yes -> slice(start, stop)
+             no  -> exact C-contiguous int64 row selector
+        -> one selection from value_tiles/manifest_index
+        -> one aligned selection from value_tiles/n_points
+        -> _SelectedValueLevelIndex
+```
+
+Pass either selector representation through Zarr's orthogonal-selection API.
+Issue exactly one selection per parallel catalog array for every nonempty level.
+Do not expand intervals to chunk or shard boundaries, form a broad slice across
+unselected value gaps, calculate touched chunk IDs, or split selections at
+shard boundaries. Zarr owns mapping the exact logical selector to inner chunks,
+shards, asynchronous work, and decoding.
+
+The returned record order must remain compatible with the already calculated
+level-local `value_indptr`. Equal pointers continue to represent a selected
+value with no records at that level. Validate aligned result shapes, positive
+point counts, level-local manifest bounds, strictly increasing manifest rows
+within every selected value, and final projected-versus-observed record counts.
+
+#### Memory policy
+
+For `R` exact records selected from one level, the disjoint path adds an
+`8 * R` byte `int64` row selector. Zarr returns two exact `uint64` arrays with a
+combined raw footprint of `16 * R` bytes; no unselected gap rows participate in
+those returned arrays. Levels are loaded sequentially, so selectors are never
+constructed for all levels at once.
+
+For the retained 100-value Xenium selection, the largest level contains 552,033
+records: approximately 4.2 MiB for its selector and 8.4 MiB for its two raw
+selected results. This is small relative to the accepted selected-index budget
+and removes the 9.9-million-row envelope amplification. The existing
+`max_resident_bytes` remains a bound on the final immutable index buffers, not a
+strict process-RSS or transient-workspace bound. Continue projecting retained
+bytes before catalog payload I/O and report selector, returned-result, retained,
+and peak-RSS evidence separately.
+
+An explicit selection containing every canonical value still normalizes to the
+all-values `None` path. Do not construct a nearly complete catalog selector for
+that exact case.
+
+#### Code retirement
+
+Remove `_ValueTileCatalogEnvelope`, `_value_tile_catalog_envelopes()`, their
+chunk/shard coalescing tests, and the envelope-fragment write-cursor path from
+`_load_selected_value_level_index()`. Do not retain the envelope planner as an
+adaptive alternative. Keep one catalog physical-selection architecture unless
+representative product evidence later demonstrates a material problem.
+
+Do not reuse a bucket-storage helper across module boundaries merely because
+the selector policy is analogous. The catalog implementation may own a small
+storage-neutral helper whose validation and return contract are explicit for
+catalog row counts.
+
+#### Focused tests
+
+Use real sharded Zarr catalogs and cover:
+
+- one value whose interval uses the contiguous slice path;
+- adjacent selected values whose touching intervals merge to one slice;
+- separated values using one exact sorted `int64` selector;
+- empty selected-value intervals at one or more levels;
+- intervals crossing inner chunks, shard boundaries, and the final partial
+  chunk or shard;
+- large unselected value gaps absent from the returned arrays;
+- exactly one `manifest_index` and one `n_points` selection per nonempty level;
+- no application-level chunk-ID, shard-splitting, or envelope planning;
+- stable value-major ordering and `value_indptr` partitioning;
+- immutable C-contiguous outputs, exact resident-byte accounting, and rejection
+  before payload I/O when the retained index exceeds its budget;
+- record-for-record equivalence with direct expected catalog rows;
+- zero catalog Zarr selections during repeated indexed LOD and viewport calls.
+
+Instrument selectors and selection counts rather than timing unit tests.
+
+#### Xenium evaluation
+
+Reuse the retained cache without rebuilding it. Evaluate the 1, 10, and 100
+abundant-value sets and record:
+
+- selected records and their distribution by level;
+- slice versus integer-selector levels and selector bytes;
+- touched chunks and shards as diagnostics reported from array metadata, without
+  application read planning;
+- catalog selection count, one-time index-load latency, returned-result bytes,
+  final `resident_bytes`, and incremental peak RSS;
+- exact logical equality with the published catalog;
+- confirmation that subsequent LOD and viewport operations perform zero catalog
+  selections.
+
+#### Exit criteria
+
+- every nonempty level uses one exact selection per parallel catalog array;
+- contiguous intervals use a slice without allocating an integer selector and
+  disjoint intervals use one exact `int64` selector without gap rows;
+- the immutable selected-value index and every downstream reader result retain
+  their current logical contracts;
+- the application no longer plans catalog chunks, shards, envelopes, or
+  fragment write cursors;
+- retained and transient memory evidence is explicit and the full Xenium gate
+  is recorded for the final architecture decision.
+
+### Slice Z15: architecture-adoption decision
 
 #### Goal
 
 Conclude the isolated architecture evaluation without blurring the two
 implementations. Include the Z11 proof that selected-value viewport planning no
 longer performs catalog I/O, the Z12 proof that bucket-local lookup metadata
-does not remain on the viewport hot path, and the Z13 bucket-batched-read
-evidence before deciding whether the backend is suitable for Phase 2
-integration.
+does not remain on the viewport hot path, the Z13 bucket-batched-read evidence,
+and the Z14 exact selected-catalog-read evidence before deciding whether the
+backend is suitable for Phase 2 integration.
 
 #### If adopted
 
@@ -6505,7 +6658,8 @@ acceptance reader
   complete and selected physical reads
 
 selected-value index
-  one-time catalog IO, immutable bounded index, IO-free viewport planning
+  one exact per-level catalog selection per aligned array, immutable bounded
+  index, IO-free viewport planning
 
 bucket lookup indexes
   eager reader initialization, resident tile/range metadata, lazy point payloads
@@ -6542,7 +6696,11 @@ counts belong to opt-in benchmark scripts.
   that workspace before advancing to the next level.
 - A selected-value index retains only exact selected catalog records,
   reports its complete resident byte cost, and is rejected before payload I/O
-  when its projected representation exceeds the supplied runtime budget.
+  when its projected representation exceeds the supplied runtime budget. Load
+  each level through one exact slice-or-`int64` selection per aligned catalog
+  array; do not retain application-level catalog chunk, shard, or envelope
+  planning. Account the transient per-level selector separately from retained
+  index bytes.
 - Resident bucket lookup indexes retain only tile offsets, sparse-range
   pointers, and sparse range records. Their projected and actual bytes are
   explicitly accounted, and point payload arrays remain on disk.
@@ -6664,6 +6822,8 @@ The production-candidate evaluation is complete when:
 - full-Xenium build and read measurements are recorded;
 - repeated selected-value viewport planning is catalog-I/O-free after one
   explicit byte-bounded selected-index loading step;
+- selected-value index loading uses exact per-level catalog selections without
+  materializing unselected value gaps or planning catalog chunks and shards;
 - initialized viewport reads resolve tile and sparse value ranges from
   byte-bounded resident bucket lookup indexes without Zarr metadata-array reads;
 - all requested tiles sharing one bucket are read through coordinated exact
@@ -6673,13 +6833,12 @@ The production-candidate evaluation is complete when:
 
 ## Immediate next slice
 
-Z0 through Z11 are resolved, including the retained full-Xenium build, reader,
-batched catalog lookup, and proof that an unchanged explicit value selection
-pays catalog I/O once before catalog-I/O-free viewport planning. Implement Z12
-next so bucket initialization and sparse-range lookup metadata also leave the
-viewport hot path. Z13 then batches every requested tile sharing one bucket into
-coordinated exact point-array selections, while buckets themselves remain
-sequential and Zarr alone owns chunk concurrency. Slice Z14 owns the explicit
-architecture-adoption decision. Do not begin public napari integration before
-that decision records whether this isolated backend should become the product
-architecture.
+Z0 through Z12 are implemented, including the retained full-Xenium build,
+reader, catalog-I/O-free selected-value viewport planning, and resident bucket
+lookup indexes. Z13 implements coordinated exact point-array selections for all
+requested tiles sharing one bucket while keeping bucket execution sequential.
+Finish its retained-Xenium evidence, then implement Z14 so selected-value index
+loading also delegates exact chunk and shard processing to Zarr instead of an
+application envelope planner. Slice Z15 owns the explicit architecture-adoption
+decision. Do not begin public napari integration before that decision records
+whether this isolated backend should become the product architecture.
