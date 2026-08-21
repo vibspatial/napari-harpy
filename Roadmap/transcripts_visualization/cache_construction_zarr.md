@@ -5738,6 +5738,9 @@ about complete napari frame latency.
 
 ### Slice Z12: load resident bucket lookup indexes
 
+**Status:** implemented with focused verification on 2026-08-21; the retained
+full-Xenium evaluation remains pending.
+
 #### Goal
 
 Remove bucket initialization and sparse-range metadata reads from the viewport
@@ -5824,7 +5827,7 @@ method.
 
 #### Resident bucket lookup contract
 
-Introduce one immutable lookup object per loaded bucket, provisionally:
+The implementation introduces one immutable lookup object per loaded bucket:
 
 ```text
 _BucketLookupIndex
@@ -5839,16 +5842,15 @@ _BucketLookupIndex
 ```
 
 `K` is the bucket tile count and `M` is its sparse range-record count. The
-object owns C-contiguous read-only NumPy buffers and is valid only for its
-opened cache generation and bucket reader.
+object owns C-contiguous read-only NumPy buffers and remains private to its
+owning bucket reader. It is released when that reader closes, so it does not
+need an additional cache-generation identity.
 
 `tile_x` and `tile_y` remain serialized bucket arrays required by the physical
 format and independent validation. The trusted runtime catalog already supplies
 logical coordinates through `_TileDescriptor`, so viewport reads must not reread
-bucket `tile_x` or `tile_y` merely to reconfirm each descriptor. If an
-implementation loads them once while constructing the lookup index, it should
-use them for one-time reconciliation and need not retain duplicate coordinate
-buffers afterward.
+bucket `tile_x` or `tile_y` merely to reconfirm each descriptor. Runtime lookup
+loading therefore neither reads nor retains these duplicate coordinate buffers.
 
 After loading, pure lookup operations resolve complete and selected tile
 requests into bucket-global point intervals as:
@@ -5869,21 +5871,21 @@ descriptor.bucket_tile_index
           exact selected point-row intervals
 ```
 
-Keep this boundary independent of physical point-array reading. Provisionally,
-the lookup-facing operations are:
+Keep this boundary independent of physical point-array reading. The
+lookup-facing operations are:
 
 ```text
-resolve_complete_tile_interval(descriptor)
+_BucketReader.resolve_complete_tile_interval(descriptor)
     -> (row_start, row_stop)
 
-resolve_selected_tile_intervals(descriptor, selected_value_ids)
+_BucketReader.resolve_selected_tile_intervals(descriptor, selected_value_ids)
     -> exact point intervals + selected row count
 ```
 
-The concrete names may follow the implementation, but both operations must be
-pure queries over the resident lookup arrays. They do not inspect point chunks,
-construct `_PointReadPlan`, choose between slice and integer row selections, or
-read `location`, point-level `value_id`, or `point_id`.
+Both operations are pure queries over the resident lookup arrays. They do not
+inspect point chunks, construct `_PointReadPlan`, choose between slice and
+integer row selections, or read `location`, point-level `value_id`, or
+`point_id`.
 
 No array in this flow may be sliced from Zarr after the bucket lookup index is
 resident. The only viewport-time Zarr selections should be from point payload
@@ -5933,6 +5935,27 @@ Support both:
 - explicit level or bucket priming so the later viewer can load the active and
   likely adjacent levels under a smaller budget.
 
+The implemented cache-level boundary is:
+
+```text
+project_bucket_lookup_index_bytes(levels=... | bucket_keys=...)
+    -> exact requested-set bytes without lookup-array reads
+
+load_bucket_lookup_indexes(
+    max_resident_bytes=...,
+    levels=... | bucket_keys=...,
+    progress=...,
+)
+    -> exact total resident bucket-lookup bytes
+```
+
+With neither selector supplied, both operations address every serialized
+bucket. Level and explicit bucket selectors are mutually exclusive. Loading
+checks the projected final total, including previously resident indexes, before
+reading large lookup arrays. If a bucket load or progress callback fails, every
+index newly introduced by that call is released while earlier resident indexes
+remain available.
+
 Reject an over-budget request before loading large range arrays. Do not silently
 partially prime a requested set and do not fall back to viewport-time Zarr
 lookup reads. A level must be ready before it becomes eligible for payload
@@ -5944,7 +5967,7 @@ while a newly required level is initialized.
 Refactor `_BucketReader` so:
 
 - opening still performs strict structural and array-layout checks;
-- an explicit operation loads and reconciles its `_BucketLookupIndex`;
+- an explicit operation loads and freezes its `_BucketLookupIndex`;
 - complete-interval lookup resolves `tile_offset` from the resident index;
 - selected-interval lookup resolves `tile_indptr` and all range records from the
   resident index and returns exact bucket-global intervals plus their logical
@@ -5953,6 +5976,14 @@ Refactor `_BucketReader` so:
   point-array I/O;
 - runtime coordinate trust comes from the already loaded manifest descriptor;
 - closing the reader releases both Zarr objects and resident lookup buffers.
+
+Do not repeat publication-time logical validation while priming a trusted
+cache. `_validate_staged_cache()` has already reconciled bucket pointers,
+sparse ranges, manifest descriptors, value IDs, and point totals before
+publication. Runtime priming retains the representation checks on
+`_BucketLookupIndex`, verifies exact projected-versus-actual byte accounting,
+and lets strict Zarr reads surface missing physical data, but it does not
+revalidate those logical relationships or read `tile_x` and `tile_y`.
 
 Do not add another transient physical planner to Z12. Application-level chunk
 IDs, coalesced read blocks, per-tile orthogonal selectors,
@@ -5982,8 +6013,8 @@ Use real sharded Zarr buckets and cover:
 - immutable C-contiguous lookup arrays;
 - one bucket, one complete level, and all-level priming;
 - over-budget rejection before range-array payload reads;
-- descriptor, pointer-terminal, monotonicity, range-bound, and generation
-  reconciliation while the index is loaded;
+- immutable representation checks and exact projected-versus-actual byte
+  accounting while the index is loaded;
 - logical equivalence of complete and selected interval resolution before and
   after the refactor, including aligned selected row counts;
 - integration coverage showing that the existing tile-scoped point reader can
