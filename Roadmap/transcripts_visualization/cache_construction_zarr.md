@@ -1016,7 +1016,7 @@ The dependency sequence is:
 | Z13 | bucket-wide batched point-payload reads | Z12 |
 | Z14 | exact per-level selected-value catalog reads | Z13 |
 | Z15 | explicit architecture-adoption decision | Z14 |
-| Z16 | canonical adopted package and removal of the tiled-Parquet cache | Z15 |
+| Z16 | self-contained Zarr package and removal of the tiled-Parquet cache | Z15 |
 
 No slice depends on an adapted Parquet point writer or a compatibility reader.
 
@@ -6667,16 +6667,18 @@ backends.
 
 Do not add a runtime backend selector, automatic fallback, or compatibility
 reader for the experimental tiled-Parquet cache. Slice Z16 makes the adopted
-implementation self-contained and gives Phase 2 one canonical Python package.
+implementation self-contained and gives Phase 2 one unambiguous Python package.
 
-### Slice Z16: canonicalize the adopted backend and remove the tiled-Parquet cache
+### Slice Z16: make the adopted backend self-contained and remove the tiled-Parquet cache
 
 #### Goal
 
 Remove the implementation split before napari integration. Make the adopted
-Zarr cache independent of the deprecated tiled-Parquet cache, remove the latter,
-and expose the adopted implementation through the canonical
-`multi_scale_cache_points` package name.
+Zarr cache independent of the deprecated tiled-Parquet cache and remove the
+latter. Keep the adopted implementation under its existing
+`multi_scale_cache_points_zarr` package name; renaming it to the former package
+name would blur the distinction between the two implementations in code review,
+history, documentation, and future maintenance.
 
 The two Parquet roles must remain distinct:
 
@@ -6708,7 +6710,7 @@ These imports do not justify retaining the old cache backend. Move the required
 source-ingestion contracts into the adopted package first, together with their
 relevant tests, and only then remove the old package.
 
-#### Canonical package transition
+#### Package transition
 
 Perform the transition in one coherent slice:
 
@@ -6718,15 +6720,11 @@ before
   core/multi_scale_cache_points_zarr/     adopted cache borrowing source helpers
 
 after
-  core/multi_scale_cache_points/          adopted Zarr cache plus source validation
+  core/multi_scale_cache_points_zarr/     adopted cache plus source validation
 ```
 
-Use the same canonicalization for the focused test directory:
-
-```text
-tests/multi_scale_cache_points_zarr/
-        -> tests/multi_scale_cache_points/
-```
+Keep the focused tests under `tests/multi_scale_cache_points_zarr`. Do not reuse
+the deleted Parquet test-directory name for the adopted implementation.
 
 The safe implementation order is:
 
@@ -6737,16 +6735,13 @@ The safe implementation order is:
 3. verify the self-contained Zarr package before removing anything;
 4. remove the deprecated tiled-Parquet writers, planning, sampling, hashing,
    storage-specific tests, and backend-only benchmark tools;
-5. rename the adopted source and test packages to the canonical
-   `multi_scale_cache_points` name and update all remaining imports;
-6. verify that the repository contains no executable import or backend selector
-   referring to `multi_scale_cache_points_zarr` or to removed tiled-Parquet
-   implementation symbols.
+5. verify that the repository contains no executable import or backend selector
+   referring to removed tiled-Parquet implementation symbols.
 
-Do not leave forwarding modules under either former namespace. This project has
-explicitly declined backward compatibility for the experimental cache backend,
-and a compatibility layer would preserve the ambiguity this slice is intended
-to remove.
+Do not leave forwarding modules under the deleted `multi_scale_cache_points`
+namespace. This project has explicitly declined backward compatibility for the
+experimental cache backend, and a compatibility layer would preserve the
+ambiguity this slice is intended to remove.
 
 #### Retained and removed coverage
 
@@ -6772,28 +6767,29 @@ Zarr.
 
 #### Format and artifact compatibility
 
-The Python package rename must not change the adopted on-disk schema, schema
-version, cache generation identity, publication protocol, hashing policies, or
-serialized method identifiers. Existing published Zarr caches must reopen with
-the canonical package after the cleanup. No full-Xenium rebuild or new
-performance comparison is required solely because Python modules moved.
+Moving the retained source-ingestion code must not change the adopted on-disk
+schema, schema version, cache generation identity, publication protocol,
+hashing policies, or serialized method identifiers. Existing published Zarr
+caches must reopen with `multi_scale_cache_points_zarr` after the cleanup. No
+full-Xenium rebuild or new performance comparison is required solely because
+source-validation modules moved.
 
 #### Focused verification
 
 - run the relocated source-resolution and Parquet-input-validation tests;
-- run the complete adopted-cache focused tests under the canonical test
-  directory;
+- run the complete adopted-cache focused tests under
+  `tests/multi_scale_cache_points_zarr`;
 - reopen the retained full-Xenium Zarr cache and exercise catalog entry,
   selected-value index loading, bucket lookup priming, LOD selection, and one
   viewport payload read;
 - scan `src`, `tests`, and retained `scripts` for stale imports and removed
   backend symbols;
-- confirm that importing the canonical package cannot import a tiled-Parquet
-  writer transitively.
+- confirm that importing `multi_scale_cache_points_zarr` cannot import a
+  tiled-Parquet writer transitively.
 
 #### Exit criteria
 
-- one cache implementation and one canonical package remain;
+- one cache implementation remains under `multi_scale_cache_points_zarr`;
 - the adopted implementation has no dependency on deleted cache code;
 - Parquet input resolution and validation retain their focused coverage;
 - tiled-Parquet cache construction code, storage-specific tests, and
@@ -6801,15 +6797,15 @@ performance comparison is required solely because Python modules moved.
 - no compatibility shim, runtime backend selector, or automatic fallback is
   introduced;
 - retained Zarr caches reopen without a schema or artifact migration;
-- Phase 2 napari integration imports only the canonical adopted package.
+- Phase 2 napari integration imports only `multi_scale_cache_points_zarr`.
 
 ## Test strategy
 
-Before Z16, normal development uses focused tests under
-`tests/multi_scale_cache_points_zarr`. Z16 relocates the adopted suite to
-`tests/multi_scale_cache_points`, retains the source-input validation coverage,
-and removes tests belonging only to the deprecated cache. The tests do not
-compare against tiled-Parquet artifacts or performance.
+Normal development uses focused tests under
+`tests/multi_scale_cache_points_zarr`. Z16 retains that location, moves the
+source-input validation coverage into it, and removes tests belonging only to
+the deprecated cache. The tests do not compare against tiled-Parquet artifacts
+or performance.
 
 Test layers are:
 
@@ -7014,6 +7010,6 @@ The production-candidate evaluation is complete when:
 Z0 through Z14 are implemented. Z15 records the decision to adopt the Zarr-backed
 cache for Phase 2 napari integration. Z16 is the immediate next slice: make the
 adopted implementation self-contained, remove the deprecated tiled-Parquet
-cache, and move the Zarr implementation to the canonical
-`multi_scale_cache_points` package name. Complete that namespace and ownership
-cleanup before adding public napari integration code.
+cache, and retain the unambiguous `multi_scale_cache_points_zarr` source and test
+namespaces. Complete that ownership cleanup before adding public napari
+integration code.
