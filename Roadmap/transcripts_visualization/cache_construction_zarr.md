@@ -6057,11 +6057,14 @@ codec caches.
   point-read plan or row selector;
 - no viewport request rereads bucket tile or sparse-range metadata from Zarr;
 - point payload arrays remain lazy and chunked on disk;
-- lookup residency is immutable, generation-safe, explicitly byte-bounded, and
-  released with its reader;
+- lookup residency is immutable, private to its owning reader, explicitly
+  byte-bounded, and released with that reader;
 - focused tests and retained-Xenium evidence document memory and latency.
 
 ### Slice Z13: batch requested tiles within each bucket
+
+**Status:** implemented with focused real-Zarr verification on 2026-08-21; the
+retained full-Xenium evaluation remains pending.
 
 #### Goal
 
@@ -6193,13 +6196,26 @@ One bucket batch accepts an entered `_BucketReader` and the requests already
 grouped for that reader:
 
 ```text
-tuple[(manifest_row, descriptor, selected_value_ids_or_none), ...]
+tuple[(descriptor, selected_value_ids_or_none), ...]
 ```
 
-For every request, resolve the exact nonempty bucket-global point intervals in
-deterministic bucket-request order. Preserve each tile's exact returned-row
-count, then merge physically touching intervals for selection planning. Choose
-the physical selection only after this merge:
+Manifest rows remain a cache-wide catalog concern and are deliberately not
+passed into the physical bucket reader. `_read_manifest_requests()` retains
+those rows, zips them with the aligned bucket payload results, and restores the
+complete cross-bucket request order.
+
+The plural operation returns one aligned payload or `None` per request. `None`
+preserves the direct `read_tile()` behavior when a requested value is absent.
+The catalog-driven viewport path treats the same result as an inconsistency,
+because `value_tiles` had declared that request positive. Empty requests add a
+repeated entry to `batch_tile_indptr` and no point rows to the physical
+selection; an entirely empty bucket result performs no point-array selection.
+
+For every request, resolve either its exact nonempty bucket-global point
+intervals or an explicit empty result in deterministic bucket-request order.
+Preserve each tile's exact returned-row count, then merge physically touching
+intervals for selection planning. Choose the physical selection only after this
+merge:
 
 ```text
 exact requested intervals
