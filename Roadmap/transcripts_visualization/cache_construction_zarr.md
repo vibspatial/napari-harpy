@@ -6710,6 +6710,100 @@ These imports do not justify retaining the old cache backend. Move the required
 source-ingestion contracts into the adopted package first, together with their
 relevant tests, and only then remove the old package.
 
+#### Source subpackage
+
+Keep the adopted package root focused on cache construction, storage, and
+reading. Move the retained input-facing behavior into one dedicated `source`
+subpackage:
+
+```text
+multi_scale_cache_points_zarr/
+  source/
+    __init__.py
+    errors.py
+    models.py
+    resolution.py
+    validation.py
+    signature.py
+    value_normalization.py
+
+  storage/
+  writer/
+
+  build_plan.py
+  builder.py
+  cache_format.py
+  hashing.py
+  models.py
+  payload.py
+  reader.py
+  sampling.py
+```
+
+Use `source`, not `discovery`, for this boundary. Discovery describes only the
+step that locates a SpatialData point element and its physical Parquet dataset;
+the subpackage owns that resolution plus source models, validation, signatures,
+and logical-value normalization.
+
+The module responsibilities are:
+
+```text
+source/resolution.py
+  SpatialData point element -> ParquetPointsSource
+
+source/validation.py
+  ParquetPointsSource -> ValidatedPointsSource
+
+source/models.py
+  PointColumnSelection
+  PointsBounds
+  ParquetPointsSource
+  ParquetSourceFile
+  ParquetSourceRowGroup
+  ValidatedPointsSource
+
+source/signature.py
+  stable source-inventory signatures
+  normalized Arrow schema descriptions
+
+source/value_normalization.py
+  canonical logical values and value IDs
+
+source/errors.py
+  source-resolution and source-validation exceptions
+```
+
+`source/__init__.py` is the intentional source-facing facade and exports only
+the contracts and operations needed to resolve and validate an input source:
+
+```text
+ParquetPointsSource
+PointColumnSelection
+ValidatedPointsSource
+resolve_spatialdata_points_source
+validate_parquet_points_source
+```
+
+Implementation modules may import additional private source contracts directly
+from their defining modules. In particular, use
+`multi_scale_cache_points_zarr.source.models.ValidatedPointsSource` internally
+rather than re-exporting every source implementation detail at the adopted
+package root.
+
+This hierarchy deliberately keeps two model domains separate:
+
+```text
+source/models.py
+  contracts describing the original point source
+
+models.py
+  contracts describing the constructed Zarr cache
+```
+
+Do not introduce deeper `discovery`, `validation`, or `normalization`
+subdirectories. The `source` package is the ownership boundary; its small
+modules provide sufficient separation without additional nesting.
+
 #### Package transition
 
 Perform the transition in one coherent slice:
@@ -6729,7 +6823,8 @@ the deleted Parquet test-directory name for the adopted implementation.
 The safe implementation order is:
 
 1. move the required source-facing models, errors, resolution, validation,
-   signatures, and normalization into the Zarr implementation;
+   signatures, and normalization into the Zarr implementation's `source`
+   subpackage;
 2. update production code, Zarr tests, retained validation tools, and retained
    benchmark tools so no adopted path imports the old package;
 3. verify the self-contained Zarr package before removing anything;
