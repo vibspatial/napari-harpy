@@ -46,6 +46,10 @@ def _build_bucket(root: Path) -> _BucketWriteResult:
         return writer.finalize()
 
 
+def _load_lookup(reader: _BucketReader) -> None:
+    reader.load_lookup_index()
+
+
 def test_reader_roundtrips_complete_and_selected_payloads(tmp_path: Path) -> None:
     result = _build_bucket(tmp_path)
     first, second = result.tile_descriptors
@@ -56,6 +60,7 @@ def test_reader_roundtrips_complete_and_selected_payloads(tmp_path: Path) -> Non
         assert complete.x_rel.tolist() == [0, 3, 2, 1, 4]
         assert complete.y_rel.tolist() == [4, 1, 2, 3, 0]
 
+        _load_lookup(reader)
         selected = reader.read_display_payload(first, np.array([0, 2], dtype=np.uint32))
         assert selected is not None
         assert selected.value_id.tolist() == [0, 0, 2, 2]
@@ -73,6 +78,7 @@ def test_visualization_reader_never_requires_point_id_payload_chunks(tmp_path: P
     point_id_objects[0].unlink()
 
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+        _load_lookup(reader)
         complete = reader.read_display_payload(first)
         assert complete is not None
         assert complete.value_id.tolist() == [0, 0, 1, 2, 2]
@@ -129,10 +135,24 @@ def test_point_read_plan_keeps_exact_intervals_and_coalesced_blocks(tmp_path: Pa
     ],
 )
 def test_reader_rejects_invalid_selected_value_ids(tmp_path: Path, selected: np.ndarray) -> None:
-    descriptor = _build_bucket(tmp_path).tile_descriptors[0]
+    result = _build_bucket(tmp_path)
+    descriptor = result.tile_descriptors[0]
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+        _load_lookup(reader)
         with pytest.raises(ValueError, match="selected_value_ids"):
             reader.read_display_payload(descriptor, selected)  # type: ignore[arg-type]
+
+
+def test_closing_reader_releases_resident_lookup_index(tmp_path: Path) -> None:
+    _build_bucket(tmp_path)
+    reader = _BucketReader(tmp_path, level=1, bucket_id=3)
+    with reader:
+        _load_lookup(reader)
+        assert reader.lookup_index_loaded
+        assert reader.resident_lookup_bytes == reader.projected_lookup_bytes
+
+    assert not reader.lookup_index_loaded
+    assert reader.resident_lookup_bytes == 0
 
 
 def test_reader_rejects_unknown_descriptor_and_calls_after_close(tmp_path: Path) -> None:
