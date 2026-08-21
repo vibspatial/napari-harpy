@@ -24,6 +24,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     VALUE_TILES_N_POINTS,
     _CatalogWriteSettings,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
@@ -33,7 +34,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _ValueTileInterval,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.sampling import _select_sampled_tile_indices
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
+    _BucketReader,
+    _PointDisplayPayload,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
 
@@ -207,6 +211,33 @@ def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: _Rea
             dtype=np.float32,
         )
         assert intrinsic_x.tolist() == expected_x.tolist()
+
+
+def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
+    reader_fixture: _ReaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = _IntrinsicViewport(0, 0, 12, 10)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        _load_bucket_lookup_indexes(reader, levels=(0,))
+        bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
+        original = bucket_reader.read_display_payloads
+        calls: list[tuple[int, ...]] = []
+
+        def tracked_batch(
+            requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
+        ) -> tuple[_PointDisplayPayload | None, ...]:
+            calls.append(tuple(descriptor.bucket_tile_index for descriptor, _ in requests))
+            return original(requests)
+
+        monkeypatch.setattr(bucket_reader, "read_display_payloads", tracked_batch)
+        assert reader.read_tile(0, 0, 0) is not None
+        assert calls == [(0,)]
+
+        calls.clear()
+        result = reader.read_viewport(0, full)
+        assert [(tile.tile_x, tile.tile_y) for tile in result.tiles] == [(0, 0), (1, 0)]
+        assert calls == [(0, 1)]
 
 
 def test_value_tile_index_prunes_gene_lost_during_sampling(reader_fixture: _ReaderFixture) -> None:
