@@ -146,6 +146,9 @@ def test_exact_row_selection_uses_slice_only_for_touching_intervals() -> None:
         (((1, 4), (3, 5)), 10, 5, "ordered"),
         (((1, 11),), 10, 10, "inside"),
         (((1, 3),), 10, 1, "reconcile"),
+        (((1, 3),), 0, 2, "point_count"),
+        (((1, 3),), 10, 0, "expected_row_count"),
+        (((1.0, 3),), 10, 2, "inside"),
     ],
 )
 def test_exact_row_selection_rejects_invalid_batch_intervals(
