@@ -26,11 +26,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+    _exact_value_tile_row_selection,
     _IntrinsicViewport,
     _PointsCacheReader,
     _SelectedValueIndex,
-    _value_tile_catalog_envelopes,
-    _ValueTileCatalogEnvelope,
     _ValueTileInterval,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.sampling import _select_sampled_tile_indices
@@ -486,34 +485,80 @@ def test_selected_level_selection_stops_after_first_valid_fit(reader_fixture: _R
         assert reader.value_filtered_levels == [0, 1]
 
 
-def test_value_tile_catalog_envelopes_coalesce_chunks_without_crossing_shards() -> None:
-    assert _value_tile_catalog_envelopes((), chunk_rows=4, shard_rows=8) == ()
-    with pytest.raises(ValueError, match="nonempty tuple"):
-        _ValueTileCatalogEnvelope(())
-    with pytest.raises(ValueError, match="ordered and nonoverlapping"):
-        _ValueTileCatalogEnvelope(
+def test_exact_value_tile_row_selection_uses_slice_only_for_touching_intervals() -> None:
+    contiguous = _exact_value_tile_row_selection(
+        (
+            _ValueTileInterval(0, 0, 1, 3),
+            _ValueTileInterval(1, 1, 3, 5),
+        ),
+        catalog_row_count=12,
+        expected_row_count=4,
+    )
+    assert contiguous == slice(1, 5)
+
+    disjoint = _exact_value_tile_row_selection(
+        (
+            _ValueTileInterval(0, 0, 1, 3),
+            _ValueTileInterval(2, 2, 7, 10),
+        ),
+        catalog_row_count=12,
+        expected_row_count=5,
+    )
+    assert isinstance(disjoint, np.ndarray)
+    assert disjoint.dtype == np.dtype(np.int64)
+    assert disjoint.flags.c_contiguous
+    assert disjoint.tolist() == [1, 2, 7, 8, 9]
+
+
+def test_value_tile_interval_rejects_invalid_fields() -> None:
+    with pytest.raises(ValueError, match="selected_value_position"):
+        _ValueTileInterval(True, 0, 1, 2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="value_id"):
+        _ValueTileInterval(0, 2**32, 1, 2)
+    with pytest.raises(ValueError, match="start"):
+        _ValueTileInterval(0, 0, 1.5, 2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="smaller"):
+        _ValueTileInterval(0, 0, 2, 2)
+
+
+@pytest.mark.parametrize(
+    ("intervals", "catalog_row_count", "expected_row_count", "match"),
+    [
+        ((), 12, 1, "nonempty"),
+        ((_ValueTileInterval(0, 0, 1, 3),), 2, 2, "inside"),
+        (
             (
                 _ValueTileInterval(1, 1, 3, 5),
                 _ValueTileInterval(0, 0, 1, 2),
-            )
+            ),
+            12,
+            3,
+            "selected-value and nonoverlapping",
+        ),
+        (
+            (
+                _ValueTileInterval(0, 0, 1, 4),
+                _ValueTileInterval(1, 1, 3, 5),
+            ),
+            12,
+            5,
+            "selected-value and nonoverlapping",
+        ),
+        ((_ValueTileInterval(0, 0, 1, 3),), 12, 3, "reconcile"),
+    ],
+)
+def test_exact_value_tile_row_selection_rejects_invalid_intervals(
+    intervals: tuple[_ValueTileInterval, ...],
+    catalog_row_count: int,
+    expected_row_count: int,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _exact_value_tile_row_selection(
+            intervals,
+            catalog_row_count=catalog_row_count,
+            expected_row_count=expected_row_count,
         )
-    intervals = (
-        _ValueTileInterval(0, 0, 1, 2),
-        _ValueTileInterval(1, 1, 3, 5),
-        _ValueTileInterval(2, 2, 7, 10),
-        _ValueTileInterval(3, 3, 16, 17),
-    )
-
-    envelopes = _value_tile_catalog_envelopes(intervals, chunk_rows=4, shard_rows=8)
-
-    assert tuple((envelope.start, envelope.stop) for envelope in envelopes) == ((1, 8), (8, 10), (16, 17))
-    assert all(envelope.start // 8 == (envelope.stop - 1) // 8 for envelope in envelopes)
-    assert tuple((interval.start, interval.stop) for interval in envelopes[0].intervals) == (
-        (1, 2),
-        (3, 5),
-        (7, 8),
-    )
-    assert tuple((interval.start, interval.stop) for interval in envelopes[1].intervals) == ((8, 10),)
 
 
 def test_complete_value_index_load_normalizes_without_catalog_payload_reads(
@@ -609,6 +654,61 @@ def test_selected_value_index_preserves_separated_values_and_empty_level_interva
 
     assert sum(len(tile.value_id) for tile in result.tiles) == 3
     assert sorted(np.concatenate(tuple(tile.value_id for tile in result.tiles)).tolist()) == [0, 0, 2]
+
+
+def test_selected_value_index_uses_one_exact_selection_per_nonempty_level(
+    reader_fixture: _ReaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_a_and_c = np.array([0, 2], dtype=np.uint32)
+    selections: dict[str, list[slice | npt.NDArray[np.int64]]] = {
+        VALUE_TILES_MANIFEST_INDEX: [],
+        VALUE_TILES_N_POINTS: [],
+    }
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        pointers = reader._value_tiles_indptr_or_raise()
+        selected_indexes = selected_a_and_c.astype(np.int64, copy=False)
+        record_counts = pointers[:, selected_indexes + 1] - pointers[:, selected_indexes]
+        expected_nonempty_levels = int((record_counts.sum(axis=1, dtype=np.uint64) > 0).sum())
+        catalog = reader._catalog_or_raise()
+        original_array = catalog.array
+
+        class _TrackingArray:
+            def __init__(self, name: str) -> None:
+                self._name = name
+                self._array = original_array(name)
+
+            def get_orthogonal_selection(self, selection: tuple[object, ...]) -> object:
+                assert len(selection) == 1
+                row_selection = selection[0]
+                assert isinstance(row_selection, (slice, np.ndarray))
+                selections[self._name].append(row_selection)
+                return self._array.get_orthogonal_selection(selection)
+
+        def tracked_array(name: str) -> object:
+            if name in selections:
+                return _TrackingArray(name)
+            return original_array(name)
+
+        monkeypatch.setattr(catalog, "array", tracked_array)
+        value_index = _load_selected_value_index(reader, selected_a_and_c)
+
+    assert len(selections[VALUE_TILES_MANIFEST_INDEX]) == expected_nonempty_levels
+    assert len(selections[VALUE_TILES_N_POINTS]) == expected_nonempty_levels
+    for manifest_selection, count_selection in zip(
+        selections[VALUE_TILES_MANIFEST_INDEX],
+        selections[VALUE_TILES_N_POINTS],
+        strict=True,
+    ):
+        if isinstance(manifest_selection, slice):
+            assert manifest_selection == count_selection
+        else:
+            assert isinstance(count_selection, np.ndarray)
+            assert np.array_equal(manifest_selection, count_selection)
+    assert any(isinstance(selection, np.ndarray) for selection in selections[VALUE_TILES_MANIFEST_INDEX])
+    assert value_index.levels[0].value_indptr.tolist() == [0, 1, 2]
+    assert value_index.levels[0].n_points.tolist() == [2, 1]
 
 
 def test_value_index_load_rejects_budget_before_catalog_payload_reads(
