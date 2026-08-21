@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
 from itertools import pairwise
@@ -322,7 +322,9 @@ class _PointsCacheReader:
     Entering validates the frozen root and array layouts, then materializes only
     the compact manifest, value pointer table, and value totals. It deliberately
     does not replay complete staged validation. Bucket stores are opened lazily
-    and retained for this reader's lifetime.
+    or by explicit lookup priming and retained for this reader's lifetime.
+    Display payload reads require their bucket lookup indexes to be resident;
+    they never load lookup metadata implicitly on the viewport path.
     """
 
     def __init__(self, cache_root: str | Path) -> None:
@@ -340,6 +342,7 @@ class _PointsCacheReader:
         self._value_tiles_indptr: npt.NDArray[np.uint64] | None = None
         self._value_n_points: npt.NDArray[np.uint64] | None = None
         self._descriptors: tuple[_TileDescriptor, ...] = ()
+        self._descriptors_by_bucket: dict[tuple[int, int], tuple[_TileDescriptor, ...]] = {}
         self._manifest_row_by_tile: dict[tuple[int, int, int], int] = {}
         self._resident_index_bytes = 0
         self._entered = False
@@ -415,6 +418,109 @@ class _PointsCacheReader:
         """Return the number of lazily entered bucket readers."""
         return self._bucket_cache_or_raise().open_reader_count
 
+    @property
+    def loaded_bucket_lookup_index_count(self) -> int:
+        """Return the number of buckets with resident lookup metadata."""
+        return self._bucket_cache_or_raise().loaded_lookup_index_count
+
+    @property
+    def resident_bucket_lookup_bytes(self) -> int:
+        """Return bytes retained by all loaded bucket lookup indexes."""
+        return self._bucket_cache_or_raise().resident_lookup_bytes
+
+    def project_bucket_lookup_index_bytes(
+        self,
+        *,
+        levels: tuple[int, ...] | None = None,
+        bucket_keys: tuple[tuple[int, int], ...] | None = None,
+    ) -> int:
+        """Return exact resident bytes for a requested bucket set.
+
+        This opens the requested bucket readers and validates their Zarr layouts
+        so their declared tile and range counts are available. It does not read
+        tile pointers, sparse ranges, or point payload arrays.
+        """
+        keys = self._requested_bucket_keys(levels=levels, bucket_keys=bucket_keys)
+        cache = self._bucket_cache_or_raise()
+        return sum(cache.get(level=level, bucket_id=bucket_id).projected_lookup_bytes for level, bucket_id in keys)
+
+    def load_bucket_lookup_indexes(
+        self,
+        *,
+        max_resident_bytes: int,
+        levels: tuple[int, ...] | None = None,
+        bucket_keys: tuple[tuple[int, int], ...] | None = None,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Explicitly load an immutable, byte-bounded bucket lookup set.
+
+        The complete requested set is projected before any large lookup array is
+        read. Loading is atomic with respect to indexes introduced by this call:
+        if one bucket or the progress callback fails, those new indexes are
+        released while indexes resident before the call remain available.
+
+        Parameters
+        ----------
+        max_resident_bytes
+            Positive upper bound for all cached bucket lookup-index array bytes
+            after the operation, including indexes cached by earlier calls.
+        levels
+            Optional sorted unique levels to load. ``None`` with no
+            ``bucket_keys`` requests every serialized bucket.
+        bucket_keys
+            Optional sorted unique ``(level, bucket_id)`` addresses. It is
+            mutually exclusive with ``levels``.
+        progress
+            Optional callback receiving ``(completed_buckets, total_buckets)``
+            after every requested bucket becomes ready.
+
+        Returns
+        -------
+        int
+            Exact bytes retained by all loaded bucket lookup indexes.
+        """
+        _require_integer_in_range(
+            max_resident_bytes,
+            "max_resident_bytes",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
+        if progress is not None and not callable(progress):
+            raise ValueError("`progress` must be callable or None.")
+        keys = self._requested_bucket_keys(levels=levels, bucket_keys=bucket_keys)
+        cache = self._bucket_cache_or_raise()
+        readers = {
+            key: cache.get(level=key[0], bucket_id=key[1])
+            for key in keys
+        }
+        projected_total = cache.resident_lookup_bytes + sum(
+            reader.projected_lookup_bytes
+            for reader in readers.values()
+            if not reader.lookup_index_loaded
+        )
+        if projected_total > max_resident_bytes:
+            raise ValueError(
+                f"Bucket lookup indexes require {projected_total} resident bytes, "
+                f"exceeding `max_resident_bytes={max_resident_bytes}`."
+            )
+
+        newly_loaded: list[tuple[int, int]] = []
+        try:
+            for completed, key in enumerate(keys, start=1):
+                reader = readers[key]
+                if not reader.lookup_index_loaded:
+                    reader.load_lookup_index()
+                    newly_loaded.append(key)
+                if progress is not None:
+                    progress(completed, len(keys))
+        except Exception:
+            cache.release_lookup_indexes(tuple(newly_loaded))
+            raise
+        if cache.resident_lookup_bytes != projected_total:
+            cache.release_lookup_indexes(tuple(newly_loaded))
+            raise RuntimeError("Resident bucket lookup bytes differ from the preflight projection.")
+        return cache.resident_lookup_bytes
+
     def read_tile(
         self,
         level: int,
@@ -423,7 +529,7 @@ class _PointsCacheReader:
         *,
         value_ids: npt.NDArray[np.uint32] | None = None,
     ) -> _TileReadResult | None:
-        """Read all or value-filtered display rows for one logical tile."""
+        """Read one tile whose bucket lookup index was explicitly primed."""
         metadata = self._require_level(level)
         _require_integer_in_range(tile_x, "tile_x", maximum=metadata.grid_width - 1)
         _require_integer_in_range(tile_y, "tile_y", maximum=metadata.grid_height - 1)
@@ -539,7 +645,8 @@ class _PointsCacheReader:
         Notes
         -----
         Positive-tile discovery uses only resident manifest and selected-index arrays.
-        The subsequent bucket-local point payload reads remain I/O by design.
+        Every positive bucket's lookup index must already be resident. The
+        subsequent bucket-local point payload reads remain I/O by design.
         """
         self._require_level(level)
         value_index = self._require_selected_value_index(value_index)
@@ -758,7 +865,59 @@ class _PointsCacheReader:
         if len(descriptors) != len(self._manifest_n_points):
             raise ValueError("Manifest pointers do not cover every resident manifest row.")
         self._descriptors = tuple(descriptors)
+        descriptors_by_bucket: dict[tuple[int, int], list[_TileDescriptor]] = {}
+        for descriptor in self._descriptors:
+            descriptors_by_bucket.setdefault((descriptor.level, descriptor.bucket_id), []).append(descriptor)
+        self._descriptors_by_bucket = {
+            key: tuple(bucket_descriptors)
+            for key, bucket_descriptors in descriptors_by_bucket.items()
+        }
         self._manifest_row_by_tile = lookup
+
+    def _requested_bucket_keys(
+        self,
+        *,
+        levels: tuple[int, ...] | None,
+        bucket_keys: tuple[tuple[int, int], ...] | None,
+    ) -> tuple[tuple[int, int], ...]:
+        """Normalize one all-level, level-scoped, or bucket-scoped prime request."""
+        self._require_open()
+        if levels is not None and bucket_keys is not None:
+            raise ValueError("`levels` and `bucket_keys` are mutually exclusive.")
+        available = self._descriptors_by_bucket
+        if levels is None and bucket_keys is None:
+            return tuple(sorted(available))
+        if levels is not None:
+            if (
+                not isinstance(levels, tuple)
+                or not levels
+                or any(not isinstance(level, int) or isinstance(level, bool) for level in levels)
+                or levels != tuple(sorted(set(levels)))
+            ):
+                raise ValueError("`levels` must be a nonempty sorted unique tuple of integers.")
+            for level in levels:
+                self._require_level(level)
+            selected_levels = set(levels)
+            return tuple(key for key in sorted(available) if key[0] in selected_levels)
+
+        if bucket_keys is None:
+            raise RuntimeError("Bucket-key normalization reached an impossible state.")
+        if (
+            not isinstance(bucket_keys, tuple)
+            or not bucket_keys
+            or any(
+                not isinstance(key, tuple)
+                or len(key) != 2
+                or any(not isinstance(value, int) or isinstance(value, bool) for value in key)
+                for key in bucket_keys
+            )
+            or bucket_keys != tuple(sorted(set(bucket_keys)))
+        ):
+            raise ValueError("`bucket_keys` must be a nonempty sorted unique tuple of (level, bucket_id) pairs.")
+        unknown = tuple(key for key in bucket_keys if key not in available)
+        if unknown:
+            raise ValueError(f"`bucket_keys` contains an unknown bucket address: {unknown[0]}.")
+        return bucket_keys
 
     def _visible_manifest_rows(
         self,
@@ -1337,6 +1496,7 @@ class _PointsCacheReader:
         self._value_tiles_indptr = None
         self._value_n_points = None
         self._descriptors = ()
+        self._descriptors_by_bucket = {}
         self._manifest_row_by_tile = {}
         self._resident_index_bytes = 0
         self._open = False

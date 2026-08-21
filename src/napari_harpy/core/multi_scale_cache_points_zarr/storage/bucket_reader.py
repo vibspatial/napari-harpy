@@ -68,6 +68,77 @@ class _PointReadPlan:
     blocks: tuple[tuple[int, int], ...]
 
 
+@dataclass(frozen=True)
+class _BucketLookupIndex:
+    """Retain one bucket's immutable metadata-to-point-row lookup.
+
+    Keeping these arrays resident is a deliberate runtime policy. Every
+    visualization request needs them to translate logical tile and value
+    selections into exact point-array intervals. Loading them once avoids
+    repeating small Zarr selections and shard decoding during viewport and
+    value-selection changes.
+
+    Only lookup metadata is retained. Point coordinates and point-level values
+    remain chunked on disk, and cache-level priming enforces an explicit memory
+    budget.
+    """
+
+    level: int
+    bucket_id: int
+    tile_offset: npt.NDArray[np.uint64]
+    tile_indptr: npt.NDArray[np.uint64]
+    range_value_id: npt.NDArray[np.uint32]
+    range_row_start: npt.NDArray[np.uint64]
+    range_row_count: npt.NDArray[np.uint64]
+
+    def __post_init__(self) -> None:
+        _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
+        _require_integer_in_range(self.bucket_id, "bucket_id", maximum=_UINT32_MAX)
+        arrays = (
+            ("tile_offset", self.tile_offset, np.uint64),
+            ("tile_indptr", self.tile_indptr, np.uint64),
+            ("range_value_id", self.range_value_id, np.uint32),
+            ("range_row_start", self.range_row_start, np.uint64),
+            ("range_row_count", self.range_row_count, np.uint64),
+        )
+        for name, array, dtype in arrays:
+            if (
+                not isinstance(array, np.ndarray)
+                or array.dtype != np.dtype(dtype)
+                or array.ndim != 1
+                or not array.flags.c_contiguous
+            ):
+                raise ValueError(f"`{name}` must be a one-dimensional C-contiguous {np.dtype(dtype).name} array.")
+            read_only = array.view()
+            read_only.flags.writeable = False
+            object.__setattr__(self, name, read_only)
+        if len(self.tile_offset) != len(self.tile_indptr):
+            raise ValueError("Tile point and range pointer arrays must have equal lengths.")
+        if len(self.tile_offset) < 2:
+            raise ValueError("Bucket lookup pointers must describe at least one tile.")
+        if not (len(self.range_value_id) == len(self.range_row_start) == len(self.range_row_count)):
+            raise ValueError("Sparse range arrays must be row-aligned.")
+
+    @property
+    def tile_count(self) -> int:
+        """Return the number of indexed logical tiles."""
+        return len(self.tile_offset) - 1
+
+    @property
+    def resident_bytes(self) -> int:
+        """Return bytes in the five retained NumPy buffers."""
+        return sum(
+            array.nbytes
+            for array in (
+                self.tile_offset,
+                self.tile_indptr,
+                self.range_value_id,
+                self.range_row_start,
+                self.range_row_count,
+            )
+        )
+
+
 class _BucketReader:
     """Reuse strict read-only handles for construction and display payloads.
 
@@ -84,9 +155,9 @@ class _BucketReader:
     -----
     The context opens one bucket once and configures every array to fail on a
     missing chunk or shard. Construction payloads read every tile row including
-    mandatory point IDs. Display payloads omit point IDs and either read every
-    row through ``tile_offset`` or resolve selected values through sparse
-    ``tile_indptr`` ranges.
+    mandatory point IDs. Display payloads require explicit lookup priming, omit
+    point IDs, and resolve complete or selected intervals exclusively from the
+    resident tile pointers and sparse ranges.
     """
 
     def __init__(self, cache_root: str | Path, *, level: int, bucket_id: int) -> None:
@@ -100,6 +171,7 @@ class _BucketReader:
         self._root: zarr.Group | None = None
         self._attributes: _BucketAttributes | None = None
         self._arrays: dict[str, zarr.Array] = {}
+        self._lookup_index: _BucketLookupIndex | None = None
         self._entered = False
         self._open = False
 
@@ -157,7 +229,8 @@ class _BucketReader:
 
     def read_construction_payload(self, descriptor: _TileDescriptor) -> _PointPayload:
         """Read all aligned rows and mandatory point IDs for cache construction."""
-        plan = self._complete_read_plan(descriptor)
+        start, stop = self._construction_tile_interval(descriptor)
+        plan = self._point_read_plan(((start, stop),))
         location, value_id, point_id = self._read_aligned_rows(plan, include_point_id=True)
         if point_id is None:
             raise RuntimeError("Construction reads must include point IDs.")
@@ -207,13 +280,20 @@ class _BucketReader:
         _PointDisplayPayload or None
             Exact aligned display rows, or ``None`` when a selected-value
             request finds no requested value in the tile.
+
+        Notes
+        -----
+        ``load_lookup_index()`` must have completed before this method is
+        called. There is no viewport-time fallback to Zarr lookup arrays.
         """
         if selected_value_ids is None:
-            plan = self._complete_read_plan(descriptor)
+            intervals = (self.resolve_complete_tile_interval(descriptor),)
         else:
-            plan = self._selected_read_plan(descriptor, selected_value_ids)
-            if plan is None:
+            resolved = self.resolve_selected_tile_intervals(descriptor, selected_value_ids)
+            if resolved is None:
                 return None
+            intervals, _ = resolved
+        plan = self._point_read_plan(intervals)
         location, value_id, point_id = self._read_aligned_rows(plan, include_point_id=False)
         if point_id is not None:
             raise RuntimeError("Visualization reads must not include point IDs.")
@@ -222,30 +302,83 @@ class _BucketReader:
             value_id=value_id,
         )
 
-    def _complete_read_plan(self, descriptor: _TileDescriptor) -> _PointReadPlan:
-        start, stop = self._tile_interval(descriptor)
-        return self._point_read_plan(((start, stop),))
+    @property
+    def projected_lookup_bytes(self) -> int:
+        """Return resident bytes required by this bucket's lookup arrays."""
+        attributes = self._attributes_or_raise()
+        pointer_bytes = 2 * (attributes.tile_count + 1) * np.dtype(np.uint64).itemsize
+        range_bytes = attributes.range_count * (
+            np.dtype(np.uint32).itemsize + 2 * np.dtype(np.uint64).itemsize
+        )
+        return pointer_bytes + range_bytes
 
-    def _selected_read_plan(
+    @property
+    def resident_lookup_bytes(self) -> int:
+        """Return currently retained lookup bytes, or zero before priming."""
+        return 0 if self._lookup_index is None else self._lookup_index.resident_bytes
+
+    @property
+    def lookup_index_loaded(self) -> bool:
+        """Return whether the bucket's immutable lookup metadata is resident."""
+        return self._lookup_index is not None
+
+    def load_lookup_index(self) -> None:
+        """Load and retain this bucket's trusted lookup metadata once.
+
+        Publication-time validation already reconciled the logical contents.
+        Runtime priming therefore copies only the five lookup arrays and never
+        selects coordinates or point payload arrays.
+        """
+        self._require_open()
+        if self._lookup_index is not None:
+            return
+
+        tile_offset = np.ascontiguousarray(self._array("tile_offset")[:], dtype=np.uint64)
+        tile_indptr = np.ascontiguousarray(self._array("ranges/tile_indptr")[:], dtype=np.uint64)
+        range_value_id = np.ascontiguousarray(self._array("ranges/value_id")[:], dtype=np.uint32)
+        range_row_start = np.ascontiguousarray(self._array("ranges/row_start")[:], dtype=np.uint64)
+        range_row_count = np.ascontiguousarray(self._array("ranges/row_count")[:], dtype=np.uint64)
+        lookup = _BucketLookupIndex(
+            level=self._level,
+            bucket_id=self._bucket_id,
+            tile_offset=tile_offset,
+            tile_indptr=tile_indptr,
+            range_value_id=range_value_id,
+            range_row_start=range_row_start,
+            range_row_count=range_row_count,
+        )
+        if lookup.resident_bytes != self.projected_lookup_bytes:
+            raise RuntimeError("Bucket lookup bytes differ from the preflight projection.")
+        self._lookup_index = lookup
+
+    def release_lookup_index(self) -> None:
+        """Release resident lookup buffers while keeping Zarr handles open."""
+        self._lookup_index = None
+
+    def resolve_complete_tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
+        """Resolve one complete tile using only the resident lookup index."""
+        index = self._lookup_index_or_raise()
+        tile_index = self._require_lookup_tile_index(descriptor, index)
+        start = int(index.tile_offset[tile_index])
+        stop = int(index.tile_offset[tile_index + 1])
+        if stop - start != descriptor.n_points:
+            raise ValueError("Tile descriptor count disagrees with the resident bucket offsets.")
+        return start, stop
+
+    def resolve_selected_tile_intervals(
         self,
         descriptor: _TileDescriptor,
         selected_value_ids: npt.NDArray[np.uint32],
-    ) -> _PointReadPlan | None:
+    ) -> tuple[tuple[tuple[int, int], ...], int] | None:
+        """Resolve exact selected point rows using only resident lookup arrays."""
         self._require_selected_value_ids(selected_value_ids)
-        tile_start, tile_stop = self._tile_interval(descriptor)
-        tile_index = descriptor.bucket_tile_index
-        range_bounds = np.asarray(
-            self._array("ranges/tile_indptr")[tile_index : tile_index + 2],
-            dtype=np.uint64,
-        )
-        range_start, range_stop = (int(value) for value in range_bounds)
-        if not 0 <= range_start < range_stop <= self._attributes_or_raise().range_count:
-            raise ValueError("Tile range pointers are invalid.")
-
-        range_values = np.asarray(
-            self._array("ranges/value_id")[range_start:range_stop],
-            dtype=np.uint32,
-        )
+        index = self._lookup_index_or_raise()
+        tile_index = self._require_lookup_tile_index(descriptor, index)
+        tile_start = int(index.tile_offset[tile_index])
+        tile_stop = int(index.tile_offset[tile_index + 1])
+        range_start = int(index.tile_indptr[tile_index])
+        range_stop = int(index.tile_indptr[tile_index + 1])
+        range_values = index.range_value_id[range_start:range_stop]
         positions = np.searchsorted(range_values, selected_value_ids)
         in_bounds = positions < len(range_values)
         matches = np.zeros(len(selected_value_ids), dtype=np.bool_)
@@ -254,21 +387,15 @@ class _BucketReader:
         if len(selected_positions) == 0:
             return None
 
-        row_starts = np.asarray(
-            self._array("ranges/row_start")[range_start:range_stop],
-            dtype=np.uint64,
-        )[selected_positions]
-        row_counts = np.asarray(
-            self._array("ranges/row_count")[range_start:range_stop],
-            dtype=np.uint64,
-        )[selected_positions]
+        row_starts = index.range_row_start[range_start:range_stop][selected_positions]
+        row_counts = index.range_row_count[range_start:range_stop][selected_positions]
         # Each selected sparse range becomes a half-open, bucket-global row
         # interval into the aligned point arrays. These are neither range-array
         # indexes nor tile-local offsets.
         intervals = tuple((int(start), int(start + count)) for start, count in zip(row_starts, row_counts, strict=True))
         if any(start < tile_start or stop > tile_stop or start >= stop for start, stop in intervals):
             raise ValueError("Selected sparse ranges are outside the logical tile interval.")
-        return self._point_read_plan(intervals)
+        return intervals, sum(stop - start for start, stop in intervals)
 
     def _point_read_plan(self, intervals: tuple[tuple[int, int], ...]) -> _PointReadPlan:
         """Plan aligned Zarr reads for exact bucket-global row intervals.
@@ -340,7 +467,7 @@ class _BucketReader:
             None if point_parts is None else _concatenate_parts(point_parts, np.uint64),
         )
 
-    def _tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
+    def _construction_tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
         """Resolve and verify one tile's bucket-global point-row interval.
 
         The descriptor's bucket identity, local tile index, coordinates, and
@@ -380,6 +507,16 @@ class _BucketReader:
             raise ValueError("Tile descriptor count disagrees with the bucket offsets.")
         return start, stop
 
+    def _require_lookup_tile_index(self, descriptor: _TileDescriptor, index: _BucketLookupIndex) -> int:
+        if not isinstance(descriptor, _TileDescriptor):
+            raise ValueError("`descriptor` must be a _TileDescriptor.")
+        if (descriptor.level, descriptor.bucket_id) != (index.level, index.bucket_id):
+            raise ValueError("Tile descriptor belongs to a different bucket.")
+        tile_index = descriptor.bucket_tile_index
+        if tile_index >= index.tile_count:
+            raise ValueError("Tile descriptor bucket-local index is out of bounds.")
+        return tile_index
+
     @staticmethod
     def _require_selected_value_ids(value: npt.NDArray[np.uint32]) -> None:
         if not isinstance(value, np.ndarray):
@@ -417,6 +554,12 @@ class _BucketReader:
             raise RuntimeError("Bucket attributes are not open.")
         return self._attributes
 
+    def _lookup_index_or_raise(self) -> _BucketLookupIndex:
+        self._require_open()
+        if self._lookup_index is None:
+            raise RuntimeError("Bucket lookup index is not loaded; prime it before display reads.")
+        return self._lookup_index
+
     def _require_open(self) -> None:
         if not self._open:
             raise RuntimeError("Bucket reader is not open.")
@@ -428,8 +571,8 @@ class _BucketReader:
         self._root = None
         self._attributes = None
         self._arrays = {}
+        self._lookup_index = None
         self._open = False
-
 
 def _coalesced_read_blocks_for_intervals(
     intervals: tuple[tuple[int, int], ...],
