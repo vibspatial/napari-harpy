@@ -5850,7 +5850,8 @@ implementation loads them once while constructing the lookup index, it should
 use them for one-time reconciliation and need not retain duplicate coordinate
 buffers afterward.
 
-After loading, complete and selected bucket reads resolve intervals as:
+After loading, pure lookup operations resolve complete and selected tile
+requests into bucket-global point intervals as:
 
 ```text
 descriptor.bucket_tile_index
@@ -5867,6 +5868,22 @@ descriptor.bucket_tile_index
                     v
           exact selected point-row intervals
 ```
+
+Keep this boundary independent of physical point-array reading. Provisionally,
+the lookup-facing operations are:
+
+```text
+resolve_complete_tile_interval(descriptor)
+    -> (row_start, row_stop)
+
+resolve_selected_tile_intervals(descriptor, selected_value_ids)
+    -> exact point intervals + selected row count
+```
+
+The concrete names may follow the implementation, but both operations must be
+pure queries over the resident lookup arrays. They do not inspect point chunks,
+construct `_PointReadPlan`, choose between slice and integer row selections, or
+read `location`, point-level `value_id`, or `point_id`.
 
 No array in this flow may be sliced from Zarr after the bucket lookup index is
 resident. The only viewport-time Zarr selections should be from point payload
@@ -5928,11 +5945,21 @@ Refactor `_BucketReader` so:
 
 - opening still performs strict structural and array-layout checks;
 - an explicit operation loads and reconciles its `_BucketLookupIndex`;
-- `_tile_interval()` resolves `tile_offset` from the resident index;
-- selected read planning resolves `tile_indptr` and all range records from the
-  resident index;
+- complete-interval lookup resolves `tile_offset` from the resident index;
+- selected-interval lookup resolves `tile_indptr` and all range records from the
+  resident index and returns exact bucket-global intervals plus their logical
+  row count;
+- interval lookup remains independent of physical display-read planning and
+  point-array I/O;
 - runtime coordinate trust comes from the already loaded manifest descriptor;
 - closing the reader releases both Zarr objects and resident lookup buffers.
+
+Do not add another transient physical planner to Z12. Application-level chunk
+IDs, coalesced read blocks, per-tile orthogonal selectors,
+`batch_tile_indptr`, and point-payload caching are outside this slice. Z13 owns
+combining the intervals for all requested tiles in one bucket, choosing the
+slice-or-integer row representation, executing the coordinated Zarr selections,
+and splitting the result back into tile payloads.
 
 `_BucketReaderCache` remains the single owner of reader and lookup-index
 lifetime. The selected-value index and bucket indexes must not duplicate or own
@@ -5957,8 +5984,11 @@ Use real sharded Zarr buckets and cover:
 - over-budget rejection before range-array payload reads;
 - descriptor, pointer-terminal, monotonicity, range-bound, and generation
   reconciliation while the index is loaded;
-- logical equivalence of complete and selected reads before and after the
-  refactor;
+- logical equivalence of complete and selected interval resolution before and
+  after the refactor, including aligned selected row counts;
+- integration coverage showing that the existing tile-scoped point reader can
+  consume the resolved intervals without making interval resolution itself own
+  physical read planning;
 - instrumented proof that initialized viewport reads never slice `tile_x`,
   `tile_y`, `tile_offset`, or any `ranges/*` Zarr array;
 - instrumented proof that point arrays remain lazy and are not read by priming;
@@ -5976,9 +6006,10 @@ Reuse the retained cache without rebuilding it. Record:
 - retained and incremental peak RSS;
 - all-bucket versus active-level priming observations;
 - the same nine-L1-tile 100-value request with initialization and lookup loading
-  outside viewport timing;
-- instrumented Zarr selections proving that viewport planning reads point arrays
-  only;
+  outside viewport timing, explicitly labelled as a pre-Z13 tile-at-a-time
+  point-read baseline rather than Z12's final display-read architecture;
+- instrumentation proving that interval planning performs no Zarr selections
+  and that the subsequent viewport payload execution selects point arrays only;
 - first and repeated point-payload latency after lookup metadata is resident.
 
 This gate records observations without fixed thresholds. It must distinguish
@@ -5991,6 +6022,8 @@ codec caches.
   hidden viewport work;
 - selected and complete tile intervals come exclusively from resident bucket
   lookup indexes;
+- interval resolution performs no point-array I/O and creates no physical
+  point-read plan or row selector;
 - no viewport request rereads bucket tile or sparse-range metadata from Zarr;
 - point payload arrays remain lazy and chunked on disk;
 - lookup residency is immutable, generation-safe, explicitly byte-bounded, and
