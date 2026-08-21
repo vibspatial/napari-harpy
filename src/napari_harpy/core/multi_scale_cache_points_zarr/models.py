@@ -42,8 +42,9 @@ class _TileDescriptor:
     The descriptor is a construction result and later becomes one manifest row.
     Keeping ``bucket_tile_index`` in that row gives the runtime reader direct
     access to both tile pointer arrays without searching the bucket's coordinate
-    arrays. The reader still verifies that ``tile_x[i]`` and ``tile_y[i]`` match
-    the descriptor before returning point data.
+    arrays. Construction reads still reconcile ``tile_x[i]`` and ``tile_y[i]``;
+    visualization trusts the independently validated manifest coordinates and
+    uses the resident bucket lookup index directly.
 
     Value membership is deliberately absent. A tile can contain a variable and
     potentially large number of distinct ``value_id`` values; duplicating them

@@ -61,14 +61,6 @@ class _PointDisplayPayload:
 
 
 @dataclass(frozen=True)
-class _PointReadPlan:
-    """Describe exact rows and minimal coalesced Zarr read envelopes."""
-
-    intervals: tuple[tuple[int, int], ...]
-    blocks: tuple[tuple[int, int], ...]
-
-
-@dataclass(frozen=True)
 class _BucketLookupIndex:
     """Retain one bucket's immutable metadata-to-point-row lookup.
 
@@ -230,10 +222,9 @@ class _BucketReader:
     def read_construction_payload(self, descriptor: _TileDescriptor) -> _PointPayload:
         """Read all aligned rows and mandatory point IDs for cache construction."""
         start, stop = self._construction_tile_interval(descriptor)
-        plan = self._point_read_plan(((start, stop),))
-        location, value_id, point_id = self._read_aligned_rows(plan, include_point_id=True)
-        if point_id is None:
-            raise RuntimeError("Construction reads must include point IDs.")
+        location = np.ascontiguousarray(self._array("location")[start:stop, :], dtype=np.float32)
+        value_id = np.ascontiguousarray(self._array("value_id")[start:stop], dtype=np.uint32)
+        point_id = np.ascontiguousarray(self._array("point_id")[start:stop], dtype=np.uint64)
         return _PointPayload(
             x_rel=np.ascontiguousarray(location[:, 0]),
             y_rel=np.ascontiguousarray(location[:, 1]),
@@ -246,61 +237,112 @@ class _BucketReader:
         descriptor: _TileDescriptor,
         selected_value_ids: npt.NDArray[np.uint32] | None = None,
     ) -> _PointDisplayPayload | None:
-        """Read exact display rows while decoding each touched chunk once.
+        """Read one display payload through the canonical plural batch path."""
+        return self.read_display_payloads(((descriptor, selected_value_ids),))[0]
 
-        ``None`` reads every point row in the logical tile. For selected values,
-        sparse range records identify the exact bucket-global rows, while Zarr
-        decompresses at inner-chunk granularity. Reading every range separately
-        could therefore decode the same chunk repeatedly. The selected path
-        performs the following conversion::
+    def read_display_payloads(
+        self,
+        requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
+    ) -> tuple[_PointDisplayPayload | None, ...]:
+        """Read all requested logical tiles as one coordinated bucket batch.
 
-            selected sparse ranges
-                -> exact point-row intervals
-                -> touched inner-chunk IDs
-                -> groups of overlapping or consecutive touched chunks
-                -> one minimal row-envelope read per group and aligned array
-                -> exact selected rows extracted from those blocks
-
-        A coalesced read may include unselected rows between selected intervals,
-        but its outer bounds remain the first and last exact selected rows. Only
-        exact selected rows enter the returned arrays. Complete and selected
-        reads slice only aligned ``location`` and ``value_id`` arrays; the
-        point-ID payload is never read or decoded.
+        Every request first resolves to exact bucket-global point intervals from
+        the resident lookup index. Physically touching intervals become one
+        basic slice; otherwise one exact C-contiguous ``int64`` row selector is
+        used. Both representations pass through Zarr's orthogonal-selection API,
+        resulting in one ``location`` and one point-level ``value_id`` selection
+        for the complete nonempty batch. Point IDs are never selected.
 
         Parameters
         ----------
-        descriptor
-            Identity and expected point count of the logical tile.
-        selected_value_ids
-            Optional strictly increasing unique value IDs to retrieve. ``None``
-            reads every value in the tile.
+        requests
+            Nonempty tuple of ``(descriptor, selected_value_ids)`` pairs from
+            this bucket in increasing bucket-local tile order. ``None`` selects
+            every point in that tile; otherwise the IDs must be strictly
+            increasing and unique.
 
         Returns
         -------
-        _PointDisplayPayload or None
-            Exact aligned display rows, or ``None`` when a selected-value
-            request finds no requested value in the tile.
+        tuple of _PointDisplayPayload or None
+            Results aligned with ``requests``. ``None`` denotes a selected-value
+            request for which the logical tile contains no requested value.
 
         Notes
         -----
-        ``load_lookup_index()`` must have completed before this method is
-        called. There is no viewport-time fallback to Zarr lookup arrays.
+        ``load_lookup_index()`` must have completed first. The transient
+        ``batch_tile_indptr`` constructed here partitions the returned point
+        arrays by request; it is unrelated to the persisted sparse-range
+        ``tile_indptr``.
         """
-        if selected_value_ids is None:
-            intervals = (self.resolve_complete_tile_interval(descriptor),)
-        else:
-            resolved = self.resolve_selected_tile_intervals(descriptor, selected_value_ids)
-            if resolved is None:
-                return None
-            intervals, _ = resolved
-        plan = self._point_read_plan(intervals)
-        location, value_id, point_id = self._read_aligned_rows(plan, include_point_id=False)
-        if point_id is not None:
-            raise RuntimeError("Visualization reads must not include point IDs.")
-        return _PointDisplayPayload(
-            location=location,
-            value_id=value_id,
+        if not isinstance(requests, tuple) or not requests:
+            raise ValueError("`requests` must be a nonempty tuple.")
+
+        batch_tile_indptr = np.empty(len(requests) + 1, dtype=np.uint64)
+        batch_tile_indptr[0] = 0
+        exact_intervals: list[tuple[int, int]] = []
+        rows_resolved = 0
+        previous_tile_index: int | None = None
+        for request_index, request in enumerate(requests):
+            if not isinstance(request, tuple) or len(request) != 2:
+                raise ValueError("Every display request must be a (descriptor, selected_value_ids) pair.")
+            descriptor, selected_value_ids = request
+            if selected_value_ids is None:
+                interval = self.resolve_complete_tile_interval(descriptor)
+                tile_intervals = (interval,)
+                tile_row_count = interval[1] - interval[0]
+            else:
+                resolved = self.resolve_selected_tile_intervals(descriptor, selected_value_ids)
+                if resolved is None:
+                    tile_intervals = ()
+                    tile_row_count = 0
+                else:
+                    tile_intervals, tile_row_count = resolved
+            tile_index = descriptor.bucket_tile_index
+            if previous_tile_index is not None and tile_index <= previous_tile_index:
+                raise ValueError("Display requests must follow increasing bucket-local tile order.")
+            previous_tile_index = tile_index
+            exact_intervals.extend(tile_intervals)
+            rows_resolved += tile_row_count
+            batch_tile_indptr[request_index + 1] = rows_resolved
+
+        if rows_resolved == 0:
+            return (None,) * len(requests)
+
+        row_selection = _exact_row_selection(
+            tuple(exact_intervals),
+            point_count=self._attributes_or_raise().point_count,
+            expected_row_count=rows_resolved,
         )
+        location = np.ascontiguousarray(
+            self._array("location").get_orthogonal_selection((row_selection, slice(None))),
+            dtype=np.float32,
+        )
+        value_id = np.ascontiguousarray(
+            self._array("value_id").get_orthogonal_selection((row_selection,)),
+            dtype=np.uint32,
+        )
+        if location.shape != (rows_resolved, 2) or value_id.shape != (rows_resolved,):
+            raise RuntimeError("Bucket display selection returned unexpected aligned array shapes.")
+
+        # Split the combined Zarr result back into request-aligned tile payloads.
+        # For example, indptr [0, 3, 3, 8] maps the three requests to rows
+        # [0:3], no selected rows, and [3:8]. These NumPy slices are views whose
+        # backing storage remains the shared batch arrays; no point rows are
+        # fetched again or copied merely to create the per-tile payloads.
+        payloads: list[_PointDisplayPayload | None] = []
+        for tile_start, tile_stop in zip(batch_tile_indptr[:-1], batch_tile_indptr[1:], strict=True):
+            start = int(tile_start)
+            stop = int(tile_stop)
+            if start == stop:
+                payloads.append(None)
+                continue
+            payloads.append(
+                _PointDisplayPayload(
+                    location=location[start:stop, :],
+                    value_id=value_id[start:stop],
+                )
+            )
+        return tuple(payloads)
 
     @property
     def projected_lookup_bytes(self) -> int:
@@ -396,76 +438,6 @@ class _BucketReader:
         if any(start < tile_start or stop > tile_stop or start >= stop for start, stop in intervals):
             raise ValueError("Selected sparse ranges are outside the logical tile interval.")
         return intervals, sum(stop - start for start, stop in intervals)
-
-    def _point_read_plan(self, intervals: tuple[tuple[int, int], ...]) -> _PointReadPlan:
-        """Plan aligned Zarr reads for exact bucket-global row intervals.
-
-        The caller supplies the exact nonempty point rows that must be returned
-        from one logical tile. This method coalesces intervals whose touched
-        chunks overlap or are consecutive into minimal Zarr slice envelopes,
-        preventing repeated decoding of the same inner chunk while leaving
-        gaps containing untouched chunks unread.
-
-        The returned ``intervals`` remain the exact output rows, whereas
-        ``blocks`` are the physical slices consumed by ``_read_aligned_rows``.
-        No point payload arrays are read here.
-
-        Parameters
-        ----------
-        intervals
-            Exact half-open row bounds into the aligned bucket-wide point
-            arrays. Callers have already verified that they are nonempty and
-            lie inside one logical tile.
-
-        Returns
-        -------
-        _PointReadPlan
-            Exact output intervals and coalesced physical read blocks.
-        """
-        value_array = self._array("value_id")
-        chunk_rows = value_array.chunks[0]
-        blocks = _coalesced_read_blocks_for_intervals(intervals, chunk_rows=chunk_rows)
-        return _PointReadPlan(
-            intervals=intervals,
-            blocks=blocks,
-        )
-
-    def _read_aligned_rows(
-        self,
-        plan: _PointReadPlan,
-        *,
-        include_point_id: bool,
-    ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.uint32], npt.NDArray[np.uint64] | None]:
-        location_parts: list[np.ndarray] = []
-        value_parts: list[np.ndarray] = []
-        point_parts: list[np.ndarray] | None = [] if include_point_id else None
-        # Read each coalesced envelope once to avoid repeated Zarr chunk
-        # decoding, then append only its exact selected intervals.
-        for block_start, block_stop in plan.blocks:
-            location = np.asarray(self._array("location")[block_start:block_stop, :], dtype=np.float32)
-            values = np.asarray(self._array("value_id")[block_start:block_stop], dtype=np.uint32)
-            points = (
-                np.asarray(self._array("point_id")[block_start:block_stop], dtype=np.uint64)
-                if include_point_id
-                else None
-            )
-            for interval_start, interval_stop in plan.intervals:
-                if interval_stop <= block_start or interval_start >= block_stop:
-                    continue
-                local_start = max(interval_start, block_start) - block_start
-                local_stop = min(interval_stop, block_stop) - block_start
-                location_parts.append(np.ascontiguousarray(location[local_start:local_stop, :]))
-                value_parts.append(np.ascontiguousarray(values[local_start:local_stop]))
-                if point_parts is not None:
-                    if points is None:
-                        raise RuntimeError("Point-ID rows were not read for a construction payload.")
-                    point_parts.append(np.ascontiguousarray(points[local_start:local_stop]))
-
-        return (
-            _concatenate_location_parts(location_parts),
-            _concatenate_parts(value_parts, np.uint32),
-            None if point_parts is None else _concatenate_parts(point_parts, np.uint64),
-        )
 
     def _construction_tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
         """Resolve and verify one tile's bucket-global point-row interval.
@@ -574,53 +546,75 @@ class _BucketReader:
         self._lookup_index = None
         self._open = False
 
-def _coalesced_read_blocks_for_intervals(
+
+def _exact_row_selection(
     intervals: tuple[tuple[int, int], ...],
     *,
-    chunk_rows: int,
-) -> tuple[tuple[int, int], ...]:
-    """Return minimal row envelopes for connected touched-chunk runs.
+    point_count: int,
+    expected_row_count: int,
+) -> slice | npt.NDArray[np.int64]:
+    """Return the cheapest exact row selector for one bucket batch.
 
-    The input intervals are half-open bucket-global point-row bounds. Overlapping
-    touched-chunk spans share one read to prevent repeated decoding; consecutive
-    spans also share one read to reduce Zarr slice requests, while gaps between
-    untouched chunks remain separate. Each returned block retains the first and
-    last exact interval bounds rather than expanding them to the outer chunk
-    edges. The caller has already verified that the nonempty intervals remain
-    within one logical tile.
+    The input consists of ordered, nonoverlapping, half-open bucket row
+    intervals. Selection follows this policy::
 
-    Examples
-    --------
-    With four rows per chunk, ``(1, 2)`` and ``(3, 4)`` both touch chunk 0,
-    so they become one exact read envelope, ``(1, 4)``. The interval
-    ``(8, 9)`` touches chunk 2 and remains separate because chunk 1 is not
-    touched. The resulting blocks are therefore ``((1, 4), (8, 9))``.
+        exact half-open intervals
+                   |
+                   v
+        merge only intervals whose boundaries touch
+                   |
+                   v
+        one resulting interval?
+            yes -> slice(start, stop)
+            no  -> exact C-contiguous int64 row array
+
+    Touching intervals can be merged without selecting unrelated rows. Gaps are
+    never filled merely to form a larger slice. Consequently, the returned
+    selector always addresses exactly ``expected_row_count`` point rows.
+
+    The slice specialization avoids allocating an ``int64`` row array and lets
+    Zarr use its cheaper contiguous-selection path for complete tiles and other
+    genuinely contiguous batches. Disjoint selections still use one orthogonal
+    integer selector so Zarr can coordinate the complete bucket batch without
+    materializing the rows inside its gaps.
+
+    Intervals must be nonempty, ordered, nonoverlapping, and contained within
+    the bucket's point arrays. This function also reconciles their total length
+    with ``expected_row_count`` before returning a selector.
     """
-    ordered = sorted(intervals, key=lambda interval: interval[0])
-    block_start, block_stop = ordered[0]
-    last_chunk = (block_stop - 1) // chunk_rows
-    blocks: list[tuple[int, int]] = []
-    for start, stop in ordered[1:]:
-        first_chunk = start // chunk_rows
-        interval_last_chunk = (stop - 1) // chunk_rows
-        if first_chunk > last_chunk + 1:
-            blocks.append((block_start, block_stop))
-            block_start, block_stop = start, stop
-            last_chunk = interval_last_chunk
-            continue
-        block_stop = max(block_stop, stop)
-        last_chunk = max(last_chunk, interval_last_chunk)
-    blocks.append((block_start, block_stop))
-    return tuple(blocks)
+    if not intervals:
+        raise ValueError("`intervals` must be nonempty.")
+    merged: list[tuple[int, int]] = []
+    observed_row_count = 0
+    previous_stop: int | None = None
+    for interval in intervals:
+        if not isinstance(interval, tuple) or len(interval) != 2:
+            raise ValueError("Every point interval must be a (start, stop) pair.")
+        start, stop = interval
+        if not isinstance(start, int) or not isinstance(stop, int) or not 0 <= start < stop <= point_count:
+            raise ValueError("Point intervals must be nonempty and lie inside the bucket point arrays.")
+        if previous_stop is not None and start < previous_stop:
+            raise ValueError("Point intervals must be ordered and nonoverlapping.")
+        observed_row_count += stop - start
+        if previous_stop is not None and start == previous_stop:
+            merged[-1] = (merged[-1][0], stop)
+        else:
+            merged.append((start, stop))
+        previous_stop = stop
+    if observed_row_count != expected_row_count:
+        raise ValueError("Point intervals do not reconcile to the expected batch row count.")
 
+    if len(merged) == 1:
+        start, stop = merged[0]
+        return slice(start, stop)
 
-def _concatenate_parts(parts: list[np.ndarray], dtype: npt.DTypeLike) -> np.ndarray:
-    if len(parts) == 1:
-        return np.ascontiguousarray(parts[0], dtype=dtype)
-    return np.ascontiguousarray(np.concatenate(parts), dtype=dtype)
-
-
-def _concatenate_location_parts(parts: list[np.ndarray]) -> npt.NDArray[np.float32]:
-    if len(parts) == 1:
-        return np.ascontiguousarray(parts[0], dtype=np.float32)
-    return np.ascontiguousarray(np.concatenate(parts, axis=0), dtype=np.float32)
+    # Begin with output positions and shift each destination segment in place to
+    # its bucket-global interval. This fills one selector allocation without
+    # constructing one Python integer per returned point.
+    selected_rows = np.arange(observed_row_count, dtype=np.int64)
+    cursor = 0
+    for start, stop in merged:
+        count = stop - start
+        selected_rows[cursor : cursor + count] += start - cursor
+        cursor += count
+    return selected_rows

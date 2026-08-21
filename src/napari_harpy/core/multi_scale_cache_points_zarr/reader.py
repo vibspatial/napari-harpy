@@ -529,7 +529,18 @@ class _PointsCacheReader:
         *,
         value_ids: npt.NDArray[np.uint32] | None = None,
     ) -> _TileReadResult | None:
-        """Read one tile whose bucket lookup index was explicitly primed."""
+        """Conveniently read one explicitly addressed tile.
+
+        This singleton API is retained for diagnostics, acceptance checks, and
+        callers that genuinely need exactly one known logical tile. It delegates
+        to the canonical bucket-batch reader as a one-request batch and does not
+        define a separate physical-read path.
+
+        Do not loop over this method to fetch viewport or other multi-tile data.
+        Such consumers must use :meth:`read_viewport`, which groups all logical
+        requests by bucket and preserves coordinated Zarr selection. The target
+        bucket's lookup index must have been explicitly primed before this call.
+        """
         metadata = self._require_level(level)
         _require_integer_in_range(tile_x, "tile_x", maximum=metadata.grid_width - 1)
         _require_integer_in_range(tile_y, "tile_y", maximum=metadata.grid_height - 1)
@@ -1357,6 +1368,33 @@ class _PointsCacheReader:
         level: int,
         requests: tuple[tuple[int, npt.NDArray[np.uint32] | None], ...],
     ) -> _ViewportReadResult:
+        """Read manifest-addressed tiles through one batched call per bucket.
+
+        A manifest request remains one logical tile request. This method groups
+        those requests by physical ``(level, bucket_id)`` and makes exactly one
+        ``read_display_payloads`` call for each nonempty bucket group. The call
+        contains every requested tile in that bucket; the bucket reader performs
+        coordinated point-array selections and returns one result per tile. The
+        resulting tile payloads are finally restored to the original manifest
+        request order::
+
+            manifest tile requests
+                    -> group by (level, bucket_id)
+                    -> one reader call per bucket, containing all its tiles
+                    -> one payload per logical tile
+                    -> restore original request order
+
+        Buckets are processed sequentially. Batching here concerns the tiles
+        within each bucket and does not introduce cross-bucket concurrency.
+
+        This bucket-local batching is deliberate. Reading every tile through a
+        separate Zarr selection would repeat selection dispatch and make the
+        caller wait for one tile before requesting the next. One bucket batch
+        instead presents all exact requested rows to each aligned point array at
+        once, allowing Zarr to coordinate work across the touched chunks and
+        shards. The batch never spans buckets because each bucket is an
+        independent Zarr store with its own reader and row-coordinate space.
+        """
         # Group logical tile requests by physical bucket so each bucket reader is
         # acquired once; restore the original manifest-request order after reading.
         grouped: dict[tuple[int, int], list[tuple[int, npt.NDArray[np.uint32] | None]]] = {}
@@ -1367,11 +1405,17 @@ class _PointsCacheReader:
         results: dict[int, _TileReadResult] = {}
         for (bucket_level, bucket_id), bucket_requests in grouped.items():
             reader = self._bucket_cache_or_raise().get(level=bucket_level, bucket_id=bucket_id)
-            for manifest_row, selected in bucket_requests:
-                descriptor = self._descriptors[manifest_row]
-                payload = reader.read_display_payload(descriptor, selected)
+            # This is one physical-reader call for the bucket, not one call per
+            # tile. Its tuple retains every logical tile request in the group.
+            # Manifest rows remain a catalog concern, so the physical reader
+            # receives only bucket-local descriptors and selections.
+            payloads = reader.read_display_payloads(
+                tuple((self._descriptors[manifest_row], selected) for manifest_row, selected in bucket_requests)
+            )
+            for (manifest_row, _), payload in zip(bucket_requests, payloads, strict=True):
                 if payload is None:
                     raise ValueError("Catalog selected a tile whose bucket contains none of the requested values.")
+                descriptor = self._descriptors[manifest_row]
                 results[manifest_row] = self._tile_result(descriptor, payload)
 
         ordered_tiles = tuple(results[manifest_row] for manifest_row, _ in requests)
