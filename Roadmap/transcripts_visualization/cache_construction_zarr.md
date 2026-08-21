@@ -1011,8 +1011,10 @@ The dependency sequence is:
 | Z8 | guarded end-to-end build and publication | Z7 |
 | Z9 | acceptance reader and full-Xenium evaluation | Z8 |
 | Z10 | batched multi-value catalog lookup | Z9 |
-| Z11 | prepared selected-value runtime index | Z10 |
-| Z12 | explicit architecture-adoption decision | Z11 |
+| Z11 | resident selected-value runtime index | Z10 |
+| Z12 | resident bucket lookup indexes and eager reader initialization | Z11 |
+| Z13 | bucket-wide batched point-payload reads | Z12 |
+| Z14 | explicit architecture-adoption decision | Z13 |
 
 No slice depends on an adapted Parquet point writer or a compatibility reader.
 
@@ -4158,7 +4160,7 @@ generations. Z8 is a lifecycle coordinator over the already implemented Z1--Z7
 primitives; it does not introduce a new point format, sampler, catalog, or
 validation algorithm.
 
-Keep the builder private until Z12 decides whether to adopt this architecture.
+Keep the builder private until Z14 decides whether to adopt this architecture.
 Add:
 
 ```text
@@ -5125,7 +5127,7 @@ requiring a Parquet comparison run.
 If the evidence supports adoption, record the format and physical settings as
 the recommended Phase 2 input. If it does not, record the measured reason and
 recommend retaining the existing implementation. Z9 produces the evidence and
-recommendation; Z12 owns the explicit architecture-adoption decision and any
+recommendation; Z14 owns the explicit architecture-adoption decision and any
 follow-up archival or integration plan. Do not add a fallback path in either
 case.
 
@@ -5209,7 +5211,7 @@ The two-million-point bucket target remains the recommendation for this
 baseline. Store-open work was visible but practical: one application-cold
 selected request opened one bucket, and its repeat saved about 9 ms. The
 observed metadata and handle behavior does not justify paying for a second
-full-scale ten-million-point build before Z12. Inner-chunk amplification, not
+full-scale ten-million-point build before Z14. Inner-chunk amplification, not
 the number of bucket directories alone, dominates the smallest sparse reads;
 for example, a single selected row still decodes one 4,096-row inner chunk.
 
@@ -5218,7 +5220,7 @@ the builder completed with bounded memory, the published artifact reopened
 quickly, normal all-values access remained practical for representative tiles
 and viewports, and sparse selection avoided unrelated point rows and point IDs.
 The subsequent budget-first selected-value revision is frozen by focused tests.
-Z12 still owns the explicit architecture-adoption decision.
+Z14 still owns the explicit architecture-adoption decision.
 
 #### Exit criteria
 
@@ -5237,7 +5239,7 @@ Z12 still owns the explicit architecture-adoption decision.
 - its useful and non-useful cases are documented honestly;
 - all-values access remains practical for the planned viewer;
 - baseline and optional bucket-target evidence are isolated and reproducible;
-- one evidence-backed recommendation is ready for the explicit Z12 decision.
+- one evidence-backed recommendation is ready for the explicit Z14 decision.
 
 ### Slice Z10: batch and coalesce multi-value catalog lookup — resolved
 
@@ -5414,7 +5416,10 @@ is justified by this gate alone.
 - the full-Xenium evaluation documents whether many-value planning is practical
   for viewer integration.
 
-### Slice Z11: prepare a selected-value runtime index
+### Slice Z11: load a selected-value runtime index — resolved
+
+**Status:** implemented with focused verification and evaluated against the
+retained 136,578,750-point Xenium cache on 2026-08-20.
 
 #### Goal
 
@@ -5434,14 +5439,14 @@ boundary explicit before napari integration.
 #### Relationship to Z10
 
 Z11 does not replace the Z10 physical lookup work. It moves that work from
-every viewport change to one explicit selection-preparation boundary:
+every viewport change to one explicit selected-index loading boundary:
 
 ```text
 Z10 interval resolution + shard-bounded block reading
         |
         | run once when selected value IDs change
         v
-Z11 immutable prepared selection
+Z11 immutable resident selected-value index
         |
         | reuse for every accepted viewport change
         v
@@ -5458,16 +5463,16 @@ Retain and reuse the Z10 contracts that:
   selected interval.
 
 Refactor the current Z10 block-reading portion into a viewport-independent
-preparation primitive where necessary. The existing on-disk
+index-loading primitive where necessary. The existing on-disk
 `_value_filtered_manifest_summary()` and `_value_filtered_manifest()` flows must not
 remain as alternative viewport-time paths: their logical aggregation and
-tile-mapping responsibilities move to operations over the prepared arrays.
-After Z11, there is one selected-value runtime architecture, not a prepared fast
+tile-mapping responsibilities move to operations over the resident index arrays.
+After Z11, there is one selected-value runtime architecture, not an indexed fast
 path alongside a synchronous fallback. A raw-value convenience helper may exist
-only when it is explicitly named and documented as performing preparation I/O;
+only when it is explicitly named and documented as loading the index from storage;
 it must not be callable accidentally from camera-driven planning.
 
-#### Explicit preparation boundary
+#### Explicit index-loading boundary
 
 Separate selection-dependent catalog I/O from viewport-dependent policy:
 
@@ -5475,10 +5480,10 @@ Separate selection-dependent catalog I/O from viewport-dependent policy:
 selected value IDs change
         |
         v
-prepare selected-value index       catalog Zarr I/O is allowed here
+load selected-value index          catalog Zarr I/O is allowed here
         |
         v
-immutable prepared selection
+immutable resident selected-value index
         |
         +------------------------------+
         |                              |
@@ -5487,20 +5492,19 @@ select LOD for viewport          discover positive viewport tiles
 catalog-I/O-free                 no repeated value_tiles reads
 ```
 
-Introduce one explicit preparation operation, provisionally:
+Introduce one explicit index-loading operation:
 
 ```python
-prepare_value_selection(
+load_selected_value_index(
     value_ids,
     *,
     max_resident_bytes,
-) -> _PreparedValueSelection | None
+) -> _SelectedValueIndex | None
 ```
 
-The exact private names may be refined during implementation, but the semantic
-boundary is frozen:
+The API and semantic boundary are:
 
-- preparation accepts the same sorted, unique `uint32` value IDs as Z9--Z10;
+- index loading accepts the same sorted, unique `uint32` value IDs as Z9--Z10;
 - it uses the Z10 shard-bounded block reader to load every serialized level;
 - it discards unselected envelope gaps after decoding and retains only exact
   selected catalog records;
@@ -5513,21 +5517,21 @@ boundary is frozen:
 Do not hide first-use I/O inside a nominally pure planner. A synchronous helper
 may remain for focused acceptance use only if its name makes the I/O explicit;
 the production-facing viewport contract must require either `None` for all
-values or an already prepared selection.
+values or an already loaded selected-value index.
 
-#### Prepared representation
+#### Resident index representation
 
 Use a small immutable root object and one immutable record set per serialized
 level. The recommended logical representation is:
 
 ```text
-_PreparedValueSelection
+_SelectedValueIndex
   cache_generation_id
   value_ids                 # (S,) read-only uint32
-  levels                    # tuple[_PreparedValueLevel, ...]
+  levels                    # tuple[_SelectedValueLevelIndex, ...]
   resident_bytes
 
-_PreparedValueLevel
+_SelectedValueLevelIndex
   value_indptr              # (S + 1,) read-only uint64
   manifest_index            # (R,) read-only uint64
   n_points                  # (R,) read-only uint64
@@ -5536,19 +5540,19 @@ _PreparedValueLevel
 Records remain grouped by the caller's selected-value order. `value_indptr`
 preserves empty value intervals and resolves each selected value without a
 per-record value-ID array. `manifest_index` uses the global manifest row so the
-same prepared object can serve both LOD counts and positive-tile discovery.
+same index can serve both LOD counts and positive-tile discovery.
 All arrays must be C-contiguous, read-only, and validated when the object is
 constructed.
 
 The retained record count and byte cost are known before catalog payload I/O:
 the resident `value_tiles/indptr` supplies every exact interval length. Reject a
-preparation request before reading the large catalog arrays if its projected
+index-loading request before reading the large catalog arrays if its projected
 representation exceeds the caller-supplied positive byte budget. Do not fall
 back to synchronous per-viewport Zarr reads, silently broaden the selection, or
-retain a partially prepared object.
+retain a partially loaded index.
 
 An explicit selection containing every canonical value is normalized to the
-existing all-values `None` path and does not construct a prepared index. Other
+existing all-values `None` path and does not construct a selected-value index. Other
 dense explicit selections preserve their exact meaning and must satisfy the
 configured byte budget or fail explicitly. The later viewer owns the user-facing
 policy for such a failure.
@@ -5562,23 +5566,27 @@ The current Xenium catalog provides useful scale evidence for the two core
 | 100 most abundant | 1,307,246 | 19.95 MiB |
 | all 5,122 | 29,787,508 | 454.52 MiB |
 
-The final resident total also includes per-level pointers, value IDs, Python
-owners, and any lookup workspace. Report the complete `resident_bytes`; do not
-describe the two-array values above as total process memory.
+The final deterministic `resident_bytes` total includes the retained value IDs,
+every per-level pointer array, and both per-level record arrays. It deliberately
+counts owned NumPy buffer bytes rather than platform-dependent Python object
+headers. Report process RSS separately so temporary decoding workspace and
+Python/NumPy ownership overhead are not mistaken for retained index buffers. Do
+not describe the two-array values above as either complete `resident_bytes` or
+total process memory.
 
 #### Runtime consumption
 
 Refactor the selected-value planning path so its frequent operation consumes a
-prepared selection rather than raw value IDs:
+selected-value index rather than raw value IDs:
 
 1. compute visible manifest rows from the resident manifest arrays;
-2. intersect those rows with the prepared level records in memory;
+2. intersect those rows with the indexed level records in memory;
 3. derive per-selected-value counts, the positive-tile union, omitted-value
    evidence, and the budget-first LOD decision;
-4. reuse the same prepared level records to map positive manifest tiles to the
+4. reuse the same indexed level records to map positive manifest tiles to the
    selected values required by bucket-local sparse-range reads.
 
-Repeated viewport planning for one prepared selection must not call
+Repeated viewport planning for one selected-value index must not call
 `CatalogReader.array(...)`, slice `value_tiles/manifest_index` or
 `value_tiles/n_points`, open a bucket reader, or read a point payload. Viewport
 payload loading is still I/O by definition, but it must not repeat the
@@ -5586,37 +5594,37 @@ cache-wide selected-value catalog lookup before opening the already identified
 positive buckets.
 
 All-values planning remains unchanged: it sums resident `manifest/n_points`
-rows and does not create a prepared selection. The prepared index does not alter
+rows and does not create a selected-value index. The index does not alter
 the budget-first policy, sampled-value omission semantics, complete-tile
 viewport convention, or persisted cache format.
 
 #### Ownership and lifecycle
 
-Keep the prepared object explicit rather than storing one hidden mutable
+Keep the selected-value index explicit rather than storing one hidden mutable
 "current selection" on `_PointsCacheReader`. Its identity includes the cache
 generation and normalized selected value IDs. Reader operations reject an index
 from a different generation.
 
-Z11 implements the immutable preparation and consumption contracts, not the
+Z11 implements the immutable index-loading and consumption contracts, not the
 complete Phase 2 scheduler or cache manager. The later runtime should:
 
-- prepare a new selection away from the UI thread;
-- keep the previous render snapshot active until preparation and payload reads
+- load a new selected-value index away from the UI thread;
+- keep the previous render snapshot active until index loading and payload reads
   for the new generation are ready;
-- pin the active prepared selection;
-- optionally retain recent prepared selections in a byte-bounded LRU keyed by
+- pin the active selected-value index;
+- optionally retain recent selected-value indexes in a byte-bounded LRU keyed by
   `(cache_generation_id, selection_key)`;
 - coalesce camera events, apply LOD hysteresis, and reject stale results.
 
 Do not add an unbounded decoded-catalog cache in this slice. The explicit
-prepared object and `resident_bytes` accounting allow the Phase 2 owner to apply
+index object and `resident_bytes` accounting allow the Phase 2 owner to apply
 one coherent memory policy without duplicating hidden caches inside the reader.
 
 #### Focused tests
 
 Use real sharded Zarr catalogs and cover:
 
-- preparation of one, adjacent, separated, sampled-away, and multi-value
+- index loading for one, adjacent, separated, sampled-away, and multi-value
   selections;
 - preservation of empty intervals and caller-order count alignment;
 - exact logical equivalence with the existing Z10 results for several
@@ -5624,10 +5632,10 @@ Use real sharded Zarr catalogs and cover:
 - immutable C-contiguous arrays and complete resident-byte accounting;
 - projected over-budget rejection before either large catalog array is sliced;
 - normalization of the complete canonical value set to the all-values path;
-- rejection of a prepared selection from another cache generation;
+- rejection of a selected-value index from another cache generation;
 - instrumented proof that repeated selected-value `select_level()` calls over
   changing viewports perform zero Zarr selections and open zero buckets;
-- instrumented proof that selected `read_viewport()` reuses the prepared tile
+- instrumented proof that selected `read_viewport()` reuses the indexed tile
   mapping and does not reread either cache-wide `value_tiles` array;
 - no change to bucket-local sparse point-range correctness.
 
@@ -5638,41 +5646,674 @@ Do not put timing thresholds in unit tests.
 Reuse the retained Z9 cache. For one, ten, and one hundred selected values,
 record separately:
 
-- one-time preparation latency;
+- one-time index-loading latency;
 - projected and actual resident bytes;
 - decoded envelopes, exact retained records, blocks, chunks, and peak temporary
-  memory during preparation;
-- repeated full and partial viewport LOD-planning latency after preparation;
-- positive-tile discovery latency after preparation;
+  memory during index loading;
+- repeated full and partial viewport LOD-planning latency after index loading;
+- positive-tile discovery latency after index loading;
 - instrumented catalog Zarr selections during each repeated viewport operation,
   which must be zero.
 
 Exercise a sequence of overlapping pan and zoom viewports through the same
-prepared object. This is a backend evaluation, not a simulation of napari frame
+selected-value index. This is a backend evaluation, not a simulation of napari frame
 timing: record observations without fixed latency thresholds and do not claim
 interactive visual acceptance before Phase 2 integration.
 
+#### Implementation and Gate Z11 results
+
+The reader now exposes one explicit `load_selected_value_index(...)` catalog-I/O
+boundary. It calculates exact selected record counts and retained NumPy-buffer
+bytes from the resident `value_tiles/indptr` before opening either large catalog
+array. Over-budget requests therefore fail before catalog payload I/O. Selecting
+the complete canonical vocabulary normalizes to the existing all-values path.
+
+Index loading reuses the Z10 shard-bounded catalog envelopes and writes exact
+selected records into one immutable `_SelectedValueLevelIndex` per serialized level.
+Each level retains `value_indptr`, `manifest_index`, and `n_points`; the root
+`_SelectedValueIndex` retains the canonical value IDs and cache generation
+UUID. Every array owns its C-contiguous buffer and is read-only. Reader methods
+reject indexes from another generation.
+
+`select_level()` and `read_viewport()` now accept only `None` or an explicit
+selected-value index for their selected-value planning contract. The earlier
+on-disk `_value_filtered_manifest_summary()` and `_value_filtered_manifest()`
+viewport paths have been removed. Direct `read_tile(..., value_ids=...)` remains
+available because a known logical tile needs no cache-wide value-to-tile catalog
+discovery.
+
+Thirteen focused reader tests use real sharded Zarr catalogs. They cover one,
+adjacent, separated, sampled-away, and multi-value selections; immutable arrays;
+complete retained-byte accounting; over-budget rejection before catalog payload
+access; complete-vocabulary normalization; generation mismatch; LOD policy;
+bucket-local sparse correctness; and instrumented proof that repeated indexed
+`select_level()` and `read_viewport()` calls cannot reread either `value_tiles`
+payload array.
+
+The retained nine-level Xenium cache was evaluated without rebuilding it. The
+selected sets are the 1, 10, and 100 most abundant values. Index-loading timings
+are single current-tree observations; RSS sampling used a 10 ms interval. The
+catalog-envelope figures cover all nine levels.
+
+| selected values | index load | retained records | decoded envelope rows | envelopes | chunks | `resident_bytes` | incremental peak RSS |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 117 ms | 15,087 | 15,087 | 9 | 9 | 0.23 MiB | 0.19 MiB |
+| 10 | 247 ms | 138,121 | 652,281 | 31 | 38 | 2.11 MiB | 7.72 MiB |
+| 100 | 570 ms | 1,307,246 | 9,905,147 | 107 | 243 | 19.95 MiB | 72.33 MiB |
+
+Projected and actual `resident_bytes` agreed exactly in every case. The larger
+RSS deltas correctly include final retained arrays, temporary decoded envelopes,
+copy/freeze workspace, codec state, and sampling noise. In particular, the
+100-value index load reads substantially more envelope rows than it retains;
+that bounded amplification is now paid once per value-selection change rather
+than once per camera change.
+
+Three overlapping full and partial viewports were then evaluated through each
+selected-value index with a 100,000-point runtime budget:
+
+| selected values | LOD planning range | positive-tile discovery range | runtime catalog Zarr selections |
+| ---: | ---: | ---: | ---: |
+| 1 | 0.34--0.67 ms | 0.098--0.100 ms | 0 |
+| 10 | 1.00--1.44 ms | 0.059--0.072 ms | 0 |
+| 100 | 7.72--9.89 ms | 0.373--0.400 ms | 0 |
+
+This establishes the intended boundary: selection changes may perform a
+noticeable, memory-bounded index load away from the UI thread, while repeated
+viewport planning over the unchanged selection is an in-memory operation. The
+measurements are backend evidence, not fixed UI timing thresholds or a claim
+about complete napari frame latency.
+
 #### Exit criteria
 
-- selected-value catalog I/O occurs once at the explicit preparation boundary,
+- selected-value catalog I/O occurs once at the explicit index-loading boundary,
   not once per viewport change;
 - selected LOD planning is a pure in-memory operation over resident manifest
-  arrays and the prepared selection;
-- positive-tile discovery reuses the same prepared records without a second
+  arrays and the selected-value index;
+- positive-tile discovery reuses the same indexed records without a second
   cache-wide lookup;
-- preparation is immutable, generation-safe, and byte-bounded;
+- the loaded index is immutable, generation-safe, and byte-bounded;
 - all-values planning continues to bypass the selected-value index;
 - focused tests and the retained Xenium evaluation demonstrate zero catalog
   Zarr reads during repeated viewport planning.
 
-### Slice Z12: architecture-adoption decision
+### Slice Z12: load resident bucket lookup indexes
+
+#### Goal
+
+Remove bucket initialization and sparse-range metadata reads from the viewport
+hot path. Keep bucket readers alive for the cache-reader lifetime, explicitly
+initialize them away from the UI thread, and materialize the bucket-local tile
+and value-range lookup arrays as immutable, byte-accounted NumPy indexes. Point
+payload arrays remain chunked on disk and are still read only for requested
+tiles.
+
+This slice addresses a different I/O boundary from Z11:
+
+```text
+Z11 selected-value index
+  cache-wide value -> positive manifest tiles
+
+Z12 bucket lookup index
+  bucket-local tile/value -> exact point-row intervals
+```
+
+Neither index contains point coordinates. Z11 changes when selected values
+change; Z12 indexes remain reusable across value selections, viewports, and LOD
+decisions for one cache generation.
+
+#### Evidence motivating the slice
+
+The retained Xenium cache contains 108 buckets across all nine levels. A
+100-abundant-value request over one viewport intersecting nine L1 tiles used
+nine distinct L1 buckets and returned 10,294 points. A diagnostic decomposition
+observed:
+
+| Work | Total | Approximate per tile |
+|---|---:|---:|
+| initialize nine bucket readers | 339 ms | 23--48 ms per bucket |
+| construct nine first selected read plans | 281 ms | 23--36 ms per tile |
+| read and assemble aligned point arrays | 99 ms | 10--14 ms per tile |
+
+The read-plan cost was primarily bucket-local Zarr lookup I/O, not NumPy search
+or interval construction. For every selected tile the current reader performs
+small selections from `tile_x`, `tile_y`, `tile_offset`,
+`ranges/tile_indptr`, `ranges/value_id`, `ranges/row_start`, and
+`ranges/row_count` before reading point arrays.
+
+The nine L1 tiles contained 1,591--1,728 range records each. The 100-value
+selection retained 93--99 intervals per tile. Those intervals coalesced to one
+point-read block per tile but spanned 4,000--4,023 of each tile's 4,096 point
+rows. This means the first selected-read latency has two independent targets:
+make lookup metadata resident, and later consider a complete-read-and-filter
+policy when sparse intervals already span almost a complete tile. Z12 owns the
+first target only.
+
+#### Distinguish reader initialization from resident lookup data
+
+Opening a `_BucketReader` initializes the Zarr group, root attributes, array
+objects, shapes, chunks, shards, codecs, and dtype/layout checks. It does not
+load array contents. Initializing every reader therefore moves the per-bucket
+open cost to cache startup but does not by itself remove viewport-time reads of
+the sparse lookup arrays.
+
+Use one explicit startup priming flow, run by the later viewer scheduler away
+from the UI thread:
+
+```text
+open long-lived _PointsCacheReader
+        |
+        v
+initialize required bucket readers
+        |  Zarr group and array metadata
+        v
+load immutable bucket lookup indexes
+        |  tile offsets and sparse range records
+        v
+publish reader as ready for viewport payload requests
+```
+
+The current reader already sizes `_BucketReaderCache` for every serialized
+bucket and retains each entered reader until `_PointsCacheReader` closes. Z12
+must preserve that lifetime. It must not recreate the cache reader when the
+viewport or selected value IDs change.
+
+The explicit priming API may initialize all buckets when requested, but must
+report progress and remain callable from a worker. Do not hide multi-second
+all-bucket initialization inside a nominally cheap constructor or camera-driven
+method.
+
+#### Resident bucket lookup contract
+
+Introduce one immutable lookup object per loaded bucket, provisionally:
+
+```text
+_BucketLookupIndex
+  level
+  bucket_id
+  tile_offset             # (K + 1,) read-only uint64
+  tile_indptr             # (K + 1,) read-only uint64
+  range_value_id          # (M,)     read-only uint32
+  range_row_start         # (M,)     read-only uint64
+  range_row_count         # (M,)     read-only uint64
+  resident_bytes
+```
+
+`K` is the bucket tile count and `M` is its sparse range-record count. The
+object owns C-contiguous read-only NumPy buffers and is valid only for its
+opened cache generation and bucket reader.
+
+`tile_x` and `tile_y` remain serialized bucket arrays required by the physical
+format and independent validation. The trusted runtime catalog already supplies
+logical coordinates through `_TileDescriptor`, so viewport reads must not reread
+bucket `tile_x` or `tile_y` merely to reconfirm each descriptor. If an
+implementation loads them once while constructing the lookup index, it should
+use them for one-time reconciliation and need not retain duplicate coordinate
+buffers afterward.
+
+After loading, complete and selected bucket reads resolve intervals as:
+
+```text
+descriptor.bucket_tile_index
+        |
+        +-> tile_offset[i:i+2]       complete point-row interval
+        |
+        +-> tile_indptr[i:i+2]       tile's sparse range-record interval
+                    |
+                    v
+          range_value_id
+          range_row_start
+          range_row_count
+                    |
+                    v
+          exact selected point-row intervals
+```
+
+No array in this flow may be sliced from Zarr after the bucket lookup index is
+resident. The only viewport-time Zarr selections should be from point payload
+arrays such as `location` and point-level `value_id`; visualization continues to
+omit `point_id`.
+
+#### Memory policy
+
+The current physical schema stores one range record as:
+
+```text
+ranges/value_id    uint32     4 bytes
+ranges/row_start   uint64     8 bytes
+ranges/row_count   uint64     8 bytes
+                             --------
+                              20 bytes
+```
+
+The retained tile pointers add two `uint64` arrays. Excluding small object
+headers, codecs, and temporary decode workspace, projected lookup bytes for a
+set of buckets are therefore known before loading:
+
+```text
+20 * total_range_count
+    + 8 * sum(tile_count_per_bucket + 1)    # tile_offset
+    + 8 * sum(tile_count_per_bucket + 1)    # tile_indptr
+```
+
+For the retained Xenium cache this is approximately:
+
+| Level | Kind | Range records | Projected resident lookup data |
+|---:|---|---:|---:|
+| L0 | Exact | 14,790,090 | 296 MB |
+| L1 | Bridge | 9,253,957 | 185 MB |
+| L2 | Spatial | 3,744,119 | 75 MB |
+| all levels | — | 29,787,508 | 596 MB |
+
+The reader must expose exact projected and actual `resident_bytes` accounting.
+Loading all levels is acceptable when the caller's explicit metadata budget can
+hold them; it must not be an unconditional assumption for every machine or
+future dataset.
+
+Support both:
+
+- all-bucket/all-level priming when the complete projection fits the supplied
+  positive byte budget;
+- explicit level or bucket priming so the later viewer can load the active and
+  likely adjacent levels under a smaller budget.
+
+Reject an over-budget request before loading large range arrays. Do not silently
+partially prime a requested set and do not fall back to viewport-time Zarr
+lookup reads. A level must be ready before it becomes eligible for payload
+execution; the later scheduler keeps the previous rendered snapshot active
+while a newly required level is initialized.
+
+#### Reader integration
+
+Refactor `_BucketReader` so:
+
+- opening still performs strict structural and array-layout checks;
+- an explicit operation loads and reconciles its `_BucketLookupIndex`;
+- `_tile_interval()` resolves `tile_offset` from the resident index;
+- selected read planning resolves `tile_indptr` and all range records from the
+  resident index;
+- runtime coordinate trust comes from the already loaded manifest descriptor;
+- closing the reader releases both Zarr objects and resident lookup buffers.
+
+`_BucketReaderCache` remains the single owner of reader and lookup-index
+lifetime. The selected-value index and bucket indexes must not duplicate or own
+one another. Their connection remains the manifest address:
+
+```text
+selected-value index
+  -> manifest row
+  -> level + bucket_id + bucket_tile_index
+  -> resident bucket lookup index
+  -> point-row intervals
+  -> Zarr point payload
+```
+
+#### Focused tests
+
+Use real sharded Zarr buckets and cover:
+
+- exact projected and actual byte accounting;
+- immutable C-contiguous lookup arrays;
+- one bucket, one complete level, and all-level priming;
+- over-budget rejection before range-array payload reads;
+- descriptor, pointer-terminal, monotonicity, range-bound, and generation
+  reconciliation while the index is loaded;
+- logical equivalence of complete and selected reads before and after the
+  refactor;
+- instrumented proof that initialized viewport reads never slice `tile_x`,
+  `tile_y`, `tile_offset`, or any `ranges/*` Zarr array;
+- instrumented proof that point arrays remain lazy and are not read by priming;
+- reuse across viewport and selected-value changes;
+- deterministic release when `_PointsCacheReader` closes.
+
+Do not add latency thresholds to unit tests.
+
+#### Xenium evaluation
+
+Reuse the retained cache without rebuilding it. Record:
+
+- complete and per-level projected lookup bytes;
+- reader-initialization and lookup-index loading latency;
+- retained and incremental peak RSS;
+- all-bucket versus active-level priming observations;
+- the same nine-L1-tile 100-value request with initialization and lookup loading
+  outside viewport timing;
+- instrumented Zarr selections proving that viewport planning reads point arrays
+  only;
+- first and repeated point-payload latency after lookup metadata is resident.
+
+This gate records observations without fixed thresholds. It must distinguish
+application reader state from uncontrolled operating-system, filesystem, and
+codec caches.
+
+#### Exit criteria
+
+- bucket initialization is an explicit startup/worker operation rather than
+  hidden viewport work;
+- selected and complete tile intervals come exclusively from resident bucket
+  lookup indexes;
+- no viewport request rereads bucket tile or sparse-range metadata from Zarr;
+- point payload arrays remain lazy and chunked on disk;
+- lookup residency is immutable, generation-safe, explicitly byte-bounded, and
+  released with its reader;
+- focused tests and retained-Xenium evidence document memory and latency.
+
+### Slice Z13: batch requested tiles within each bucket
+
+#### Goal
+
+Replace repeated tile-at-a-time point selections with one coordinated read batch
+for all requested tiles belonging to the same physical bucket. Resolve every
+tile and selected-value interval from the resident Z12 lookup index, expose the
+complete bucket batch to Zarr's existing chunk concurrency, and reconstruct the
+same immutable tile results in the caller's original order.
+
+Retain the physical grouping already constructed by
+`_read_manifest_requests()`:
+
+```text
+logical manifest requests
+        |
+        v
+group by (level, bucket_id)
+        |
+        +-> bucket A -- one coordinated multi-tile Zarr batch
+        +-> bucket B -- one coordinated multi-tile Zarr batch
+        +-> bucket C -- one coordinated multi-tile Zarr batch
+        |
+        v
+split each batch back into tile payloads
+        |
+        v
+restore original manifest-request order
+```
+
+Process bucket batches sequentially. Do not introduce a thread pool, worker task
+per bucket or tile, application-managed `asyncio` fan-out, or any other outer
+concurrency layer. Zarr alone owns concurrency among the chunks participating in
+each coordinated array selection. Outer bucket concurrency and spatially
+clustered bucket construction remain outside this roadmap unless later evidence
+opens a separate decision.
+
+#### Relationship to Z12
+
+Z13 depends on Z12. Each requested bucket reader and its immutable lookup index
+must already be resident before a bucket batch reads point arrays. Batch planning
+resolves `tile_offset`, `tile_indptr`, and sparse value ranges exclusively from
+that in-memory index; it must not slice bucket tile or range metadata from Zarr.
+
+Z12 and Z13 solve different parts of the same viewport path:
+
+```text
+Z12 resident lookup index
+  tile/value request -> exact bucket-global point intervals
+
+Z13 bucket batch
+  all exact intervals -> coordinated point-array selections -> tile payloads
+```
+
+Point arrays remain lazy. Loading a bucket lookup index must not decode
+`location`, point-level `value_id`, or `point_id`.
+
+#### Reader refactor boundary
+
+Split the current tile-scoped display-planning responsibility rather than
+extending `_selected_read_plan()` to perform bucket I/O. Its selected-value
+matching logic remains necessary per logical tile, but its physical display-read
+plan does not:
+
+```text
+current tile-scoped display path
+  _selected_read_plan(descriptor, selected_value_ids)
+      -> exact tile intervals
+      -> tile-specific _PointReadPlan
+      -> tile-specific point-array reads
+
+Z13 display path
+  resolve_selected_tile_intervals(descriptor, selected_value_ids)
+      -> exact bucket-global intervals only
+      -> no _PointReadPlan and no point-array read
+
+  plan_bucket_display_selection(all requested tile intervals)
+      -> basic slice or orthogonal selected_rows
+      -> batch_tile_indptr
+
+  execute one bucket display batch
+      -> one location selection and one value_id selection
+      -> immutable per-tile display payloads
+```
+
+The private names above are descriptive rather than mandatory, but the ownership
+boundary is frozen. Per-tile interval resolution:
+
+- validates the descriptor and selected IDs;
+- uses only the resident Z12 lookup index;
+- returns exact bucket-global intervals and their logical point count, or an
+  explicit empty result;
+- does not inspect chunk geometry, create `_PointReadPlan`, or access a point
+  payload array.
+
+Introduce one canonical plural bucket-reader operation for display payloads.
+`_read_manifest_requests()` calls it exactly once for each nonempty physical
+bucket group. The direct `read_tile()` API routes its single descriptor through
+the same plural operation as a one-request batch; do not retain a second
+tile-specific display-I/O implementation. A singular private convenience method
+may exist only as a thin wrapper around that canonical batch path.
+
+Keep construction reads separate and unchanged in semantics.
+`read_construction_payload()` still reads one complete logical tile including
+mandatory `point_id` for Bridge and spatial construction. Its complete-tile
+`_PointReadPlan` and aligned-row machinery may remain tile-scoped and must not be
+silently redirected through the display batch, which deliberately omits
+`point_id`.
+
+#### Bucket-batch contract
+
+One bucket batch accepts an entered `_BucketReader` and the requests already
+grouped for that reader:
+
+```text
+tuple[(manifest_row, descriptor, selected_value_ids_or_none), ...]
+```
+
+For every request, resolve the exact nonempty bucket-global point intervals in
+deterministic bucket-request order. Preserve each tile's exact returned-row
+count, then merge physically touching intervals for selection planning. Choose
+the physical selection only after this merge:
+
+```text
+exact requested intervals
+        |
+        v
+merge touching intervals
+        |
+        +-- one merged interval
+        |       |
+        |       v
+        |   one basic slice
+        |   no selected_rows allocation
+        |
+        +-- several disjoint intervals
+                |
+                v
+            one C-contiguous int64 selected_rows array
+            one exact orthogonal selection
+```
+
+Construct one transient `uint64 batch_tile_indptr` of length
+`requested_tile_count + 1`; its adjacent entries identify the returned row
+interval belonging to each requested tile on either physical path. This is
+in-memory read workspace and is unrelated to the persisted
+`ranges/tile_indptr` that addresses sparse range records. For example, the
+disjoint path uses:
+
+```text
+tile A requires [10:13] and [20:22]
+tile B requires [100:104]
+
+selected_rows      = [10, 11, 12, 20, 21, 100, 101, 102, 103]
+batch_tile_indptr  = [0, 5, 9]
+```
+
+Reject overlapping, out-of-order, out-of-bucket, or out-of-array exact
+intervals. Logical tiles are disjoint, so a valid batch never needs the same
+point row twice. Validate all counts and the chosen physical selection before
+opening point payload chunks.
+
+Issue exactly one coordinated selection from `location` and one from point-level
+`value_id` for each nonempty bucket batch. Use basic indexing when the merged
+interval is contiguous and orthogonal indexing only when exact requested rows
+remain disjoint. Visualization continues to omit `point_id`. Zarr maps either
+selection to its inner chunks, applies its configured asynchronous chunk
+concurrency, and may coalesce nearby reads inside a shard. The application does
+not create concurrent selection calls around it.
+
+```text
+contiguous:
+  location[start:stop, :]
+  value_id[start:stop]
+
+disjoint:
+  location.get_orthogonal_selection((selected_rows, slice(None)))
+  value_id.get_orthogonal_selection((selected_rows,))
+```
+
+On the disjoint path, do not replace the exact selector with one basic slice
+spanning its minimum and maximum row. Tiles assigned to one bucket may be
+separated by large runs of unrequested tiles; a broad envelope would decode
+unrelated chunks and make memory depend on their gap rather than the requested
+payload.
+
+Split the two returned arrays at `batch_tile_indptr` and construct one
+`_PointDisplayPayload` and `_TileReadResult` per request. Prefer C-contiguous
+read-only views into the batch result when that preserves the payload contract;
+do not copy the complete batch once per tile. The returned tuple follows the
+original bucket-request order. `_read_manifest_requests()` then restores the
+complete cross-bucket `requests` order exactly as it does now.
+
+#### Sequential bucket execution and failure
+
+The outer bucket loop remains synchronous and sequential:
+
+```text
+bucket A coordinated batch -- wait
+bucket B coordinated batch -- wait
+bucket C coordinated batch -- wait
+```
+
+If planning or reading any bucket fails, fail the complete viewport request and
+publish no partial `_ViewportReadResult`. Previously created local batch results
+are released normally. Reader lifetime remains owned solely by
+`_BucketReaderCache`; Z13 adds no executor, task lifecycle, cancellation model,
+or cross-thread close behavior.
+
+#### Memory accounting
+
+For `N` returned rows and `K` requested tiles, the deterministic additional
+selection workspace is:
+
+```text
+both paths:
+  8 * (K + 1)     batch_tile_indptr uint64
+
+disjoint orthogonal path only:
+  8 * N           selected_rows int64
+```
+
+This is in addition to the returned `(N, 2) float32 location` and `(N,) uint32
+value_id` buffers and Zarr's bounded decoded-chunk workspace. The contiguous
+basic path allocates no row-selector array. On the disjoint path, construct the
+selector as one NumPy allocation rather than one Python integer per point,
+report its bytes in the Xenium gate, and release it after the returned arrays
+have been split. Explicit-level acceptance reads can exceed the viewer's normal
+render budget, so do not describe selector memory as intrinsically capped at
+100,000 rows.
+
+The exact physical selection prevents gap amplification in the returned arrays,
+but inner chunks remain the minimum independently decoded units. Record
+decoded-row amplification separately from selector and logical output bytes. Do
+not add a decoded point-payload cache in this slice.
+
+#### Focused tests
+
+Use real sharded Zarr buckets and cover:
+
+- one tile in one bucket;
+- several requested tiles sharing one bucket;
+- complete and selected tiles with adjacent and separated value ranges;
+- touching intervals merging to one basic slice with no `selected_rows`
+  allocation;
+- disjoint intervals using one exact orthogonal row selector;
+- requested rows sharing an inner chunk, crossing chunks and shards, and ending
+  in the final partial chunk;
+- large unrequested row gaps that are absent from the orthogonal result;
+- exactly one `location` and one point-level `value_id` selection per nonempty
+  bucket batch and no `point_id` selection;
+- several buckets executing in deterministic sequential order;
+- stable tile order across bucket grouping and result reconstruction;
+- logical equivalence with a sequential reference execution;
+- direct singleton `read_tile()` and one-request bucket batching using the same
+  display-I/O implementation;
+- construction payload reads retaining complete aligned `point_id` semantics;
+- failure during one bucket producing no partial viewport result;
+- deterministic reader cleanup after completed and failed requests;
+- C-contiguous immutable point payloads and read-only lookup indexes;
+- no reintroduction of bucket metadata Zarr reads after Z12 priming.
+
+Instrument selection objects and logical outputs rather than asserting timing in
+unit tests.
+
+#### Xenium evaluation
+
+Reuse the retained cache after Z12 priming without rebuilding it. Evaluate at
+least one request containing several tiles from the same bucket so the batch
+contract is exercised. Retain the nine-L1-tile, 100-abundant-value request as an
+honest counterexample: its nine tiles currently occupy nine distinct buckets,
+so Z13 creates nine one-tile batches and should not claim a multi-tile batching
+benefit for it.
+
+Record:
+
+- Zarr's configured internal async concurrency;
+- bucket-batch count and tiles per batch;
+- coordinated Zarr selection count per point array;
+- selected level, positive tiles, logical returned points, and decoded-row
+  amplification;
+- selected-row bytes when the disjoint path is used, `batch_tile_indptr` bytes,
+  returned payload bytes, and incremental peak RSS;
+- payload latency with readers and lookup indexes resident;
+- exact logical equality and stable output order;
+- confirmation that no tile/range metadata Zarr arrays were selected.
+
+Do not tune Zarr concurrency, change bucket construction, or compare worker
+counts in this gate. Record observations without numerical pass/fail thresholds.
+
+#### Exit criteria
+
+- all requested tiles in one bucket are resolved and read as one logical batch;
+- touching intervals use one basic slice without row-selector allocation, while
+  disjoint intervals use one exact orthogonal selection without materializing
+  unrelated row gaps;
+- each nonempty bucket batch performs one coordinated selection per display
+  point array and delegates chunk concurrency to Zarr;
+- separate immutable tile results preserve original request order and logical
+  content without full-batch-per-tile copies;
+- one canonical plural display-read path serves both viewport and singleton tile
+  requests, while construction reads remain tile-scoped and point-ID-complete;
+- lookup metadata remains resident and display reads never access point IDs;
+- buckets remain sequential and no application concurrency layer is introduced;
+- selector, decoded-chunk, output-memory, and retained-Xenium latency evidence
+  are documented for the final adoption decision.
+
+### Slice Z14: architecture-adoption decision
 
 #### Goal
 
 Conclude the isolated architecture evaluation without blurring the two
 implementations. Include the Z11 proof that selected-value viewport planning no
-longer performs catalog I/O before deciding whether the backend is suitable for
-Phase 2 integration.
+longer performs catalog I/O, the Z12 proof that bucket-local lookup metadata
+does not remain on the viewport hot path, and the Z13 bucket-batched-read
+evidence before deciding whether the backend is suitable for Phase 2
+integration.
 
 #### If adopted
 
@@ -5728,8 +6369,15 @@ builder
 acceptance reader
   complete and selected physical reads
 
-prepared selection
+selected-value index
   one-time catalog IO, immutable bounded index, IO-free viewport planning
+
+bucket lookup indexes
+  eager reader initialization, resident tile/range metadata, lazy point payloads
+
+bucket-wide point reads
+  one exact basic-or-orthogonal multi-tile selection per display array,
+  Zarr-owned chunk concurrency, stable splitting, sequential bucket execution
 ```
 
 Do not assert codec-compressed byte counts in normal unit tests. Assert declared
@@ -5756,9 +6404,21 @@ counts belong to opt-in benchmark scripts.
 - Cache-wide `value_tiles` construction materializes and sorts one level's
   compact range records at a time, writes ordered bounded slices, and releases
   that workspace before advancing to the next level.
-- A prepared selected-value index retains only exact selected catalog records,
+- A selected-value index retains only exact selected catalog records,
   reports its complete resident byte cost, and is rejected before payload I/O
   when its projected representation exceeds the supplied runtime budget.
+- Resident bucket lookup indexes retain only tile offsets, sparse-range
+  pointers, and sparse range records. Their projected and actual bytes are
+  explicitly accounted, and point payload arrays remain on disk.
+- Viewport requests are grouped by bucket and all requested tiles in one bucket
+  are resolved into one exact row selection per display point array. Use a basic
+  slice for one merged interval and an orthogonal `int64` selector only for
+  disjoint intervals.
+- Bucket batches execute sequentially. Zarr alone owns concurrency among chunks
+  participating in one selection; do not add a bucket or tile executor.
+- Transient batch tile pointers and any disjoint-path row selector are explicitly
+  byte-accounted, and a batch must not replace disjoint rows with one
+  gap-amplifying envelope.
 - Small consecutive tiles and their range records are buffered across tile
   boundaries so partially filled point or range shards are not repeatedly
   rewritten.
@@ -5867,14 +6527,23 @@ The production-candidate evaluation is complete when:
   generation-replacement and rollback semantics;
 - full-Xenium build and read measurements are recorded;
 - repeated selected-value viewport planning is catalog-I/O-free after one
-  explicit byte-bounded preparation step;
+  explicit byte-bounded selected-index loading step;
+- initialized viewport reads resolve tile and sparse value ranges from
+  byte-bounded resident bucket lookup indexes without Zarr metadata-array reads;
+- all requested tiles sharing one bucket are read through coordinated exact
+  point-array selections, split back into immutable results in original order,
+  and processed without application-managed read concurrency;
 - the project explicitly adopts or does not adopt the candidate architecture.
 
 ## Immediate next slice
 
-Z0 through Z10 are resolved, including the retained full-Xenium build, reader,
-and batched catalog-lookup evidence. Implement Z11 next so an unchanged explicit
-value selection pays its catalog I/O once and every subsequent viewport plan is
-an in-memory operation. Do not begin public napari integration or make the Z12
-architecture-adoption decision before the focused tests and retained Xenium Z11
-evaluation establish that boundary.
+Z0 through Z11 are resolved, including the retained full-Xenium build, reader,
+batched catalog lookup, and proof that an unchanged explicit value selection
+pays catalog I/O once before catalog-I/O-free viewport planning. Implement Z12
+next so bucket initialization and sparse-range lookup metadata also leave the
+viewport hot path. Z13 then batches every requested tile sharing one bucket into
+coordinated exact point-array selections, while buckets themselves remain
+sequential and Zarr alone owns chunk concurrency. Slice Z14 owns the explicit
+architecture-adoption decision. Do not begin public napari integration before
+that decision records whether this isolated backend should become the product
+architecture.
