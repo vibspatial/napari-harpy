@@ -6440,7 +6440,7 @@ counts in this gate. Record observations without numerical pass/fail thresholds.
 - selector, decoded-chunk, output-memory, and retained-Xenium latency evidence
   are documented for the final adoption decision.
 
-### Slice Z14: replace catalog envelopes with exact per-level Zarr selections
+### Slice Z14: replace catalog envelopes with exact per-level Zarr selections — resolved
 
 #### Goal
 
@@ -6591,6 +6591,34 @@ abundant-value sets and record:
   fragment write cursors;
 - retained and transient memory evidence is explicit and the full Xenium gate
   is recorded for the final architecture decision.
+
+#### Implemented result
+
+The selected-value loader now resolves one exact row selector per nonempty
+level and passes it once to each aligned `value_tiles` array. One selected value
+uses the slice path at every level; separated value sets use one C-contiguous
+`int64` selector per level. `_ValueTileCatalogEnvelope`, its chunk/shard planner,
+fragment write cursors, and their tests have been removed. Focused reader tests
+use real sharded catalogs and verify selector form, exact aligned selection
+counts, empty levels, immutable output, budget rejection, and catalog-I/O-free
+runtime reuse.
+
+The retained nine-level Xenium cache was evaluated without rebuilding it. These
+are one current-tree observations with a 10 ms RSS sampling interval; operating
+system, filesystem, and codec caches were not reset:
+
+| selected values | index load | exact records | selections per array | slice / `int64` levels | total / maximum selector | `resident_bytes` | incremental peak RSS |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 28.6 ms | 15,087 | 9 | 9 / 0 | 0 / 0 MiB | 0.23 MiB | 0.12 MiB |
+| 10 | 43.7 ms | 138,121 | 9 | 0 / 9 | 1.05 / 0.45 MiB | 2.11 MiB | 7.20 MiB |
+| 100 | 160.7 ms | 1,307,246 | 9 | 0 / 9 | 9.97 / 4.21 MiB | 19.95 MiB | 77.17 MiB |
+
+Projected and actual retained bytes agreed exactly. The aligned catalog arrays
+received identical selectors, the selected and retained record counts agreed,
+and repeated indexed LOD and viewport operations performed zero catalog Zarr
+selections. The peak-RSS observation includes selected Zarr results, immutable
+index copies, selector workspace, codec state, and sampling noise; it is not a
+strict bound derived from `max_resident_bytes`.
 
 ### Slice Z15: architecture-adoption decision
 
@@ -6836,9 +6864,10 @@ The production-candidate evaluation is complete when:
 Z0 through Z12 are implemented, including the retained full-Xenium build,
 reader, catalog-I/O-free selected-value viewport planning, and resident bucket
 lookup indexes. Z13 implements coordinated exact point-array selections for all
-requested tiles sharing one bucket while keeping bucket execution sequential.
-Finish its retained-Xenium evidence, then implement Z14 so selected-value index
-loading also delegates exact chunk and shard processing to Zarr instead of an
-application envelope planner. Slice Z15 owns the explicit architecture-adoption
-decision. Do not begin public napari integration before that decision records
-whether this isolated backend should become the product architecture.
+requested tiles sharing one bucket while keeping bucket execution sequential;
+finish its retained-Xenium evidence. Z14 is resolved: selected-value index
+loading now delegates exact chunk and shard processing to Zarr and no longer
+retains an application catalog-envelope planner. Slice Z15 is next and owns the
+explicit architecture-adoption decision. Do not begin public napari integration
+before that decision records whether this isolated backend should become the
+product architecture.
