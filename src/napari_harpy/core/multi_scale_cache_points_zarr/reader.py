@@ -1198,6 +1198,8 @@ class _PointsCacheReader:
         level: int,
         requests: tuple[tuple[int, npt.NDArray[np.uint32] | None], ...],
     ) -> _ViewportReadResult:
+        # Group logical tile requests by physical bucket so each bucket reader is
+        # acquired once; restore the original manifest-request order after reading.
         grouped: dict[tuple[int, int], list[tuple[int, npt.NDArray[np.uint32] | None]]] = {}
         for manifest_row, selected in requests:
             descriptor = self._descriptors[manifest_row]
