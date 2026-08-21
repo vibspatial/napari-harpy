@@ -11,6 +11,7 @@ from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
+    _INT64_MAX,
     _UINT32_MAX,
     _bucket_path,
     _require_integer_in_range,
@@ -581,9 +582,16 @@ def _exact_row_selection(
     Intervals must be nonempty, ordered, nonoverlapping, and contained within
     the bucket's point arrays. This function also reconciles their total length
     with ``expected_row_count`` before returning a selector.
+
+    This is the bucket point-row counterpart of
+    ``_exact_value_tile_row_selection`` in the cache-level reader. The helpers
+    deliberately remain separate because this function validates untyped point
+    row pairs, while its counterpart validates value-major catalog intervals.
     """
     if not intervals:
         raise ValueError("`intervals` must be nonempty.")
+    _require_integer_in_range(point_count, "point_count", minimum=1, maximum=_INT64_MAX)
+    _require_integer_in_range(expected_row_count, "expected_row_count", minimum=1, maximum=_INT64_MAX)
     merged: list[tuple[int, int]] = []
     observed_row_count = 0
     previous_stop: int | None = None

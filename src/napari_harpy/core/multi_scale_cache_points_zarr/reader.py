@@ -272,48 +272,17 @@ class _ValueTileInterval:
     start: int
     stop: int
 
-
-@dataclass(frozen=True)
-class _ValueTileCatalogEnvelope:
-    """Describe one shard-bounded contiguous catalog read.
-
-    The first interval's start and final interval's stop define the shared row
-    envelope sliced once from each parallel ``value_tiles`` array. Unselected
-    gaps between the exact fragments are discarded after the read.
-    """
-
-    intervals: tuple[_ValueTileInterval, ...]
-
     def __post_init__(self) -> None:
-        if not isinstance(self.intervals, tuple) or not self.intervals:
-            raise ValueError("`intervals` must be a nonempty tuple.")
-        if not all(isinstance(interval, _ValueTileInterval) for interval in self.intervals):
-            raise ValueError("Every catalog-envelope interval must be a _ValueTileInterval.")
-        if any(
-            interval.selected_value_position < 0
-            or interval.value_id < 0
-            or interval.start < 0
-            or interval.start >= interval.stop
-            for interval in self.intervals
-        ):
-            raise ValueError("Catalog-envelope intervals must contain valid nonnegative half-open rows.")
-        if any(
-            current.selected_value_position <= previous.selected_value_position
-            or current.value_id <= previous.value_id
-            or current.start < previous.stop
-            for previous, current in pairwise(self.intervals)
-        ):
-            raise ValueError("Catalog-envelope intervals must be ordered and nonoverlapping.")
-
-    @property
-    def start(self) -> int:
-        """Return the first exact fragment's catalog-row start."""
-        return self.intervals[0].start
-
-    @property
-    def stop(self) -> int:
-        """Return the final exact fragment's catalog-row stop."""
-        return self.intervals[-1].stop
+        _require_integer_in_range(
+            self.selected_value_position,
+            "selected_value_position",
+            maximum=_INT64_MAX,
+        )
+        _require_integer_in_range(self.value_id, "value_id", maximum=_UINT32_MAX)
+        _require_integer_in_range(self.start, "start", maximum=_INT64_MAX)
+        _require_integer_in_range(self.stop, "stop", minimum=1, maximum=_INT64_MAX)
+        if self.start >= self.stop:
+            raise ValueError("`start` must be smaller than `stop`.")
 
 
 class _PointsCacheReader:
@@ -697,9 +666,10 @@ class _PointsCacheReader:
         point_budget
             Maximum estimated visible point count for a successful selection.
         value_index
-            Optional in-memory selected-value index. When supplied, only
-            represented requested values contribute to each level's estimate;
-            missing values do not make that level ineligible.
+            Immutable in-memory index returned by
+            :meth:`load_selected_value_index`, or ``None`` for all values. When
+            supplied, only represented requested values contribute to each
+            level's estimate; missing values do not make that level ineligible.
 
         Returns
         -------
@@ -710,6 +680,15 @@ class _PointsCacheReader:
 
         Notes
         -----
+        **Selected-index lifecycle.** ``load_selected_value_index()`` is the
+        explicit catalog-I/O boundary used when the selected value IDs change.
+        The caller deliberately keeps its result in memory and reuses it across
+        subsequent pan, zoom, level-selection, and viewport-read operations.
+        This method consumes that resident index but never reconstructs it or
+        rereads the cache-wide ``value_tiles`` arrays. Keeping this preparation
+        outside the viewport hot path is what makes filtered level selection
+        responsive as the camera changes.
+
         **Level-choice policy.** Evaluate serialized levels from Exact toward the
         coarsest level. At each level, sum visible points for the requested values
         represented there. Return the first estimate at most ``point_budget``;
@@ -1011,18 +990,12 @@ class _PointsCacheReader:
         Its cumulative sum defines the level-index ``value_indptr`` and exact
         output-array sizes.
 
-        Selected source intervals are read through shard-bounded catalog
-        envelopes. When one value crosses an envelope boundary, its fragments
-        are copied into the same reserved destination interval using a
-        per-value write cursor. Final cursor reconciliation proves that every
-        projected record was written.
-
-        The on-disk catalog is value-major and ``value_ids`` is sorted, so source
-        intervals and reserved destinations are both traversed in ascending
-        value order. A sparse selection can require separated source-envelope
-        reads, but destination writes remain compact, forward-moving NumPy slice
-        assignments. Records are not scattered randomly or copied row by row in
-        Python.
+        The on-disk catalog is value-major and ``value_ids`` is sorted. Resolve
+        its exact selected intervals to one basic slice when they become
+        contiguous, or one C-contiguous ``int64`` row selector when gaps remain.
+        Each aligned catalog array receives that selector once. Zarr owns chunk
+        and shard processing; the application never materializes unselected
+        rows merely to join the intervals into a broad envelope.
 
         The returned level contains compact read-only ``value_indptr``,
         ``manifest_index``, and ``n_points`` arrays grouped by selected-value
@@ -1036,58 +1009,39 @@ class _PointsCacheReader:
         value_indptr = np.empty(len(value_ids) + 1, dtype=np.uint64)
         value_indptr[0] = 0
         np.cumsum(record_counts, out=value_indptr[1:])
-        manifest_index = np.empty(int(value_indptr[-1]), dtype=np.uint64)
-        n_points = np.empty(int(value_indptr[-1]), dtype=np.uint64)
+        expected_row_count = int(value_indptr[-1])
         intervals = self._value_tile_intervals(level, value_ids)
         if not intervals:
+            if expected_row_count != 0:
+                raise RuntimeError("Selected-value intervals do not reconcile to the projected record count.")
+            manifest_index = np.empty(0, dtype=np.uint64)
+            n_points = np.empty(0, dtype=np.uint64)
             return _SelectedValueLevelIndex(value_indptr, manifest_index, n_points)
 
-        settings = self._attributes_or_raise().catalog.settings
-        envelopes = _value_tile_catalog_envelopes(
+        row_selection = _exact_value_tile_row_selection(
             intervals,
-            chunk_rows=settings.value_tile_chunk_rows,
-            shard_rows=settings.value_tile_shard_rows,
+            catalog_row_count=self._attributes_or_raise().catalog.value_tile_row_count,
+            expected_row_count=expected_row_count,
         )
+        manifest_index = np.ascontiguousarray(
+            manifest_array.get_orthogonal_selection((row_selection,)),
+            dtype=np.uint64,
+        )
+        n_points = np.ascontiguousarray(
+            point_count_array.get_orthogonal_selection((row_selection,)),
+            dtype=np.uint64,
+        )
+        if manifest_index.shape != (expected_row_count,) or n_points.shape != (expected_row_count,):
+            raise ValueError("Selected catalog reads returned unexpected aligned shapes.")
+
         level_start = int(self._manifest_level_indptr_or_raise()[level])
         level_stop = int(self._manifest_level_indptr_or_raise()[level + 1])
-        write_cursors = value_indptr[:-1].copy()
-        previous_manifest = np.zeros(len(value_ids), dtype=np.uint64)
-        has_previous = np.zeros(len(value_ids), dtype=np.bool_)
-
-        for envelope in envelopes:
-            envelope_manifest = np.asarray(manifest_array[envelope.start : envelope.stop], dtype=np.uint64)
-            envelope_counts = np.asarray(point_count_array[envelope.start : envelope.stop], dtype=np.uint64)
-            if envelope_manifest.shape != (envelope.stop - envelope.start,) or envelope_counts.shape != (
-                envelope.stop - envelope.start,
-            ):
-                raise ValueError("Catalog envelope reads returned unexpected shapes.")
-            for interval in envelope.intervals:
-                local_start = interval.start - envelope.start
-                local_stop = interval.stop - envelope.start
-                interval_manifest = envelope_manifest[local_start:local_stop]
-                interval_counts = envelope_counts[local_start:local_stop]
-                selected_position = interval.selected_value_position
-                if (
-                    bool((interval_counts == 0).any())
-                    or bool((interval_manifest < level_start).any())
-                    or bool((interval_manifest >= level_stop).any())
-                    or bool((interval_manifest[1:] <= interval_manifest[:-1]).any())
-                    or (
-                        has_previous[selected_position]
-                        and int(interval_manifest[0]) <= int(previous_manifest[selected_position])
-                    )
-                ):
-                    raise ValueError("Encountered invalid value-tile records while loading the index.")
-                destination_start = int(write_cursors[selected_position])
-                destination_stop = destination_start + len(interval_manifest)
-                manifest_index[destination_start:destination_stop] = interval_manifest
-                n_points[destination_start:destination_stop] = interval_counts
-                write_cursors[selected_position] = destination_stop
-                previous_manifest[selected_position] = interval_manifest[-1]
-                has_previous[selected_position] = True
-
-        if not np.array_equal(write_cursors, value_indptr[1:]):
-            raise RuntimeError("Selected-value index writes did not fill every projected record.")
+        if (
+            bool((n_points == 0).any())
+            or bool((manifest_index < level_start).any())
+            or bool((manifest_index >= level_stop).any())
+        ):
+            raise ValueError("Encountered invalid value-tile records while loading the index.")
         return _SelectedValueLevelIndex(value_indptr, manifest_index, n_points)
 
     def _selected_value_manifest(
@@ -1568,57 +1522,61 @@ def _read_only_index_array(array: object, name: str, dtype: npt.DTypeLike) -> np
     return read_only
 
 
-def _value_tile_catalog_envelopes(
+def _exact_value_tile_row_selection(
     intervals: tuple[_ValueTileInterval, ...],
     *,
-    chunk_rows: int,
-    shard_rows: int,
-) -> tuple[_ValueTileCatalogEnvelope, ...]:
-    """Plan minimal connected catalog envelopes within physical shards.
+    catalog_row_count: int,
+    expected_row_count: int,
+) -> slice | npt.NDArray[np.int64]:
+    """Return the cheapest exact row selector for one selected catalog level.
 
-    Split logical value intervals at shard boundaries, then combine fragments
-    whose touched inner chunks overlap or are consecutive inside the same shard.
-    Returned envelopes retain their first and last exact row bounds rather than
-    expanding to complete chunk or shard edges.
+    The input contains one ordered, nonoverlapping, value-major half-open
+    interval for every selected value represented at the level. Selection
+    follows this policy::
 
-    Notes
-    -----
-    Zarr can correctly serve a slice spanning several shards. The one-shard
-    boundary is instead a deliberate resource policy. A cross-shard slice must
-    still access each independent shard, consult its index, and decode the
-    relevant inner chunks from that shard. Zarr then assembles the extracted
-    rows into one returned array, so crossing the boundary can create a larger
-    temporary result without eliminating the underlying shard accesses or
-    chunk decoding. Keeping each envelope inside one shard gives every individual
-    Zarr slice a deterministic base bound. With the default 1,048,576-row
-    shards, the two parallel ``uint64`` result arrays contain at most 16 MiB for
-    one envelope before exact-fragment indexes, masks, and other working arrays are
-    considered. This is not a strict process-peak bound: generator loop locals
-    from the preceding envelope may remain referenced until they are overwritten,
-    and consumer output has its own memory cost.
+        exact half-open intervals
+                   |
+                   v
+        merge only intervals whose boundaries touch
+                   |
+                   v
+        one resulting interval?
+            yes -> slice(start, stop)
+            no  -> exact C-contiguous int64 row array
 
-    This bound applies to temporary decoded catalog envelopes, not to any
-    retained output assembled from their exact selected fragments. Blocks are
-    also not padded to shard edges. For a shard boundary at row 8, one logical
-    interval ``[7:10]`` becomes exact fragments ``[7:8]`` and ``[8:10]``.
-    Processing them as successive envelopes avoids one cross-shard returned slice
-    without changing the logical interval.
+    Touching intervals can be merged without selecting unrelated rows. Gaps are
+    never filled merely to form a larger slice. Consequently, the returned
+    selector always addresses exactly ``expected_row_count`` catalog rows.
+
+    The slice specialization avoids allocating an ``int64`` row array and lets
+    Zarr use its cheaper contiguous-selection path for genuinely contiguous
+    values. Disjoint selections use one orthogonal integer selector so Zarr can
+    coordinate the complete level selection without materializing unselected
+    value rows inside its gaps. Chunk and shard geometry remain Zarr concerns.
+
+    Intervals must be nonempty, ordered by selected value, nonoverlapping, and
+    contained within the catalog arrays. This function also reconciles their
+    total length with ``expected_row_count`` before returning a selector.
+
+    This is the selected-catalog counterpart of ``_exact_row_selection`` in
+    ``storage.bucket_reader``. The helpers deliberately remain separate because
+    this function validates value-major catalog intervals, while its counterpart
+    validates untyped bucket point-row pairs.
     """
-    _require_integer_in_range(chunk_rows, "chunk_rows", minimum=1, maximum=_INT64_MAX)
-    _require_integer_in_range(shard_rows, "shard_rows", minimum=1, maximum=_INT64_MAX)
-    if shard_rows % chunk_rows:
-        raise ValueError("`shard_rows` must be a multiple of `chunk_rows`.")
+    _require_integer_in_range(catalog_row_count, "catalog_row_count", minimum=1, maximum=_INT64_MAX)
+    _require_integer_in_range(expected_row_count, "expected_row_count", minimum=1, maximum=_INT64_MAX)
     if not intervals:
-        return ()
+        raise ValueError("`intervals` must be nonempty.")
     if any(
         not isinstance(interval, _ValueTileInterval)
         or interval.selected_value_position < 0
         or interval.value_id < 0
         or interval.start < 0
         or interval.start >= interval.stop
+        or interval.stop > catalog_row_count
         for interval in intervals
     ):
-        raise ValueError("Catalog intervals must contain valid nonnegative half-open rows.")
+        raise ValueError("Catalog intervals must be nonempty and lie inside the catalog arrays.")
     if any(
         current.selected_value_position <= previous.selected_value_position
         or current.value_id <= previous.value_id
@@ -1627,51 +1585,30 @@ def _value_tile_catalog_envelopes(
     ):
         raise ValueError("Catalog intervals must follow selected-value and nonoverlapping row order.")
 
-    fragments: list[_ValueTileInterval] = []
+    merged: list[tuple[int, int]] = []
+    observed_row_count = 0
     for interval in intervals:
-        cursor = interval.start
-        while cursor < interval.stop:
-            shard_stop = ((cursor // shard_rows) + 1) * shard_rows
-            fragment_stop = min(interval.stop, shard_stop)
-            fragments.append(
-                _ValueTileInterval(
-                    selected_value_position=interval.selected_value_position,
-                    value_id=interval.value_id,
-                    start=cursor,
-                    stop=fragment_stop,
-                )
-            )
-            cursor = fragment_stop
+        observed_row_count += interval.stop - interval.start
+        if merged and interval.start == merged[-1][1]:
+            merged[-1] = (merged[-1][0], interval.stop)
+        else:
+            merged.append((interval.start, interval.stop))
+    if observed_row_count != expected_row_count:
+        raise ValueError("Catalog intervals do not reconcile to the expected selected record count.")
 
-    block_stop = fragments[0].stop
-    block_shard = fragments[0].start // shard_rows
-    last_chunk = (block_stop - 1) // chunk_rows
-    block_intervals = [fragments[0]]
-    envelopes: list[_ValueTileCatalogEnvelope] = []
-    for fragment in fragments[1:]:
-        fragment_shard = fragment.start // shard_rows
-        first_chunk = fragment.start // chunk_rows
-        fragment_last_chunk = (fragment.stop - 1) // chunk_rows
-        if fragment_shard != block_shard or first_chunk > last_chunk + 1:
-            envelopes.append(
-                _ValueTileCatalogEnvelope(
-                    intervals=tuple(block_intervals),
-                )
-            )
-            block_stop = fragment.stop
-            block_shard = fragment_shard
-            last_chunk = fragment_last_chunk
-            block_intervals = [fragment]
-            continue
-        block_stop = max(block_stop, fragment.stop)
-        last_chunk = max(last_chunk, fragment_last_chunk)
-        block_intervals.append(fragment)
-    envelopes.append(
-        _ValueTileCatalogEnvelope(
-            intervals=tuple(block_intervals),
-        )
-    )
-    return tuple(envelopes)
+    if len(merged) == 1:
+        start, stop = merged[0]
+        return slice(start, stop)
+
+    # Fill one exact selector without constructing one Python integer per
+    # catalog row. Each destination segment is shifted to its source interval.
+    selected_rows = np.arange(observed_row_count, dtype=np.int64)
+    cursor = 0
+    for start, stop in merged:
+        count = stop - start
+        selected_rows[cursor : cursor + count] += start - cursor
+        cursor += count
+    return selected_rows
 
 
 def _require_display_arrays(location: object, value_id: object) -> None:
