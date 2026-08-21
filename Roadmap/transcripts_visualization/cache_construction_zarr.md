@@ -6669,7 +6669,7 @@ Do not add a runtime backend selector, automatic fallback, or compatibility
 reader for the experimental tiled-Parquet cache. Slice Z16 makes the adopted
 implementation self-contained and gives Phase 2 one unambiguous Python package.
 
-### Slice Z16: make the adopted backend self-contained and remove the tiled-Parquet cache
+### Slice Z16: make the adopted backend self-contained and remove the tiled-Parquet cache — resolved
 
 #### Goal
 
@@ -6894,6 +6894,30 @@ source-validation modules moved.
 - retained Zarr caches reopen without a schema or artifact migration;
 - Phase 2 napari integration imports only `multi_scale_cache_points_zarr`.
 
+#### Implemented result
+
+The retained source-input boundary now lives under
+`multi_scale_cache_points_zarr/source`. Its public facade exposes source
+resolution and validation, while implementation modules own source models,
+errors, signatures, and value normalization. Cache-internal models remain at the
+adopted package root.
+
+All adopted production modules, focused tests, validation tools, and retained
+benchmark tools import the new source boundary. The deprecated
+`multi_scale_cache_points` package, its tiled-Parquet planning and writers, its
+storage-specific tests, and its two backend construction benchmarks have been
+removed. The source-validation benchmark remains available under the explicit
+`benchmark_multi_scale_cache_points_zarr_source_validation.py` name. No
+forwarding package or backend selector remains.
+
+The complete focused suite passed with 272 tests. A stale-import scan over
+`src`, `tests`, and `scripts` found no executable reference to the removed
+package, and Python package discovery no longer resolves it. The retained
+full-Xenium generation reopened without migration; one common-value full-extent
+smoke request selected L4 within budget, primed three required bucket indexes,
+and returned the expected 78,789 points across 127 positive tiles. No cache
+rebuild was required.
+
 ## Test strategy
 
 Normal development uses focused tests under
@@ -7102,9 +7126,8 @@ The production-candidate evaluation is complete when:
 
 ## Immediate next slice
 
-Z0 through Z14 are implemented. Z15 records the decision to adopt the Zarr-backed
-cache for Phase 2 napari integration. Z16 is the immediate next slice: make the
-adopted implementation self-contained, remove the deprecated tiled-Parquet
-cache, and retain the unambiguous `multi_scale_cache_points_zarr` source and test
-namespaces. Complete that ownership cleanup before adding public napari
-integration code.
+Z0 through Z16 are resolved. The Zarr-backed cache is adopted, self-contained,
+and the deprecated tiled-Parquet cache has been removed. The next phase is
+public napari integration against the unambiguous
+`multi_scale_cache_points_zarr` package; no cache-backend compatibility or
+selection layer is required.

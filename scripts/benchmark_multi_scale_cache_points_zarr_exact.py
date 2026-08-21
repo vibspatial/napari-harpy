@@ -18,13 +18,6 @@ import pyarrow.parquet as pq
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points import (
-    ParquetPointsSource,
-    PointColumnSelection,
-    validate_parquet_points_source,
-)
-from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points.value_normalization import _normalized_row_values
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
     _PointsCacheBuildPlan,
@@ -35,6 +28,13 @@ from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
     _bucket_count_for_level,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+    ParquetPointsSource,
+    PointColumnSelection,
+    validate_parquet_points_source,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import _normalized_row_values
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
@@ -211,7 +211,7 @@ def _verify_and_summarize(
 
         with _BucketReader(staging, level=0, bucket_id=bucket.bucket_id) as reader:
             for descriptor in bucket.tile_descriptors:
-                payload = reader.read_complete(descriptor)
+                payload = reader.read_construction_payload(descriptor)
                 maximum_tile_rows = max(maximum_tile_rows, payload.n_points)
                 point_ids = payload.point_id
                 if len(np.unique(point_ids)) != len(point_ids) or bool((point_ids >= row_count).any()):
@@ -351,18 +351,18 @@ def _read_measurements(
             "tile_x": largest.tile_x,
             "tile_y": largest.tile_y,
             "logical_rows": largest.n_points,
-            "seconds": _time(lambda: reader.read_complete(largest)),
+            "seconds": _time(lambda: reader.read_construction_payload(largest)),
         }
     labels = validated.value_table["value"].to_pylist()
     for category, value_id in categories.items():
         descriptor = first_descriptor_by_value[value_id]
         selected = np.array([value_id], dtype=np.uint32)
         with _BucketReader(staging, level=0, bucket_id=descriptor.bucket_id) as reader:
-            payload = reader.read_selected(descriptor, selected)
+            payload = reader.read_display_payload(descriptor, selected)
             if payload is None:
                 raise RuntimeError("A selected-read measurement value is absent from its recorded tile.")
             timings = _time(
-                lambda descriptor=descriptor, selected=selected: reader.read_selected(
+                lambda descriptor=descriptor, selected=selected: reader.read_display_payload(
                     descriptor,
                     selected,
                 )
@@ -379,7 +379,7 @@ def _read_measurements(
             "source_tile_count": value_tile_counts[value_id],
             "tile_x": descriptor.tile_x,
             "tile_y": descriptor.tile_y,
-            "logical_rows": payload.n_points,
+            "logical_rows": payload.logical_point_rows,
             **physical,
             "seconds": timings,
         }

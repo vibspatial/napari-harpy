@@ -17,8 +17,8 @@ from typing import Any
 import psutil
 import pyarrow as pa
 
-import napari_harpy.core.multi_scale_cache_points.validation as validation_module
-from napari_harpy.core.multi_scale_cache_points import (
+import napari_harpy.core.multi_scale_cache_points_zarr.source.validation as validation_module
+from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     ValidatedPointsSource,
@@ -140,8 +140,7 @@ def _run_once(
 
     if len(measurements.inventory_seconds) != 2 or len(measurements.scan_seconds) != 1:
         raise RuntimeError(
-            "Expected one initial inventory, one scan, and one final inventory "
-            "from validate_parquet_points_source()."
+            "Expected one initial inventory, one scan, and one final inventory from validate_parquet_points_source()."
         )
 
     return {

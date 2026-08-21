@@ -105,14 +105,16 @@ def main() -> None:
         reads: dict[str, object] = {}
         with _BucketReader(workspace, level=0, bucket_id=0) as reader:
             for descriptor, (name, _, value_count) in zip(result.tile_descriptors, scenarios, strict=True):
-                complete = _time_read(lambda descriptor=descriptor: reader.read_complete(descriptor))
+                complete = _time_read(lambda descriptor=descriptor: reader.read_construction_payload(descriptor))
                 localized = np.array([value_count // 2], dtype=np.uint32)
                 distributed = np.array([0, value_count // 2, value_count - 1], dtype=np.uint32)
                 localized_times = _time_read(
-                    lambda descriptor=descriptor, selected=localized: reader.read_selected(descriptor, selected)
+                    lambda descriptor=descriptor, selected=localized: reader.read_display_payload(descriptor, selected)
                 )
                 distributed_times = _time_read(
-                    lambda descriptor=descriptor, selected=distributed: reader.read_selected(descriptor, selected)
+                    lambda descriptor=descriptor, selected=distributed: reader.read_display_payload(
+                        descriptor, selected
+                    )
                 )
                 reads[name] = {
                     "complete_seconds": complete,
