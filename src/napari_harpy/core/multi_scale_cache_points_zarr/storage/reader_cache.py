@@ -27,8 +27,9 @@ class _BucketReaderCache:
     Notes
     -----
     The least-recently-used reader is closed before a new miss is admitted at
-    capacity. Reuse retains initialized Zarr array metadata; this cache never
-    stores decoded chunks or point payloads.
+    capacity. Reuse retains initialized Zarr array metadata and explicitly
+    loaded immutable lookup indexes; this cache never stores decoded chunks or
+    point payloads.
     """
 
     def __init__(self, cache_root: str | Path, *, max_open_readers: int) -> None:
@@ -87,6 +88,24 @@ class _BucketReaderCache:
     def open_reader_count(self) -> int:
         """Return the current number of entered readers."""
         return len(self._readers)
+
+    @property
+    def loaded_lookup_index_count(self) -> int:
+        """Return the number of readers retaining bucket lookup metadata."""
+        return sum(reader.lookup_index_loaded for reader in self._readers.values())
+
+    @property
+    def resident_lookup_bytes(self) -> int:
+        """Return bytes retained by all loaded bucket lookup indexes."""
+        return sum(reader.resident_lookup_bytes for reader in self._readers.values())
+
+    def release_lookup_indexes(self, keys: tuple[tuple[int, int], ...]) -> None:
+        """Release lookup buffers for the stated already opened buckets."""
+        self._require_open()
+        for key in keys:
+            reader = self._readers.get(key)
+            if reader is not None:
+                reader.release_lookup_index()
 
     def _require_open(self) -> None:
         if not self._open:
