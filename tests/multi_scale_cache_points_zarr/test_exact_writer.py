@@ -235,6 +235,7 @@ def test_exact_writer_builds_deterministic_validated_zarr_from_row_groups(
     for bucket in first.buckets:
         assert _validate_bucket(first_staging, level=0, bucket_id=bucket.bucket_id) == bucket
         with _BucketReader(first_staging, level=0, bucket_id=bucket.bucket_id) as reader:
+            reader.load_lookup_index()
             for descriptor in bucket.tile_descriptors:
                 complete = reader.read_construction_payload(descriptor)
                 order = np.lexsort((complete.point_id, complete.value_id))
