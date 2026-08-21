@@ -6074,12 +6074,19 @@ Z13 display path
       -> no _PointReadPlan and no point-array read
 
   plan_bucket_display_selection(all requested tile intervals)
-      -> basic slice or orthogonal selected_rows
+      -> slice or int64 selected_rows
       -> batch_tile_indptr
 
   execute one bucket display batch
+      -> both row representations use Zarr's orthogonal-selection API
       -> one location selection and one value_id selection
       -> immutable per-tile display payloads
+
+construction path
+  resolve one complete tile interval
+      -> direct location[start:stop, :]
+      -> direct value_id[start:stop]
+      -> direct point_id[start:stop]
 ```
 
 The private names above are descriptive rather than mandatory, but the ownership
@@ -6101,10 +6108,20 @@ may exist only as a thin wrapper around that canonical batch path.
 
 Keep construction reads separate and unchanged in semantics.
 `read_construction_payload()` still reads one complete logical tile including
-mandatory `point_id` for Bridge and spatial construction. Its complete-tile
-`_PointReadPlan` and aligned-row machinery may remain tile-scoped and must not be
-silently redirected through the display batch, which deliberately omits
-`point_id`.
+mandatory `point_id` for Bridge and spatial construction. Because that complete
+tile is one contiguous bucket-global interval, read its three aligned arrays
+directly with the same `[start:stop]` bounds. A slice may span several chunks;
+Zarr still owns their physical chunk processing. Do not redirect construction
+through the display batch, which deliberately omits `point_id`.
+
+The current `_PointReadPlan`, `_point_read_plan()`,
+`_coalesced_read_blocks_for_intervals()`, and general `_read_aligned_rows()`
+exist to turn several tile-scoped sparse intervals into application-planned
+basic-slice envelopes and then trim those envelopes in memory. After the display
+batch uses one exact basic or orthogonal selection and construction uses one
+direct complete slice, they have no production consumer and should be removed
+rather than retained as a second physical-read architecture. Replace their
+private block-planner tests with the Z13 selection-path tests.
 
 #### Bucket-batch contract
 
@@ -6129,15 +6146,20 @@ merge touching intervals
         +-- one merged interval
         |       |
         |       v
-        |   one basic slice
+        |   row_selection = slice(start, stop)
         |   no selected_rows allocation
         |
         +-- several disjoint intervals
                 |
                 v
-            one C-contiguous int64 selected_rows array
-            one exact orthogonal selection
+            row_selection = one C-contiguous int64 selected_rows array
 ```
+
+This merge is exact interval normalization, not the old chunk-envelope
+coalescing. Merge only when `previous_stop == next_start`. Do not inspect
+`chunk_rows`, expand a requested interval to chunk boundaries, or join two
+intervals merely because they touch the same or consecutive chunks. Zarr owns
+the mapping from the final basic or orthogonal selection to physical chunks.
 
 Construct one transient `uint64 batch_tile_indptr` of length
 `requested_tile_count + 1`; its adjacent entries identify the returned row
@@ -6160,21 +6182,23 @@ point row twice. Validate all counts and the chosen physical selection before
 opening point payload chunks.
 
 Issue exactly one coordinated selection from `location` and one from point-level
-`value_id` for each nonempty bucket batch. Use basic indexing when the merged
-interval is contiguous and orthogonal indexing only when exact requested rows
-remain disjoint. Visualization continues to omit `point_id`. Zarr maps either
-selection to its inner chunks, applies its configured asynchronous chunk
-concurrency, and may coalesce nearby reads inside a shard. The application does
-not create concurrent selection calls around it.
+`value_id` for each nonempty bucket batch. Pass either row-selection
+representation through Zarr's orthogonal-selection entry point; it accepts both
+slices and integer arrays. A slice follows the simple contiguous selector path,
+while an integer array follows the disjoint advanced-index path. Visualization
+continues to omit `point_id`. Zarr maps the selection to its inner chunks,
+applies its configured asynchronous chunk concurrency, and may coalesce nearby
+reads inside a shard. The application does not create concurrent selection calls
+around it.
 
 ```text
-contiguous:
-  location[start:stop, :]
-  value_id[start:stop]
+row_selection:
+  slice(start, stop)            # one exact contiguous interval
+  selected_rows                 # several exact disjoint intervals
 
-disjoint:
-  location.get_orthogonal_selection((selected_rows, slice(None)))
-  value_id.get_orthogonal_selection((selected_rows,))
+physical reads:
+  location.get_orthogonal_selection((row_selection, slice(None)))
+  value_id.get_orthogonal_selection((row_selection,))
 ```
 
 On the disjoint path, do not replace the exact selector with one basic slice
@@ -6182,6 +6206,33 @@ spanning its minimum and maximum row. Tiles assigned to one bucket may be
 separated by large runs of unrequested tiles; a broad envelope would decode
 unrelated chunks and make memory depend on their gap rather than the requested
 payload.
+
+#### Maintainability decision
+
+Do not introduce an adaptive basic-envelope path for disjoint rows. In
+particular, do not retain application logic that calculates touched chunk IDs,
+coalesces them into blocks, loops over those blocks, and trims unwanted envelope
+rows. Orthogonal selection may not be the fastest operation for every dense
+within-chunk pattern, but one Zarr-owned selection architecture is preferred to
+maintaining two competing physical planners and a policy for choosing between
+them.
+
+A narrow read-only diagnostic on the retained sharded Xenium L1 cache motivated
+this choice. These were same-process medians with uncontrolled filesystem,
+operating-system, and codec caches, not acceptance thresholds:
+
+| Request shape | Current per-tile blocks | Bucket blocks | Bucket orthogonal |
+|---|---:|---:|---:|
+| 1,258 rows, 2 chunks, 1 block | 9.57 ms | 2.31 ms | 2.87 ms |
+| 5,094 rows, 12 chunks, 7 blocks | 13.84 ms | 13.81 ms | 9.29 ms |
+
+The first observation shows a small possible advantage for an ideal basic
+envelope; the second shows the orthogonal path benefiting when rows span several
+separated blocks. The product decision is that removing repeated per-tile calls
+provides the important structural gain, while the remaining sub-millisecond
+one-block difference does not justify preserving the chunk-block planner. Reopen
+this decision only with representative evidence showing a material product
+problem, not because a basic envelope can win an isolated microbenchmark.
 
 Split the two returned arrays at `batch_tile_indptr` and construct one
 `_PointDisplayPayload` and `_TileReadResult` per request. Prefer C-contiguous
@@ -6240,9 +6291,10 @@ Use real sharded Zarr buckets and cover:
 - one tile in one bucket;
 - several requested tiles sharing one bucket;
 - complete and selected tiles with adjacent and separated value ranges;
-- touching intervals merging to one basic slice with no `selected_rows`
-  allocation;
+- touching intervals merging to one slice row selection, passed through the
+  same Zarr orthogonal-selection API, with no `selected_rows` allocation;
 - disjoint intervals using one exact orthogonal row selector;
+- no application-level chunk-ID calculation or coalesced read-block planning;
 - requested rows sharing an inner chunk, crossing chunks and shards, and ending
   in the final partial chunk;
 - large unrequested row gaps that are absent from the orthogonal result;
@@ -6253,7 +6305,8 @@ Use real sharded Zarr buckets and cover:
 - logical equivalence with a sequential reference execution;
 - direct singleton `read_tile()` and one-request bucket batching using the same
   display-I/O implementation;
-- construction payload reads retaining complete aligned `point_id` semantics;
+- direct construction slices spanning one and several chunks while retaining
+  complete aligned `point_id` semantics;
 - failure during one bucket producing no partial viewport result;
 - deterministic reader cleanup after completed and failed requests;
 - C-contiguous immutable point payloads and read-only lookup indexes;
@@ -6290,15 +6343,17 @@ counts in this gate. Record observations without numerical pass/fail thresholds.
 #### Exit criteria
 
 - all requested tiles in one bucket are resolved and read as one logical batch;
-- touching intervals use one basic slice without row-selector allocation, while
-  disjoint intervals use one exact orthogonal selection without materializing
-  unrelated row gaps;
+- touching intervals use one slice without row-selector allocation, while
+  disjoint intervals use one exact integer row selector without materializing
+  unrelated row gaps; both use the same Zarr orthogonal-selection API;
 - each nonempty bucket batch performs one coordinated selection per display
   point array and delegates chunk concurrency to Zarr;
 - separate immutable tile results preserve original request order and logical
   content without full-batch-per-tile copies;
 - one canonical plural display-read path serves both viewport and singleton tile
   requests, while construction reads remain tile-scoped and point-ID-complete;
+- the obsolete application-level `_PointReadPlan` and chunk-block coalescing
+  path have no production or private-test remainder;
 - lookup metadata remains resident and display reads never access point IDs;
 - buckets remain sequential and no application concurrency layer is introduced;
 - selector, decoded-chunk, output-memory, and retained-Xenium latency evidence
@@ -6376,7 +6431,8 @@ bucket lookup indexes
   eager reader initialization, resident tile/range metadata, lazy point payloads
 
 bucket-wide point reads
-  one exact basic-or-orthogonal multi-tile selection per display array,
+  one exact slice-or-integer multi-tile selection per display array through
+  Zarr's orthogonal-selection API,
   Zarr-owned chunk concurrency, stable splitting, sequential bucket execution
 ```
 
@@ -6411,9 +6467,9 @@ counts belong to opt-in benchmark scripts.
   pointers, and sparse range records. Their projected and actual bytes are
   explicitly accounted, and point payload arrays remain on disk.
 - Viewport requests are grouped by bucket and all requested tiles in one bucket
-  are resolved into one exact row selection per display point array. Use a basic
-  slice for one merged interval and an orthogonal `int64` selector only for
-  disjoint intervals.
+  are resolved into one exact row selection per display point array. Represent
+  one merged interval as a slice and disjoint intervals as an `int64` selector;
+  pass either representation through the same Zarr orthogonal-selection API.
 - Bucket batches execute sequentially. Zarr alone owns concurrency among chunks
   participating in one selection; do not add a bucket or tile executor.
 - Transient batch tile pointers and any disjoint-path row selector are explicitly
