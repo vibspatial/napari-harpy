@@ -6,7 +6,7 @@ from pathlib import Path, PurePosixPath
 
 import pyarrow as pa
 
-from napari_harpy.core.multi_scale_cache_points.errors import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import (
     ParquetMetadataValidationError,
     PointContentValidationError,
     PointsSourceValidationError,
@@ -143,11 +143,7 @@ class ParquetSourceFile:
                 code="invalid_source_file_path",
             )
         relative_path = PurePosixPath(self.relative_path)
-        if (
-            relative_path.is_absolute()
-            or ".." in relative_path.parts
-            or relative_path.as_posix() != self.relative_path
-        ):
+        if relative_path.is_absolute() or ".." in relative_path.parts or relative_path.as_posix() != self.relative_path:
             raise ParquetMetadataValidationError(
                 f"Source-file path `{self.relative_path}` is not a normalized dataset-relative POSIX path.",
                 code="invalid_source_file_path",

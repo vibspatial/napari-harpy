@@ -10,8 +10,6 @@ from typing import Any, Final
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
-from napari_harpy.core.multi_scale_cache_points.value_normalization import VALUE_NORMALIZATION_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
     BUCKET_HASH_METHOD,
     TARGET_POINTS_PER_BUCKET,
@@ -27,6 +25,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
     SAMPLING_METHOD,
     SAMPLING_SEED,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
+from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import VALUE_NORMALIZATION_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _COORDINATE_ENCODING,
     _PAYLOAD_SCHEMA_VERSION,

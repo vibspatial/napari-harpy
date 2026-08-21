@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING
 
 import pyarrow as pa
 
-from napari_harpy.core.multi_scale_cache_points.errors import ParquetMetadataValidationError
+from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import ParquetMetadataValidationError
 
 if TYPE_CHECKING:
-    from napari_harpy.core.multi_scale_cache_points.validation import _ParquetSourceInventory
+    from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _ParquetSourceInventory
 
 
 SOURCE_SIGNATURE_METHOD = "harpy-parquet-source-inventory-sha256-v1"
@@ -116,7 +116,6 @@ def _normalized_arrow_type(data_type: pa.DataType) -> dict[str, object]:
         }
 
     raise ParquetMetadataValidationError(
-        f"Arrow type `{data_type}` cannot be represented by source-signature method "
-        f"`{SOURCE_SIGNATURE_METHOD}`.",
+        f"Arrow type `{data_type}` cannot be represented by source-signature method `{SOURCE_SIGNATURE_METHOD}`.",
         code="unsupported_source_signature_type",
     )

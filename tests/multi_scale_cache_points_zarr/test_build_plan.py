@@ -5,13 +5,13 @@ from typing import cast
 
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points.models import PointsBounds, ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _LevelBuildPlan,
     _LevelKind,
     _plan_points_cache,
     _PointsCacheBuildPlan,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import PointsBounds, ValidatedPointsSource
 
 
 class _ForbiddenSource:

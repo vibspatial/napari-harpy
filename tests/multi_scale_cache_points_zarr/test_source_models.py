@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     PointsSourceResolutionError,

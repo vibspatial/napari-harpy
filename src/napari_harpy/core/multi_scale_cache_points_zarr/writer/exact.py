@@ -13,12 +13,6 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points.signature import POINT_ID_POLICY
-from napari_harpy.core.multi_scale_cache_points.value_normalization import (
-    VALUE_NORMALIZATION_METHOD,
-    _normalized_row_values,
-)
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _LevelKind,
     _PointsCacheBuildPlan,
@@ -32,6 +26,12 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY
+from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import (
+    VALUE_NORMALIZATION_METHOD,
+    _normalized_row_values,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,

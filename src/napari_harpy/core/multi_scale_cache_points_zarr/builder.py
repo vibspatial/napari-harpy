@@ -14,8 +14,6 @@ import zarr
 from filelock import FileLock, Timeout
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points.validation import _require_parquet_source_unchanged
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_COMPLETE,
@@ -24,6 +22,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _parse_cache_attributes,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _require_parquet_source_unchanged
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (

@@ -1,1 +1,1 @@
-"""Independent Zarr-backed multiscale points-cache experiment."""
+"""Zarr-backed multiscale points-cache construction and reading."""

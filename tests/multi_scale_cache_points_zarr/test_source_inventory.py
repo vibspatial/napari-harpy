@@ -5,9 +5,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points import ParquetPointsSource, PointColumnSelection
-from napari_harpy.core.multi_scale_cache_points.errors import ParquetMetadataValidationError
-from napari_harpy.core.multi_scale_cache_points.validation import _read_parquet_source_inventory
+from napari_harpy.core.multi_scale_cache_points_zarr.source import ParquetPointsSource, PointColumnSelection
+from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import ParquetMetadataValidationError
+from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _read_parquet_source_inventory
 
 
 def _source(tmp_path: Path) -> ParquetPointsSource:

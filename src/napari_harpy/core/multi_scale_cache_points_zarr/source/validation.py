@@ -8,12 +8,12 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from napari_harpy.core.multi_scale_cache_points.errors import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import (
     ParquetMetadataValidationError,
     PointContentValidationError,
     PointsSourceValidationError,
 )
-from napari_harpy.core.multi_scale_cache_points.models import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import (
     _VALUE_TABLE_SCHEMA,
     ParquetPointsSource,
     ParquetSourceFile,
@@ -21,12 +21,12 @@ from napari_harpy.core.multi_scale_cache_points.models import (
     PointsBounds,
     ValidatedPointsSource,
 )
-from napari_harpy.core.multi_scale_cache_points.signature import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import (
     POINT_ID_POLICY,
     SOURCE_SIGNATURE_METHOD,
     build_source_signature,
 )
-from napari_harpy.core.multi_scale_cache_points.value_normalization import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import (
     VALUE_NORMALIZATION_METHOD,
     _trim_utf8,
 )
@@ -34,6 +34,8 @@ from napari_harpy.core.multi_scale_cache_points.value_normalization import (
 _MAX_UINT64 = 2**64 - 1
 _MAX_VALUE_CARDINALITY = 2**32
 _PARQUET_METADATA_FILES = {"_metadata", "_common_metadata"}
+
+
 @dataclass(frozen=True)
 class _ParquetSourceInventory:
     """Record the Parquet metadata observed for a resolved points source.

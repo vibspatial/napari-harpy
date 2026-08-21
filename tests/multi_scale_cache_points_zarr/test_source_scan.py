@@ -6,10 +6,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points.validation as validation_module
-from napari_harpy.core.multi_scale_cache_points import ParquetPointsSource, PointColumnSelection
-from napari_harpy.core.multi_scale_cache_points.errors import PointContentValidationError
-from napari_harpy.core.multi_scale_cache_points.validation import (
+import napari_harpy.core.multi_scale_cache_points_zarr.source.validation as validation_module
+from napari_harpy.core.multi_scale_cache_points_zarr.source import ParquetPointsSource, PointColumnSelection
+from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import PointContentValidationError
+from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import (
     VALUE_NORMALIZATION_METHOD,
     _normalized_value_counts,
     _read_parquet_source_inventory,

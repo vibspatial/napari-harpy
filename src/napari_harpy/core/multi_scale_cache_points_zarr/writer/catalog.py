@@ -6,8 +6,6 @@ from pathlib import Path
 import numpy as np
 
 from napari_harpy import __version__ as napari_harpy_version
-from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points.signature import _normalized_arrow_type
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _PointsCacheBuildPlan
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_STAGING,
@@ -29,6 +27,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
     SAMPLING_METHOD,
     SAMPLING_SEED,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import _normalized_arrow_type
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _iter_bucket_range_batches,
     _read_bucket_storage_settings,

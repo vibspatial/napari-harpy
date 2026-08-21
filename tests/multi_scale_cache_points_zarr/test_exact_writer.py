@@ -10,16 +10,16 @@ import pytest
 
 import napari_harpy.core.multi_scale_cache_points_zarr.hashing as hashing_module
 import napari_harpy.core.multi_scale_cache_points_zarr.writer.exact as exact_module
-from napari_harpy.core.multi_scale_cache_points import (
-    ParquetPointsSource,
-    PointColumnSelection,
-    validate_parquet_points_source,
-)
-from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
     _PointsCacheBuildPlan,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+    ParquetPointsSource,
+    PointColumnSelection,
+    validate_parquet_points_source,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (

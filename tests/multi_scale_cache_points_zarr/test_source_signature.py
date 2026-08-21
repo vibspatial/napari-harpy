@@ -3,19 +3,19 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from napari_harpy.core.multi_scale_cache_points.models import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import (
     ParquetPointsSource,
     ParquetSourceFile,
     ParquetSourceRowGroup,
     PointColumnSelection,
 )
-from napari_harpy.core.multi_scale_cache_points.signature import (
+from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import (
     POINT_ID_POLICY,
     SOURCE_SIGNATURE_METHOD,
     _canonical_source_signature_bytes,
     build_source_signature,
 )
-from napari_harpy.core.multi_scale_cache_points.validation import _ParquetSourceInventory
+from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _ParquetSourceInventory
 
 _EXPECTED_CANONICAL_BYTES = (
     b'{"columns":[{"name":"x","nullable":false,"role":"x","type":{"bit_width":64,"kind":"float"}},'

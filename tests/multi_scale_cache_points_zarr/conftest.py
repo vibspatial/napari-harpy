@@ -7,16 +7,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points import (
-    ParquetPointsSource,
-    PointColumnSelection,
-    validate_parquet_points_source,
-)
-from napari_harpy.core.multi_scale_cache_points.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
     _PointsCacheBuildPlan,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+    ParquetPointsSource,
+    PointColumnSelection,
+    validate_parquet_points_source,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _LevelWriteResult,
     _ZarrWriteSettings,

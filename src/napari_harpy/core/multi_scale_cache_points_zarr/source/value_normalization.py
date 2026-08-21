@@ -1,3 +1,5 @@
+"""Normalize logical point values for stable cache construction."""
+
 from __future__ import annotations
 
 import pyarrow as pa

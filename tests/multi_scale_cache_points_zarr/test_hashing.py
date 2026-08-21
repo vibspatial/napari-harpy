@@ -52,4 +52,3 @@ def test_bucket_mapping_rejects_invalid_inputs(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         _tile_bucket_ids(tile_x, tile_y, bucket_count=bucket_count)  # type: ignore[arg-type]
-

@@ -1,3 +1,5 @@
+"""Errors raised while resolving and validating point sources."""
+
 from __future__ import annotations
 
 

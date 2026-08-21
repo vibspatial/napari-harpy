@@ -10,11 +10,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points import (
-    ParquetPointsSource,
-    PointColumnSelection,
-    validate_parquet_points_source,
-)
 from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
@@ -33,6 +28,11 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _ValueTileInterval,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.sampling import _select_sampled_tile_indices
+from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+    ParquetPointsSource,
+    PointColumnSelection,
+    validate_parquet_points_source,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
     _BucketReader,
     _PointDisplayPayload,
@@ -406,10 +406,13 @@ def test_bucket_lookup_priming_reads_only_resident_lookup_arrays(
             return original_array(name)
 
         monkeypatch.setattr(bucket_reader, "_array", record_lookup_array)
-        assert reader.load_bucket_lookup_indexes(
-            levels=(0,),
-            max_resident_bytes=projected,
-        ) == projected
+        assert (
+            reader.load_bucket_lookup_indexes(
+                levels=(0,),
+                max_resident_bytes=projected,
+            )
+            == projected
+        )
         assert tuple(observed_names) == expected_names
 
 

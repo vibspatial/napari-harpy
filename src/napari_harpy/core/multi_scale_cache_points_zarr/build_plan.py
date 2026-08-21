@@ -36,7 +36,7 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
-from napari_harpy.core.multi_scale_cache_points.models import PointsBounds, ValidatedPointsSource
+from napari_harpy.core.multi_scale_cache_points_zarr.source.models import PointsBounds, ValidatedPointsSource
 
 _BRIDGE_MAX_POINTS_PER_TILE = 4_096
 _INT16_MAX = 2**15 - 1
