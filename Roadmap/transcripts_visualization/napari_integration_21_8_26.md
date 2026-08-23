@@ -920,7 +920,7 @@ focused tests. A slice may be merged while hidden behind an internal entrypoint,
 but the existing points workflow is not removed until Gate I and the product
 migration slice pass.
 
-### Slice I0: freeze integration contracts and compatibility
+### Slice I0: freeze integration contracts and compatibility — resolved
 
 Deliverables:
 
