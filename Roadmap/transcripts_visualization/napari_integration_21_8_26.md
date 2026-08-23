@@ -944,6 +944,60 @@ Exit criteria:
 
 ### Slice I1: add the viewer-oriented cache planning seam
 
+The current `read_viewport()` operation discovers the positive logical tiles
+and immediately reads every corresponding point payload. That is correct for a
+complete standalone viewport request, but it gives a later CPU residency cache
+no opportunity to remove tiles that are already decoded.
+
+I1 separates discovery from physical point reads:
+
+```text
+current read_viewport()
+    discover positive tiles
+    + immediately read every tile
+
+I1
+    plan_viewport()
+        -> immutable ordered tile plan
+        -> no point-payload IO
+
+    application chooses missing tile keys
+
+    read_planned_tiles(plan, missing_tile_keys)
+        -> validate the subset against the plan
+        -> group missing tiles by physical bucket
+        -> one coordinated read per bucket
+        -> return tiles in plan order
+
+    read_viewport()
+        -> plan all
+        -> read all
+```
+
+For example:
+
+```text
+planned tiles:   A B C D
+resident tiles:  A   C
+physical reads:    B   D
+```
+
+The immutable plan contains the ordered logical tile identity and the internal
+read instructions needed for all-values or selected-value access. It exposes
+stable logical tile and required bucket keys, but callers do not construct or
+modify manifest rows, bucket descriptors, or sparse-range records. The plan is
+bound to the cache generation and selected-value index that produced it, so a
+subset from another generation or selection is rejected.
+
+Subset reads reuse the existing one-batch-per-bucket implementation; they must
+not loop through the singleton `read_tile()` convenience API. Physical bucket
+execution may differ from logical tile order, so results are restored to plan
+order before they are returned.
+
+I1 provides this reader capability but does not implement the CPU LRU or decide
+which tiles are resident. That policy belongs to I5. Keeping the boundary here
+makes I1 independently testable without napari, Qt, workers, or a renderer.
+
 Deliverables:
 
 - expose immutable cache dataset information from the reader;
