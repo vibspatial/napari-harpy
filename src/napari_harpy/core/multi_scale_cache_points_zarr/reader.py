@@ -601,12 +601,12 @@ class _PointsCacheReader:
     def load_bucket_lookup_indexes(
         self,
         *,
-        max_resident_bytes: int,
+        max_resident_bytes: int | None,
         levels: tuple[int, ...] | None = None,
         bucket_keys: tuple[tuple[int, int], ...] | None = None,
         progress: Callable[[int, int], None] | None = None,
     ) -> int:
-        """Explicitly load an immutable, byte-bounded bucket lookup set.
+        """Explicitly load an immutable bucket lookup set.
 
         The complete requested set is projected before any large lookup array is
         read. Loading is atomic with respect to indexes introduced by this call:
@@ -618,6 +618,8 @@ class _PointsCacheReader:
         max_resident_bytes
             Positive upper bound for all cached bucket lookup-index array bytes
             after the operation, including indexes cached by earlier calls.
+            ``None`` disables the configured limit; projection and exact
+            post-load byte reconciliation still run.
         levels
             Optional sorted unique levels to load. ``None`` with no
             ``bucket_keys`` requests every serialized bucket.
@@ -633,12 +635,13 @@ class _PointsCacheReader:
         int
             Exact bytes retained by all loaded bucket lookup indexes.
         """
-        _require_integer_in_range(
-            max_resident_bytes,
-            "max_resident_bytes",
-            minimum=1,
-            maximum=_INT64_MAX,
-        )
+        if max_resident_bytes is not None:
+            _require_integer_in_range(
+                max_resident_bytes,
+                "max_resident_bytes",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
         if progress is not None and not callable(progress):
             raise ValueError("`progress` must be callable or None.")
         keys = self._requested_bucket_keys(levels=levels, bucket_keys=bucket_keys)
@@ -647,7 +650,7 @@ class _PointsCacheReader:
         projected_total = cache.resident_lookup_bytes + sum(
             reader.projected_lookup_bytes for reader in readers.values() if not reader.lookup_index_loaded
         )
-        if projected_total > max_resident_bytes:
+        if max_resident_bytes is not None and projected_total > max_resident_bytes:
             raise ValueError(
                 f"Bucket lookup indexes require {projected_total} resident bytes, "
                 f"exceeding `max_resident_bytes={max_resident_bytes}`."
@@ -708,7 +711,7 @@ class _PointsCacheReader:
         self,
         value_ids: npt.NDArray[np.uint32],
         *,
-        max_resident_bytes: int,
+        max_resident_bytes: int | None,
     ) -> _SelectedValueIndex | None:
         """Read and retain selected value-to-tile records for every level.
 
@@ -722,8 +725,9 @@ class _PointsCacheReader:
         The resident representation is compact relative to point payloads: it
         retains only selected value-to-tile manifest rows, aligned point counts,
         and per-value pointers—not point coordinates or point-level value IDs.
-        Its exact NumPy-buffer footprint is projected and checked against
-        ``max_resident_bytes`` before either large catalog array is read.
+        Its exact NumPy-buffer footprint is projected before either large
+        catalog array is read. A configured ``max_resident_bytes`` is checked
+        against that projection.
 
         Parameters
         ----------
@@ -731,6 +735,8 @@ class _PointsCacheReader:
             Nonempty sorted unique canonical value IDs.
         max_resident_bytes
             Maximum retained NumPy-buffer bytes allowed for the loaded index.
+            ``None`` disables the configured limit; projection and exact
+            post-load byte reconciliation still run.
 
         Returns
         -------
@@ -741,12 +747,13 @@ class _PointsCacheReader:
         value_ids = self._require_value_ids(value_ids)
         if value_ids is None:
             raise ValueError("`value_ids` must be supplied when loading a selected-value index.")
-        _require_integer_in_range(
-            max_resident_bytes,
-            "max_resident_bytes",
-            minimum=1,
-            maximum=_INT64_MAX,
-        )
+        if max_resident_bytes is not None:
+            _require_integer_in_range(
+                max_resident_bytes,
+                "max_resident_bytes",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
         if len(value_ids) == len(self.value_names):
             return None
 
@@ -755,7 +762,7 @@ class _PointsCacheReader:
         record_counts = pointers[:, indexes + 1] - pointers[:, indexes]
         projected_bytes = value_ids.nbytes + pointers.shape[0] * (len(value_ids) + 1) * np.dtype(np.uint64).itemsize
         projected_bytes += int(record_counts.sum(dtype=np.uint64)) * 2 * np.dtype(np.uint64).itemsize
-        if projected_bytes > max_resident_bytes:
+        if max_resident_bytes is not None and projected_bytes > max_resident_bytes:
             raise ValueError(
                 f"Selected-value index requires {projected_bytes} resident bytes, "
                 f"exceeding `max_resident_bytes={max_resident_bytes}`."
