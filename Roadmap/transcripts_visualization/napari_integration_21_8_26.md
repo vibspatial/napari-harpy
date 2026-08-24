@@ -106,8 +106,9 @@ thresholds. They lead to the following runtime decisions:
   on every pan or zoom;
 - bucket lookup arrays are explicitly primed before interaction and remain
   resident for the cache generation;
-- the initial integration supports eager loading of all bucket lookup indexes
-  when their complete projected size fits the configured metadata budget;
+- the initial integration supports eager loading of all bucket lookup indexes;
+  a configured metadata budget can guard their complete projected size, while
+  an explicit `None` permits loading without that product-level limit;
 - an application CPU tile cache is needed so a warm pan does not reread point
   payloads merely because `read_viewport()` was called again;
 - one logical tile is a useful reuse unit, but 127 visible tiles are enough that
@@ -556,7 +557,7 @@ create empty logical layer with complete extent
         ↓
 project all bucket lookup-index bytes
         ↓
-compare complete projection with explicit metadata budget
+configured metadata budget is present and projection exceeds it?
         ↓
 load all bucket lookup indexes on worker thread
         ↓
@@ -1292,7 +1293,7 @@ Exit criteria:
 - changing point diameter alone does not change the effective budget;
 - the callback performs no IO and remains fast on the GUI thread.
 
-### Slice I4: implement the worker-owned cache session
+### Slice I4: implement the worker-owned cache session — resolved
 
 I4 introduces the long-lived runtime wrapper around `_PointsCacheReader`. It
 does not yet schedule viewports or read point payloads. Its responsibility is
@@ -1340,7 +1341,7 @@ CLOSED
 The session does not expose its reader or accept future reader commands before
 readiness. `close()` is safe and idempotent from every non-closed state.
 
-Add immutable `_CacheSessionSettings` with two required positive integers and
+Add immutable `_CacheSessionSettings` with two required `int | None` fields and
 no implicit defaults:
 
 ```text
@@ -1352,6 +1353,13 @@ I4 must not guess a machine-wide memory policy. I7/I8 will supply the adopted
 product configuration. The decoded point-payload/CPU-LRU budget belongs to I5,
 not these settings.
 
+A positive integer is a preflight upper bound. `None` explicitly disables that
+configured limit; it does not disable size projection, byte reporting, or
+post-load reconciliation, and it does not imply that process memory is
+unlimited. Propagate this `int | None` contract through the bucket-lookup and
+selected-value reader APIs rather than translating `None` to an artificial
+large integer.
+
 Session startup is ordered and guarded:
 
 ```text
@@ -1361,9 +1369,9 @@ return immutable cache dataset information
         ↓
 project bytes for every bucket lookup index
         ↓
-projection exceeds explicit metadata budget?
+configured limit exists and projection exceeds it?
     yes → fail before loading lookup arrays
-    no  ↓
+    no or no configured limit ↓
 load all bucket lookup indexes with progress
         ↓
 mark session READY for later viewport commands
@@ -1373,8 +1381,8 @@ The resident lookup indexes contain bucket tile/range metadata, not point
 coordinates or point-level value IDs. Priming all of them is deliberate: it
 moves this metadata IO out of later pan, zoom, LOD, and value-selection paths.
 For the evaluated Xenium cache the expected retained lookup footprint is about
-596 MB; the configured metadata budget is therefore an explicit product
-decision rather than an implicit allocation.
+596 MB; choosing a finite metadata budget or explicitly choosing `None` is
+therefore a product decision rather than an implicit allocation.
 
 The session also owns the current selected-value index. Its command boundary
 uses `None` for all values and a sorted unique nonempty `tuple[int, ...]` for a
@@ -1410,7 +1418,8 @@ Deliverables:
 
 - start one long-lived serial reader worker;
 - enter the reader and return cache dataset information;
-- project and eagerly load all bucket lookup indexes within an explicit budget;
+- project and eagerly load all bucket lookup indexes, enforcing an explicit
+  byte budget when one is configured;
 - load and retain selected-value indexes when selection changes;
 - close the reader on its owning thread;
 - expose structured startup, ready, progress, and error events.
