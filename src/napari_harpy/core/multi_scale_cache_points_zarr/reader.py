@@ -503,6 +503,8 @@ class _PointsCacheReader:
             attributes = catalog.attributes
             if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
                 raise ValueError("Cache root publication_state is not 'complete'.")
+            # Size the cache to retain all bucket readers and reuse their lookup
+            # indexes throughout the visualization session.
             bucket_cache = stack.enter_context(
                 _BucketReaderCache(
                     self._cache_root,
