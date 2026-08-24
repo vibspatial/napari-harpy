@@ -74,6 +74,16 @@ class _BucketLookupIndex:
     Only lookup metadata is retained. Point coordinates and point-level values
     remain chunked on disk, and cache-level priming enforces an explicit memory
     budget.
+
+    The resident fields correspond to the persisted bucket arrays as follows::
+
+        Resident field          Zarr array
+        -----------------------------------------------
+        tile_offset             tile_offset
+        tile_indptr             ranges/tile_indptr
+        range_value_id          ranges/value_id
+        range_row_start         ranges/row_start
+        range_row_count         ranges/row_count
     """
 
     level: int
