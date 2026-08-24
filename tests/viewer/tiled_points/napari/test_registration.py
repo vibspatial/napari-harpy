@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import ModuleType
 from uuid import uuid4
 
 import pytest
+from napari._qt.layer_controls import qt_layer_controls_container
 from napari._qt.layer_controls.qt_layer_controls_container import create_qt_layer_controls
+from napari._vispy.utils import visual
 from napari._vispy.utils.qt_font import FontInfo
 from napari._vispy.utils.visual import create_vispy_layer
 
@@ -90,6 +93,27 @@ def test_controls_update_layer_style_and_read_only_status(clean_real_registratio
     assert controls.status_label.text() == "Ready"
     assert controls.sampling_label.text() == "Sampled; omitted value IDs: 9"
     assert not controls.transform_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("module", "attribute", "replacement"),
+    [
+        (visual, "layer_to_visual", object()),
+        (qt_layer_controls_container, "layer_to_controls", object()),
+        (visual, "create_vispy_layer", None),
+        (qt_layer_controls_container, "create_qt_layer_controls", None),
+    ],
+)
+def test_private_registration_shape_mismatch_fails_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    attribute: str,
+    replacement: object,
+) -> None:
+    monkeypatch.setattr(module, attribute, replacement)
+
+    with pytest.raises(TiledPointsLayerCompatibilityError, match="private visual/control registries"):
+        registration._load_napari_compatibility()
 
 
 class _FailingControlsRegistry(dict[type[object], type[object]]):
