@@ -347,7 +347,7 @@ runtime budget. When `_LevelSelection.within_budget` is false:
 
 - do not call a point-payload read;
 - retain the last valid snapshot if one exists;
-- otherwise show an empty transcript visual with the complete logical extent;
+- otherwise show an empty tiled-points visual with the complete logical extent;
 - report that the user must zoom in or raise the hard budget.
 
 An explicit future “render anyway” action may override this, but automatic
@@ -1165,6 +1165,73 @@ Exit criteria:
 - the layer cannot enter an edit mode.
 
 ### Slice I3: implement viewport conversion and effective budgets
+
+I3 is the GUI-only adapter between the napari layer created in I2 and the
+reader-planning seam created in I1. The two existing ends are deliberately not
+connected yet:
+
+```text
+napari draw state
+    TiledPointsLayerModel.events.viewport exists, but nothing emits it
+
+cache-reader planning
+    select_level(_IntrinsicViewport, point_budget)
+    plan_viewport(_IntrinsicViewport, ...)
+```
+
+I3 fills that gap by adding an immutable `TiledPointsViewportState` and a narrow
+`TiledPointsLayerModel._update_draw()` override. The override first calls
+`super()._update_draw(...)` so normal napari scale and corner bookkeeping still
+runs. Napari's base implementation calculates a data-space bounding box but
+rounds it to integer array coordinates; I3 must independently preserve the
+floating-point bounds required by point data.
+
+Napari supplies the top-left and bottom-right viewbox corners in world `(y, x)`
+coordinates. Form all four world corners, inverse-transform each through
+`Layer.world_to_data()`, take the enclosing floating-point data-coordinate AABB,
+and only then convert `(y, x)` to the reader's half-open `(x, y)` viewport.
+Transforming only two corners is invalid under rotation or shear. Do not round,
+clip, or otherwise quantize these bounds in the layer; cache-geometry clipping
+remains the reader's responsibility.
+
+The viewport state retains the displayed axes, intrinsic bounds, napari-provided
+canvas dimensions, scale evidence, and effective point budget. Treat
+`shape_threshold` as the consistently defined logical viewbox-pixel dimensions
+supplied by napari 0.7.1. The marker renderer and real-canvas gate must use the
+same logical-pixel convention and explicitly qualify HiDPI behavior; introduce a
+device-pixel conversion only if that gate proves it necessary.
+
+Budgeting remains viewer policy:
+
+```text
+screen_density_budget = max(
+    1,
+    floor(canvas_pixel_area / target_pixels_per_point),
+)
+
+effective_point_budget = min(
+    hard_render_point_budget,
+    screen_density_budget,
+)
+```
+
+The existing points-panel render budget eventually supplies the hard limit in
+I8. `target_pixels_per_point` is explicit viewer configuration calibrated with
+point diameter and HiDPI behavior; it is neither inferred from nor persisted in
+the cache. Later reader code receives only the intrinsic rectangle and effective
+budget.
+
+Normalize axis order, scalar types, and canvas dimensions before comparing a
+new state with the last emitted state. Use exact immutable-state equality after
+normalization; do not obtain deduplication by rounding coordinates. An identical
+draw emits nothing, preventing a point-buffer upload from recursively scheduling
+the same viewport request. A changed camera, transform, canvas size, hard budget,
+or density evidence emits one `viewport` event.
+
+The I3 tests connect a recorder to that event instead of creating a cache
+session. I3 performs no cache open, Zarr IO, LOD selection, viewport planning,
+worker scheduling, tile read, or VisPy point-buffer mutation. I4 through I7
+consume the emitted state and implement those responsibilities.
 
 Deliverables:
 
