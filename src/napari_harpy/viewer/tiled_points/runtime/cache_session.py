@@ -108,7 +108,6 @@ class _TiledPointsCacheWorker(QObject):
         self._settings = settings
         self._cancellation = cancellation
         self._reader_factory = reader_factory
-        self._reader_context: _PointsCacheReader | None = None
         self._reader: _PointsCacheReader | None = None
         self._selection_identity: tuple[int, ...] | None = None
         self._selected_value_index: _SelectedValueIndex | None = None
@@ -120,10 +119,9 @@ class _TiledPointsCacheWorker(QObject):
         phase: _FailurePhase = "startup"
         try:
             self._require_not_cancelled()
-            reader_context = self._reader_factory(self._cache_root)
+            reader = self._reader_factory(self._cache_root)
             self._require_not_cancelled()
-            reader = reader_context.__enter__()
-            self._reader_context = reader_context
+            reader.__enter__()
             self._reader = reader
             self.dataset_available.emit(reader.dataset_info)
 
@@ -219,14 +217,13 @@ class _TiledPointsCacheWorker(QObject):
         if emit_closing:
             self.state_changed.emit(_CacheSessionState.CLOSING)
 
-        reader_context = self._reader_context
-        self._reader_context = None
+        reader = self._reader
         self._reader = None
         self._selection_identity = None
         self._selected_value_index = None
         try:
-            if reader_context is not None:
-                reader_context.__exit__(None, None, None)
+            if reader is not None:
+                reader.__exit__(None, None, None)
         except Exception as error:  # noqa: BLE001
             logger.exception("Tiled-points cache session failed while closing the reader.")
             self.state_changed.emit(_CacheSessionState.FAILED)
