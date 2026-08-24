@@ -288,7 +288,7 @@ residency:
 ```text
 TileResidencyKey = (
     cache_generation_id,
-    selection_key,
+    requested_value_ids,
     level,
     tile_x,
     tile_y,
@@ -368,7 +368,7 @@ ordered positive tile requests and required bucket keys
         ↓
 CPU residency lookup
         ↓
-read_planned_tiles(plan, missing_tile_keys)
+read_planned_tiles(plan, tile_keys_to_read)
 ```
 
 The plan is immutable and bound to the reader's cache generation and selected
@@ -942,7 +942,7 @@ Exit criteria:
 - the screen-density budget is explicitly viewer-owned;
 - later slices do not need to infer coordinate ordering.
 
-### Slice I1: add the viewer-oriented cache planning seam
+### Slice I1: add the viewer-oriented cache planning seam — resolved
 
 The current `read_viewport()` operation discovers the positive logical tiles
 and immediately reads every corresponding point payload. That is correct for a
@@ -961,9 +961,9 @@ I1
         -> immutable ordered tile plan
         -> no point-payload IO
 
-    application chooses missing tile keys
+    application chooses the tile keys to read
 
-    read_planned_tiles(plan, missing_tile_keys)
+    read_planned_tiles(plan, tile_keys_to_read)
         -> validate the subset against the plan
         -> group missing tiles by physical bucket
         -> one coordinated read per bucket
@@ -986,8 +986,20 @@ The immutable plan contains the ordered logical tile identity and the internal
 read instructions needed for all-values or selected-value access. It exposes
 stable logical tile and required bucket keys, but callers do not construct or
 modify manifest rows, bucket descriptors, or sparse-range records. The plan is
-bound to the cache generation and selected-value index that produced it, so a
-subset from another generation or selection is rejected.
+bound to the cache generation and records the complete requested value IDs once.
+Each private tile instruction retains only the requested value IDs applicable to
+that tile. The public subset keys are therefore purely logical
+`(level, tile_x, tile_y)` identities; supplying a subset cannot alter the value
+selection already frozen in the plan. The private instruction stores those
+three coordinates directly and exposes the tuple through a property; there is
+no additional logical-key wrapper object.
+
+The later viewer runtime combines the plan's cache generation and complete
+value-selection identity with each logical tile key when constructing the CPU
+and GPU `TileResidencyKey`. Keeping that policy out of the core reader avoids
+coupling every core tile instruction to viewer residency policy. An empty
+`tile_keys_to_read` tuple is a valid no-IO read, and caller key order never
+changes the plan-order result.
 
 Subset reads reuse the existing one-batch-per-bucket implementation; they must
 not loop through the singleton `read_tile()` convenience API. Physical bucket
