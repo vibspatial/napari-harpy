@@ -3,6 +3,7 @@
 from napari_harpy.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
     TiledPointsLayerStatus,
+    TiledPointsViewportState,
 )
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 from napari_harpy.viewer.tiled_points.napari.registration import (
@@ -15,5 +16,6 @@ __all__ = [
     "TiledPointsLayerCompatibilityError",
     "TiledPointsLayerModel",
     "TiledPointsLayerStatus",
+    "TiledPointsViewportState",
     "register_tiled_points_layer",
 ]
