@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+from collections.abc import Iterator
+from uuid import uuid4
+
+import pytest
+from napari._qt.layer_controls.qt_layer_controls_container import create_qt_layer_controls
+from napari._vispy.utils.qt_font import FontInfo
+from napari._vispy.utils.visual import create_vispy_layer
+
+from napari_harpy.viewer.tiled_points import (
+    TiledPointsDatasetReference,
+    TiledPointsLayerModel,
+    TiledPointsLayerStatus,
+)
+from napari_harpy.viewer.tiled_points.napari import registration
+from napari_harpy.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
+from napari_harpy.viewer.tiled_points.napari.registration import (
+    TiledPointsLayerCompatibilityError,
+    register_tiled_points_layer,
+)
+from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+
+
+def _layer() -> TiledPointsLayerModel:
+    return TiledPointsLayerModel(
+        TiledPointsDatasetReference(
+            cache_generation_id=str(uuid4()),
+            points_name="spots",
+            value_column="feature_name",
+            x_min=3.0,
+            x_max=23.0,
+            y_min=2.0,
+            y_max=12.0,
+        )
+    )
+
+
+@pytest.fixture
+def clean_real_registration() -> Iterator[None]:
+    registration._unregister_tiled_points_layer_for_testing()
+    try:
+        yield
+    finally:
+        registration._unregister_tiled_points_layer_for_testing()
+
+
+def test_registration_is_idempotent_and_factories_select_owned_types(
+    clean_real_registration: None,
+    monkeypatch: pytest.MonkeyPatch,
+    qtbot,
+) -> None:
+    monkeypatch.setattr("napari._vispy.layers.base.get_max_texture_sizes", lambda: (8192, 2048))
+    register_tiled_points_layer()
+    register_tiled_points_layer()
+    layer = _layer()
+
+    controls = create_qt_layer_controls(layer)
+    qtbot.addWidget(controls)
+    visual = create_vispy_layer(layer, font_info=FontInfo())
+    try:
+        assert isinstance(controls, QtTiledPointsLayerControls)
+        assert isinstance(visual, VispyTiledPointsLayer)
+        layer.visible = False
+        assert not visual.node.visible
+    finally:
+        visual.close()
+
+
+def test_controls_update_layer_style_and_read_only_status(clean_real_registration: None, qtbot) -> None:
+    register_tiled_points_layer()
+    layer = _layer()
+    controls = create_qt_layer_controls(layer)
+    qtbot.addWidget(controls)
+    assert isinstance(controls, QtTiledPointsLayerControls)
+
+    controls.point_diameter_spin_box.setValue(6.5)
+    layer.display_status = TiledPointsLayerStatus(
+        level_label="Bridge",
+        rendered_point_count=1234,
+        rendered_tile_count=3,
+        message="Ready",
+        sampled=True,
+        omitted_value_ids=(9,),
+    )
+
+    assert layer.point_diameter == 6.5
+    assert controls.level_label.text() == "Bridge"
+    assert controls.rendered_label.text() == "1,234 points / 3 tiles"
+    assert controls.status_label.text() == "Ready"
+    assert controls.sampling_label.text() == "Sampled; omitted value IDs: 9"
+    assert not controls.transform_button.isEnabled()
+
+
+class _FailingControlsRegistry(dict[type[object], type[object]]):
+    def __setitem__(self, key: type[object], value: type[object]) -> None:
+        raise RuntimeError("controls registry failure")
+
+
+def _compatibility(
+    *,
+    napari_version: str = "0.7.1",
+    vispy_version: str = "0.16.2",
+    visual_registry: dict[type[object], type[object]] | None = None,
+    controls_registry: dict[type[object], type[object]] | None = None,
+) -> registration._NapariCompatibility:
+    return registration._NapariCompatibility(
+        napari_version=napari_version,
+        vispy_version=vispy_version,
+        visual_registry={} if visual_registry is None else visual_registry,
+        controls_registry={} if controls_registry is None else controls_registry,
+    )
+
+
+def test_registration_rolls_back_visual_when_controls_mutation_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    visual_registry: dict[type[object], type[object]] = {}
+    compatibility = _compatibility(
+        visual_registry=visual_registry,
+        controls_registry=_FailingControlsRegistry(),
+    )
+    monkeypatch.setattr(registration, "_load_napari_compatibility", lambda: compatibility)
+
+    with pytest.raises(TiledPointsLayerCompatibilityError, match="atomically"):
+        register_tiled_points_layer()
+
+    assert TiledPointsLayerModel not in visual_registry
+
+
+def test_registration_rejects_conflict_before_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ConflictingVisual:
+        pass
+
+    visual_registry = {TiledPointsLayerModel: ConflictingVisual}
+    controls_registry: dict[type[object], type[object]] = {}
+    compatibility = _compatibility(
+        visual_registry=visual_registry,
+        controls_registry=controls_registry,
+    )
+    monkeypatch.setattr(registration, "_load_napari_compatibility", lambda: compatibility)
+
+    with pytest.raises(TiledPointsLayerCompatibilityError, match="conflicting visual"):
+        register_tiled_points_layer()
+
+    assert visual_registry == {TiledPointsLayerModel: ConflictingVisual}
+    assert controls_registry == {}
+
+
+def test_unsupported_versions_fail_before_registry_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    visual_registry: dict[type[object], type[object]] = {}
+    controls_registry: dict[type[object], type[object]] = {}
+    compatibility = _compatibility(
+        napari_version="0.7.2",
+        visual_registry=visual_registry,
+        controls_registry=controls_registry,
+    )
+    monkeypatch.setattr(registration, "_load_napari_compatibility", lambda: compatibility)
+
+    with pytest.raises(TiledPointsLayerCompatibilityError, match="supports exactly"):
+        register_tiled_points_layer()
+
+    assert visual_registry == {}
+    assert controls_registry == {}
