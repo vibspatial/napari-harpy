@@ -803,9 +803,11 @@ permanent user-facing UI.
 napari draw on GUI thread
         ↓
 TiledPointsLayerModel._update_draw()
-        ↓ normalize, deduplicate, increment request generation
+        ↓ normalize and deduplicate
+TiledPointsLayerModel.events.viewport(state)
+        ↓ GUI listener submits or replaces the pending request; no cache IO
 latest-request coordinator
-        ↓
+        ↓ assign request generation
 reader worker: select_level()
         ↓
 within_budget=False ──→ warning result; no payload read
@@ -1164,11 +1166,11 @@ Exit criteria:
 - unsupported versions fail before a layer is inserted;
 - the layer cannot enter an edit mode.
 
-### Slice I3: implement viewport conversion and effective budgets
+### Slice I3: implement viewport conversion and effective budgets — resolved
 
 I3 is the GUI-only adapter between the napari layer created in I2 and the
-reader-planning seam created in I1. The two existing ends are deliberately not
-connected yet:
+reader-planning seam created in I1. At the start of I3, the two existing ends
+are deliberately not connected yet:
 
 ```text
 napari draw state
@@ -1186,6 +1188,13 @@ runs. Napari's base implementation calculates a data-space bounding box but
 rounds it to integer array coordinates; I3 must independently preserve the
 floating-point bounds required by point data.
 
+I3 only defines and emits `TiledPointsLayerModel.events.viewport`; it does not
+install a production listener. I5 implements the latest-request coordinator,
+and I7 connects this event to that coordinator during session composition. The
+event is emitted synchronously on the GUI thread, so its listener may only
+submit or replace pending work. It must never perform Zarr or codec work
+directly.
+
 Napari supplies the top-left and bottom-right viewbox corners in world `(y, x)`
 coordinates. Form all four world corners, inverse-transform each through
 `Layer.world_to_data()`, take the enclosing floating-point data-coordinate AABB,
@@ -1201,19 +1210,19 @@ TiledPointsViewportState
     displayed_axes: tuple[int, int]
     x_min, y_min, x_max, y_max: float
     canvas_width, canvas_height: int
-    world_units_per_pixel: float
     hard_render_point_budget: int
     screen_density_budget: int
-    effective_point_budget: int
+    effective_point_budget: int  # derived property: min(hard, screen density)
 ```
 
-The three budgets remain in the state as diagnostic and test evidence, while
-later reader code receives only the intrinsic rectangle and
-`effective_point_budget`. Treat `shape_threshold` as the consistently defined
-logical viewbox-pixel dimensions supplied by napari 0.7.1. The marker renderer
-and real-canvas gate must use the same logical-pixel convention and explicitly
-qualify HiDPI behavior; introduce a device-pixel conversion only if that gate
-proves it necessary.
+The two budget inputs remain stored in the state as diagnostic and test
+evidence; `effective_point_budget` is a property derived from their minimum and
+cannot become inconsistent with them. Later reader code receives only the
+intrinsic rectangle and that effective budget. Treat `shape_threshold` as the
+consistently defined logical viewbox-pixel dimensions supplied by napari 0.7.1.
+The marker renderer and real-canvas gate must use the same logical-pixel
+convention and explicitly qualify HiDPI behavior; introduce a device-pixel
+conversion only if that gate proves it necessary.
 
 Budgeting remains viewer policy:
 
@@ -1248,10 +1257,13 @@ draw emits nothing, preventing a point-buffer upload from recursively scheduling
 the same viewport request. A changed camera, transform, canvas size, hard budget,
 or density evidence emits one `viewport` event.
 
-Retain the latest normalized draw geometry separately from the last emitted
-state. If the hard budget or density configuration changes while the camera is
-stationary, recompute and emit from that retained geometry. Before the first
-draw there is no geometry to recompute and therefore no viewport event.
+Retain the latest emitted immutable viewport state; do not introduce a second
+private geometry object containing the same bounds and canvas dimensions. If
+the hard budget or density configuration changes while the camera is
+stationary, retain those geometry fields, recalculate the state's budget
+fields, and pass the replacement state through the same deduplicating emitter.
+Before the first draw there is no state to update and therefore no viewport
+event.
 
 The I3 tests connect a recorder to that event instead of creating a cache
 session. I3 performs no cache open, Zarr IO, LOD selection, viewport planning,
@@ -1366,6 +1378,10 @@ Exit criteria:
 Deliverables:
 
 - bind the real worker session and coordinator to `TiledPointsLayerModel`;
+- connect `TiledPointsLayerModel.events.viewport` to the GUI-side coordinator
+  callback, and disconnect it during layer/session teardown;
+- keep that callback non-blocking: it only submits or replaces the latest
+  request and performs no cache IO;
 - deliver worker results through queued GUI-thread signals;
 - connect render snapshots to the VisPy backend;
 - report Exact/Bridge/Spatial, selected counts, omitted values, and errors;
