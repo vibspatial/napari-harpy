@@ -1194,12 +1194,26 @@ Transforming only two corners is invalid under rotation or shear. Do not round,
 clip, or otherwise quantize these bounds in the layer; cache-geometry clipping
 remains the reader's responsibility.
 
-The viewport state retains the displayed axes, intrinsic bounds, napari-provided
-canvas dimensions, scale evidence, and effective point budget. Treat
-`shape_threshold` as the consistently defined logical viewbox-pixel dimensions
-supplied by napari 0.7.1. The marker renderer and real-canvas gate must use the
-same logical-pixel convention and explicitly qualify HiDPI behavior; introduce a
-device-pixel conversion only if that gate proves it necessary.
+Freeze the immutable state as:
+
+```text
+TiledPointsViewportState
+    displayed_axes: tuple[int, int]
+    x_min, y_min, x_max, y_max: float
+    canvas_width, canvas_height: int
+    world_units_per_pixel: float
+    hard_render_point_budget: int
+    screen_density_budget: int
+    effective_point_budget: int
+```
+
+The three budgets remain in the state as diagnostic and test evidence, while
+later reader code receives only the intrinsic rectangle and
+`effective_point_budget`. Treat `shape_threshold` as the consistently defined
+logical viewbox-pixel dimensions supplied by napari 0.7.1. The marker renderer
+and real-canvas gate must use the same logical-pixel convention and explicitly
+qualify HiDPI behavior; introduce a device-pixel conversion only if that gate
+proves it necessary.
 
 Budgeting remains viewer policy:
 
@@ -1215,11 +1229,17 @@ effective_point_budget = min(
 )
 ```
 
-The existing points-panel render budget eventually supplies the hard limit in
-I8. `target_pixels_per_point` is explicit viewer configuration calibrated with
-point diameter and HiDPI behavior; it is neither inferred from nor persisted in
-the cache. Later reader code receives only the intrinsic rectangle and effective
-budget.
+Use the existing `100_000` points-panel default as the initial hard limit. Set
+the initial configurable `target_pixels_per_point` to `9.0`, corresponding to
+the approximate `3 x 3` canvas-pixel footprint of the default point diameter.
+This value is an initial viewer policy rather than an acceptance threshold or
+cache-format value; I6 may adjust its default after real-canvas and HiDPI
+qualification. I8 supplies the validated points-panel hard limit.
+
+Keep `target_pixels_per_point` independent of live `point_diameter` edits in the
+initial integration. A diameter change remains a style-only GPU-uniform update
+and must not silently select another LOD or trigger a cache read. A future
+diameter-aware density policy would be a separate behavioral change.
 
 Normalize axis order, scalar types, and canvas dimensions before comparing a
 new state with the last emitted state. Use exact immutable-state equality after
@@ -1227,6 +1247,11 @@ normalization; do not obtain deduplication by rounding coordinates. An identical
 draw emits nothing, preventing a point-buffer upload from recursively scheduling
 the same viewport request. A changed camera, transform, canvas size, hard budget,
 or density evidence emits one `viewport` event.
+
+Retain the latest normalized draw geometry separately from the last emitted
+state. If the hard budget or density configuration changes while the camera is
+stationary, recompute and emit from that retained geometry. Before the first
+draw there is no geometry to recompute and therefore no viewport event.
 
 The I3 tests connect a recorder to that event instead of creating a cache
 session. I3 performs no cache open, Zarr IO, LOD selection, viewport planning,
@@ -1240,6 +1265,7 @@ Deliverables:
 - handle pan, zoom, resize, transform, and HiDPI canvas changes;
 - deduplicate identical normalized states;
 - implement hard-versus-screen-density budget calculation;
+- recompute from retained draw geometry when budget policy changes;
 - add a recorder instead of a real cache session.
 
 Exit criteria:
@@ -1249,6 +1275,8 @@ Exit criteria:
 - y/x and x/y swaps are excluded by asymmetric fixtures;
 - upload-induced redraws do not emit another identical request;
 - a small canvas can produce a budget below the construction overview;
+- a stationary viewport emits a replacement state when its budget changes;
+- changing point diameter alone does not change the effective budget;
 - the callback performs no IO and remains fast on the GUI thread.
 
 ### Slice I4: implement the worker-owned cache session
