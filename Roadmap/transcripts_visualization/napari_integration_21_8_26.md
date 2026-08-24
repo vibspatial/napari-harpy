@@ -1033,6 +1033,71 @@ Exit criteria:
 
 ### Slice I2: implement the custom napari layer boundary
 
+I2 creates the empty but fully functional napari shell that the later cache
+runtime and renderer will drive. It does not yet read Zarr point payloads or
+render transcripts. The change from the current native-`Points` boundary is:
+
+```text
+current transcript display
+    materialized N x 2 coordinates
+        -> napari Points.data
+        -> native Points renderer
+
+I2 boundary
+    small immutable cache dataset description + layer affine
+        -> TranscriptLayerModel.data
+        -> complete stable dataset extent
+        -> registered empty transcript visual and custom controls
+```
+
+`TranscriptLayerModel` subclasses napari's base `Layer` directly. Its `data`
+property is a small logical dataset reference derived from the immutable cache
+dataset information exposed in I1; it is never a resident coordinate array.
+The model reports the complete cache extent in napari `(y, x)` data order, and
+napari applies the normal layer transform to obtain the world extent. Fit to
+view and other layer-list operations therefore remain correct before any tile
+is loaded and remain unchanged as the viewport, selection, LOD, or resident
+snapshot changes.
+
+The model implements only the smallest napari 0.7.1 base-layer behavior needed
+for a fixed two-dimensional logical layer: no-op slicing, no picking, a
+deterministic placeholder thumbnail, and explicit unsupported standard
+layer-data serialization. It does not inherit from `Points` and consequently
+does not acquire point editing, feature-table, selection, slicing, or native
+point-view-cache semantics.
+
+I2 also establishes the napari lifecycle boundary needed to add the model to a
+real viewer. Explicit registration, performed before inserting the first
+transcript layer, maps `TranscriptLayerModel` to:
+
+- a thin `VispyBaseLayer` adapter that supports ordinary visibility, opacity,
+  blending, transforms, ordering, and close, but does not yet own transcript
+  buffers; and
+- minimal transcript layer controls built on napari's normal base controls.
+
+The same visual boundary is completed into the tile-retaining renderer in I6.
+Registration is never an import side effect: it checks the supported napari and
+VisPy versions, is idempotent for the desired mappings, rejects conflicts, and
+rolls back the first private-registry mutation if the second fails.
+
+The slice boundary is deliberately narrow:
+
+```text
+I2  logical napari layer, empty visual lifecycle, and controls
+I3  canvas viewport -> intrinsic cache viewport
+I4  worker-owned cache reader and resident lookup indexes
+I5  scheduling, level planning, and CPU tile residency
+I6  tile-retaining VisPy point renderer
+I7  complete cache-to-canvas session
+I8  replacement of the current napari-harpy Points workflow
+```
+
+Consequently, I2 does not call `plan_viewport()`, open a cache reader, select an
+LOD, read a bucket, upload a point buffer, or replace the existing materialized
+`PointsLoadRequest` path. Its acceptance result is an empty logical transcript
+layer that napari can manage correctly without any transcript coordinates in
+`Layer.data`.
+
 Deliverables:
 
 - implement `TranscriptLayerModel` and its minimal no-op slicing state;
