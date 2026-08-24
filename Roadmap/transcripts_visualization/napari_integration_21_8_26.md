@@ -1293,6 +1293,67 @@ Exit criteria:
 
 ### Slice I4: implement the worker-owned cache session
 
+I4 introduces the long-lived runtime wrapper around `_PointsCacheReader`. It
+does not yet schedule viewports or read point payloads. Its responsibility is
+to create, enter, use, and close one reader on one dedicated serial worker
+thread while exposing only immutable information and queued lifecycle events
+to the GUI thread:
+
+```text
+GUI thread
+    cache-session facade
+        ↓ queued commands
+dedicated serial reader worker
+    _PointsCacheReader
+    resident bucket lookup indexes
+    current selected-value index
+        ↑ queued immutable results/events
+GUI thread
+```
+
+Do not construct the reader on the GUI thread and move it afterwards. The
+worker creates and enters `_PointsCacheReader`, performs every subsequent
+reader operation, and calls `__exit__()` on that same thread. A dedicated
+`QThread` worker or a single-worker executor with a Qt signal bridge remains
+acceptable, but an independent `thread_worker` invocation per operation does
+not establish this ownership guarantee.
+
+Session startup is ordered and guarded:
+
+```text
+enter trusted completed reader
+        ↓
+return immutable cache dataset information
+        ↓
+project bytes for every bucket lookup index
+        ↓
+projection exceeds explicit metadata budget?
+    yes → fail before loading lookup arrays
+    no  ↓
+load all bucket lookup indexes with progress
+        ↓
+mark session READY for later viewport commands
+```
+
+The resident lookup indexes contain bucket tile/range metadata, not point
+coordinates or point-level value IDs. Priming all of them is deliberate: it
+moves this metadata IO out of later pan, zoom, LOD, and value-selection paths.
+For the evaluated Xenium cache the expected retained lookup footprint is about
+596 MB; the configured metadata budget is therefore an explicit product
+decision rather than an implicit allocation.
+
+The session also owns the current selected-value index. A changed nonempty
+subset is loaded once through `load_selected_value_index()` on the reader
+thread and retained across subsequent viewports. Selecting all canonical
+values stores `None` and uses the reader's all-values path. The session does
+not maintain an unbounded cache of historical selections.
+
+Expose structured immutable lifecycle evidence for at least startup, dataset
+information availability, lookup-priming progress, readiness, selected-index
+loading, errors, and closure. Worker-originated results cross to the GUI using
+queued signals; no worker callback may mutate a napari layer, Qt control,
+VisPy node, or OpenGL resource.
+
 Deliverables:
 
 - start one long-lived serial reader worker;
@@ -1302,13 +1363,25 @@ Deliverables:
 - close the reader on its owning thread;
 - expose structured startup, ready, progress, and error events.
 
+Non-goals for I4:
+
+- do not connect `TiledPointsLayerModel.events.viewport`;
+- do not run `select_level()` or `plan_viewport()`;
+- do not read point payload arrays;
+- do not implement decoded CPU tile residency or render snapshots;
+- do not mutate the layer or renderer.
+
+I5 adds viewport scheduling, payload reads, and CPU tile residency on top of
+this already-open, already-primed worker session. I7 later connects the layer's
+viewport event to the composed coordinator.
+
 Exit criteria:
 
 - thread-ID tests prove reader and GUI ownership boundaries;
 - no viewport read is accepted before lookup priming completes;
 - an over-budget metadata projection fails before lookup arrays are loaded;
 - selecting all values avoids a selected index;
-- repeated viewports reuse the same selected index;
+- requesting an unchanged value selection reuses the retained selected index;
 - session shutdown during startup, priming, index loading, and idle state is
   safe and idempotent.
 
