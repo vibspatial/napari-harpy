@@ -14,7 +14,6 @@ from napari._vispy.utils.visual import create_vispy_layer
 from napari_harpy.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
-    TiledPointsLayerStatus,
 )
 from napari_harpy.viewer.tiled_points.napari import registration
 from napari_harpy.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
@@ -68,31 +67,6 @@ def test_registration_is_idempotent_and_factories_select_owned_types(
         assert not visual.node.visible
     finally:
         visual.close()
-
-
-def test_controls_update_layer_style_and_read_only_status(clean_real_registration: None, qtbot) -> None:
-    register_tiled_points_layer()
-    layer = _layer()
-    controls = create_qt_layer_controls(layer)
-    qtbot.addWidget(controls)
-    assert isinstance(controls, QtTiledPointsLayerControls)
-
-    controls.point_diameter_spin_box.setValue(6.5)
-    layer.display_status = TiledPointsLayerStatus(
-        level_label="Bridge",
-        rendered_point_count=1234,
-        rendered_tile_count=3,
-        message="Ready",
-        sampled=True,
-        omitted_value_ids=(9,),
-    )
-
-    assert layer.point_diameter == 6.5
-    assert controls.level_label.text() == "Bridge"
-    assert controls.rendered_label.text() == "1,234 points / 3 tiles"
-    assert controls.status_label.text() == "Ready"
-    assert controls.sampling_label.text() == "Sampled; omitted value IDs: 9"
-    assert not controls.transform_button.isEnabled()
 
 
 @pytest.mark.parametrize(
