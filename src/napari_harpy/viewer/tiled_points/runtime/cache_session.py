@@ -119,6 +119,8 @@ class _TiledPointsCacheWorker(QObject):
         phase: _FailurePhase = "startup"
         try:
             self._require_not_cancelled()
+            # Construct the reader here so it and all opened Zarr resources are
+            # owned by the worker thread.
             reader = self._reader_factory(self._cache_root)
             self._require_not_cancelled()
             reader.__enter__()
