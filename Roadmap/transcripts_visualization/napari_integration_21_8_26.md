@@ -225,8 +225,9 @@ src/napari_harpy/
       contracts.py                      # immutable runtime values only
       runtime/
         __init__.py
-        cache_session.py                # worker-owned reader and CPU LRU
+        cache_session.py                # worker-owned reader lifecycle
         coordinator.py                  # generations and latest-request policy
+        residency.py                    # decoded CPU tile LRU
       napari/
         __init__.py
         layer.py                         # TiledPointsLayerModel
@@ -1311,12 +1312,45 @@ dedicated serial reader worker
 GUI thread
 ```
 
-Do not construct the reader on the GUI thread and move it afterwards. The
-worker creates and enters `_PointsCacheReader`, performs every subsequent
-reader operation, and calls `__exit__()` on that same thread. A dedicated
-`QThread` worker or a single-worker executor with a Qt signal bridge remains
-acceptable, but an independent `thread_worker` invocation per operation does
-not establish this ownership guarantee.
+Implement a GUI-thread `_TiledPointsCacheSession(QObject)` facade and a private
+`_TiledPointsCacheWorker(QObject)` moved to one dedicated `QThread`. Do not
+construct the reader on the GUI thread and move it afterwards. The worker
+creates and enters `_PointsCacheReader`, performs every subsequent reader
+operation, and calls `__exit__()` on that same thread. Independent
+`thread_worker` invocations and a general thread pool do not establish this
+ownership guarantee and are not part of I4.
+
+Construction remains passive. Creating the session does not start a thread or
+perform IO; an explicit `start()` transition creates/starts the worker
+lifecycle. Use a small private state machine:
+
+```text
+NEW
+STARTING
+PRIMING
+READY
+LOADING_SELECTION
+FAILED
+CLOSING
+CLOSED
+```
+
+`start()` is valid only from `NEW`. Selection requests are accepted only from
+`READY`; they return to `READY` after success or recoverable selection failure.
+The session does not expose its reader or accept future reader commands before
+readiness. `close()` is safe and idempotent from every non-closed state.
+
+Add immutable `_CacheSessionSettings` with two required positive integers and
+no implicit defaults:
+
+```text
+max_bucket_lookup_bytes
+max_selected_value_index_bytes
+```
+
+I4 must not guess a machine-wide memory policy. I7/I8 will supply the adopted
+product configuration. The decoded point-payload/CPU-LRU budget belongs to I5,
+not these settings.
 
 Session startup is ordered and guarded:
 
@@ -1342,17 +1376,35 @@ For the evaluated Xenium cache the expected retained lookup footprint is about
 596 MB; the configured metadata budget is therefore an explicit product
 decision rather than an implicit allocation.
 
-The session also owns the current selected-value index. A changed nonempty
-subset is loaded once through `load_selected_value_index()` on the reader
-thread and retained across subsequent viewports. Selecting all canonical
-values stores `None` and uses the reader's all-values path. The session does
-not maintain an unbounded cache of historical selections.
+The session also owns the current selected-value index. Its command boundary
+uses `None` for all values and a sorted unique nonempty `tuple[int, ...]` for a
+subset. A changed subset is converted to `uint32`, loaded once through
+`load_selected_value_index()` on the reader thread, and retained across
+subsequent viewports. Selecting all canonical values stores `None` and uses the
+reader's all-values path. An unchanged identity reuses the current index; the
+session does not maintain an unbounded cache of historical selections. The
+`_SelectedValueIndex` object never crosses to the GUI thread.
 
-Expose structured immutable lifecycle evidence for at least startup, dataset
-information availability, lookup-priming progress, readiness, selected-index
-loading, errors, and closure. Worker-originated results cross to the GUI using
-queued signals; no worker callback may mutate a napari layer, Qt control,
-VisPy node, or OpenGL resource.
+Expose focused Qt signals carrying only immutable lifecycle evidence:
+
+```text
+state_changed(state)
+dataset_available(_CacheDatasetInfo)
+lookup_progress(completed_buckets, total_buckets)
+ready()
+selection_ready(selection_identity, resident_bytes)
+failed(phase, exception_type, message)
+closed()
+```
+
+Log the original exception and traceback on the worker side; do not transport
+a live traceback object as GUI state. A startup or priming failure is fatal,
+closes the reader on its owning thread, and transitions through `FAILED` to
+`CLOSED`. A selected-index failure is recoverable: retain the previous
+selection/index, report the failure phase, and return to `READY`.
+
+Worker-originated results cross to the GUI using queued signals; no worker
+callback may mutate a napari layer, Qt control, VisPy node, or OpenGL resource.
 
 Deliverables:
 
@@ -1375,15 +1427,32 @@ I5 adds viewport scheduling, payload reads, and CPU tile residency on top of
 this already-open, already-primed worker session. I7 later connects the layer's
 viewport event to the composed coordinator.
 
+Shutdown is cooperative rather than falsely instantaneous. `close()` sets a
+thread-safe cancellation flag and schedules reader closure on the owner
+thread. Lookup priming checks the flag through its per-bucket progress callback
+and may use that callback to trigger the reader's atomic rollback. A
+synchronous selected-index load has no progress boundary and may finish before
+closure runs; its result must not be published after closing begins. In every
+case, the worker first runs `_PointsCacheReader.__exit__()` and reports its
+private completion, the facade asks the `QThread` event loop to quit, and the
+public `closed()` signal is emitted only after `QThread.finished` reaches the
+GUI-side facade.
+
 Exit criteria:
 
-- thread-ID tests prove reader and GUI ownership boundaries;
-- no viewport read is accepted before lookup priming completes;
+- injected fake-reader thread-ID tests prove construction, entry, operations,
+  and exit all use the worker thread while facade callbacks use the GUI thread;
+- the session cannot reach `READY` before complete lookup priming;
 - an over-budget metadata projection fails before lookup arrays are loaded;
 - selecting all values avoids a selected index;
 - requesting an unchanged value selection reuses the retained selected index;
+- a selected-index failure retains the previous ready selection;
 - session shutdown during startup, priming, index loading, and idle state is
-  safe and idempotent.
+  safe and idempotent;
+- focused state-machine tests use an injected fake reader, while one small real
+  cache test proves the session boundary works with `_PointsCacheReader`;
+- tests assert project behavior, event order, ownership, and cleanup rather
+  than generic `QThread` or Qt signal internals.
 
 ### Slice I5: implement viewport scheduling and CPU tile residency
 
