@@ -14,8 +14,15 @@ from napari.types import LayerDataType
 from napari.utils.events import Event
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    DEFAULT_HARD_RENDER_POINT_BUDGET,
+    DEFAULT_TARGET_PIXELS_PER_POINT,
     TiledPointsDatasetReference,
     TiledPointsLayerStatus,
+    TiledPointsViewportState,
+)
+from napari_harpy.viewer.tiled_points.napari.viewport import (
+    _viewport_state_from_draw,
+    _viewport_state_with_budget,
 )
 
 _DEFAULT_POINT_DIAMETER = 3.0
@@ -43,6 +50,8 @@ class TiledPointsLayerModel(Layer):
         name: str | None = None,
         opacity: float = 0.8,
         point_diameter: float = _DEFAULT_POINT_DIAMETER,
+        hard_render_point_budget: int = DEFAULT_HARD_RENDER_POINT_BUDGET,
+        target_pixels_per_point: float = DEFAULT_TARGET_PIXELS_PER_POINT,
         rotate: Any | None = None,
         scale: Any | None = None,
         shear: Any | None = None,
@@ -54,6 +63,15 @@ class TiledPointsLayerModel(Layer):
             raise ValueError("`data` must be TiledPointsDatasetReference.")
         self._data = data
         self._point_diameter = _require_point_diameter(point_diameter)
+        self._hard_render_point_budget = _require_positive_integer(
+            hard_render_point_budget,
+            "hard_render_point_budget",
+        )
+        self._target_pixels_per_point = _require_positive_finite_float(
+            target_pixels_per_point,
+            "target_pixels_per_point",
+        )
+        self._viewport_state: TiledPointsViewportState | None = None
         self._display_status = TiledPointsLayerStatus()
         super().__init__(
             data=data,
@@ -116,6 +134,47 @@ class TiledPointsLayerModel(Layer):
         self.events.point_diameter(value=diameter)
 
     @property
+    def hard_render_point_budget(self) -> int:
+        """Return the viewer's absolute upper bound for visible point rows."""
+        return self._hard_render_point_budget
+
+    @hard_render_point_budget.setter
+    def hard_render_point_budget(self, value: int) -> None:
+        budget = _require_positive_integer(value, "hard_render_point_budget")
+        if budget == self._hard_render_point_budget:
+            return
+        self._hard_render_point_budget = budget
+        self._refresh_viewport_budget()
+
+    @property
+    def target_pixels_per_point(self) -> float:
+        """Return the target logical canvas-pixel area per rendered point.
+
+        A value of ``9.0`` aims for approximately one point per ``3 x 3``
+        canvas-pixel region::
+
+            +---+---+---+
+            |   |   |   |
+            +---+---+---+
+            |   | ● |   |  approximately one rendered point
+            +---+---+---+
+            |   |   |   |
+            +---+---+---+
+
+        This is a display-density heuristic, not the marker diameter or a
+        guarantee that rendered points will be spatially separated.
+        """
+        return self._target_pixels_per_point
+
+    @target_pixels_per_point.setter
+    def target_pixels_per_point(self, value: float) -> None:
+        target = _require_positive_finite_float(value, "target_pixels_per_point")
+        if target == self._target_pixels_per_point:
+            return
+        self._target_pixels_per_point = target
+        self._refresh_viewport_budget()
+
+    @property
     def display_status(self) -> TiledPointsLayerStatus:
         """Return the latest immutable display-status summary."""
         return self._display_status
@@ -159,6 +218,40 @@ class TiledPointsLayerModel(Layer):
         del position
         return None
 
+    def _update_draw(self, scale_factor: Any, corner_pixels_displayed: Any, shape_threshold: Any) -> None:
+        """Emit one normalized intrinsic viewport after napari draw bookkeeping."""
+        super()._update_draw(scale_factor, corner_pixels_displayed, shape_threshold)
+        state = _viewport_state_from_draw(
+            displayed_axes=tuple(self._slice_input.displayed),
+            corner_pixels_displayed=corner_pixels_displayed,
+            shape_threshold=shape_threshold,
+            world_to_data=self.world_to_data,
+            hard_render_point_budget=self._hard_render_point_budget,
+            target_pixels_per_point=self._target_pixels_per_point,
+        )
+        if state is not None:
+            self._emit_viewport(state)
+
+    def _refresh_viewport_budget(self) -> None:
+        state = self._viewport_state
+        if state is None:
+            return
+        self._emit_viewport(
+            _viewport_state_with_budget(
+                state,
+                hard_render_point_budget=self._hard_render_point_budget,
+                target_pixels_per_point=self._target_pixels_per_point,
+            )
+        )
+
+    def _emit_viewport(self, state: TiledPointsViewportState) -> None:
+        if state == self._viewport_state:
+            return
+        # Store before emitting so a synchronous redraw caused by a listener is
+        # recognized as the same request instead of recursively scheduling it.
+        self._viewport_state = state
+        self.events.viewport(value=state)
+
     def _update_thumbnail(self) -> None:
         """Install a deterministic placeholder independent of resident tiles."""
         thumbnail = np.zeros(self._thumbnail_shape, dtype=np.uint8)
@@ -182,4 +275,16 @@ class _TiledPointsLayerSlicingState(_LayerSlicingState):
 def _require_point_diameter(value: float) -> float:
     if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
         raise ValueError("`point_diameter` must be a positive finite number.")
+    return float(value)
+
+
+def _require_positive_integer(value: int, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"`{name}` must be a positive integer.")
+    return value
+
+
+def _require_positive_finite_float(value: float, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"`{name}` must be a positive finite number.")
     return float(value)
