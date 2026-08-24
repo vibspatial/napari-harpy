@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
+DEFAULT_HARD_RENDER_POINT_BUDGET = 100_000
+DEFAULT_TARGET_PIXELS_PER_POINT = 9.0
+
 
 @dataclass(frozen=True)
 class TiledPointsDatasetReference:
@@ -102,3 +105,52 @@ class TiledPointsLayerStatus:
             or tuple(sorted(set(self.omitted_value_ids))) != self.omitted_value_ids
         ):
             raise ValueError("`omitted_value_ids` must contain sorted unique nonnegative integers.")
+
+
+@dataclass(frozen=True)
+class TiledPointsViewportState:
+    """Describe one normalized napari viewport in intrinsic cache coordinates.
+
+    The hard and screen-density budgets are retained as viewer-side diagnostic
+    evidence. ``effective_point_budget`` is their derived minimum. Later cache
+    planning consumes only the intrinsic bounds and that effective budget.
+    """
+
+    displayed_axes: tuple[int, int]
+    x_min: float
+    y_min: float
+    x_max: float
+    y_max: float
+    canvas_width: int
+    canvas_height: int
+    hard_render_point_budget: int
+    screen_density_budget: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.displayed_axes, tuple)
+            or len(self.displayed_axes) != 2
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis < 0 for axis in self.displayed_axes)
+            or len(set(self.displayed_axes)) != 2
+        ):
+            raise ValueError("`displayed_axes` must contain two unique nonnegative integers.")
+        for name in ("x_min", "y_min", "x_max", "y_max"):
+            value = getattr(self, name)
+            if type(value) is not float or not math.isfinite(value):
+                raise ValueError(f"`{name}` must be a finite float.")
+        if self.x_min >= self.x_max or self.y_min >= self.y_max:
+            raise ValueError("Viewport bounds must have positive width and height.")
+        for name in (
+            "canvas_width",
+            "canvas_height",
+            "hard_render_point_budget",
+            "screen_density_budget",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"`{name}` must be a positive integer.")
+
+    @property
+    def effective_point_budget(self) -> int:
+        """Return the stricter of the hard and screen-density budgets."""
+        return min(self.hard_render_point_budget, self.screen_density_budget)
