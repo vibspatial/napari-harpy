@@ -31,9 +31,11 @@ older selected-value coverage policy are not part of this implementation.
 
 ## Executive decision
 
-Implement transcript visualization as a dedicated, read-only napari layer with
-a Harpy-owned VisPy renderer. Do not repeatedly replace the data of a native
-napari `Points` layer as the camera moves.
+Implement transcript visualization through a generic, read-only tiled-points
+napari layer with a Harpy-owned VisPy renderer. The initial product consumer is
+the transcript workflow, but the layer, runtime contracts, and renderer do not
+encode transcript- or gene-specific behavior. Do not repeatedly replace the
+data of a native napari `Points` layer as the camera moves.
 
 The production path is:
 
@@ -136,7 +138,7 @@ thresholds. They lead to the following runtime decisions:
 
 - Supporting the removed tiled-Parquet backend.
 - Automatically falling back to the old materialized-points workflow.
-- Editing, adding, or deleting transcripts in the tiled layer.
+- Editing, adding, or deleting individual points in the tiled-points layer.
 - Point picking or hover metadata in the first integrated release. Display
   payloads deliberately omit `point_id`.
 - Arbitrary 3D transcript rendering. The first supported contract is a 2D
@@ -218,7 +220,7 @@ src/napari_harpy/
       reader.py                         # storage-neutral cache reader
 
   viewer/
-    transcripts/
+    tiled_points/
       __init__.py
       contracts.py                      # immutable runtime values only
       runtime/
@@ -227,19 +229,19 @@ src/napari_harpy/
         coordinator.py                  # generations and latest-request policy
       napari/
         __init__.py
-        layer.py                         # TranscriptLayerModel
+        layer.py                         # TiledPointsLayerModel
         registration.py                  # private napari compatibility boundary
         controls.py                      # minimal layer controls
         viewport.py                      # draw callback to intrinsic viewport
       vispy/
         __init__.py
-        layer.py                         # VispyTranscriptLayer
-        visuals.py                       # transcript tile visual
+        layer.py                         # VispyTiledPointsLayer
+        visuals.py                       # tiled-points tile visual
         residency.py                     # tile GPU residency and eviction
 
 tests/
   viewer/
-    transcripts/
+    tiled_points/
       runtime/
       napari/
       vispy/
@@ -409,6 +411,11 @@ is a valid atomic result that clears the previous visual.
 
 ## Coordinate and transform contract
 
+The cache is constructed from the intrinsic `x` and `y` columns stored in the
+SpatialData points element at `points/<points_name>/points.parquet`. Those
+source-native coordinates are tiled without applying any SpatialData transform;
+the cache stores each position relative to its intrinsic logical tile origin.
+
 Coordinate ordering is explicit at every boundary:
 
 ```text
@@ -466,7 +473,7 @@ transforms; they do not reread cache payloads or reupload coordinate buffers.
 
 ### One long-lived reader thread
 
-Create one dedicated, serial worker for each open transcript layer/session. The
+Create one dedicated, serial worker for each open tiled-points layer/session. The
 worker creates, enters, uses, and closes `_PointsCacheReader` on that same
 thread.
 
@@ -602,7 +609,7 @@ prevents one rare gene from forcing a large multi-value request back to Exact.
 
 ## Napari layer model
 
-Implement a dedicated `TranscriptLayerModel(Layer)` with these semantics:
+Implement a dedicated `TiledPointsLayerModel(Layer)` with these semantics:
 
 - fixed `ndim=2`;
 - read-only, pan/zoom interaction only;
@@ -618,10 +625,27 @@ Implement a dedicated `TranscriptLayerModel(Layer)` with these semantics:
   and session status;
 - no ownership of the cache reader or worker thread.
 
-`TranscriptLayerModel._update_draw()` is the narrow viewport bridge. It calls
+`TiledPointsLayerModel._update_draw()` is the narrow viewport bridge. It calls
 `super()._update_draw()` first, constructs the normalized intrinsic viewport,
 and emits only when the state materially changed. It never performs LOD
 planning, disk IO, or renderer mutation.
+
+Gene colour has three distinct owners. The napari-harpy points controller owns
+the stable colour assignment for the canonical cache vocabulary. The layer
+model owns the resulting immutable presentation state as a dense
+`value_palette`, aligned so row `value_id` contains that value's RGBA colour,
+and emits a palette-change event. `VispyTiledPointsLayer` owns the corresponding
+GPU lookup resource. Point payloads and VBOs retain only `value_id`; they never
+duplicate per-point RGBA rows. A palette change therefore performs no Zarr
+point read and does not reupload point positions.
+
+For the initial implementation, use a complete `(G, 4)` `uint8` palette, where
+`G` is the canonical cache vocabulary size. At 5,122 values this occupies about
+20 KiB and preserves colour identity as values enter or leave a selection. I2
+deliberately does not add this model property before a renderer can consume it.
+I6 adds `TiledPointsLayerModel.value_palette`, its event, validation, and the GPU
+lookup together; I8 supplies the stable palette from the existing points-panel
+colour policy.
 
 The layer's private napari abstract-method implementation should follow the
 smallest behavior supported by napari 0.7.1. Do not inherit from `Points` merely
@@ -630,7 +654,7 @@ slicing, and view-cache semantics that do not describe a logical tiled layer.
 
 ## Private napari registration and controls
 
-Registration is explicit and occurs before adding the first transcript layer.
+Registration is explicit and occurs before adding the first tiled-points layer.
 Importing `napari_harpy` must not mutate global napari registries.
 
 The registration operation:
@@ -659,7 +683,7 @@ where the source element is chosen. Do not duplicate them in layer controls.
 
 ### Ownership
 
-`VispyTranscriptLayer` subclasses `VispyBaseLayer` and owns one compound root
+`VispyTiledPointsLayer` subclasses `VispyBaseLayer` and owns one compound root
 visual plus Harpy-owned tile visuals. It relies on the base class for:
 
 - root visibility and opacity;
@@ -694,7 +718,7 @@ layout, not a spatial rendering identity.
 ### Visual representation
 
 Qualify a standard VisPy markers-per-tile implementation as the correctness
-reference, then adopt a compact transcript visual if it passes the real-canvas
+reference, then adopt a compact tiled-points visual if it passes the real-canvas
 gate. The recommended compact payload is:
 
 ```text
@@ -707,13 +731,31 @@ a small palette lookup resource so a palette edit does not reupload positions.
 A 2D nearest-filtered palette texture is preferable to relying on 1D texture
 support across GL profiles.
 
+The renderer receives the complete immutable `value_palette` from
+`TiledPointsLayerModel` and translates it into that GPU resource. It does not
+choose gene colours or mutate the palette. The controller-to-model-to-renderer
+flow is:
+
+```text
+napari-harpy points controller
+    stable value_id -> RGBA assignment
+                ↓
+TiledPointsLayerModel.value_palette
+    complete immutable (G, 4) uint8 presentation state
+                ↓ palette-change event
+VispyTiledPointsLayer
+    small GPU lookup texture
+                ↓
+tile VBO value_id -> displayed RGBA
+```
+
 If value IDs are converted to float32 attributes, enforce the exact-integer
 range explicitly. The evaluated 5,122-value vocabulary is safe, but the visual
 must not silently accept a cache vocabulary whose IDs cannot be represented
 exactly. An integer attribute path may be adopted instead if VisPy/gloo support
 is verified on the supported GL environments.
 
-Use constant canvas-pixel diameter initially. It gives transcripts a stable
+Use constant canvas-pixel diameter initially. It gives points a stable
 visual size across zoom levels and makes the screen-density budget meaningful.
 World-space diameter may be considered later as a separate presentation mode.
 
@@ -760,7 +802,7 @@ permanent user-facing UI.
 ```text
 napari draw on GUI thread
         ↓
-TranscriptLayerModel._update_draw()
+TiledPointsLayerModel._update_draw()
         ↓ normalize, deduplicate, increment request generation
 latest-request coordinator
         ↓
@@ -863,14 +905,14 @@ The existing workflow currently:
 The final transcript workflow instead:
 
 1. opens the completed cache and reads its canonical vocabulary;
-2. creates one persistent `TranscriptLayerModel`;
+2. creates one persistent `TiledPointsLayerModel`;
 3. keeps one reader session for the layer lifetime;
 4. changes the selected-value index and render snapshots in place;
 5. never constructs a complete pandas feature table for display;
 6. never replaces the layer on camera or selection changes.
 
-Add a distinct `TranscriptLayerBinding`; do not make
-`PointsLayerBinding` pretend that a custom transcript layer is a native
+Add a distinct `TiledPointsLayerBinding`; do not make
+`PointsLayerBinding` pretend that a custom tiled-points layer is a native
 `Points` layer. Reuse the source identity, SpatialData transform helper,
 selected-value UI, stable value colors, and render-budget input where their
 semantics still match.
@@ -905,7 +947,7 @@ readable.
 
 Do not rebuild a cache while its reader session is active unless publication
 and reader quiescence have an explicit protocol. The initial safe workflow
-closes the transcript layer/session before replacement, builds and publishes,
+closes the tiled-points layer/session before replacement, builds and publishes,
 then opens the new generation.
 
 If cache construction is cancelled or fails, the guarded builder leaves the
@@ -1031,11 +1073,11 @@ Exit criteria:
 - one warm-pan test proves already supplied tiles can be omitted from the next
   physical read.
 
-### Slice I2: implement the custom napari layer boundary
+### Slice I2: implement the custom napari layer boundary — resolved
 
 I2 creates the empty but fully functional napari shell that the later cache
 runtime and renderer will drive. It does not yet read Zarr point payloads or
-render transcripts. The change from the current native-`Points` boundary is:
+render tiled points. The change from the current native-`Points` boundary is:
 
 ```text
 current transcript display
@@ -1045,12 +1087,12 @@ current transcript display
 
 I2 boundary
     small immutable cache dataset description + layer affine
-        -> TranscriptLayerModel.data
+        -> TiledPointsLayerModel.data
         -> complete stable dataset extent
-        -> registered empty transcript visual and custom controls
+        -> registered empty tiled-points visual and custom controls
 ```
 
-`TranscriptLayerModel` subclasses napari's base `Layer` directly. Its `data`
+`TiledPointsLayerModel` subclasses napari's base `Layer` directly. Its `data`
 property is a small logical dataset reference derived from the immutable cache
 dataset information exposed in I1; it is never a resident coordinate array.
 The model reports the complete cache extent in napari `(y, x)` data order, and
@@ -1068,17 +1110,22 @@ point-view-cache semantics.
 
 I2 also establishes the napari lifecycle boundary needed to add the model to a
 real viewer. Explicit registration, performed before inserting the first
-transcript layer, maps `TranscriptLayerModel` to:
+tiled-points layer, maps `TiledPointsLayerModel` to:
 
 - a thin `VispyBaseLayer` adapter that supports ordinary visibility, opacity,
-  blending, transforms, ordering, and close, but does not yet own transcript
+  blending, transforms, ordering, and close, but does not yet own point
   buffers; and
-- minimal transcript layer controls built on napari's normal base controls.
+- minimal tiled-points layer controls built on napari's normal base controls.
 
 The same visual boundary is completed into the tile-retaining renderer in I6.
 Registration is never an import side effect: it checks the supported napari and
 VisPy versions, is idempotent for the desired mappings, rejects conflicts, and
 rolls back the first private-registry mutation if the second fails.
+`register_tiled_points_layer()` deliberately has no application call site at
+the end of I2; only its focused tests exercise it at this stage. I8 becomes its
+first production consumer and must call it before constructing or inserting the
+first `TiledPointsLayerModel`. This dormant interval is an intentional slice
+boundary, not evidence that the registration function is dead code.
 
 The slice boundary is deliberately narrow:
 
@@ -1094,13 +1141,13 @@ I8  replacement of the current napari-harpy Points workflow
 
 Consequently, I2 does not call `plan_viewport()`, open a cache reader, select an
 LOD, read a bucket, upload a point buffer, or replace the existing materialized
-`PointsLoadRequest` path. Its acceptance result is an empty logical transcript
-layer that napari can manage correctly without any transcript coordinates in
+`PointsLoadRequest` path. Its acceptance result is an empty logical tiled-points
+layer that napari can manage correctly without any point coordinates in
 `Layer.data`.
 
 Deliverables:
 
-- implement `TranscriptLayerModel` and its minimal no-op slicing state;
+- implement `TiledPointsLayerModel` and its minimal no-op slicing state;
 - report complete data/world extent independently of resident points;
 - implement explicit private visual/control registration;
 - implement minimal custom controls;
@@ -1109,7 +1156,7 @@ Deliverables:
 
 Exit criteria:
 
-- an empty logical transcript layer can be added, selected, transformed,
+- an empty logical tiled-points layer can be added, selected, transformed,
   hidden, fit to view, and removed;
 - no coordinate array is stored in `Layer.data`;
 - the correct visual and controls are selected automatically;
@@ -1192,14 +1239,17 @@ Exit criteria:
 
 Deliverables:
 
-- implement `VispyTranscriptLayer` and compound root;
+- implement `VispyTiledPointsLayer` and compound root;
 - render recognizable synthetic local-coordinate tiles;
 - implement one tile visual per `TileResidencyKey`;
-- implement stable palette, point diameter, and opacity behavior;
+- add the complete immutable `TiledPointsLayerModel.value_palette` and its
+  palette-change event;
+- implement GPU palette lookup, point diameter, and opacity behavior without
+  rereading points or reuploading positions after palette-only changes;
 - implement active/pending atomic snapshots;
 - implement GPU byte accounting, pinning, and eviction;
 - implement idempotent close;
-- compare the standard marker reference with the compact transcript visual;
+- compare the standard marker reference with the compact tiled-points visual;
 - run real-canvas alignment and performance tests.
 
 Exit criteria:
@@ -1220,7 +1270,7 @@ Exit criteria:
 
 Deliverables:
 
-- bind the real worker session and coordinator to `TranscriptLayerModel`;
+- bind the real worker session and coordinator to `TiledPointsLayerModel`;
 - deliver worker results through queued GUI-thread signals;
 - connect render snapshots to the VisPy backend;
 - report Exact/Bridge/Spatial, selected counts, omitted values, and errors;
@@ -1257,19 +1307,23 @@ Approval requires:
 
 Deliverables:
 
-- add `TranscriptLayerBinding` and cache-backed controller state;
+- add `TiledPointsLayerBinding` and cache-backed controller state;
+- call `register_tiled_points_layer()` before constructing or inserting the
+  first `TiledPointsLayerModel`; do not register through an import side effect;
 - derive the nested cache path for the selected SpatialData points element;
 - populate value selection from cache `value_names`;
-- reuse the SpatialData affine and stable value colors;
+- reuse the SpatialData affine and existing stable value colours, construct the
+  complete value-ID-aligned palette, and assign it to the persistent tiled-points
+  layer;
 - connect the current points panel to persistent layer selection changes;
 - replace `PointsLoadRequest`/materialized selection application in the
   transcript path;
-- activate and preserve one existing transcript layer instead of replacing it;
+- activate and preserve one existing tiled-points layer instead of replacing it;
 - update status cards for cache, LOD, sampled omission, and over-budget state.
 
 Exit criteria:
 
-- selecting values updates the existing transcript layer;
+- selecting values updates the existing tiled-points layer;
 - ordinary selection and camera changes do not execute Dask;
 - the layer remains at the same layer-list identity and camera state;
 - changing coordinate system applies the transform exactly once;
@@ -1319,7 +1373,7 @@ Exit criteria:
 - the SpatialData transcript points panel has one cache-backed implementation;
 - no backend selector or forwarding compatibility layer remains;
 - no normal transcript view builds `PointsValueSelection.coordinates`;
-- focused existing viewer tests and all new transcript tests pass;
+- focused existing viewer tests and all new tiled-points tests pass;
 - native Points and shapes-as-points features still pass their focused tests.
 
 ### Slice I11: full-Xenium product evaluation
