@@ -335,7 +335,13 @@ class _TiledPointsCacheWorker(QObject):
         self.bucket_index_progress.emit(completed_buckets, total_buckets)
 
     def _require_not_cancelled(self) -> None:
-        """Stop the active worker operation after a GUI-side close request."""
+        """Stop active work when the GUI has requested session closure.
+
+        The thread-safe event can be observed while the worker's queued
+        ``close()`` slot is still waiting for the current slot to return. This
+        lets long-running work stop at its next checkpoint; reader cleanup
+        remains on the worker thread.
+        """
         if self._cancellation.is_set():
             raise _SessionCancelled
 

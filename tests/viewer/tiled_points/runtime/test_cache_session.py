@@ -15,12 +15,20 @@ from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _PointsCacheBuilderConfig,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
+from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+    _LevelSelection,
+    _PlannedTileRead,
+    _TileReadResult,
+    _ViewportReadPlan,
+    _ViewportReadResult,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from napari_harpy.viewer.tiled_points.contracts import TiledPointsViewportState, _ViewportRequest
 from napari_harpy.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
@@ -49,6 +57,11 @@ class _ReaderProbe:
     pause_construction: bool = False
     construction_paused: threading.Event = field(default_factory=threading.Event)
     resume_construction: threading.Event = field(default_factory=threading.Event)
+    planned_tile_x: tuple[int, ...] = (0, 1)
+    over_budget: bool = False
+    viewport_reads: list[tuple[tuple[int, int, int], ...]] = field(default_factory=list)
+    last_location_batch: np.ndarray | None = None
+    last_value_id_batch: np.ndarray | None = None
 
     def record(self, operation: str) -> None:
         self.operations.append((operation, threading.get_ident()))
@@ -57,6 +70,7 @@ class _ReaderProbe:
 @dataclass(frozen=True)
 class _FakeSelectedValueIndex:
     resident_bytes: int
+    value_ids: np.ndarray
 
 
 class _ControllableReader:
@@ -65,7 +79,7 @@ class _ControllableReader:
     def __init__(self, cache_root: Path, probe: _ReaderProbe) -> None:
         del cache_root
         self._probe = probe
-        self.dataset_info = object()
+        self.dataset_info = _FakeDatasetInfo()
         probe.record("construct")
         if probe.pause_construction:
             probe.construction_paused.set()
@@ -115,7 +129,79 @@ class _ControllableReader:
             assert self._probe.resume_selection.wait(timeout=5)
         if self._probe.fail_selection:
             raise ValueError("selection does not fit")
-        return _FakeSelectedValueIndex(24 if max_resident_bytes is None else min(max_resident_bytes, 24))
+        return _FakeSelectedValueIndex(
+            24 if max_resident_bytes is None else min(max_resident_bytes, 24),
+            value_ids.copy(),
+        )
+
+    def select_level(self, viewport: object, point_budget: int, *, value_index: object) -> _LevelSelection:
+        del viewport, point_budget, value_index
+        point_count = len(self._probe.planned_tile_x)
+        return _LevelSelection(
+            level=0,
+            estimated_point_count=point_count,
+            positive_visible_tile_count=point_count,
+            within_budget=not self._probe.over_budget,
+            omitted_value_ids=None,
+        )
+
+    def plan_viewport(self, level: int, viewport: object, *, value_index: object) -> _ViewportReadPlan:
+        del viewport
+        requested_value_ids = (
+            None if value_index is None else tuple(int(value_id) for value_id in value_index.value_ids)
+        )
+        return _ViewportReadPlan(
+            cache_generation_id=_GENERATION_ID,
+            requested_value_ids=requested_value_ids,
+            level=level,
+            requests=tuple(
+                _PlannedTileRead(level, tile_x, 0, tile_x, 0, None if value_index is None else value_index.value_ids)
+                for tile_x in self._probe.planned_tile_x
+            ),
+        )
+
+    def read_planned_tiles(
+        self,
+        plan: _ViewportReadPlan,
+        tile_keys_to_read: tuple[tuple[int, int, int], ...],
+    ) -> _ViewportReadResult:
+        self._probe.record("read_viewport")
+        self._probe.viewport_reads.append(tile_keys_to_read)
+        location_batch = np.asarray(
+            [[float(tile_x), float(tile_y)] for _, tile_x, tile_y in tile_keys_to_read],
+            dtype=np.float32,
+        )
+        value_id_batch = np.zeros(len(tile_keys_to_read), dtype=np.uint32)
+        self._probe.last_location_batch = location_batch
+        self._probe.last_value_id_batch = value_id_batch
+        return _ViewportReadResult(
+            level=plan.level,
+            tiles=tuple(
+                _TileReadResult(
+                    level=level,
+                    tile_x=tile_x,
+                    tile_y=tile_y,
+                    tile_size=10,
+                    location=location_batch[index : index + 1, :],
+                    value_id=value_id_batch[index : index + 1],
+                )
+                for index, (level, tile_x, tile_y) in enumerate(tile_keys_to_read)
+            ),
+        )
+
+
+_GENERATION_ID = "12345678-1234-5678-9234-567812345678"
+
+
+@dataclass(frozen=True)
+class _FakeLevelInfo:
+    kind: str = "exact"
+
+
+@dataclass(frozen=True)
+class _FakeDatasetInfo:
+    cache_generation_id: str = _GENERATION_ID
+    levels: tuple[_FakeLevelInfo, ...] = (_FakeLevelInfo(),)
 
 
 def _session(
@@ -123,12 +209,14 @@ def _session(
     *,
     max_bucket_lookup_bytes: int | None = 1_000,
     max_selected_value_index_bytes: int | None = 1_000,
+    max_cpu_tile_bytes: int = 1_000,
 ) -> _TiledPointsCacheSession:
     return _TiledPointsCacheSession(
         Path("unused.zarr"),
         _CacheSessionSettings(
             max_bucket_lookup_bytes=max_bucket_lookup_bytes,
             max_selected_value_index_bytes=max_selected_value_index_bytes,
+            max_cpu_tile_bytes=max_cpu_tile_bytes,
         ),
         reader_factory=lambda cache_root: _ControllableReader(cache_root, probe),
     )
@@ -146,6 +234,35 @@ def _close(session: _TiledPointsCacheSession, qtbot) -> None:
     with qtbot.waitSignal(session.closed, timeout=5_000):
         session.close()
     assert session.state is _CacheSessionState.CLOSED
+
+
+def _viewport_request(request_generation: int) -> _ViewportRequest:
+    return _ViewportRequest(
+        request_generation=request_generation,
+        selection_generation=0,
+        requested_value_ids=None,
+        viewport=TiledPointsViewportState(
+            displayed_axes=(0, 1),
+            x_min=0.0,
+            y_min=0.0,
+            x_max=30.0,
+            y_max=10.0,
+            canvas_width=100,
+            canvas_height=100,
+            hard_render_point_budget=100,
+            screen_density_budget=100,
+        ),
+    )
+
+
+@pytest.mark.parametrize("max_cpu_tile_bytes", [None, True, 0, -1])
+def test_session_settings_require_bounded_cpu_tile_residency(max_cpu_tile_bytes: object) -> None:
+    with pytest.raises(ValueError, match="max_cpu_tile_bytes"):
+        _CacheSessionSettings(
+            max_bucket_lookup_bytes=None,
+            max_selected_value_index_bytes=None,
+            max_cpu_tile_bytes=max_cpu_tile_bytes,  # type: ignore[arg-type]
+        )
 
 
 def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) -> None:
@@ -272,6 +389,7 @@ def test_worker_treats_selection_without_reader_as_fatal() -> None:
         _CacheSessionSettings(
             max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
+            max_cpu_tile_bytes=1_000,
         ),
         threading.Event(),
         lambda cache_root: _ControllableReader(cache_root, _ReaderProbe()),
@@ -360,6 +478,88 @@ def test_passive_session_closes_idempotently_without_starting_reader(qtbot) -> N
         session.start()
 
 
+def test_session_reads_only_nonresident_tiles_and_returns_complete_snapshots(qtbot) -> None:
+    probe = _ReaderProbe(planned_tile_x=(0, 1))
+    session = _session(probe, max_cpu_tile_bytes=24)
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+
+    try:
+        _start_ready(session, qtbot)
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(_viewport_request(1))
+
+        probe.planned_tile_x = (1, 2)
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(_viewport_request(2))
+
+        assert probe.viewport_reads == [((0, 0, 0), (0, 1, 0)), ((0, 2, 0),)]
+        assert [tile.key.tile_x for tile in snapshots[-1].tiles] == [1, 2]
+        assert snapshots[-1].rendered_point_count == 2
+    finally:
+        _close(session, qtbot)
+
+
+def test_session_detaches_render_tiles_from_shared_reader_batches(qtbot) -> None:
+    probe = _ReaderProbe(planned_tile_x=(0, 1))
+    session = _session(probe, max_cpu_tile_bytes=1_000)
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+
+    try:
+        _start_ready(session, qtbot)
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(_viewport_request(1))
+
+        location_batch = probe.last_location_batch
+        value_id_batch = probe.last_value_id_batch
+        assert location_batch is not None
+        assert value_id_batch is not None
+        snapshot = snapshots[-1]
+        assert all(not np.shares_memory(tile.location, location_batch) for tile in snapshot.tiles)
+        assert all(not np.shares_memory(tile.value_id, value_id_batch) for tile in snapshot.tiles)
+        assert sum(tile.resident_bytes for tile in snapshot.tiles) == location_batch.nbytes + value_id_batch.nbytes
+    finally:
+        _close(session, qtbot)
+
+
+def test_session_rejects_over_budget_viewport_before_point_io(qtbot) -> None:
+    probe = _ReaderProbe(over_budget=True)
+    session = _session(probe)
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+
+    try:
+        _start_ready(session, qtbot)
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(_viewport_request(1))
+
+        assert not snapshots[-1].within_budget
+        assert snapshots[-1].tiles == ()
+        assert probe.viewport_reads == []
+    finally:
+        _close(session, qtbot)
+
+
+def test_oversized_tile_is_returned_transiently_but_not_retained(qtbot) -> None:
+    probe = _ReaderProbe(planned_tile_x=(0,))
+    session = _session(probe, max_cpu_tile_bytes=1)
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+
+    try:
+        _start_ready(session, qtbot)
+        for generation in (1, 2):
+            with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+                session.request_viewport(_viewport_request(generation))
+
+        assert len(snapshots) == 2
+        assert all(snapshot.rendered_point_count == 1 for snapshot in snapshots)
+        assert probe.viewport_reads == [((0, 0, 0),), ((0, 0, 0),)]
+    finally:
+        _close(session, qtbot)
+
+
 @pytest.fixture(scope="module")
 def real_cache_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("tiled-points-session")
@@ -408,6 +608,7 @@ def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Pa
         _CacheSessionSettings(
             max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
+            max_cpu_tile_bytes=1_000,
         ),
     )
     try:
@@ -420,5 +621,46 @@ def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Pa
             session.set_selected_value_ids((0,))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
         assert session.selected_value_ids == (0,)
+    finally:
+        _close(session, qtbot)
+
+
+def test_real_cache_session_builds_generation_bound_viewport_snapshot(real_cache_root: Path, qtbot) -> None:
+    session = _TiledPointsCacheSession(
+        real_cache_root,
+        _CacheSessionSettings(
+            max_bucket_lookup_bytes=None,
+            max_selected_value_index_bytes=None,
+            max_cpu_tile_bytes=1_000_000,
+        ),
+    )
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+    try:
+        _start_ready(session, qtbot)
+        request = _ViewportRequest(
+            request_generation=1,
+            selection_generation=0,
+            requested_value_ids=None,
+            viewport=TiledPointsViewportState(
+                displayed_axes=(0, 1),
+                x_min=0.0,
+                y_min=0.0,
+                x_max=20.0,
+                y_max=10.0,
+                canvas_width=100,
+                canvas_height=100,
+                hard_render_point_budget=100,
+                screen_density_budget=100,
+            ),
+        )
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(request)
+
+        snapshot = snapshots[-1]
+        assert snapshot.request_generation == 1
+        assert snapshot.within_budget
+        assert snapshot.rendered_point_count == 4
+        assert snapshot.rendered_tile_count == 2
     finally:
         _close(session, qtbot)
