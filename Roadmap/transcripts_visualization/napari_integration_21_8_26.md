@@ -1785,17 +1785,239 @@ Exit criteria:
 
 ### Slice I6: implement and qualify the tile-retaining VisPy renderer
 
+I6 turns the empty `Compound` root created in I2 into the GUI-thread renderer
+for the complete immutable snapshots produced by I5. It performs no cache
+planning or point IO:
+
+```text
+I5 worker result
+    TiledPointsRenderSnapshot
+        complete ordered TiledPointsRenderTile payloads
+                ↓ queued delivery to GUI thread
+I6 VispyTiledPointsLayer
+        reuse or create GPU resources by TileResidencyKey
+                ↓
+        prepare the complete pending tile set
+                ↓
+        atomically replace active visual membership
+```
+
+The current `VispyTiledPointsLayer` is deliberately only a lifecycle-safe empty
+root. I6 completes that existing boundary rather than introducing another
+napari layer type or passing visible coordinates through `Layer.data`.
+
+#### Complete the viewer dataset and presentation contracts
+
+Extend `TiledPointsDatasetReference` with the small immutable fields that the
+renderer cannot reconstruct from observed bounds:
+
+```text
+x_origin: float
+y_origin: float
+value_count: int
+```
+
+The origins come directly from `_CacheDatasetInfo`; they are not necessarily
+equal to `x_min` and `y_min`, and a coarser tile origin cannot in general be
+recovered by aligning an observed minimum to that level's tile size.
+`value_count` is the length of the canonical cache vocabulary and lets the
+model validate palette rows without retaining reader-private metadata. Require
+finite origins, a positive value count, and origins no greater than their
+corresponding observed minima.
+
+Add one complete immutable `TiledPointsLayerModel.value_palette` with shape
+`(value_count, 4)`, dtype `uint8`, C-contiguous storage, and its own
+`value_palette` event. The model takes an owned copy and exposes a read-only
+view so caller mutation cannot silently change presentation state. An equal
+replacement emits nothing. I8 supplies the stable product palette from the
+existing points-panel colour assignment; I6 tests use explicit deterministic
+palettes.
+
+The complete palette is deliberately stored on the model rather than copied
+into every tile. At the evaluated 5,122-value vocabulary it occupies about
+20 KiB. A palette change is style-only: it must not emit a viewport event,
+change LOD, read Zarr, rebuild CPU snapshots, or reupload point positions.
+
+Napari creates a registered visual from only the layer and `font_info`, so make
+the GPU tile budget an explicit positive integer layer construction setting:
+
+```text
+max_gpu_tile_bytes: int
+```
+
+`None`, booleans, zero, and negative values are invalid. I7/I8 must provide the
+adopted product value; I6 must not infer machine-wide GPU capacity. Treat this
+as the bound for logical tile-owned GPU payload bytes, not as a claim about
+driver-internal allocations. Report the separate palette-resource bytes for
+diagnostics.
+
+#### Tile visual and coordinate contract
+
+Keep one logical tile visual per `TileResidencyKey` as the first production
+strategy. Each resource owns:
+
+```text
+tile-local location buffer     float32 (N, 2)
+aligned value-ID buffer        exact GPU-compatible representation
+intrinsic tile-origin transform
+logical uploaded bytes
+last-use and active/pending membership evidence
+```
+
+The coordinate path remains:
+
+```text
+tile-local VisPy position (x, y)
+        + (x_origin + tile_x * tile_size,
+           y_origin + tile_y * tile_size)
+                ↓
+intrinsic dataset position
+                ↓
+one napari layer transform on the compound root
+                ↓
+world and canvas position
+```
+
+Do not add the SpatialData transform to point buffers and do not convert
+tile-local arrays into large-origin float32 coordinates. A layer transform
+change updates scene transforms only; it performs no cache read and no
+coordinate-buffer upload. Asymmetric real-canvas tests must prove the `(x, y)`
+tile payload and napari `(y, x)` layer conventions meet exactly once.
+
+Use constant logical-canvas-pixel point diameter initially. Update it through a
+uniform or equivalent shared style state in response to
+`layer.events.point_diameter`; do not recreate tile buffers. Continue to rely
+on `VispyBaseLayer` for root visibility, opacity, blending, ordering, and the
+napari layer transform.
+
+#### Palette lookup and visual representation
+
+Use a standard VisPy markers-per-tile implementation as the correctness
+reference. Qualify a compact Harpy-owned tile visual whose per-point payload is
+only tile-local position plus value ID. Resolve colour through one small GPU
+palette lookup resource, preferably a nearest-filtered 2D texture for supported
+GL-profile portability:
+
+```text
+TiledPointsLayerModel.value_palette
+                ↓ one GPU palette resource
+tile value_id ──┴─→ displayed RGBA
+```
+
+If the shader consumes value IDs through float32 attributes, reject
+vocabularies outside exact float32 integer representation. Prefer a verified
+integer attribute path when supported by the pinned VisPy/GL environments. Do
+not silently round IDs and do not materialize per-point RGBA arrays merely to
+reuse a standard marker API.
+
+The marker implementation is a qualification reference, not a permanent
+backend selector. Retain one accepted implementation after real-canvas
+correctness and performance review.
+
+#### Atomic snapshot activation
+
+Connect the visual to `layer.events.render_snapshot`. I6 tests may emit
+synthetic snapshots directly; I7 becomes the production emitter. Validate that
+the snapshot cache generation matches `layer.data.cache_generation_id` before
+mutating renderer state.
+
+For every incoming snapshot:
+
+```text
+current active snapshot remains visible
+        ↓
+look up every pending TileResidencyKey
+        ↓
+reuse retained resource or upload location/value_id once
+        ↓
+all pending resources available
+        ↓
+atomically switch active membership
+```
+
+Never display a partial mixture of cache generations, value selections, or
+levels. Same-selection pans reuse overlapping VBOs and upload only entering or
+previously evicted tiles. Selection and LOD changes keep the old snapshot
+visible until the complete replacement can activate.
+
+A within-budget zero-tile snapshot is a real atomic replacement and clears the
+old visual; this is required for complete sampled omission. I7 owns the
+distinct product policy for `within_budget=False`: perform no upload and retain
+the previous valid view or keep an initially empty one while reporting the
+over-budget condition.
+
+#### GPU residency and capacity failure
+
+Maintain a GUI-thread, byte-bounded LRU keyed by `TileResidencyKey`. Pin every
+resource used by the active snapshot and every resource being prepared for the
+pending snapshot. Evict only least-recently-used inactive resources.
+
+Before uploading a pending snapshot, project the tile-owned GPU bytes needed by
+the union of its reusable and new resources. First evict inactive resources. If
+the pinned active-plus-pending transition still cannot fit
+`max_gpu_tile_bytes`, reject the pending activation atomically, release any
+resources created only for it, and keep the active snapshot unchanged. Do not
+silently exceed the configured bound or partially replace the display. I7 must
+surface this as an actionable renderer-capacity failure.
+
+Track at least:
+
+```text
+resident tile count
+resident point count
+resident logical GPU bytes
+palette resource bytes
+coordinate uploads by TileResidencyKey
+evictions
+active and pending snapshot identity
+```
+
+These counters are acceptance and diagnostic evidence rather than additional
+point-payload fields. GPU residency is independent of worker-owned CPU
+residency: a GPU-evicted tile present in an I5 snapshot can be reuploaded from
+its immutable CPU arrays without a Zarr read.
+
+#### Lifecycle and qualification
+
+Implement idempotent GUI-thread closure. Disconnect every model event callback,
+detach all child nodes, clear active/pending/LRU references, and release buffer
+and palette objects. A closed visual rejects or ignores a late snapshot and
+cannot recreate scene nodes.
+
+The real-canvas review must cover:
+
+- recognizable asymmetric synthetic tiles against a reference image;
+- identity, translation, scale, rotation, and shear without coordinate
+  reupload;
+- tile-local precision at large intrinsic origins;
+- constant logical-pixel diameter and explicit HiDPI behavior;
+- palette, opacity, blending, visibility, and layer ordering;
+- upload counts for same-selection warm pans and selection/LOD replacements;
+- GPU budget, pinning, eviction, and capacity-failure rollback;
+- repeated add/remove cleanup;
+- the observed full-extent common-value case of approximately 127 tile nodes.
+
+One tile node per logical tile remains the initial strategy because it preserves
+the reuse identity already established by I5. If the 127-node measurement has
+unacceptable draw-call or frame cost, introduce renderer-owned pooled pages
+before Gate I while preserving `TileResidencyKey` as the logical identity. Do
+not group GPU resources by physical Zarr bucket; bucket identity is an IO
+layout, not a rendering layout.
+
 Deliverables:
 
-- implement `VispyTiledPointsLayer` and compound root;
+- extend `TiledPointsDatasetReference` with cache origins and vocabulary size;
+- add immutable `TiledPointsLayerModel.value_palette`, palette events, and the
+  required positive `max_gpu_tile_bytes` setting;
+- implement `VispyTiledPointsLayer`, its compound root, and retained tile
+  resources;
 - render recognizable synthetic local-coordinate tiles;
 - implement one tile visual per `TileResidencyKey`;
-- add the complete immutable `TiledPointsLayerModel.value_palette` and its
-  palette-change event;
 - implement GPU palette lookup, point diameter, and opacity behavior without
   rereading points or reuploading positions after palette-only changes;
 - implement active/pending atomic snapshots;
-- implement GPU byte accounting, pinning, and eviction;
+- implement GPU byte accounting, pinning, eviction, and capacity-failure
+  rollback;
 - implement idempotent close;
 - compare the standard marker reference with the compact tiled-points visual;
 - run real-canvas alignment and performance tests.
@@ -1809,10 +2031,18 @@ Exit criteria:
 - selection and LOD changes never show mixed snapshots;
 - style-only changes do not reupload positions in the adopted visual;
 - point diameter is stable under zoom and correct on HiDPI displays;
-- GPU residency obeys its byte budget;
+- GPU residency never exceeds its configured logical tile-byte budget;
+- an active-plus-pending transition that cannot fit leaves the active snapshot
+  intact and reports a renderer-capacity failure;
 - 127 visible tile nodes have measured acceptable frame behavior, or a
   renderer-owned pooling follow-up is completed before Gate I;
 - repeated add/remove releases scene nodes, callbacks, and GPU references.
+
+I6 stops at a renderer that can be driven by synthetic snapshot events. It does
+not connect `TiledPointsLayerModel.events.viewport` to the coordinator, deliver
+real coordinator results to `events.render_snapshot`, update product status, or
+own the cache session. I7 performs that composition and guarantees all VisPy
+mutation occurs on the GUI thread.
 
 ### Slice I7: compose the real cache-to-canvas session
 
