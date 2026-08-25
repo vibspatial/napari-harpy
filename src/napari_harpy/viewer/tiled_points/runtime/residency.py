@@ -11,6 +11,25 @@ from napari_harpy.viewer.tiled_points.contracts import TiledPointsRenderTile, Ti
 class _CpuTileResidency:
     """Own one worker-thread LRU of immutable decoded point tiles.
 
+    The retention policy is::
+
+        byte-bounded LRU
+                |
+                v
+        evict oldest unprotected tiles first
+                |
+                v
+        protect resident tiles used by the active snapshot
+                |
+                v
+        if no space remains, return the new payload transiently
+        without caching it
+
+    Entries are ordered from least to most recently used. When one decoded
+    batch exceeds the available budget, later tiles may evict earlier new tiles
+    from the same batch; the complete snapshot still owns all of its tile
+    references.
+
     Newly decoded entries have independently owned point-array allocations at
     the viewer-residency boundary. Consequently, each tile's
     ``resident_bytes`` is the allocation released when that tile is evicted;
@@ -105,6 +124,7 @@ class _CpuTileResidency:
         self._resident_bytes = 0
 
     def _evict_until_fits(self, required_bytes: int, protected: frozenset[TileResidencyKey]) -> None:
+        """Evict least-recently-used unprotected tiles until a payload fits."""
         for key in tuple(self._entries):
             if self._resident_bytes + required_bytes <= self._max_resident_bytes:
                 return
