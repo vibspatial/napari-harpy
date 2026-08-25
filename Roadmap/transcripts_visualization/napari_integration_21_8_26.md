@@ -400,12 +400,12 @@ One immutable render snapshot contains:
 ```text
 cache generation
 viewport/request generation
-selection identity
+selection identity and selection-request generation
 selected level and LOD kind
 within-budget evidence
 omitted value IDs
 ordered core tile residency keys
-new CPU tile payloads, if any
+immutable CPU payload references for every active tile
 ```
 
 It never mixes levels, selections, or cache generations. A zero-tile snapshot
@@ -1489,22 +1489,28 @@ accepting viewport commands. The reader can already separate catalog-only tile
 discovery from subset point-payload reads. I5 adds the runtime policy between
 these seams; it does not replace any of them.
 
-#### Worker request flow
+#### Submission and worker request flow
 
-One accepted viewport request executes on the existing serial reader worker:
+The GUI-side coordinator assigns the request generation synchronously when a
+viewport is submitted, before the request can wait behind active worker work.
+This lets a newer camera event make an older completion stale immediately even
+while the reader thread is busy. The accepted request then executes on the
+existing serial reader worker:
 
 ```text
-normalized intrinsic viewport + effective point budget
+GUI: normalized intrinsic viewport + effective point budget
         ↓
-assign monotonically increasing request generation
+GUI: assign monotonically increasing request generation
         ↓
-select_level(viewport, effective_point_budget, selected_value_index)
+GUI: install as active request or replace latest pending request
         ↓
-within_budget is false?
+worker: select_level(viewport, effective_point_budget, selected_value_index)
+        ↓
+worker: within_budget is false?
     yes → warning snapshot; no plan payload read
     no
         ↓
-plan_viewport(selected level, viewport, selected_value_index)
+worker: plan_viewport(selected level, viewport, selected_value_index)
         ↓
 ordered positive logical tiles
         ↓
@@ -1514,7 +1520,7 @@ read_planned_tiles(plan, only nonresident logical tile keys)
         ↓
 retain eligible decoded payloads and assemble one immutable snapshot
         ↓
-publish only if its session, selection, and request generation remain current
+GUI: publish only if its session, selection, and request generation remain current
 ```
 
 `select_level()`, `plan_viewport()`, and point-payload reads remain on the same
@@ -1554,10 +1560,42 @@ them, but request 1 must not activate after a newer request generation exists.
 This is stale-result rejection, not an unsupported claim that an active Zarr
 decode can be interrupted.
 
-Selection and LOD changes participate in the same identity checks. A completed
-S1 request cannot activate after S2 becomes current, and an L2 result cannot
+LOD changes participate in the same identity checks. An L2 result cannot
 activate after the latest viewport selects L3. The previous valid snapshot
 remains visible while a replacement is assembled.
+
+#### Selection changes during viewport work
+
+The coordinator also owns one monotonically increasing selection-request
+generation. Accepting a value-selection change increments that generation and
+immediately invalidates activation of active or pending viewport work for the
+previous generation; it does not attempt to interrupt a synchronous Zarr read.
+
+```text
+S1 viewport request active
+        ↓
+GUI accepts S2 selection request and advances selection generation
+        ↓
+S1 may finish and populate correctly keyed CPU residency
+        ↓
+S1 snapshot activation is rejected
+        ↓
+worker loads and commits the S2 selected-value index
+        ↓
+latest viewport is replanned for S2
+```
+
+The committed S1 selection and its previous valid snapshot remain active until
+S2 index loading and replacement snapshot assembly succeed. If S2 index loading
+fails, the worker retains S1 as already required by I4; the coordinator retains
+the old snapshot and later viewport requests continue from that committed
+selection.
+
+Selection generation exists only to reject stale asynchronous results. It is
+not part of `TileResidencyKey`: CPU identity continues to use the complete
+requested-value-ID tuple. Returning to a previously used value selection may
+therefore reuse an exactly matching resident tile without allowing an obsolete
+snapshot to activate.
 
 #### Decoded CPU tile residency
 
@@ -1585,13 +1623,18 @@ by at least:
 location.nbytes + value_id.nbytes
 ```
 
-The decoded-tile limit is explicit I5 configuration and is separate from I4's
-bucket-lookup and selected-value-index metadata limits. LRU bookkeeping must
-never report more retained bytes than the configured budget. A single payload
-larger than that budget may pass through one result transiently, but it is not
-retained as a resident entry. Tiles needed while an active or pending snapshot
-is assembled are protected from eviction until that assembly decision is
-complete; immutable array references are reused rather than copied.
+Extend `_CacheSessionSettings` with one required `max_cpu_tile_bytes: int`
+field. It must be a positive integer; unlike the optional metadata preflight
+limits, `None` is not accepted because this structure is specifically an
+evicting, byte-bounded cache. The setting is separate from I4's bucket-lookup
+and selected-value-index metadata limits.
+
+LRU bookkeeping must never report more retained bytes than
+`max_cpu_tile_bytes`. A single payload larger than that budget may pass through
+one result transiently, but it is not retained as a resident entry. Tiles needed
+while an active or pending snapshot is assembled are protected from eviction
+until that assembly decision is complete; immutable array references are reused
+rather than copied.
 
 For the deterministic same-selection sequence:
 
@@ -1606,11 +1649,31 @@ keys remain in the LRU.
 
 #### Snapshot boundary and slice ownership
 
-I5 returns one immutable snapshot carrying the cache/request generation,
-selection identity, selected level and LOD evidence, budget outcome, omitted
-value IDs, ordered tile residency keys, and the immutable CPU payload references
-needed to satisfy it. A zero-tile snapshot is a valid atomic result. A snapshot
-never mixes cache generations, value selections, or levels.
+I5 returns one immutable `TiledPointsRenderSnapshot` carrying:
+
+```text
+cache generation ID
+request generation
+selection-request generation
+requested value IDs
+selected level and level kind
+within-budget evidence and estimated point count
+omitted value IDs
+ordered active tile entries, each containing:
+    TileResidencyKey
+    tile size
+    immutable location
+    immutable value_id
+```
+
+The snapshot carries payload references for every active tile, not only tiles
+physically read by the current request. This is required when a tile remains in
+the CPU LRU but I6 has evicted its GPU visual: the renderer must be able to
+recreate that visual without rereading Zarr. Snapshot assembly reuses immutable
+arrays and does not copy point payloads.
+
+A zero-tile snapshot is a valid atomic result. A snapshot never mixes cache
+generations, value selections, or levels.
 
 I5 stops at this renderer-independent boundary. It does not create VisPy nodes,
 GPU buffers, or OpenGL resources; I6 consumes the snapshot contract in the
@@ -1624,9 +1687,11 @@ Deliverables:
 - implement one-active/one-latest-pending request coordination;
 - run level selection and viewport planning on the reader worker;
 - reject over-budget plans before point IO;
-- implement the byte-bounded CPU tile LRU;
+- add the required positive `max_cpu_tile_bytes` session setting and implement
+  the byte-bounded CPU tile LRU;
 - read only plan tiles missing from CPU residency;
-- assemble immutable render snapshots;
+- assign GUI-side request and selection generations before worker dispatch;
+- assemble immutable render snapshots containing every active tile payload;
 - reject stale completions by session, selection, and request generation.
 
 Required deterministic sequences include:
@@ -1642,8 +1707,11 @@ Exit criteria:
 - B is physically read at most once while resident;
 - obsolete S1 or L2 results cannot activate;
 - intermediate camera states do not form an unbounded queue;
+- `max_cpu_tile_bytes` rejects `None`, booleans, zero, and negative values;
 - CPU bytes never exceed the configured retained budget;
 - active/pending assembly is not broken by LRU eviction;
+- every active snapshot tile has an aligned immutable payload reference,
+  including CPU-resident tiles that required no physical read;
 - `within_budget=False` produces zero point-array calls;
 - the complete scheduler is testable with a fake renderer and no OpenGL.
 
