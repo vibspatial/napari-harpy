@@ -1331,7 +1331,7 @@ NEW
 STARTING
 LOADING_BUCKET_INDEXES
 READY
-LOADING_SELECTION
+UPDATING_SELECTED_VALUE_INDEX
 FAILED
 CLOSING
 CLOSED
@@ -1401,7 +1401,7 @@ state_changed(state)
 dataset_available(_CacheDatasetInfo)
 bucket_index_progress(completed_buckets, total_buckets)
 ready()
-selection_ready(selected_value_ids, resident_bytes)
+value_selection_ready(selected_value_ids, resident_bytes)
 failed(phase, exception_type, message)
 closed()
 ```
