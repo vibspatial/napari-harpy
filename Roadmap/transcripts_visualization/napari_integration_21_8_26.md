@@ -1468,7 +1468,7 @@ Exit criteria:
 - tests assert project behavior, event order, ownership, and cleanup rather
   than generic `QThread` or Qt signal internals.
 
-### Slice I5: implement viewport scheduling and CPU tile residency
+### Slice I5: implement viewport scheduling and CPU tile residency — resolved
 
 I5 connects capabilities that are already implemented but deliberately remain
 separate after I4:
@@ -1552,7 +1552,15 @@ the previous pending request:
 request 1 active
 request 2 pending
 request 3 arrives → discard request 2; retain request 3 as pending
+request 1 finishes → reject stale activation; dispatch request 3
 ```
+
+This is worker-occupancy coalescing, not a time-based debounce. When the worker
+is idle, a submitted viewport is dispatched immediately; there is no fixed
+delay waiting for camera motion to settle. Coalescing begins only while one
+request already occupies the serial cache worker. Therefore intermediate
+viewports cannot accumulate behind a slow read, while the first useful result
+is not delayed merely to discover whether another camera event will arrive.
 
 A synchronous Zarr operation already running for request 1 may finish. Correctly
 keyed decoded tiles may still enter the CPU LRU because a later viewport can use
