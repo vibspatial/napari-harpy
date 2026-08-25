@@ -403,7 +403,7 @@ class _TiledPointsCacheSession(QObject):
         self._set_state(_CacheSessionState.STARTING)
         thread.start()
 
-    def set_selected_value_ids(self, selected_value_ids: tuple[int, ...] | None) -> bool:
+    def set_selected_value_ids(self, requested_value_ids: tuple[int, ...] | None) -> bool:
         """Queue one selected-value index replacement from the ready state.
 
         ``None`` selects all canonical values. A tuple represents one sorted,
@@ -411,11 +411,11 @@ class _TiledPointsCacheSession(QObject):
         """
         if self._state is not _CacheSessionState.READY:
             raise RuntimeError("Value selection can change only while the cache session is READY.")
-        selected_value_ids = _require_selected_value_ids(selected_value_ids)
-        if selected_value_ids == self._selected_value_ids:
+        requested_value_ids = _require_selected_value_ids(requested_value_ids)
+        if requested_value_ids == self._selected_value_ids:
             return False
         self._set_state(_CacheSessionState.UPDATING_SELECTED_VALUE_INDEX)
-        self._selection_requested.emit(selected_value_ids)
+        self._selection_requested.emit(requested_value_ids)
         return True
 
     def close(self) -> bool:
