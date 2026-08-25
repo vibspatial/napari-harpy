@@ -650,6 +650,27 @@ I6 adds `TiledPointsLayerModel.value_palette`, its event, validation, and the GP
 lookup together; I8 supplies the stable palette from the existing points-panel
 colour policy.
 
+Construct the default complete palette in canonical cache `value_id` order by
+repeating napari-harpy's existing 102-colour points cycle modulo 102:
+
+```text
+value_id 0   -> cycle colour 0
+value_id 1   -> cycle colour 1
+...
+value_id 101 -> cycle colour 101
+value_id 102 -> cycle colour 0
+value_id 103 -> cycle colour 1
+...
+```
+
+Selection order must not influence this assignment: the same `value_id` keeps
+the same palette row as values enter or leave the selection. Do not carry the
+direct `Points` path's “more than 102 selected values becomes one solid colour”
+fallback into the tiled renderer. More than 102 canonical values deliberately
+reuse the cycle while remaining value-coloured. A later explicit UI colour
+override may replace an individual canonical row without changing the base
+cycle assignment of other rows.
+
 The layer's private napari abstract-method implementation should follow the
 smallest behavior supported by napari 0.7.1. Do not inherit from `Points` merely
 to avoid those methods: doing so would reintroduce point editing, feature,
@@ -1783,7 +1804,7 @@ Exit criteria:
 - `within_budget=False` produces zero point-array calls;
 - the complete scheduler is testable with a fake renderer and no OpenGL.
 
-### Slice I6: implement and qualify the tile-retaining VisPy renderer
+### Slice I6: implement and qualify the tile-retaining VisPy renderer — resolved
 
 I6 turns the empty `Compound` root created in I2 into the GUI-thread renderer
 for the complete immutable snapshots produced by I5. It performs no cache
@@ -2044,6 +2065,50 @@ real coordinator results to `events.render_snapshot`, update product status, or
 own the cache session. I7 performs that composition and guarantees all VisPy
 mutation occurs on the GUI thread.
 
+#### I6 qualification evidence
+
+The adopted compact visual was qualified on 25 August 2026 with napari 0.7.1,
+VisPy 0.16.2, and a real macOS OpenGL canvas. The tests and measurements used
+synthetic immutable snapshots, as intended at this boundary; I7 remains
+responsible for connecting those snapshots to the real cache session.
+
+The asymmetric reference check used a cache origin of `(100_000_000,
+200_000_000)`, two differently coloured tile-local points, and nontrivial
+translation, scale, rotation, and shear. The compact visual and standard VisPy
+markers differed by at most 0.31 device pixels at their colour centroids. A
+logical `320 x 240` canvas rendered as `640 x 480` device pixels on the Retina
+display. Changing the camera by a factor of two left the marker footprint
+unchanged at 248 selected device pixels, confirming constant screen-space point
+diameter. The implementation keeps the large shared cache origin in napari's
+float64 layer matrix and sends only tile-local coordinates plus the smaller
+tile-grid offset through the float32 vertex path.
+
+The observed full-extent stress shape was represented by 127 independently
+retained tile nodes and 78,816 points:
+
+| Measurement | Result |
+|---|---:|
+| Snapshot resource creation and upload submission | 64.06 ms |
+| First render, including cold shader compilation/linking | 490.15 ms |
+| Warm render median across seven renders | 11.64 ms |
+| Warm render p95 across seven renders | 13.79 ms |
+| Logical resident tile-buffer payload | 0.90 MiB |
+
+The cold first render is materially more expensive because all 127 tile
+programs are compiled and linked for the first time. The warm 127-node frame
+cost remains below one 60 Hz frame interval on the evaluated machine, so I6
+retains the simpler one-visual-per-logical-tile design and does not introduce
+renderer-owned pooling. I7 should retain this cold-start observation during the
+integrated first-view review; pooling remains evidence-driven follow-up work if
+that complete product path proves unacceptable.
+
+Focused non-GL tests cover overlap reuse, transform/style updates without
+coordinate reupload, palette updates, byte-bounded LRU eviction, capacity
+failure, upload-failure rollback, empty and over-budget snapshots, and
+idempotent cleanup. The opt-in real-canvas test compares the adopted visual to
+standard markers under the large-origin affine case; it is skipped in ordinary
+headless runs and enabled explicitly for renderer qualification.
+
 ### Slice I7: compose the real cache-to-canvas session
 
 Deliverables:
@@ -2098,9 +2163,12 @@ Deliverables:
   first `TiledPointsLayerModel`; do not register through an import side effect;
 - derive the nested cache path for the selected SpatialData points element;
 - populate value selection from cache `value_names`;
-- reuse the SpatialData affine and existing stable value colours, construct the
-  complete value-ID-aligned palette, and assign it to the persistent tiled-points
-  layer;
+- reuse the SpatialData affine and construct the complete value-ID-aligned
+  palette by repeating the existing 102-colour points cycle in canonical
+  `value_id` order; do not use selection encounter order or the direct-Points
+  solid-colour fallback for vocabularies or selections above 102 values;
+- assign that complete palette to the persistent tiled-points layer and apply
+  any later explicit per-value UI override to its canonical row only;
 - connect the current points panel to persistent layer selection changes;
 - replace `PointsLoadRequest`/materialized selection application in the
   transcript path;
