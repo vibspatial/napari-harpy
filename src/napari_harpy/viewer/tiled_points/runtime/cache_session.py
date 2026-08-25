@@ -15,12 +15,22 @@ from qtpy.QtCore import QObject, QThread, Signal, Slot
 
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
+    _IntrinsicViewport,
     _PointsCacheReader,
     _SelectedValueIndex,
 )
+from napari_harpy.viewer.tiled_points.contracts import (
+    TiledPointsRenderSnapshot,
+    TiledPointsRenderTile,
+    TileResidencyKey,
+    _ViewportRequest,
+)
+from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 _UINT32_MAX = np.iinfo(np.uint32).max
-_FailurePhase = Literal["startup", "bucket_index_projection", "bucket_index_loading", "selection", "shutdown"]
+_FailurePhase = Literal[
+    "startup", "bucket_index_projection", "bucket_index_loading", "selection", "viewport", "shutdown"
+]
 _ReaderFactory = Callable[[Path], _PointsCacheReader]
 
 
@@ -39,7 +49,7 @@ class _CacheSessionState(StrEnum):
 
 @dataclass(frozen=True)
 class _CacheSessionSettings:
-    """Bound lookup metadata retained by one cache session.
+    """Bound metadata and decoded tile payloads retained by one cache session.
 
     Parameters
     ----------
@@ -50,10 +60,13 @@ class _CacheSessionSettings:
     max_selected_value_index_bytes
         Maximum resident bytes for the current selected-value catalog index.
         ``None`` disables this configured preflight limit.
+    max_cpu_tile_bytes
+        Positive byte limit for the evicting decoded point-payload LRU.
     """
 
     max_bucket_lookup_bytes: int | None
     max_selected_value_index_bytes: int | None
+    max_cpu_tile_bytes: int
 
     def __post_init__(self) -> None:
         for name in ("max_bucket_lookup_bytes", "max_selected_value_index_bytes"):
@@ -62,6 +75,12 @@ class _CacheSessionSettings:
                 continue
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"`{name}` must be a positive integer or None.")
+        if (
+            not isinstance(self.max_cpu_tile_bytes, int)
+            or isinstance(self.max_cpu_tile_bytes, bool)
+            or self.max_cpu_tile_bytes <= 0
+        ):
+            raise ValueError("`max_cpu_tile_bytes` must be a positive integer.")
 
 
 @dataclass(frozen=True)
@@ -73,7 +92,14 @@ class _CacheSessionFailure:
     message: str
 
     def __post_init__(self) -> None:
-        if self.phase not in ("startup", "bucket_index_projection", "bucket_index_loading", "selection", "shutdown"):
+        if self.phase not in (
+            "startup",
+            "bucket_index_projection",
+            "bucket_index_loading",
+            "selection",
+            "viewport",
+            "shutdown",
+        ):
             raise ValueError("Unsupported cache-session failure phase.")
         for name in ("exception_type", "message"):
             value = getattr(self, name)
@@ -100,6 +126,7 @@ class _TiledPointsCacheWorker(QObject):
         ----------                              -------------
         session.start()       --------------->  start()
         selection requested  --------------->  update_selected_value_index()
+        viewport requested   --------------->  read_viewport_snapshot()
         close requested      --------------->  close()
 
         session handlers     <---------------  state/progress/result signals
@@ -107,7 +134,8 @@ class _TiledPointsCacheWorker(QObject):
 
     These connections are queued according to QObject thread affinity. They
     keep cache operations off the GUI thread while returning only immutable
-    descriptions, selected value IDs, byte counts, and structured failures.
+    descriptions and snapshots, selected value IDs, byte counts, and structured
+    failures.
 
     Notes
     -----
@@ -142,6 +170,8 @@ class _TiledPointsCacheWorker(QObject):
     bucket_index_progress = Signal(int, int)
     ready = Signal(int, int)
     value_selection_ready = Signal(object, int)
+    viewport_ready = Signal(object)
+    viewport_failed = Signal(int, object)
     failed = Signal(object)
     finished = Signal()
 
@@ -160,6 +190,7 @@ class _TiledPointsCacheWorker(QObject):
         self._reader: _PointsCacheReader | None = None
         self._selected_value_ids: tuple[int, ...] | None = None
         self._selected_value_index: _SelectedValueIndex | None = None
+        self._cpu_tile_residency = _CpuTileResidency(settings.max_cpu_tile_bytes)
         self._finished = False
 
     @Slot()
@@ -269,6 +300,36 @@ class _TiledPointsCacheWorker(QObject):
         """Close the reader and finish this worker exactly once."""
         self._shutdown(emit_closing=True)
 
+    @Slot(object)
+    def read_viewport_snapshot(self, request: _ViewportRequest) -> None:
+        """Build one generation-bound snapshot with resident or newly read tiles."""
+        if self._finished:
+            return
+        reader = self._reader
+        if reader is None:
+            self._report_viewport_failure(request, RuntimeError("Cache reader is not ready."))
+            return
+        try:
+            self._require_not_cancelled()
+            if not isinstance(request, _ViewportRequest):
+                raise ValueError("`request` must be _ViewportRequest.")
+            if request.requested_value_ids != self._selected_value_ids:
+                raise ValueError("Viewport request value IDs do not match the worker's committed selection.")
+            snapshot = _read_viewport_snapshot(
+                reader,
+                self._selected_value_index,
+                self._cpu_tile_residency,
+                request,
+                check_cancelled=self._require_not_cancelled,
+            )
+            self._require_not_cancelled()
+            self.viewport_ready.emit(snapshot)
+        except _SessionCancelled:
+            self._shutdown(emit_closing=True)
+        except Exception as error:  # noqa: BLE001
+            logger.exception("Tiled-points cache session failed while reading a viewport snapshot.")
+            self._report_viewport_failure(request, error)
+
     def _on_bucket_index_progress(self, completed_buckets: int, total_buckets: int) -> None:
         self._require_not_cancelled()
         self.bucket_index_progress.emit(completed_buckets, total_buckets)
@@ -282,6 +343,10 @@ class _TiledPointsCacheWorker(QObject):
         self.failed.emit(_failure_from_exception("selection", error))
         self.state_changed.emit(_CacheSessionState.READY)
 
+    def _report_viewport_failure(self, request: object, error: Exception) -> None:
+        request_generation = request.request_generation if isinstance(request, _ViewportRequest) else 0
+        self.viewport_failed.emit(request_generation, _failure_from_exception("viewport", error))
+
     def _shutdown(self, *, emit_closing: bool) -> None:
         if self._finished:
             return
@@ -293,6 +358,7 @@ class _TiledPointsCacheWorker(QObject):
         self._reader = None
         self._selected_value_ids = None
         self._selected_value_index = None
+        self._cpu_tile_residency.clear()
         try:
             if reader is not None:
                 reader.__exit__(None, None, None)
@@ -317,12 +383,15 @@ class _TiledPointsCacheSession(QObject):
     bucket_index_progress = Signal(int, int)
     ready = Signal()
     value_selection_ready = Signal(object, int)
+    viewport_ready = Signal(object)
+    viewport_failed = Signal(int, object)
     failed = Signal(object)
     closed = Signal()
 
     # Queue a value-ID selection change on the worker; `value_selection_ready`
     # announces the committed result back to the GUI thread.
     _value_selection_change_requested = Signal(object)
+    _viewport_requested = Signal(object)
     _close_requested = Signal()
 
     def __init__(
@@ -390,12 +459,15 @@ class _TiledPointsCacheSession(QObject):
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
         self._value_selection_change_requested.connect(worker.update_selected_value_index)
+        self._viewport_requested.connect(worker.read_viewport_snapshot)
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
         worker.bucket_index_progress.connect(self._on_bucket_index_progress)
         worker.ready.connect(self._on_ready)
         worker.value_selection_ready.connect(self._on_value_selection_ready)
+        worker.viewport_ready.connect(self._on_viewport_ready)
+        worker.viewport_failed.connect(self._on_viewport_failed)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -419,6 +491,16 @@ class _TiledPointsCacheSession(QObject):
         self._set_state(_CacheSessionState.UPDATING_SELECTED_VALUE_INDEX)
         self._value_selection_change_requested.emit(requested_value_ids)
         return True
+
+    def request_viewport(self, request: _ViewportRequest) -> None:
+        """Queue one coordinator-stamped viewport request on the reader worker."""
+        if self._state is not _CacheSessionState.READY:
+            raise RuntimeError("A viewport can be requested only while the cache session is READY.")
+        if not isinstance(request, _ViewportRequest):
+            raise ValueError("`request` must be _ViewportRequest.")
+        if request.requested_value_ids != self._selected_value_ids:
+            raise ValueError("Viewport request value IDs do not match the committed session selection.")
+        self._viewport_requested.emit(request)
 
     def close(self) -> bool:
         """Request terminal owner-thread closure exactly once."""
@@ -474,6 +556,19 @@ class _TiledPointsCacheSession(QObject):
         self.value_selection_ready.emit(selected_value_ids, resident_bytes)
 
     @Slot(object)
+    def _on_viewport_ready(self, snapshot: TiledPointsRenderSnapshot) -> None:
+        if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
+            return
+        self.viewport_ready.emit(snapshot)
+
+    @Slot(int, object)
+    def _on_viewport_failed(self, request_generation: int, failure: _CacheSessionFailure) -> None:
+        if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
+            return
+        self.failed.emit(failure)
+        self.viewport_failed.emit(request_generation, failure)
+
+    @Slot(object)
     def _on_failed(self, failure: _CacheSessionFailure) -> None:
         if self._state is _CacheSessionState.CLOSED:
             return
@@ -494,6 +589,124 @@ class _TiledPointsCacheSession(QObject):
             return
         self._state = state
         self.state_changed.emit(state)
+
+
+def _read_viewport_snapshot(
+    reader: _PointsCacheReader,
+    selected_value_index: _SelectedValueIndex | None,
+    residency: _CpuTileResidency,
+    request: _ViewportRequest,
+    *,
+    check_cancelled: Callable[[], None],
+) -> TiledPointsRenderSnapshot:
+    """Plan one viewport and assemble its complete immutable render snapshot.
+
+    Reuse CPU-resident tiles, read only residency misses, and restore the
+    complete tile plan's spatial order before returning. If no serialized level
+    satisfies the runtime budget, return a metadata-only over-budget snapshot
+    without reading point payloads.
+    """
+    viewport = _IntrinsicViewport(
+        request.viewport.x_min,
+        request.viewport.y_min,
+        request.viewport.x_max,
+        request.viewport.y_max,
+    )
+    level_selection = reader.select_level(
+        viewport,
+        request.viewport.effective_point_budget,
+        value_index=selected_value_index,
+    )
+    check_cancelled()
+    dataset_info = reader.dataset_info
+    level_kind = _level_kind(level_selection.level, dataset_info.levels[level_selection.level].kind)
+    omitted_value_ids = (
+        ()
+        if level_selection.omitted_value_ids is None
+        else tuple(int(value_id) for value_id in level_selection.omitted_value_ids)
+    )
+    if not level_selection.within_budget:
+        return TiledPointsRenderSnapshot(
+            cache_generation_id=dataset_info.cache_generation_id,
+            request_generation=request.request_generation,
+            selection_generation=request.selection_generation,
+            requested_value_ids=request.requested_value_ids,
+            level=level_selection.level,
+            level_kind=level_kind,
+            within_budget=False,
+            estimated_point_count=level_selection.estimated_point_count,
+            omitted_value_ids=omitted_value_ids,
+            tiles=(),
+        )
+
+    plan = reader.plan_viewport(level_selection.level, viewport, value_index=selected_value_index)
+    check_cancelled()
+    if plan.requested_value_ids != request.requested_value_ids:
+        raise RuntimeError("Viewport plan selection differs from its generation-bound request.")
+    keys = tuple(
+        TileResidencyKey(
+            cache_generation_id=dataset_info.cache_generation_id,
+            requested_value_ids=request.requested_value_ids,
+            level=level,
+            tile_x=tile_x,
+            tile_y=tile_y,
+        )
+        for level, tile_x, tile_y in plan.tile_keys
+    )
+    payloads_by_key: dict[TileResidencyKey, TiledPointsRenderTile] = {}
+    missing_keys: list[TileResidencyKey] = []
+    for key in keys:
+        tile = residency.get(key)
+        if tile is None:
+            missing_keys.append(key)
+        else:
+            payloads_by_key[key] = tile
+    resident_keys = tuple(payloads_by_key)
+
+    new_tiles: tuple[TiledPointsRenderTile, ...] = ()
+    if missing_keys:
+        result = reader.read_planned_tiles(
+            plan,
+            tuple(key.logical_tile_key for key in missing_keys),
+        )
+        check_cancelled()
+        key_by_logical_tile = {key.logical_tile_key: key for key in missing_keys}
+        # Bucket reads expose per-tile views into shared batch allocations.
+        # Copy once at the viewer-residency boundary so every render tile owns
+        # exactly the point-array bytes accounted by `_CpuTileResidency`.
+        new_tiles = tuple(
+            TiledPointsRenderTile(
+                key=key_by_logical_tile[(tile.level, tile.tile_x, tile.tile_y)],
+                tile_size=tile.tile_size,
+                location=tile.location.copy(order="C"),
+                value_id=tile.value_id.copy(order="C"),
+            )
+            for tile in result.tiles
+        )
+        if {tile.key for tile in new_tiles} != set(missing_keys):
+            raise RuntimeError("Viewport subset read did not return every requested nonresident tile.")
+        payloads_by_key.update((tile.key, tile) for tile in new_tiles)
+        residency.retain(new_tiles, protected_keys=resident_keys)
+
+    return TiledPointsRenderSnapshot(
+        cache_generation_id=dataset_info.cache_generation_id,
+        request_generation=request.request_generation,
+        selection_generation=request.selection_generation,
+        requested_value_ids=request.requested_value_ids,
+        level=level_selection.level,
+        level_kind=level_kind,
+        within_budget=True,
+        estimated_point_count=level_selection.estimated_point_count,
+        omitted_value_ids=omitted_value_ids,
+        tiles=tuple(payloads_by_key[key] for key in keys),
+    )
+
+
+def _level_kind(level: int, serialized_kind: str) -> Literal["exact", "bridge", "spatial"]:
+    expected: Literal["exact", "bridge", "spatial"] = "exact" if level == 0 else "bridge" if level == 1 else "spatial"
+    if serialized_kind != expected:
+        raise RuntimeError("Serialized cache level kind is inconsistent with its level index.")
+    return expected
 
 
 def _require_requested_value_ids(requested_value_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:
