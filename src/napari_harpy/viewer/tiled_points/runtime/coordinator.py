@@ -1,4 +1,26 @@
-"""Coordinate latest-only tiled-points viewport work on the GUI thread."""
+"""Coordinate latest-only tiled-points viewport work on the GUI thread.
+
+The runtime ownership and thread boundary are::
+
+    napari integration
+            |
+            v
+    _TiledPointsViewportCoordinator
+            |
+            v
+    _TiledPointsCacheSession
+            |
+            | Qt queued signals cross the thread boundary
+            v
+    _TiledPointsCacheWorker
+            |
+            v
+    _PointsCacheReader / Zarr
+
+Napari-facing code submits work to the coordinator. The coordinator and
+session remain on the GUI thread; only the worker owns and accesses the cache
+reader and its Zarr resources.
+"""
 
 from __future__ import annotations
 
@@ -107,7 +129,33 @@ class _TiledPointsViewportCoordinator(QObject):
         return None if self._pending_submission is None else self._pending_submission.request_generation
 
     def submit_viewport(self, viewport: TiledPointsViewportState) -> int:
-        """Stamp and submit or retain the newest immutable viewport state."""
+        """Stamp and submit or retain the newest immutable viewport state.
+
+        The request crosses into the cache worker only when the latest-request
+        mailbox permits dispatch::
+
+            napari GUI thread
+                    |
+                    v
+            coordinator.submit_viewport()
+                    |
+                    v
+            one-active/one-latest-pending mailbox
+                    |
+                    | only when dispatch is permitted
+                    v
+            coordinator._dispatch_pending()
+                    |
+                    v
+            session.request_viewport()
+                    |
+                    | Qt queued signal
+                    v
+            worker.read_viewport_snapshot()
+                    |
+                    v
+            cache reader and Zarr access
+        """
         self._require_open()
         if not isinstance(viewport, TiledPointsViewportState):
             raise ValueError("`viewport` must be TiledPointsViewportState.")
@@ -123,7 +171,32 @@ class _TiledPointsViewportCoordinator(QObject):
         return submission.request_generation
 
     def set_selected_value_ids(self, requested_value_ids: tuple[int, ...] | None) -> bool:
-        """Request a selected-value index change and invalidate old viewport work."""
+        """Request a selected-value index change and invalidate old viewport work.
+
+        Value-index loading runs on the reader worker. Once the worker commits
+        the selection, the coordinator may dispatch its latest viewport::
+
+            napari GUI thread
+                    |
+                    v
+            coordinator.set_selected_value_ids()
+                    |
+                    v
+            session.set_selected_value_ids()
+                    |
+                    | Qt queued signal
+                    v
+            worker.update_selected_value_index()
+                    |
+                    v
+            cache_reader.load_selected_value_index()
+                    |
+                    v
+            worker reports committed selection
+                    |
+                    v
+            coordinator dispatches latest retained viewport
+        """
         self._require_open()
         accepted = self._session.set_selected_value_ids(requested_value_ids)
         if not accepted:
