@@ -189,13 +189,17 @@ class _TiledPointsCacheWorker(QObject):
             self._require_not_cancelled()
             phase = "bucket_index_loading"
             self.state_changed.emit(_CacheSessionState.LOADING_BUCKET_INDEXES)
-            resident_bytes = reader.load_bucket_lookup_indexes(
+            # Retain each bucket's five point-row lookup arrays (`tile_offset` and
+            # `ranges/{tile_indptr,value_id,row_start,row_count}`). See
+            # `storage.bucket_reader._BucketLookupIndex` for the complete contract.
+            # Point coordinates and point-level values remain on disk.
+            resident_bucket_index_bytes = reader.load_bucket_lookup_indexes(
                 max_resident_bytes=max_lookup_bytes,
                 progress=self._on_bucket_index_progress,
             )
             self._require_not_cancelled()
             self.state_changed.emit(_CacheSessionState.READY)
-            self.ready.emit(projected_bytes, resident_bytes)
+            self.ready.emit(projected_bytes, resident_bucket_index_bytes)
         except _SessionCancelled:
             self._shutdown(emit_closing=True)
         except Exception as error:  # noqa: BLE001
