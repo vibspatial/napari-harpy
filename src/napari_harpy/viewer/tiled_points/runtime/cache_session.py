@@ -31,7 +31,7 @@ class _CacheSessionState(StrEnum):
     STARTING = "starting"
     LOADING_BUCKET_INDEXES = "loading_bucket_indexes"
     READY = "ready"
-    UPDATING_VALUE_SELECTION = "updating_value_selection"
+    UPDATING_SELECTED_VALUE_INDEX = "updating_selected_value_index"
     FAILED = "failed"
     CLOSING = "closing"
     CLOSED = "closed"
@@ -99,7 +99,7 @@ class _TiledPointsCacheWorker(QObject):
         GUI thread                              worker thread
         ----------                              -------------
         session.start()       --------------->  start()
-        selection requested  --------------->  update_value_selection()
+        selection requested  --------------->  update_selected_value_index()
         close requested      --------------->  close()
 
         session handlers     <---------------  state/progress/result signals
@@ -210,8 +210,8 @@ class _TiledPointsCacheWorker(QObject):
             self._shutdown(emit_closing=False)
 
     @Slot(object)
-    def update_value_selection(self, requested_value_ids: tuple[int, ...] | None) -> None:
-        """Update the value selection and worker-resident catalog index.
+    def update_selected_value_index(self, requested_value_ids: tuple[int, ...] | None) -> None:
+        """Update the worker-resident selected-value index for a new selection.
 
         This operation does not necessarily load data. An unchanged normalized
         selection reuses the current index, while the all-values selection
@@ -387,7 +387,7 @@ class _TiledPointsCacheSession(QObject):
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
-        self._selection_requested.connect(worker.update_value_selection)
+        self._selection_requested.connect(worker.update_selected_value_index)
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
@@ -414,7 +414,7 @@ class _TiledPointsCacheSession(QObject):
         selected_value_ids = _require_selected_value_ids(selected_value_ids)
         if selected_value_ids == self._selected_value_ids:
             return False
-        self._set_state(_CacheSessionState.UPDATING_VALUE_SELECTION)
+        self._set_state(_CacheSessionState.UPDATING_SELECTED_VALUE_INDEX)
         self._selection_requested.emit(selected_value_ids)
         return True
 

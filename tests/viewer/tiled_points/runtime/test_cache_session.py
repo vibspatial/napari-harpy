@@ -199,9 +199,9 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
         _CacheSessionState.STARTING,
         _CacheSessionState.LOADING_BUCKET_INDEXES,
         _CacheSessionState.READY,
-        _CacheSessionState.LOADING_SELECTION,
+        _CacheSessionState.UPDATING_SELECTED_VALUE_INDEX,
         _CacheSessionState.READY,
-        _CacheSessionState.LOADING_SELECTION,
+        _CacheSessionState.UPDATING_SELECTED_VALUE_INDEX,
         _CacheSessionState.READY,
         _CacheSessionState.CLOSING,
         _CacheSessionState.CLOSED,
@@ -283,7 +283,7 @@ def test_worker_treats_selection_without_reader_as_fatal() -> None:
     worker.failed.connect(failures.append)
     worker.finished.connect(lambda: finished.append(None))
 
-    worker.apply_value_selection((0,))
+    worker.update_selected_value_index((0,))
 
     assert states == [_CacheSessionState.FAILED]
     assert len(failures) == 1
