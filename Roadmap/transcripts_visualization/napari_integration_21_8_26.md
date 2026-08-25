@@ -1826,6 +1826,10 @@ Deliverables:
 - deliver worker results through queued GUI-thread signals;
 - connect render snapshots to the VisPy backend;
 - report Exact/Bridge/Spatial, selected counts, omitted values, and errors;
+- when `all_exact_present_values_omitted` is true, atomically apply the
+  zero-tile snapshot and report that the selected values are not represented at
+  the sampled LOD; do not retain stale points or describe this as biological
+  absence;
 - retain the prior snapshot during reads and selection changes;
 - exercise the complete flow with a small real Zarr cache.
 
@@ -2102,6 +2106,43 @@ The layer status must say that Gene A is not represented at the sampled level
 and direct the user to zoom in or raise the hard budget. Do not describe the
 empty result as biological absence, and do not automatically violate the
 budget by falling back to Exact.
+
+This policy was audited on 25 August 2026 against the persisted
+136,578,750-point Xenium cache. For every single gene whose Exact count exceeded
+each tested budget, the first fitting level was nonempty:
+
+| Effective budget | Genes above budget | Empty first fit | No fitting level |
+|---:|---:|---:|---:|
+| 10,000 | 2,602 | 0 | 0 |
+| 25,000 | 1,473 | 0 | 0 |
+| 50,000 | 657 | 0 | 0 |
+| 75,000 | 376 | 0 | 0 |
+| 100,000 | 231 | 0 | 0 |
+
+At 100,000 points, 223 of the 231 genes fitted at Bridge; the remaining eight
+fitted nonemptily at L2 through L4. The nearest genes above the threshold had
+approximately 100,600--104,300 Exact points and 9,400--23,200 Bridge points,
+rather than disappearing. A conservative tile-local audit found that at most
+7,778 Exact points for any such gene lived in tiles where the corresponding
+Bridge tile omitted it. Later adjacent-level omission bounds were 220 points or
+less. Consequently, a viewport containing more than 100,000 points for one of
+these genes cannot become completely empty at its next sampled level.
+
+An adversarial multi-value audit reached the same conclusion for this cache.
+Selecting all 462 values absent from the terminal L8 overview produced 649,337
+Exact points but fitted nonemptily at L2 with 62,149 points. These measurements
+make a fully omitted fitting level unlikely in realistic Xenium interaction,
+but they do not make it impossible for a future dataset, a small screen-density
+budget, or a specially arranged viewport.
+
+Do not add in-memory trimming now. Trimming would first decode an over-budget
+payload, require a deterministic spatially balanced policy, and make tile
+residency depend on that policy or runtime budget. Instead,
+`TiledPointsRenderSnapshot.all_exact_present_values_omitted` derives the rare
+observable condition from a within-budget zero-point selected snapshot with
+nonempty omitted IDs. I7 must surface it explicitly. Reconsider a bounded
+fallback only if integrated napari measurements show this condition often
+enough to justify the additional reader and residency complexity.
 
 ### Runtime budget below terminal overview
 
