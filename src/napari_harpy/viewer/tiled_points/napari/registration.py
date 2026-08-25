@@ -32,9 +32,30 @@ class _NapariCompatibility:
 def register_tiled_points_layer() -> None:
     """Register the tiled-points model with napari's visual and controls factories.
 
+    This extends the same private ``layer_to_visual`` and
+    ``layer_to_controls`` registries that napari uses to dispatch its built-in
+    layer models to VisPy layers and Qt controls. Napari populates its built-in
+    entries statically; this function adds the Harpy-owned mappings at runtime.
+    This is not a public napari custom-layer registration API, which is why the
+    integration is explicitly version- and contract-checked.
+
     Registration is explicit, version-checked, idempotent for the desired
     mappings, and atomic across the two private registries. Importing
-    ``napari_harpy`` does not invoke this function.
+    ``napari_harpy`` does not invoke this function. Registration installs
+    factories only; it does not construct a model, controls, or visual::
+
+        register_tiled_points_layer()
+                    |
+                    v
+        TiledPointsLayerModel -> VispyTiledPointsLayer mapping
+                    |
+        TiledPointsLayerModel instance inserted into a GUI viewer
+                    |
+                    v
+        napari constructs VispyTiledPointsLayer(model, font_info)
+
+    Call this before inserting the first ``TiledPointsLayerModel``. The layer
+    list insertion event, not this function, triggers visual construction.
     """
     compatibility = _load_napari_compatibility()
     _require_supported_versions(compatibility)
