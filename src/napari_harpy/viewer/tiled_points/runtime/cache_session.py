@@ -31,7 +31,7 @@ class _CacheSessionState(StrEnum):
     STARTING = "starting"
     LOADING_BUCKET_INDEXES = "loading_bucket_indexes"
     READY = "ready"
-    LOADING_SELECTION = "loading_selection"
+    UPDATING_VALUE_SELECTION = "updating_value_selection"
     FAILED = "failed"
     CLOSING = "closing"
     CLOSED = "closed"
@@ -99,7 +99,7 @@ class _TiledPointsCacheWorker(QObject):
         GUI thread                              worker thread
         ----------                              -------------
         session.start()       --------------->  start()
-        selection requested  --------------->  apply_value_selection()
+        selection requested  --------------->  update_value_selection()
         close requested      --------------->  close()
 
         session handlers     <---------------  state/progress/result signals
@@ -210,8 +210,8 @@ class _TiledPointsCacheWorker(QObject):
             self._shutdown(emit_closing=False)
 
     @Slot(object)
-    def apply_value_selection(self, requested_value_ids: tuple[int, ...] | None) -> None:
-        """Apply a value selection to the worker-resident catalog index.
+    def update_value_selection(self, requested_value_ids: tuple[int, ...] | None) -> None:
+        """Update the value selection and worker-resident catalog index.
 
         This operation does not necessarily load data. An unchanged normalized
         selection reuses the current index, while the all-values selection
@@ -387,7 +387,7 @@ class _TiledPointsCacheSession(QObject):
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
-        self._selection_requested.connect(worker.apply_value_selection)
+        self._selection_requested.connect(worker.update_value_selection)
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
@@ -414,7 +414,7 @@ class _TiledPointsCacheSession(QObject):
         selected_value_ids = _require_selected_value_ids(selected_value_ids)
         if selected_value_ids == self._selected_value_ids:
             return False
-        self._set_state(_CacheSessionState.LOADING_SELECTION)
+        self._set_state(_CacheSessionState.UPDATING_VALUE_SELECTION)
         self._selection_requested.emit(selected_value_ids)
         return True
 
