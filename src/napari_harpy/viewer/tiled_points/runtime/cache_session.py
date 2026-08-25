@@ -99,7 +99,7 @@ class _TiledPointsCacheWorker(QObject):
         GUI thread                              worker thread
         ----------                              -------------
         session.start()       --------------->  start()
-        selection requested  --------------->  load_selection()
+        selection requested  --------------->  apply_value_selection()
         close requested      --------------->  close()
 
         session handlers     <---------------  state/progress/result signals
@@ -210,8 +210,16 @@ class _TiledPointsCacheWorker(QObject):
             self._shutdown(emit_closing=False)
 
     @Slot(object)
-    def load_selection(self, requested_value_ids: tuple[int, ...] | None) -> None:
-        """Replace the worker-resident selected-value index."""
+    def apply_value_selection(self, requested_value_ids: tuple[int, ...] | None) -> None:
+        """Apply a value selection to the worker-resident catalog index.
+
+        This operation does not necessarily load data. An unchanged normalized
+        selection reuses the current index, while the all-values selection
+        (``None``) clears that index. Only a changed proper subset loads a new
+        selected-value index from the catalog. The replacement is committed
+        only after loading succeeds, so a recoverable failure leaves the
+        previous selection active.
+        """
         if self._finished:
             return
         reader = self._reader
@@ -379,7 +387,7 @@ class _TiledPointsCacheSession(QObject):
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
-        self._selection_requested.connect(worker.load_selection)
+        self._selection_requested.connect(worker.apply_value_selection)
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
