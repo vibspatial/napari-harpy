@@ -1462,12 +1462,162 @@ Exit criteria:
 - session shutdown during startup, bucket-index loading, selected-value index
   loading, and idle state is
   safe and idempotent;
-- focused state-machine tests use an injected fake reader, while one small real
-  cache test proves the session boundary works with `_PointsCacheReader`;
+- focused state-machine tests use the injected `_ControllableReader` test
+  double, while one small real cache test proves the session boundary works
+  with `_PointsCacheReader`;
 - tests assert project behavior, event order, ownership, and cleanup rather
   than generic `QThread` or Qt signal internals.
 
 ### Slice I5: implement viewport scheduling and CPU tile residency
+
+I5 connects capabilities that are already implemented but deliberately remain
+separate after I4:
+
+```text
+I3  TiledPointsViewportState and effective runtime point budget
+                         +
+I4  one entered worker-owned reader and retained selected-value index
+                         +
+I1  select_level(), plan_viewport(), and read_planned_tiles()
+                         ↓
+I5  scheduled, residency-aware immutable render snapshots
+```
+
+The layer currently emits normalized viewport state without performing cache
+IO. The session currently owns the reader and compact lookup indexes without
+accepting viewport commands. The reader can already separate catalog-only tile
+discovery from subset point-payload reads. I5 adds the runtime policy between
+these seams; it does not replace any of them.
+
+#### Worker request flow
+
+One accepted viewport request executes on the existing serial reader worker:
+
+```text
+normalized intrinsic viewport + effective point budget
+        ↓
+assign monotonically increasing request generation
+        ↓
+select_level(viewport, effective_point_budget, selected_value_index)
+        ↓
+within_budget is false?
+    yes → warning snapshot; no plan payload read
+    no
+        ↓
+plan_viewport(selected level, viewport, selected_value_index)
+        ↓
+ordered positive logical tiles
+        ↓
+construct full TileResidencyKey values and query CPU LRU
+        ↓
+read_planned_tiles(plan, only nonresident logical tile keys)
+        ↓
+retain eligible decoded payloads and assemble one immutable snapshot
+        ↓
+publish only if its session, selection, and request generation remain current
+```
+
+`select_level()`, `plan_viewport()`, and point-payload reads remain on the same
+thread that owns `_PointsCacheReader`; I5 does not introduce a second reader or
+a general reader thread pool. The GUI-side submission boundary only replaces
+pending immutable requests and receives immutable results. It never accesses
+the private `_SelectedValueIndex`, bucket readers, Zarr arrays, or mutable LRU
+state.
+
+The runtime must compare the complete planned identity before point IO:
+
+```text
+cache generation
+requested value IDs
+selected level
+ordered positive logical tile keys
+```
+
+If that identity is unchanged, movement within the same logical tile set does
+not reread points and does not create renderer upload work.
+
+#### Latest-request mailbox
+
+Camera events must not form an unbounded FIFO. The coordinator owns at most one
+active worker request and one pending request; every newer submission replaces
+the previous pending request:
+
+```text
+request 1 active
+request 2 pending
+request 3 arrives → discard request 2; retain request 3 as pending
+```
+
+A synchronous Zarr operation already running for request 1 may finish. Correctly
+keyed decoded tiles may still enter the CPU LRU because a later viewport can use
+them, but request 1 must not activate after a newer request generation exists.
+This is stale-result rejection, not an unsupported claim that an active Zarr
+decode can be interrupted.
+
+Selection and LOD changes participate in the same identity checks. A completed
+S1 request cannot activate after S2 becomes current, and an L2 result cannot
+activate after the latest viewport selects L3. The previous valid snapshot
+remains visible while a replacement is assembled.
+
+#### Decoded CPU tile residency
+
+Add a worker-owned, byte-bounded LRU of immutable display payloads. This cache
+is distinct from both the always-resident bucket lookup indexes and any Zarr
+filesystem/codec cache: it retains the decoded application arrays that prevent
+an overlapping warm pan from calling point-array IO again.
+
+The complete key is:
+
+```text
+TileResidencyKey = (
+    cache_generation_id,
+    requested_value_ids,
+    level,
+    tile_x,
+    tile_y,
+)
+```
+
+Physical bucket identity is not part of logical residency. Account each entry
+by at least:
+
+```text
+location.nbytes + value_id.nbytes
+```
+
+The decoded-tile limit is explicit I5 configuration and is separate from I4's
+bucket-lookup and selected-value-index metadata limits. LRU bookkeeping must
+never report more retained bytes than the configured budget. A single payload
+larger than that budget may pass through one result transiently, but it is not
+retained as a resident entry. Tiles needed while an active or pending snapshot
+is assembled are protected from eviction until that assembly decision is
+complete; immutable array references are reused rather than copied.
+
+For the deterministic same-selection sequence:
+
+```text
+view 1: A B      → read A and B
+view 2:   B C    → reuse B; read C
+view 3:     C D  → reuse C; read D
+```
+
+`B` and `C` are physically decoded at most once while their exact residency
+keys remain in the LRU.
+
+#### Snapshot boundary and slice ownership
+
+I5 returns one immutable snapshot carrying the cache/request generation,
+selection identity, selected level and LOD evidence, budget outcome, omitted
+value IDs, ordered tile residency keys, and the immutable CPU payload references
+needed to satisfy it. A zero-tile snapshot is a valid atomic result. A snapshot
+never mixes cache generations, value selections, or levels.
+
+I5 stops at this renderer-independent boundary. It does not create VisPy nodes,
+GPU buffers, or OpenGL resources; I6 consumes the snapshot contract in the
+tile-retaining renderer. I5 also does not yet connect the real
+`TiledPointsLayerModel.events.viewport` signal to the coordinator; I7 composes
+that GUI binding and teardown. Focused I5 tests therefore drive the submission
+boundary directly and use a fake snapshot consumer without an OpenGL context.
 
 Deliverables:
 
