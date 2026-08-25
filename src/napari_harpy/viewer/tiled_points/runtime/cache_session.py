@@ -82,11 +82,60 @@ class _CacheSessionFailure:
 
 
 class _SessionCancelled(RuntimeError):
-    """Stop worker startup without reporting cancellation as a failure."""
+    """Stop active worker work without reporting cancellation as a failure."""
 
 
 class _TiledPointsCacheWorker(QObject):
-    """Create, use, and close one cache reader on the worker thread."""
+    """Own cache IO and reader state on one dedicated Qt worker thread.
+
+    The GUI-thread ``_TiledPointsCacheSession`` constructs this object, moves it
+    to a ``QThread``, and then starts that thread. Reader construction happens in
+    :meth:`start`, after the move, so the reader and all opened Zarr resources
+    are created, used, and closed on the worker thread. Neither the live reader
+    nor the resident selected-value index crosses the GUI facade.
+
+    Communication in both directions uses Qt signals and slots::
+
+        GUI thread                              worker thread
+        ----------                              -------------
+        session.start()       --------------->  start()
+        selection requested  --------------->  load_selection()
+        close requested      --------------->  close()
+
+        session handlers     <---------------  state/progress/result signals
+        thread.quit()        <---------------  finished
+
+    These connections are queued according to QObject thread affinity. They
+    keep cache operations off the GUI thread while returning only immutable
+    descriptions, selection identities, byte counts, and structured failures.
+
+    Notes
+    -----
+    The session and worker share the thread-safe ``cancellation`` event supplied
+    to ``__init__``. Closing needs both this event and a queued ``close()`` slot::
+
+        GUI thread                         worker thread
+        ----------                         -------------
+        session.close()
+          cancellation.set()  ---------->  _require_not_cancelled()
+          emit close signal                raises _SessionCancelled
+                                                    |
+                                                    v
+                                            close reader and finish
+
+    A busy worker cannot execute the queued ``close()`` slot until its current
+    slot returns. Cancellation checkpoints let that active operation observe the
+    event, raise ``_SessionCancelled``, and enter cleanup without publishing a
+    late result. This is cooperative cancellation: it stops between operations
+    or bucket reads, but it cannot interrupt a Zarr call already in progress.
+
+    Conversely, an idle worker has no active checkpoint at which to observe the
+    passive event. The queued ``close()`` slot therefore remains necessary to
+    execute cleanup on the reader's owning thread. Active cancellation and idle
+    closure both converge on idempotent :meth:`_shutdown`, which closes the
+    reader once, clears worker-resident state, and emits ``finished`` so the
+    session can terminate the thread and publish ``CLOSED``.
+    """
 
     state_changed = Signal(object)
     dataset_available = Signal(object)
@@ -205,6 +254,7 @@ class _TiledPointsCacheWorker(QObject):
         self.lookup_progress.emit(completed_buckets, total_buckets)
 
     def _require_not_cancelled(self) -> None:
+        """Stop the active worker operation after a GUI-side close request."""
         if self._cancellation.is_set():
             raise _SessionCancelled
 
@@ -358,6 +408,8 @@ class _TiledPointsCacheSession(QObject):
             self.closed.emit()
             return True
 
+        # The event stops active work; the queued slot closes an idle worker on
+        # its owning thread. Both paths converge on idempotent worker shutdown.
         self._cancellation.set()
         self._set_state(_CacheSessionState.CLOSING)
         self._close_requested.emit()
