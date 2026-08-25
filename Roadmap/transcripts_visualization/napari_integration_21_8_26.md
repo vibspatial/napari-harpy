@@ -2120,6 +2120,46 @@ Deliverables:
   request and performs no cache IO;
 - deliver worker results through queued GUI-thread signals;
 - connect render snapshots to the VisPy backend;
+- make the composition/listener docstring the authoritative description of the
+  complete request/result wiring and teardown ownership::
+
+      TiledPointsLayerModel.events.viewport
+              |
+              v
+      composition/listener
+              |
+              v
+      _TiledPointsViewportCoordinator.submit_viewport()
+              |
+              v
+      _TiledPointsCacheSession.request_viewport()
+              |
+              | Qt queued signal to worker thread
+              v
+      _TiledPointsCacheWorker.read_viewport_snapshot()
+              |
+              v
+      _PointsCacheReader
+              |
+              | TiledPointsRenderSnapshot; queued to GUI thread
+              v
+      _TiledPointsCacheSession.viewport_ready
+              |
+              v
+      _TiledPointsViewportCoordinator.snapshot_ready
+              |
+              v
+      composition/listener
+              |
+              v
+      TiledPointsLayerModel.events.render_snapshot
+              |
+              v
+      VispyTiledPointsLayer
+
+  The source docstring must describe the concrete runtime contract without
+  referring to roadmap slices. Keep the model documentation limited to the
+  semantic direction of its outbound viewport and inbound snapshot events;
 - report Exact/Bridge/Spatial, selected counts, omitted values, and errors;
 - when `all_exact_present_values_omitted` is true, atomically apply the
   zero-tile snapshot and report that the selected values are not represented at
