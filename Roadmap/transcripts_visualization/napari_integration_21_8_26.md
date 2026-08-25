@@ -813,7 +813,7 @@ resident point count
 resident GPU bytes
 coordinate uploads by TileResidencyKey
 evictions
-active and pending snapshot IDs
+active and pending tile membership
 ```
 
 These counters support acceptance and diagnosis; they need not all become
@@ -1990,13 +1990,19 @@ resident logical GPU bytes
 palette resource bytes
 coordinate uploads by TileResidencyKey
 evictions
-active and pending snapshot identity
+active and pending tile membership
 ```
 
 These counters are acceptance and diagnostic evidence rather than additional
 point-payload fields. GPU residency is independent of worker-owned CPU
 residency: a GPU-evicted tile present in an I5 snapshot can be reuploaded from
 its immutable CPU arrays without a Zarr read.
+
+Do not retain separate active or pending snapshot-identity objects in the
+renderer. The coordinator owns stale request/selection rejection, while
+`TileResidencyKey` and the active/pending membership already provide the cache,
+selection, level, and logical-tile identity needed for GPU reuse and atomic
+activation.
 
 #### Lifecycle and qualification
 
@@ -2307,6 +2313,68 @@ draw-call/frame cost
 ```
 
 Optimize the measured boundary rather than adding speculative concurrency.
+
+### Optional Slice I12: investigate renderer preparation and first-draw latency
+
+Run this slice only if the integrated I7/I11 evaluation shows an unacceptable
+GUI pause during first view, LOD or selection changes, or multi-tile pans. The
+current renderer deliberately creates missing tile resources sequentially on
+the GUI/OpenGL thread. `VertexBuffer.set_data()` may stage work that VisPy
+defers until draw, so do not describe the complete loop duration as physical
+GPU-upload time.
+
+Measure the following boundaries separately:
+
+```text
+TiledPointsRenderSnapshot received
+        |
+        v
+sequential CPU packing per missing tile
+        |
+        v
+VisPy visual/VBO construction and set_data submission
+        |
+        v
+first OpenGL draw and deferred buffer work
+        |
+        v
+shader compilation/linking
+        |
+        v
+subsequent warm frame
+```
+
+Cover one entering tile during a warm pan, several entering tiles, an
+Exact/coarse LOD transition, and the measured 127-tile stress viewport. Record
+structured-array packing, VisPy resource creation/submission, first draw, warm
+draw, and total GUI-thread blocking independently.
+
+Evaluate candidate remedies in this order:
+
+1. reuse or warm compatible shader programs where the supported VisPy contract
+   permits it;
+2. pool logical tiles into fewer renderer-owned VBO/program pages while
+   retaining `TileResidencyKey` bookkeeping;
+3. prepare resources incrementally across GUI frames while leaving the prior
+   snapshot visible;
+4. consider shared or multiple OpenGL contexts only if simpler approaches fail
+   and platform support is proven.
+
+Do not call the existing GUI-owned OpenGL context from ordinary worker threads.
+Any adopted optimization must preserve:
+
+- atomic snapshot activation, without partial mixtures of levels or value
+  selections;
+- tile-level CPU/GPU reuse;
+- bounded logical GPU byte accounting;
+- the prior snapshot during incremental preparation;
+- an explicit distinction between VisPy submission and physical work deferred
+  until draw.
+
+Exit with either an accepted current sequential implementation because the
+integrated latency is satisfactory, or one measured optimization that
+materially improves the identified boundary. Do not require a renderer rewrite
+when the complete product path is already responsive.
 
 ## Test strategy
 
