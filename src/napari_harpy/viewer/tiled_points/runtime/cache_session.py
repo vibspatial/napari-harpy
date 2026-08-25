@@ -107,7 +107,7 @@ class _TiledPointsCacheWorker(QObject):
 
     These connections are queued according to QObject thread affinity. They
     keep cache operations off the GUI thread while returning only immutable
-    descriptions, selection identities, byte counts, and structured failures.
+    descriptions, selected value IDs, byte counts, and structured failures.
 
     Notes
     -----
@@ -158,7 +158,7 @@ class _TiledPointsCacheWorker(QObject):
         self._cancellation = cancellation
         self._reader_factory = reader_factory
         self._reader: _PointsCacheReader | None = None
-        self._selection_identity: tuple[int, ...] | None = None
+        self._selected_value_ids: tuple[int, ...] | None = None
         self._selected_value_index: _SelectedValueIndex | None = None
         self._finished = False
 
@@ -224,29 +224,32 @@ class _TiledPointsCacheWorker(QObject):
             return
         try:
             self._require_not_cancelled()
-            selection_identity = _normalize_all_values(requested_value_ids, value_count=len(reader.value_names))
-            if selection_identity == self._selection_identity:
+            requested_value_ids = _normalize_all_values(
+                requested_value_ids,
+                value_count=len(reader.value_names),
+            )
+            if requested_value_ids == self._selected_value_ids:
                 resident_bytes = 0 if self._selected_value_index is None else self._selected_value_index.resident_bytes
                 self.state_changed.emit(_CacheSessionState.READY)
-                self.selection_ready.emit(selection_identity, resident_bytes)
+                self.selection_ready.emit(requested_value_ids, resident_bytes)
                 return
 
-            if selection_identity is None:
+            if requested_value_ids is None:
                 value_index = None
             else:
                 value_index = reader.load_selected_value_index(
-                    np.asarray(selection_identity, dtype=np.uint32),
+                    np.asarray(requested_value_ids, dtype=np.uint32),
                     max_resident_bytes=self._settings.max_selected_value_index_bytes,
                 )
                 if value_index is None:
-                    selection_identity = None
+                    requested_value_ids = None
 
             self._require_not_cancelled()
-            self._selection_identity = selection_identity
+            self._selected_value_ids = requested_value_ids
             self._selected_value_index = value_index
             resident_bytes = 0 if value_index is None else value_index.resident_bytes
             self.state_changed.emit(_CacheSessionState.READY)
-            self.selection_ready.emit(selection_identity, resident_bytes)
+            self.selection_ready.emit(requested_value_ids, resident_bytes)
         except _SessionCancelled:
             self._shutdown(emit_closing=True)
         except Exception as error:  # noqa: BLE001
@@ -280,7 +283,7 @@ class _TiledPointsCacheWorker(QObject):
 
         reader = self._reader
         self._reader = None
-        self._selection_identity = None
+        self._selected_value_ids = None
         self._selected_value_index = None
         try:
             if reader is not None:
@@ -330,7 +333,7 @@ class _TiledPointsCacheSession(QObject):
         self._reader_factory = reader_factory
         self._state = _CacheSessionState.NEW
         self._dataset_info: _CacheDatasetInfo | None = None
-        self._selection_identity: tuple[int, ...] | None = None
+        self._selected_value_ids: tuple[int, ...] | None = None
         self._projected_lookup_bytes: int | None = None
         self._resident_lookup_bytes: int | None = None
         self._cancellation = threading.Event()
@@ -348,9 +351,9 @@ class _TiledPointsCacheSession(QObject):
         return self._dataset_info
 
     @property
-    def selection_identity(self) -> tuple[int, ...] | None:
-        """Return the current canonical selection; ``None`` means all values."""
-        return self._selection_identity
+    def selected_value_ids(self) -> tuple[int, ...] | None:
+        """Return the successfully applied value IDs; ``None`` means all values."""
+        return self._selected_value_ids
 
     @property
     def projected_lookup_bytes(self) -> int | None:
@@ -392,7 +395,7 @@ class _TiledPointsCacheSession(QObject):
         self._set_state(_CacheSessionState.STARTING)
         thread.start()
 
-    def set_selected_value_ids(self, value_ids: tuple[int, ...] | None) -> bool:
+    def set_selected_value_ids(self, selected_value_ids: tuple[int, ...] | None) -> bool:
         """Queue one selected-value index replacement from the ready state.
 
         ``None`` selects all canonical values. A tuple represents one sorted,
@@ -400,11 +403,11 @@ class _TiledPointsCacheSession(QObject):
         """
         if self._state is not _CacheSessionState.READY:
             raise RuntimeError("Value selection can change only while the cache session is READY.")
-        selection_identity = _require_selection_identity(value_ids)
-        if selection_identity == self._selection_identity:
+        selected_value_ids = _require_selected_value_ids(selected_value_ids)
+        if selected_value_ids == self._selected_value_ids:
             return False
         self._set_state(_CacheSessionState.LOADING_SELECTION)
-        self._selection_requested.emit(selection_identity)
+        self._selection_requested.emit(selected_value_ids)
         return True
 
     def close(self) -> bool:
@@ -454,11 +457,11 @@ class _TiledPointsCacheSession(QObject):
         self.ready.emit()
 
     @Slot(object, int)
-    def _on_selection_ready(self, selection_identity: tuple[int, ...] | None, resident_bytes: int) -> None:
+    def _on_selection_ready(self, selected_value_ids: tuple[int, ...] | None, resident_bytes: int) -> None:
         if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
             return
-        self._selection_identity = selection_identity
-        self.selection_ready.emit(selection_identity, resident_bytes)
+        self._selected_value_ids = selected_value_ids
+        self.selection_ready.emit(selected_value_ids, resident_bytes)
 
     @Slot(object)
     def _on_failed(self, failure: _CacheSessionFailure) -> None:
@@ -483,7 +486,7 @@ class _TiledPointsCacheSession(QObject):
         self.state_changed.emit(state)
 
 
-def _require_selection_identity(value_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:
+def _require_selected_value_ids(value_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:
     if value_ids is None:
         return None
     if (
