@@ -216,7 +216,11 @@ class _TiledPointsCacheWorker(QObject):
             return
         reader = self._reader
         if reader is None:
-            self._report_recoverable_selection_failure(RuntimeError("Cache reader is not ready."))
+            error = RuntimeError("Cache reader is not ready.")
+            logger.error("Tiled-points worker received a selection request without a live cache reader.")
+            self.state_changed.emit(_CacheSessionState.FAILED)
+            self.failed.emit(_failure_from_exception("selection", error))
+            self._shutdown(emit_closing=False)
             return
         try:
             self._require_not_cancelled()
