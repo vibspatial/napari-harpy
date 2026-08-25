@@ -1379,7 +1379,7 @@ mark session READY for later viewport commands
 ```
 
 The resident lookup indexes contain bucket tile/range metadata, not point
-coordinates or point-level value IDs. Priming all of them is deliberate: it
+coordinates or point-level value IDs. Loading all of them is deliberate: it
 moves this metadata IO out of later pan, zoom, LOD, and value-selection paths.
 For the evaluated Xenium cache the expected retained lookup footprint is about
 596 MB; choosing a finite metadata budget or explicitly choosing `None` is
@@ -1390,8 +1390,8 @@ uses `None` for all values and a sorted unique nonempty `tuple[int, ...]` for a
 subset. A changed subset is converted to `uint32`, loaded once through
 `load_selected_value_index()` on the reader thread, and retained across
 subsequent viewports. Selecting all canonical values stores `None` and uses the
-reader's all-values path. An unchanged identity reuses the current index; the
-session does not maintain an unbounded cache of historical selections. The
+reader's all-values path. Unchanged selected value IDs reuse the current index;
+the session does not maintain an unbounded cache of historical selections. The
 `_SelectedValueIndex` object never crosses to the GUI thread.
 
 Expose focused Qt signals carrying only immutable lifecycle evidence:
@@ -1401,7 +1401,7 @@ state_changed(state)
 dataset_available(_CacheDatasetInfo)
 bucket_index_progress(completed_buckets, total_buckets)
 ready()
-selection_ready(selection_identity, resident_bytes)
+selection_ready(selected_value_ids, resident_bytes)
 failed(phase, exception_type, message)
 closed()
 ```
@@ -1410,7 +1410,9 @@ Log the original exception and traceback on the worker side; do not transport
 a live traceback object as GUI state. A startup or bucket-index-loading failure
 is fatal, closes the reader on its owning thread, and transitions through
 `FAILED` to `CLOSED`. A selected-index failure is recoverable: retain the
-previous selection/index, report the failure phase, and return to `READY`.
+previous selection/index, report the failure phase, and return to `READY`. A
+selection command received without a live reader is instead a fatal lifecycle
+invariant failure; it must not transition the worker back to `READY`.
 
 Worker-originated results cross to the GUI using queued signals; no worker
 callback may mutate a napari layer, Qt control, VisPy node, or OpenGL resource.
