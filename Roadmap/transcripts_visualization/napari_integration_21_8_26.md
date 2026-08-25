@@ -2082,12 +2082,38 @@ checks them again immediately before mutation.
 
 A coarse level may contain zero rows for a requested value. Keep budget-first
 selection, surface omitted IDs, and never describe sampled omission as exact
-absence.
+absence. Omission does not make that level ineligible. For example:
+
+```text
+effective runtime budget = 100,000
+
+Exact:  101,000 Gene A points → does not fit
+Bridge:       0 Gene A points → fits, but Gene A was omitted by sampling
+                                  ↓
+within_budget = True
+omitted_value_ids = (Gene A,)
+tiles = ()
+```
+
+This is a valid within-budget zero-tile snapshot, not the terminal over-budget
+failure below. Apply it atomically and clear points from the previous snapshot;
+retaining stale points would falsely present them at the new viewport or LOD.
+The layer status must say that Gene A is not represented at the sampled level
+and direct the user to zoom in or raise the hard budget. Do not describe the
+empty result as biological absence, and do not automatically violate the
+budget by falling back to Exact.
 
 ### Runtime budget below terminal overview
 
 The reader truthfully returns `within_budget=False`. Do not read automatically.
-Retain the old view or show an empty one and provide an actionable status.
+Retain the old view or show an empty one and provide an actionable status. This
+case occurs only when every serialized level, including the terminal overview,
+still exceeds the supplied runtime budget.
+
+| Situation | `within_budget` | Point tiles | Viewer behavior |
+|---|---:|---:|---|
+| Requested values omitted at a fitting sampled LOD | `True` | Possibly zero | Apply the new snapshot, clear stale points, and report omitted values |
+| Every serialized level exceeds the runtime budget | `False` | Zero | Perform no payload read; retain the last valid view or show an empty initial view |
 
 ### Cache replacement with an active reader
 
