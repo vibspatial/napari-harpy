@@ -320,7 +320,9 @@ class _TiledPointsCacheSession(QObject):
     failed = Signal(object)
     closed = Signal()
 
-    _selection_requested = Signal(object)
+    # Queue a value-ID selection change on the worker; `selection_ready`
+    # announces the committed result back to the GUI thread.
+    _value_selection_change_requested = Signal(object)
     _close_requested = Signal()
 
     def __init__(
@@ -387,7 +389,7 @@ class _TiledPointsCacheSession(QObject):
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.start)
-        self._selection_requested.connect(worker.update_selected_value_index)
+        self._value_selection_change_requested.connect(worker.update_selected_value_index)
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
@@ -411,11 +413,11 @@ class _TiledPointsCacheSession(QObject):
         """
         if self._state is not _CacheSessionState.READY:
             raise RuntimeError("Value selection can change only while the cache session is READY.")
-        requested_value_ids = _require_selected_value_ids(requested_value_ids)
+        requested_value_ids = _require_requested_value_ids(requested_value_ids)
         if requested_value_ids == self._selected_value_ids:
             return False
         self._set_state(_CacheSessionState.UPDATING_SELECTED_VALUE_INDEX)
-        self._selection_requested.emit(requested_value_ids)
+        self._value_selection_change_requested.emit(requested_value_ids)
         return True
 
     def close(self) -> bool:
@@ -494,20 +496,20 @@ class _TiledPointsCacheSession(QObject):
         self.state_changed.emit(state)
 
 
-def _require_selected_value_ids(value_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:
-    if value_ids is None:
+def _require_requested_value_ids(requested_value_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:
+    if requested_value_ids is None:
         return None
     if (
-        not isinstance(value_ids, tuple)
-        or not value_ids
+        not isinstance(requested_value_ids, tuple)
+        or not requested_value_ids
         or any(
             not isinstance(value_id, int) or isinstance(value_id, bool) or not 0 <= value_id <= _UINT32_MAX
-            for value_id in value_ids
+            for value_id in requested_value_ids
         )
-        or tuple(sorted(set(value_ids))) != value_ids
+        or tuple(sorted(set(requested_value_ids))) != requested_value_ids
     ):
-        raise ValueError("`value_ids` must be None or sorted unique nonnegative uint32 integers.")
-    return value_ids
+        raise ValueError("`requested_value_ids` must be None or sorted unique nonnegative uint32 integers.")
+    return requested_value_ids
 
 
 def _normalize_all_values(value_ids: tuple[int, ...] | None, *, value_count: int) -> tuple[int, ...] | None:
