@@ -188,6 +188,21 @@ class TiledPointsRenderTile:
     ``location`` and ``value_id`` backing allocations before CPU residency.
     This dataclass validates those arrays and installs read-only views without
     copying their point buffers again.
+
+    Parameters
+    ----------
+    key
+        Cache-generation, value-selection, level, and logical-tile identity
+        used by CPU residency.
+    tile_size
+        Intrinsic width and height of the logical tile, used to position its
+        tile-relative coordinates.
+    location
+        Independently owned C-contiguous ``float32`` coordinates with shape
+        ``(N, 2)``, expressed relative to the logical tile origin.
+    value_id
+        Independently owned C-contiguous ``uint32`` value IDs with shape
+        ``(N,)``, aligned row-for-row with ``location``.
     """
 
     key: TileResidencyKey
