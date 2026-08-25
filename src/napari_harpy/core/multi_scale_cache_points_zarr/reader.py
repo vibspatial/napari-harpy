@@ -466,7 +466,7 @@ class _PointsCacheReader:
     Entering validates the frozen root and array layouts, then materializes only
     the compact manifest, value pointer table, and value totals. It deliberately
     does not replay complete staged validation. Bucket stores are opened lazily
-    or by explicit lookup priming and retained for this reader's lifetime.
+    or by explicit lookup-index loading and retained for this reader's lifetime.
     Display payload reads require their bucket lookup indexes to be resident;
     they never load lookup metadata implicitly on the viewport path.
     """

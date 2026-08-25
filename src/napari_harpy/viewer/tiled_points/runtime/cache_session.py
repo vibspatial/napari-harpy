@@ -20,7 +20,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
 )
 
 _UINT32_MAX = np.iinfo(np.uint32).max
-_FailurePhase = Literal["startup", "lookup_projection", "lookup_priming", "selection", "shutdown"]
+_FailurePhase = Literal["startup", "bucket_index_projection", "bucket_index_loading", "selection", "shutdown"]
 _ReaderFactory = Callable[[Path], _PointsCacheReader]
 
 
@@ -29,7 +29,7 @@ class _CacheSessionState(StrEnum):
 
     NEW = "new"
     STARTING = "starting"
-    PRIMING = "priming"
+    LOADING_BUCKET_INDEXES = "loading_bucket_indexes"
     READY = "ready"
     LOADING_SELECTION = "loading_selection"
     FAILED = "failed"
@@ -73,7 +73,7 @@ class _CacheSessionFailure:
     message: str
 
     def __post_init__(self) -> None:
-        if self.phase not in ("startup", "lookup_projection", "lookup_priming", "selection", "shutdown"):
+        if self.phase not in ("startup", "bucket_index_projection", "bucket_index_loading", "selection", "shutdown"):
             raise ValueError("Unsupported cache-session failure phase.")
         for name in ("exception_type", "message"):
             value = getattr(self, name)
@@ -139,7 +139,7 @@ class _TiledPointsCacheWorker(QObject):
 
     state_changed = Signal(object)
     dataset_available = Signal(object)
-    lookup_progress = Signal(int, int)
+    bucket_index_progress = Signal(int, int)
     ready = Signal(int, int)
     selection_ready = Signal(object, int)
     failed = Signal(object)
@@ -177,7 +177,7 @@ class _TiledPointsCacheWorker(QObject):
             self.dataset_available.emit(reader.dataset_info)
 
             self._require_not_cancelled()
-            phase = "lookup_projection"
+            phase = "bucket_index_projection"
             projected_bytes = reader.project_bucket_lookup_index_bytes()
             max_lookup_bytes = self._settings.max_bucket_lookup_bytes
             if max_lookup_bytes is not None and projected_bytes > max_lookup_bytes:
@@ -187,11 +187,11 @@ class _TiledPointsCacheWorker(QObject):
                 )
 
             self._require_not_cancelled()
-            phase = "lookup_priming"
-            self.state_changed.emit(_CacheSessionState.PRIMING)
+            phase = "bucket_index_loading"
+            self.state_changed.emit(_CacheSessionState.LOADING_BUCKET_INDEXES)
             resident_bytes = reader.load_bucket_lookup_indexes(
                 max_resident_bytes=max_lookup_bytes,
-                progress=self._on_lookup_progress,
+                progress=self._on_bucket_index_progress,
             )
             self._require_not_cancelled()
             self.state_changed.emit(_CacheSessionState.READY)
@@ -249,9 +249,9 @@ class _TiledPointsCacheWorker(QObject):
         """Close the reader and finish this worker exactly once."""
         self._shutdown(emit_closing=True)
 
-    def _on_lookup_progress(self, completed_buckets: int, total_buckets: int) -> None:
+    def _on_bucket_index_progress(self, completed_buckets: int, total_buckets: int) -> None:
         self._require_not_cancelled()
-        self.lookup_progress.emit(completed_buckets, total_buckets)
+        self.bucket_index_progress.emit(completed_buckets, total_buckets)
 
     def _require_not_cancelled(self) -> None:
         """Stop the active worker operation after a GUI-side close request."""
@@ -294,7 +294,7 @@ class _TiledPointsCacheSession(QObject):
 
     state_changed = Signal(object)
     dataset_available = Signal(object)
-    lookup_progress = Signal(int, int)
+    bucket_index_progress = Signal(int, int)
     ready = Signal()
     selection_ready = Signal(object, int)
     failed = Signal(object)
@@ -371,7 +371,7 @@ class _TiledPointsCacheSession(QObject):
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
-        worker.lookup_progress.connect(self._on_lookup_progress)
+        worker.bucket_index_progress.connect(self._on_bucket_index_progress)
         worker.ready.connect(self._on_ready)
         worker.selection_ready.connect(self._on_selection_ready)
         worker.failed.connect(self._on_failed)
@@ -431,10 +431,10 @@ class _TiledPointsCacheSession(QObject):
         self.dataset_available.emit(dataset_info)
 
     @Slot(int, int)
-    def _on_lookup_progress(self, completed_buckets: int, total_buckets: int) -> None:
+    def _on_bucket_index_progress(self, completed_buckets: int, total_buckets: int) -> None:
         if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
             return
-        self.lookup_progress.emit(completed_buckets, total_buckets)
+        self.bucket_index_progress.emit(completed_buckets, total_buckets)
 
     @Slot(int, int)
     def _on_ready(self, projected_lookup_bytes: int, resident_lookup_bytes: int) -> None:

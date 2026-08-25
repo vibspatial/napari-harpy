@@ -379,7 +379,7 @@ def test_reader_cache_retains_bucket_metadata_across_levels(reader_fixture: _Rea
         assert reader.loaded_bucket_lookup_index_count == 3
 
 
-def test_bucket_lookup_priming_is_explicit_immutable_and_byte_accounted(
+def test_bucket_lookup_index_loading_is_explicit_immutable_and_byte_accounted(
     reader_fixture: _ReaderFixture,
 ) -> None:
     progress: list[tuple[int, int]] = []
@@ -415,6 +415,25 @@ def test_bucket_lookup_priming_is_explicit_immutable_and_byte_accounted(
         assert lookup.resident_bytes == projected
 
 
+def test_reader_loads_lookup_indexes_without_configured_memory_limits(
+    reader_fixture: _ReaderFixture,
+) -> None:
+    selected_a = np.array([0], dtype=np.uint32)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        resident_bytes = reader.load_bucket_lookup_indexes(
+            levels=(0,),
+            max_resident_bytes=None,
+        )
+        value_index = reader.load_selected_value_index(
+            selected_a,
+            max_resident_bytes=None,
+        )
+
+        assert resident_bytes == reader.project_bucket_lookup_index_bytes(levels=(0,))
+        assert value_index is not None
+        assert value_index.resident_bytes > 0
+
+
 def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -440,7 +459,7 @@ def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
         assert reader.resident_bucket_lookup_bytes == 0
 
 
-def test_bucket_lookup_priming_rolls_back_new_indexes_after_failure(
+def test_bucket_lookup_index_loading_rolls_back_new_indexes_after_failure(
     reader_fixture: _ReaderFixture,
 ) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
@@ -491,7 +510,7 @@ def test_primed_display_reads_do_not_reread_bucket_lookup_arrays(
     assert selected is not None and selected.value_id.tolist() == [0, 0]
 
 
-def test_bucket_lookup_priming_reads_only_resident_lookup_arrays(
+def test_bucket_lookup_index_loading_reads_only_resident_lookup_arrays(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -511,7 +530,7 @@ def test_bucket_lookup_priming_reads_only_resident_lookup_arrays(
         def record_lookup_array(name: str) -> object:
             observed_names.append(name)
             if name not in expected_names:
-                raise AssertionError(f"Lookup priming read an unrelated array: {name}.")
+                raise AssertionError(f"Lookup-index loading read an unrelated array: {name}.")
             return original_array(name)
 
         monkeypatch.setattr(bucket_reader, "_array", record_lookup_array)

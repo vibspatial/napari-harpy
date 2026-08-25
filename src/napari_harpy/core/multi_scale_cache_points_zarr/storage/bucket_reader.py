@@ -72,7 +72,7 @@ class _BucketLookupIndex:
     value-selection changes.
 
     Only lookup metadata is retained. Point coordinates and point-level values
-    remain chunked on disk, and cache-level priming enforces an explicit memory
+    remain chunked on disk, and cache-level loading enforces an explicit memory
     budget.
 
     The resident fields correspond to the persisted bucket arrays as follows::
@@ -158,7 +158,7 @@ class _BucketReader:
     -----
     The context opens one bucket once and configures every array to fail on a
     missing chunk or shard. Construction payloads read every tile row including
-    mandatory point IDs. Display payloads require explicit lookup priming, omit
+    mandatory point IDs. Display payloads require explicit lookup-index loading, omit
     point IDs, and resolve complete or selected intervals exclusively from the
     resident tile pointers and sparse ranges.
     """
@@ -360,14 +360,12 @@ class _BucketReader:
         """Return resident bytes required by this bucket's lookup arrays."""
         attributes = self._attributes_or_raise()
         pointer_bytes = 2 * (attributes.tile_count + 1) * np.dtype(np.uint64).itemsize
-        range_bytes = attributes.range_count * (
-            np.dtype(np.uint32).itemsize + 2 * np.dtype(np.uint64).itemsize
-        )
+        range_bytes = attributes.range_count * (np.dtype(np.uint32).itemsize + 2 * np.dtype(np.uint64).itemsize)
         return pointer_bytes + range_bytes
 
     @property
     def resident_lookup_bytes(self) -> int:
-        """Return currently retained lookup bytes, or zero before priming."""
+        """Return currently retained lookup bytes, or zero before loading."""
         return 0 if self._lookup_index is None else self._lookup_index.resident_bytes
 
     @property
@@ -379,7 +377,7 @@ class _BucketReader:
         """Load and retain this bucket's trusted lookup metadata once.
 
         Publication-time validation already reconciled the logical contents.
-        Runtime priming therefore copies only the five lookup arrays and never
+        Runtime loading therefore copies only the five lookup arrays and never
         selects coordinates or point payload arrays.
         """
         self._require_open()
