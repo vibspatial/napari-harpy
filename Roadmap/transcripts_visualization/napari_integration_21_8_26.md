@@ -1641,8 +1641,11 @@ LRU bookkeeping must never report more retained bytes than
 `max_cpu_tile_bytes`. A single payload larger than that budget may pass through
 one result transiently, but it is not retained as a resident entry. Tiles needed
 while an active or pending snapshot is assembled are protected from eviction
-until that assembly decision is complete; immutable array references are reused
-rather than copied.
+until that assembly decision is complete. A CPU-resident tile owns independent
+`location` and `value_id` allocations so its `nbytes` accounting describes the
+allocation released on eviction. Newly decoded reader views are copied exactly
+once at this viewer-residency boundary; already resident tiles are reused
+without another copy.
 
 For the deterministic same-selection sequence:
 
@@ -1654,6 +1657,61 @@ view 3:     C D  → reuse C; read D
 
 `B` and `C` are physically decoded at most once while their exact residency
 keys remain in the LRU.
+
+#### Xenium payload ownership and copy benchmark
+
+The independent-allocation policy was measured on 25 August 2026 against the
+persisted 136,578,750-point cache at:
+
+```text
+/Users/arne.defauw/VIB/DATA/test_data/
+sdata_xenium_full_data_core.transcripts-cache-workspace/
+z9-current/transcripts_vis_zarr
+```
+
+The experiment used the real `plan_viewport()` and `read_planned_tiles()` path
+after loading every bucket lookup index. Planning time was excluded. Immediately
+after each payload read, every returned tile's contiguous `location` and
+`value_id` arrays were copied into independent allocations. Seven warm repeats
+followed the first measured payload read; the operating-system filesystem cache
+was not explicitly cleared.
+
+| Scenario | Points | Decoded payload | First measured read | Warm read median | Independent copy median | Copy / warm read |
+|---|---:|---:|---:|---:|---:|---:|
+| Dense Exact, one tile | 108,598 | 1.24 MiB | 11.0 ms | 11.1 ms | 0.036 ms | 0.32% |
+| Dense Exact, 3 by 3 tiles | 873,786 | 10.00 MiB | 260.0 ms | 90.6 ms | 0.230 ms | 0.25% |
+| Dense spatial L4, 3 by 3 tiles | 294,912 | 3.38 MiB | 110.9 ms | 44.7 ms | 0.081 ms | 0.18% |
+
+The copy ran at approximately 35--44 GiB/s because the freshly decoded arrays
+were contiguous and memory-hot. It does not slow Zarr selection or decoding; it
+adds one short sequential memory operation after the reader returns. The
+temporary conversion peak is the reader batch plus the independent render-tile
+arrays. At 100,000 points, each side is approximately 1.15 MiB. Even the
+deliberately heavy 873,786-point case added only 10 MiB temporarily.
+
+The ownership probe also confirmed the reason for copying on this real cache.
+For one L4 bucket batch, a tile accounted for 0.375 MiB while its NumPy view kept
+a 1.125 MiB three-tile backing allocation alive. In a four-tile batch, the same
+0.375 MiB tile retained 1.500 MiB. Per-tile view accounting therefore cannot
+provide a strict LRU byte bound after sibling tiles are evicted.
+
+The 260 ms first measured Exact read is not copy overhead: the corresponding
+first copy was approximately 1.0 ms. That viewport addressed nine Exact tiles
+in nine physical buckets. The current reader visits independent bucket groups
+sequentially; each group performs separate Zarr selections for `location` and
+point-level `value_id`, including shard/chunk access, Zstd decoding, and NumPy
+materialization. Its approximately 29 ms per first-touched tile and 10 ms per
+warm tile agree with earlier full-Xenium observations.
+
+This 873,786-point Exact request deliberately exceeds the normal render budget.
+Production level selection should choose a coarser level before point IO, and
+CPU residency prevents unchanged or overlapping tiles from being reread. The
+warm benchmark intentionally called `read_planned_tiles()` again to isolate
+reader and copy costs; it did not model an LRU hit. These results support the
+current decision: preserve zero-copy batching inside the generic cache reader,
+then copy each newly decoded tile exactly once when converting it into an
+independently evictable `TiledPointsRenderTile`. Reconsider bucket-level read
+concurrency only after profiling integrated napari interaction.
 
 #### Snapshot boundary and slice ownership
 
@@ -1678,7 +1736,9 @@ The snapshot carries payload references for every active tile, not only tiles
 physically read by the current request. This is required when a tile remains in
 the CPU LRU but I6 has evicted its GPU visual: the renderer must be able to
 recreate that visual without rereading Zarr. Snapshot assembly reuses immutable
-arrays and does not copy point payloads.
+arrays for resident hits. Newly decoded reader views are detached from their
+shared batch by the one ownership copy described above before they enter the
+snapshot and CPU LRU.
 
 A zero-tile snapshot is a valid atomic result. A snapshot never mixes cache
 generations, value selections, or levels.
