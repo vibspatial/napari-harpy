@@ -269,6 +269,32 @@ class TiledPointsRenderSnapshot:
     value. Construction verifies that tiles share the snapshot's cache,
     selection, and level, and that their decoded point total reconciles with
     ``estimated_point_count``.
+
+    Parameters
+    ----------
+    cache_generation_id
+        Identity of the published cache generation that produced the snapshot.
+    request_generation
+        Monotonic viewport-request generation used to reject stale results.
+    selection_generation
+        Value-selection generation against which the request was evaluated.
+    requested_value_ids
+        Selected value IDs, or ``None`` when all values were requested.
+    level
+        Serialized cache level chosen for the viewport.
+    level_kind
+        Semantic kind of ``level``: Exact, Bridge, or spatial.
+    within_budget
+        Whether the selected level satisfies the effective point budget.
+    estimated_point_count
+        Catalog-derived point count for the complete snapshot.
+    omitted_value_ids
+        Requested values present in the Exact viewport but absent from the
+        selected sampled level. These are sampling omissions, not evidence of
+        biological absence.
+    tiles
+        Complete ordered render-tile set for the viewport. This is empty when
+        ``within_budget`` is false.
     """
 
     cache_generation_id: str
@@ -295,6 +321,11 @@ class TiledPointsRenderSnapshot:
             raise ValueError("`within_budget` must be bool.")
         _require_nonnegative_integer(self.estimated_point_count, "estimated_point_count")
         _require_value_ids(self.omitted_value_ids, "omitted_value_ids", allow_none=False, allow_empty=True)
+        if self.requested_value_ids is None:
+            if self.omitted_value_ids:
+                raise ValueError("An all-values snapshot cannot report omitted value IDs.")
+        elif not set(self.omitted_value_ids).issubset(self.requested_value_ids):
+            raise ValueError("`omitted_value_ids` must be a subset of `requested_value_ids`.")
         if not isinstance(self.tiles, tuple) or not all(isinstance(tile, TiledPointsRenderTile) for tile in self.tiles):
             raise ValueError("`tiles` must be a tuple of TiledPointsRenderTile values.")
         keys = tuple(tile.key for tile in self.tiles)
@@ -323,6 +354,22 @@ class TiledPointsRenderSnapshot:
     def rendered_tile_count(self) -> int:
         """Return the number of active logical tiles."""
         return len(self.tiles)
+
+    @property
+    def all_exact_present_values_omitted(self) -> bool:
+        """Return whether sampling removed every Exact-present selected value.
+
+        Requested values already absent from the Exact viewport are not sampled
+        omissions. A nonempty omission tuple together with a within-budget,
+        zero-point selected snapshot therefore identifies the complete sampled
+        omission case that needs an explicit viewer status.
+        """
+        return (
+            self.within_budget
+            and self.requested_value_ids is not None
+            and self.estimated_point_count == 0
+            and bool(self.omitted_value_ids)
+        )
 
 
 @dataclass(frozen=True)
