@@ -189,8 +189,9 @@ class _TiledPointsCacheWorker(QObject):
             self._require_not_cancelled()
             phase = "bucket_index_loading"
             self.state_changed.emit(_CacheSessionState.LOADING_BUCKET_INDEXES)
-            # Retain each bucket's five point-row lookup arrays (`tile_offset` and
-            # `ranges/{tile_indptr,value_id,row_start,row_count}`). See
+            # Omitting `levels` and `bucket_keys` loads every serialized bucket
+            # across all levels. Each retains five point-row lookup arrays:
+            # `tile_offset` and `ranges/{tile_indptr,value_id,row_start,row_count}`. See
             # `storage.bucket_reader._BucketLookupIndex` for the complete contract.
             # Point coordinates and point-level values remain on disk.
             resident_bucket_index_bytes = reader.load_bucket_lookup_indexes(
