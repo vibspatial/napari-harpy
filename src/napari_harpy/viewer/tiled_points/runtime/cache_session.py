@@ -141,7 +141,7 @@ class _TiledPointsCacheWorker(QObject):
     dataset_available = Signal(object)
     bucket_index_progress = Signal(int, int)
     ready = Signal(int, int)
-    selection_ready = Signal(object, int)
+    value_selection_ready = Signal(object, int)
     failed = Signal(object)
     finished = Signal()
 
@@ -239,7 +239,7 @@ class _TiledPointsCacheWorker(QObject):
             if requested_value_ids == self._selected_value_ids:
                 resident_bytes = 0 if self._selected_value_index is None else self._selected_value_index.resident_bytes
                 self.state_changed.emit(_CacheSessionState.READY)
-                self.selection_ready.emit(requested_value_ids, resident_bytes)
+                self.value_selection_ready.emit(requested_value_ids, resident_bytes)
                 return
 
             if requested_value_ids is None:
@@ -257,7 +257,7 @@ class _TiledPointsCacheWorker(QObject):
             self._selected_value_index = value_index
             resident_bytes = 0 if value_index is None else value_index.resident_bytes
             self.state_changed.emit(_CacheSessionState.READY)
-            self.selection_ready.emit(requested_value_ids, resident_bytes)
+            self.value_selection_ready.emit(requested_value_ids, resident_bytes)
         except _SessionCancelled:
             self._shutdown(emit_closing=True)
         except Exception as error:  # noqa: BLE001
@@ -316,11 +316,11 @@ class _TiledPointsCacheSession(QObject):
     dataset_available = Signal(object)
     bucket_index_progress = Signal(int, int)
     ready = Signal()
-    selection_ready = Signal(object, int)
+    value_selection_ready = Signal(object, int)
     failed = Signal(object)
     closed = Signal()
 
-    # Queue a value-ID selection change on the worker; `selection_ready`
+    # Queue a value-ID selection change on the worker; `value_selection_ready`
     # announces the committed result back to the GUI thread.
     _value_selection_change_requested = Signal(object)
     _close_requested = Signal()
@@ -395,7 +395,7 @@ class _TiledPointsCacheSession(QObject):
         worker.dataset_available.connect(self._on_dataset_available)
         worker.bucket_index_progress.connect(self._on_bucket_index_progress)
         worker.ready.connect(self._on_ready)
-        worker.selection_ready.connect(self._on_selection_ready)
+        worker.value_selection_ready.connect(self._on_value_selection_ready)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -467,11 +467,11 @@ class _TiledPointsCacheSession(QObject):
         self.ready.emit()
 
     @Slot(object, int)
-    def _on_selection_ready(self, selected_value_ids: tuple[int, ...] | None, resident_bytes: int) -> None:
+    def _on_value_selection_ready(self, selected_value_ids: tuple[int, ...] | None, resident_bytes: int) -> None:
         if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
             return
         self._selected_value_ids = selected_value_ids
-        self.selection_ready.emit(selected_value_ids, resident_bytes)
+        self.value_selection_ready.emit(selected_value_ids, resident_bytes)
 
     @Slot(object)
     def _on_failed(self, failure: _CacheSessionFailure) -> None:
