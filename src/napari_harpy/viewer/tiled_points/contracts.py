@@ -160,7 +160,14 @@ class TiledPointsViewportState:
 
 @dataclass(frozen=True)
 class TileResidencyKey:
-    """Identify one decoded logical tile for one cache and value selection."""
+    """Key one decoded tile in the viewer's in-memory CPU residency cache.
+
+    This is not a physical Zarr address. It combines the published cache
+    generation, requested value selection, and logical tile coordinates so a
+    decoded payload is reused only for the dataset and selection that produced
+    it. ``logical_tile_key`` exposes the smaller ``(level, tile_x, tile_y)``
+    identity expected by the core cache reader.
+    """
 
     cache_generation_id: str
     requested_value_ids: tuple[int, ...] | None
