@@ -1,4 +1,30 @@
-"""Pure viewport conversion and budgeting for the tiled-points layer."""
+"""Pure viewport conversion and budgeting for the tiled-points layer.
+
+The layer owns viewport-state creation; the cache runtime only consumes the
+normalized result. The normal camera-driven path is::
+
+    napari camera pan, zoom, resize, or redraw
+            |
+            v
+    TiledPointsLayerModel._update_draw()
+            |
+            v
+    _viewport_state_from_draw()
+            |
+            v
+    TiledPointsViewportState
+            |
+            v
+    layer.events.viewport
+            |
+            v
+    integration listener -> coordinator.submit_viewport()
+
+Changing a render-budget setting while the camera is stationary instead calls
+``_viewport_state_with_budget()``. It creates a replacement state with retained
+intrinsic geometry and recalculated budget fields, then follows the same layer
+event path.
+"""
 
 from __future__ import annotations
 
