@@ -11,6 +11,11 @@ from napari_harpy.viewer.tiled_points.contracts import TiledPointsRenderTile, Ti
 class _CpuTileResidency:
     """Own one worker-thread LRU of immutable decoded point tiles.
 
+    Newly decoded entries have independently owned point-array allocations at
+    the viewer-residency boundary. Consequently, each tile's
+    ``resident_bytes`` is the allocation released when that tile is evicted;
+    it does not merely describe a view into a larger retained reader batch.
+
     The byte budget covers only entries retained by this LRU. A caller may
     still hold transient immutable references returned for snapshot assembly.
     Payloads larger than the complete budget are therefore usable for one
