@@ -156,7 +156,7 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
     progress: list[tuple[int, int]] = []
     states: list[_CacheSessionState] = []
     session.ready.connect(lambda: callback_thread_ids.append(threading.get_ident()))
-    session.selection_ready.connect(lambda _selection, _bytes: callback_thread_ids.append(threading.get_ident()))
+    session.value_selection_ready.connect(lambda _selection, _bytes: callback_thread_ids.append(threading.get_ident()))
     session.bucket_index_progress.connect(lambda completed, total: progress.append((completed, total)))
     session.state_changed.connect(states.append)
 
@@ -166,7 +166,7 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
         assert session.projected_lookup_bytes == 64
         assert session.resident_lookup_bytes == 64
 
-        with qtbot.waitSignal(session.selection_ready, timeout=5_000):
+        with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             assert session.set_selected_value_ids((0,))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
         assert session.selected_value_ids == (0,)
@@ -175,7 +175,7 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
 
         # Returning to all values drops the selected index without another
         # catalog-index load.
-        with qtbot.waitSignal(session.selection_ready, timeout=5_000):
+        with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             assert session.set_selected_value_ids(None)
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
         assert session.selected_value_ids is None
@@ -233,7 +233,7 @@ def test_session_propagates_absent_lookup_and_selection_limits(qtbot) -> None:
 
     try:
         _start_ready(session, qtbot)
-        with qtbot.waitSignal(session.selection_ready, timeout=5_000):
+        with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             session.set_selected_value_ids((0,))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
         assert probe.bucket_lookup_limits == [None]
@@ -250,7 +250,7 @@ def test_selection_failure_retains_previous_ready_selection(qtbot) -> None:
 
     try:
         _start_ready(session, qtbot)
-        with qtbot.waitSignal(session.selection_ready, timeout=5_000):
+        with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             session.set_selected_value_ids((0,))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
 
@@ -319,7 +319,7 @@ def test_close_during_selected_index_load_does_not_publish_late_selection(qtbot)
     probe = _ReaderProbe(pause_selection=True)
     session = _session(probe)
     published: list[object] = []
-    session.selection_ready.connect(lambda selection, _bytes: published.append(selection))
+    session.value_selection_ready.connect(lambda selection, _bytes: published.append(selection))
 
     _start_ready(session, qtbot)
     session.set_selected_value_ids((0,))
@@ -416,7 +416,7 @@ def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Pa
         assert session.dataset_info.value_names == ("A", "B")
         assert session.projected_lookup_bytes == session.resident_lookup_bytes
 
-        with qtbot.waitSignal(session.selection_ready, timeout=5_000):
+        with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             session.set_selected_value_ids((0,))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
         assert session.selected_value_ids == (0,)
