@@ -576,7 +576,8 @@ Plan-driven incremental lookup residency may be added later, but it also needs
 eviction semantics that the current reader intentionally does not expose.
 
 Measure all-index startup time and peak RSS on the retained Xenium cache in the
-acceptance slice. Keep the empty layer and status UI responsive while priming.
+acceptance slice. Keep the empty layer and status UI responsive while bucket
+indexes load.
 
 ### Value selection change
 
@@ -1328,7 +1329,7 @@ lifecycle. Use a small private state machine:
 ```text
 NEW
 STARTING
-PRIMING
+LOADING_BUCKET_INDEXES
 READY
 LOADING_SELECTION
 FAILED
@@ -1398,7 +1399,7 @@ Expose focused Qt signals carrying only immutable lifecycle evidence:
 ```text
 state_changed(state)
 dataset_available(_CacheDatasetInfo)
-lookup_progress(completed_buckets, total_buckets)
+bucket_index_progress(completed_buckets, total_buckets)
 ready()
 selection_ready(selection_identity, resident_bytes)
 failed(phase, exception_type, message)
@@ -1406,10 +1407,10 @@ closed()
 ```
 
 Log the original exception and traceback on the worker side; do not transport
-a live traceback object as GUI state. A startup or priming failure is fatal,
-closes the reader on its owning thread, and transitions through `FAILED` to
-`CLOSED`. A selected-index failure is recoverable: retain the previous
-selection/index, report the failure phase, and return to `READY`.
+a live traceback object as GUI state. A startup or bucket-index-loading failure
+is fatal, closes the reader on its owning thread, and transitions through
+`FAILED` to `CLOSED`. A selected-index failure is recoverable: retain the
+previous selection/index, report the failure phase, and return to `READY`.
 
 Worker-originated results cross to the GUI using queued signals; no worker
 callback may mutate a napari layer, Qt control, VisPy node, or OpenGL resource.
@@ -1438,7 +1439,7 @@ viewport event to the composed coordinator.
 
 Shutdown is cooperative rather than falsely instantaneous. `close()` sets a
 thread-safe cancellation flag and schedules reader closure on the owner
-thread. Lookup priming checks the flag through its per-bucket progress callback
+thread. Bucket-index loading checks the flag through its per-bucket progress callback
 and may use that callback to trigger the reader's atomic rollback. A
 synchronous selected-index load has no progress boundary and may finish before
 closure runs; its result must not be published after closing begins. In every
@@ -1451,12 +1452,13 @@ Exit criteria:
 
 - injected fake-reader thread-ID tests prove construction, entry, operations,
   and exit all use the worker thread while facade callbacks use the GUI thread;
-- the session cannot reach `READY` before complete lookup priming;
+- the session cannot reach `READY` before all bucket lookup indexes are loaded;
 - an over-budget metadata projection fails before lookup arrays are loaded;
 - selecting all values avoids a selected index;
 - requesting an unchanged value selection reuses the retained selected index;
 - a selected-index failure retains the previous ready selection;
-- session shutdown during startup, priming, index loading, and idle state is
+- session shutdown during startup, bucket-index loading, selected-value index
+  loading, and idle state is
   safe and idempotent;
 - focused state-machine tests use an injected fake reader, while one small real
   cache test proves the session boundary works with `_PointsCacheReader`;
@@ -1666,7 +1668,7 @@ responsive enough, attribute time separately to:
 viewport conversion
 LOD and tile planning
 selected-index preparation
-bucket lookup priming
+bucket lookup-index loading
 point payload reads
 CPU snapshot assembly
 Qt delivery
