@@ -2326,32 +2326,321 @@ Approval requires:
 
 ### Slice I8: replace the napari-harpy points selection workflow
 
-Deliverables:
+I8 is the application-integration slice. I1 through I7 provide the generic
+cache reader, custom napari layer, VisPy renderer, worker session, viewport
+mailbox, CPU/GPU residency, and cache-to-canvas composition. I8 connects those
+components to napari-harpy's existing points panel. It must not reimplement
+cache planning, point reads, or rendering inside the widget or viewer adapter.
 
-- add `TiledPointsLayerBinding` and cache-backed controller state;
-- call `register_tiled_points_layer()` before constructing or inserting the
-  first `TiledPointsLayerModel`; do not register through an import side effect;
-- derive the nested cache path for the selected SpatialData points element;
-- populate value selection from cache `value_names`;
-- reuse the SpatialData affine and construct the complete value-ID-aligned
-  palette by repeating the existing 102-colour points cycle in canonical
-  `value_id` order; do not use selection encounter order or the direct-Points
-  solid-colour fallback for vocabularies or selections above 102 values;
-- assign that complete palette to the persistent tiled-points layer and apply
-  any later explicit per-value UI override to its canonical row only;
-- connect the current points panel to persistent layer selection changes;
-- replace `PointsLoadRequest`/materialized selection application in the
-  transcript path;
-- activate and preserve one existing tiled-points layer instead of replacing it;
-- update status cards for cache, LOD, sampled omission, and over-budget state.
+The current points-selection path is:
+
+```text
+points panel
+    |
+    v
+PointsController.load_value_source()
+    |
+    | full-source Dask validation and value-table construction
+    v
+PointsController.load_selection()
+    |
+    | Dask filtering, sampling, and coordinate materialization
+    v
+PointsLoadRequest
+    |
+    v
+ViewerAdapter creates a new native napari Points layer
+    |
+    v
+previous selection layer is removed and the camera is restored
+```
+
+The adopted cache-backed path is:
+
+```text
+points panel chooses points element, coordinate system, and value column
+    |
+    v
+resolve <sdata.zarr>/points/<points_name>/transcripts_vis_zarr
+    |
+    | worker-owned metadata-only cache open
+    v
+cache dataset identity + canonical value_names
+    |
+    v
+one persistent TiledPointsLayerModel
+    |
+    +-- TiledPointsLayerBinding
+    `-- _TiledPointsLayerRuntime
+
+later value-selection change
+    |
+    v
+selected names -> canonical value_ids
+    |
+    v
+_TiledPointsLayerRuntime.set_selected_value_ids(...)
+    |
+    v
+worker replaces its resident selected-value index
+    |
+    v
+the current viewport is replanned and rendered on the existing layer
+```
+
+#### Add a distinct tiled-points binding and lifecycle owner
+
+Add `TiledPointsLayerBinding`; do not broaden the existing
+`PointsLayerBinding`, which continues to describe native napari `Points`
+layers used by unrelated features. The new binding records the live
+`TiledPointsLayerModel`, SpatialData identity, points element, coordinate
+system, cache root and generation, and cache value column. It owns, or owns a
+dedicated lifecycle companion that owns, the `_TiledPointsLayerRuntime`.
+
+Extend the shared layer-binding registry and viewer adapter with typed
+registration and lookup for this binding. Selection updates find an existing
+binding for the same SpatialData points element, coordinate system, and value
+column and reuse its layer. They must not pass the tiled model through native
+`Points` styling, feature-table, hover-cache, or replacement helpers.
+
+Layer removal, source replacement, widget shutdown, and cache-generation
+replacement must call the runtime's idempotent `close()` before releasing the
+binding. The existing viewer-layer removal listener remains the authoritative
+place to notice manual removal from napari. Closing the binding stops viewport
+scheduling and asks the worker-owned reader to close; a late result cannot
+mutate the removed layer.
+
+#### Load a small cache descriptor before constructing the layer
+
+Use the adopted nested location:
+
+```text
+<sdata.zarr>/points/<points_name>/transcripts_vis_zarr/
+```
+
+The selected SpatialData object must be backed and the points element must
+resolve to exactly that intrinsic element path. Add a small immutable
+viewer-facing cache descriptor seam that returns the completed generation's
+dataset identity and canonical `value_names`. Run this metadata operation away
+from the GUI thread. It may parse the root semantic attributes and validate the
+frozen group/array metadata, but it must not:
+
+- enter `_PointsCacheReader` merely to materialize its complete resident
+  runtime catalog indexes and then discard them;
+- load bucket lookup indexes or point payloads;
+- run exhaustive staged validation;
+- inspect, scan, or compute the original Dask points dataframe.
+
+The later `_TiledPointsLayerRuntime` still opens the long-lived
+`_PointsCacheReader` on its worker thread and independently verifies that the
+reported cache identity matches the model's `TiledPointsDatasetReference`.
+Reading the small semantic descriptor twice is acceptable; moving large
+runtime indexes onto the GUI thread is not.
+
+I8 assumes this completed cache exists. A missing, incomplete, or incompatible
+cache produces an actionable points-panel state and never falls back to hidden
+source materialization. Cache discovery plus explicit Build/Rebuild actions are
+I9 responsibilities.
+
+Require the cache's points name, element path, and value column to agree with
+the panel selection. In particular, selecting one index column while opening a
+cache constructed for another column must report both names and the cache path;
+it must not silently reinterpret `value_id` rows.
+
+#### Populate value selection from the canonical cache vocabulary
+
+Replace Dask-backed value-table construction in the cache-backed path with the
+descriptor's `value_names`. Their tuple position is their canonical ID:
+
+```text
+value_names = ("ACTA2", "CD3D", "EPCAM", ...)
+
+"ACTA2" -> value_id 0
+"CD3D"  -> value_id 1
+"EPCAM" -> value_id 2
+```
+
+Refactor the points widget's value-source input so its search completer can
+accept an immutable ordered value-label collection without requiring a
+`PointsValueSource`, validated dataframe, or materialized value table. Retain
+the existing value search, selected-value list, Clear action, All values action,
+and render-budget validation.
+
+The cache-backed controller owns both mappings:
+
+```text
+canonical value name <-> canonical uint32 value_id
+```
+
+Reject duplicate, unknown, or stale names before asking the runtime to update
+its selected-value index. `"all"` maps to `None`, which is the reader/runtime
+representation for all canonical values. A proper selected subset maps to a
+sorted unique tuple of canonical IDs; UI encounter order must not affect cache
+identity, palette identity, or tile residency keys.
+
+#### Register and create one persistent tiled-points layer
+
+Call `register_tiled_points_layer()` explicitly before constructing or
+inserting the first `TiledPointsLayerModel`; importing napari-harpy must remain
+side-effect free. The registration is process-wide and idempotent for the
+supported napari/VisPy contract.
+
+Construct one model from:
+
+- `TiledPointsDatasetReference` derived from the cache descriptor;
+- the complete value-ID-aligned RGBA palette;
+- the selected render-budget and residency settings;
+- the SpatialData affine for the selected coordinate system;
+- stable name, visibility, opacity, and point-diameter presentation state.
+
+Install the runtime's model listeners before inserting the model into napari.
+Layer insertion then constructs the registered VisPy layer and Qt controls;
+the first normalized viewport is retained or dispatched through the existing
+coordinator/session boundary. Do not perform cache IO from insertion callbacks.
+
+After first insertion, a selection or camera change must preserve the exact
+napari layer object. It therefore also preserves layer-list order, active-layer
+identity, camera state, visibility, opacity, point diameter, and any compatible
+CPU/GPU tile residency. The native-Points workaround that constructs a new
+layer and restores the camera is not part of this path.
+
+#### Apply the SpatialData transform exactly once
+
+Cache `location` rows remain in the points element's intrinsic coordinate
+system. Reuse or relocate the existing points-affine extraction so the selected
+SpatialData transformation is passed once to `TiledPointsLayerModel` in napari
+axis order. Do not transform cached coordinates during reads or snapshot
+assembly.
+
+The cache origin is not another SpatialData transformation. The adopted VisPy
+layer already precomposes `TiledPointsDatasetReference.x_origin/y_origin` into
+the root scene transform while individual vertex buffers retain tile-local
+float32 coordinates. I8 must not add that origin to the layer affine or point
+rows a second time.
+
+A coordinate-system change must update the binding/model transformation through
+one explicit lifecycle operation and must not compound the new transform with
+the preceding coordinate-system transform. Selection-only updates never touch
+the affine.
+
+#### Build one complete canonical palette
+
+Construct one `(value_count, 4)` `uint8` RGBA palette in canonical `value_id`
+order. Repeat the existing deterministic 102-colour points cycle for arbitrary
+vocabulary sizes:
+
+```text
+value_id   0 -> points colour   0
+value_id   1 -> points colour   1
+...
+value_id 101 -> points colour 101
+value_id 102 -> points colour   0
+```
+
+Assign the complete palette to the persistent model before insertion. Do not
+reuse the current selection-encounter-order colour dictionary and do not switch
+to the native-Points solid-colour fallback when a vocabulary or selection
+contains more than 102 values. Selection changes alter only which point rows
+are requested; they do not rebuild or reorder the palette.
+
+If the application later exposes an explicit per-value colour override, resolve
+the value name to its canonical ID and replace only that palette row. Changing
+one colour must not reconstruct point payloads or upload tile coordinate
+buffers.
+
+#### Replace materialized selection application
+
+For the cache-backed path, replace the current per-selection
+`PointsController.load_selection()` -> `PointsLoadRequest` ->
+`ViewerAdapter._ensure_points_layer_from_selection()` flow. The panel's Add /
+Update action becomes:
+
+```text
+validate requested value labels and point budget
+        |
+        +-- existing binding -> update its persistent layer/runtime
+        |
+        `-- no binding       -> construct, register, insert, and activate one
+                                persistent tiled-points layer
+```
+
+Set the model's hard render-point budget from the panel and pass canonical IDs
+to `_TiledPointsLayerRuntime.set_selected_value_ids()`. The effective viewport
+budget remains the minimum of that hard limit and the screen-density budget
+implemented in I3. The preceding accepted visual remains visible while the
+worker prepares a changed selected-value index; when it commits, the
+coordinator dispatches the latest retained viewport.
+
+Camera updates continue through `TiledPointsLayerModel.events.viewport`; they
+must not call the points controller, execute Dask, or reconstruct the layer.
+Finally activate the existing layer through the viewer adapter rather than
+adding a replacement layer.
+
+#### Expose cache and display state in the existing panel
+
+Replace `PointsLoadRequest`/`PointsLoadResult` status-card construction in the
+cache-backed path with controller and layer state. The points panel should
+distinguish:
+
+- opening cache metadata;
+- loading resident bucket indexes;
+- ready and updating the selected-value index;
+- Exact, Bridge, and Spatial LOD;
+- rendered point and tile counts;
+- sampled display and omitted selected values;
+- ordinary empty view;
+- no within-budget serialized level;
+- cache identity/value-column mismatch;
+- reader, cache, and renderer failure.
+
+The custom napari layer controls remain a second passive consumer of
+`TiledPointsLayerModel.display_status`. The points panel may translate omitted
+IDs back to canonical value names for presentation, but it must not infer LOD
+or cache state from layer payloads.
+
+#### Preserve unrelated native Points behavior
+
+I8 changes only the cache-backed points-element selection path. Keep native
+`PointsLayerBinding`, native Points styling, and shapes-as-points behavior
+unchanged for remaining consumers. Do not delete the old Dask selection types
+or helpers in this slice; after the adopted path has real application coverage,
+I10 performs the consumer scan and removal.
+
+#### Focused I8 tests
+
+Add focused tests covering:
+
+- metadata loading uses the nested cache path and never computes the source
+  dataframe;
+- the cache value column and selected panel column must match;
+- canonical names map to stable IDs independently of selection encounter order;
+- all-values maps to `None`;
+- vocabularies above 102 values repeat the existing cycle without a solid-colour
+  fallback;
+- registration happens before first tiled-layer insertion;
+- the first selection creates one binding, model, and runtime;
+- later selections reuse the same napari layer and preserve camera/layer state;
+- selected-value and camera updates do not execute Dask;
+- coordinate-system transformation is applied exactly once;
+- layer removal and widget shutdown close the runtime once;
+- cache, LOD, sampled-omission, over-budget, and failure status reach the points
+  panel;
+- unrelated native Points and shapes-as-points focused tests remain unchanged.
 
 Exit criteria:
 
+- the existing points panel is the application entry point for a completed
+  compatible cache;
 - selecting values updates the existing tiled-points layer;
 - ordinary selection and camera changes do not execute Dask;
+- no normal cache-backed selection constructs `PointsLoadRequest`,
+  `PointsValueSelection.coordinates`, or a native napari `Points` layer;
 - the layer remains at the same layer-list identity and camera state;
+- canonical value IDs and colours remain stable when selection order changes;
 - changing coordinate system applies the transform exactly once;
 - a value-column/cache mismatch is actionable;
+- layer removal and shutdown close the worker-owned runtime without late model
+  or VisPy mutation;
 - native Points behavior used by unrelated features remains unchanged.
 
 ### Slice I9: integrate cache discovery, build, and rebuild
