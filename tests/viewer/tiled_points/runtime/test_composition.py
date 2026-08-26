@@ -5,28 +5,15 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 from napari._vispy.utils.qt_font import FontInfo
 from qtpy.QtCore import QObject, Signal
 
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
-    _build_points_cache_zarr,
-    _PointsCacheBuilderConfig,
-)
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
     _CacheLevelInfo,
     _PointsCacheReader,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
-    ParquetPointsSource,
-    PointColumnSelection,
-    validate_parquet_points_source,
-)
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
     TiledPointsRenderSnapshot,
@@ -431,58 +418,16 @@ def test_runtime_closes_when_layer_data_changes_to_another_generation() -> None:
     assert "construct a new cache runtime" in layer.display_status.message
 
 
-@pytest.fixture(scope="module")
-def composed_real_cache_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("tiled-points-composition")
-    source = ParquetPointsSource(
-        spatialdata_path=root / "source.zarr",
-        points_name="transcripts",
-        columns=PointColumnSelection(x="x", y="y", value="gene"),
-    )
-    source.parquet_path.mkdir(parents=True)
-    pq.write_table(
-        pa.table(
-            {
-                "x": pa.array([1.0, 3.0, 2.0, 11.0], type=pa.float64()),
-                "y": pa.array([1.0, 2.0, 3.0, 1.0], type=pa.float64()),
-                "gene": pa.array(["A", "B", "A", "B"]),
-            }
-        ),
-        source.parquet_path / "part.0.parquet",
-        row_group_size=2,
-    )
-    validated = validate_parquet_points_source(source, max_batch_rows=2)
-    temporary_root = root / "temporary"
-    temporary_root.mkdir()
-    return _build_points_cache_zarr(
-        validated,
-        output_path=root / "transcripts_vis_zarr",
-        temporary_directory_root=temporary_root,
-        config=_PointsCacheBuilderConfig(
-            leaf_tile_size=10,
-            overview_point_budget=10,
-            dask_worker_count=2,
-            zarr_settings=_ZarrWriteSettings(2, 4, 2, 4, "zstd-v1"),
-            catalog_settings=_CatalogWriteSettings(
-                manifest_chunk_rows=2,
-                manifest_shard_rows=4,
-                value_tile_chunk_rows=2,
-                value_tile_shard_rows=4,
-            ),
-        ),
-    )
-
-
 def test_real_cache_flows_from_layer_viewport_to_renderer_and_selected_values(
-    composed_real_cache_root: Path,
+    real_cache_root: Path,
     maximum_texture_size: None,
     monkeypatch: pytest.MonkeyPatch,
     qtbot,
 ) -> None:
-    with _PointsCacheReader(composed_real_cache_root) as reader:
+    with _PointsCacheReader(real_cache_root) as reader:
         info = reader.dataset_info
     layer = _layer(info)
-    runtime = _TiledPointsLayerRuntime(layer, composed_real_cache_root, _settings())
+    runtime = _TiledPointsLayerRuntime(layer, real_cache_root, _settings())
     visual = VispyTiledPointsLayer(layer, FontInfo())
     created_keys = _track_tile_resource_creation(visual, monkeypatch)
     observed: list[TiledPointsRenderSnapshot] = []
