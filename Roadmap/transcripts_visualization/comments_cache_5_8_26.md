@@ -24,7 +24,7 @@ Still unimplemented:
 - value-aware nested sampling;
 - runtime `TileStore`, planner and scheduler;
 - CPU and GPU LRUs;
-- `TranscriptLayerModel`;
+- `TiledPointsLayerModel`;
 - the VisPy tiled renderer;
 - napari registration and UI integration.
 
@@ -144,7 +144,7 @@ Full value-selective Parquet IO can remain later work, but the product should ha
 
 ```mermaid
 flowchart TD
-    A["TranscriptLayerModel"] --> B["Viewport planner"]
+    A["TiledPointsLayerModel"] --> B["Viewport planner"]
     B --> C["Tile scheduler"]
     C --> D["PyArrow tile store"]
     D --> E["CPU tile LRU"]
@@ -153,7 +153,7 @@ flowchart TD
     G --> H["Atomic render snapshot"]
 ```
 
-### 1. `TranscriptLayerModel`
+### 1. `TiledPointsLayerModel`
 
 A dedicated subclass of napari `Layer`, not `Points`, is the right decision.
 
@@ -178,13 +178,13 @@ In napari 0.8, visual creation still uses the private `napari._vispy.utils.visua
 The adapter will therefore need to register approximately:
 
 ```python
-layer_to_visual[TranscriptLayerModel] = VispyTranscriptLayer
-layer_to_controls[TranscriptLayerModel] = QtTranscriptControls
+layer_to_visual[TiledPointsLayerModel] = VispyTiledPointsLayer
+layer_to_controls[TiledPointsLayerModel] = QtTiledPointsLayerControls
 ```
 
 I agree with isolating this in one `_napari_transcript_registration.py`. I would support a narrow napari range initially—probably napari 0.8.x—rather than pretending the existing `napari>=0.4.18` constraint covers this renderer. Napari 0.8.0 is currently the latest release. [napari 0.8.0 release](https://github.com/napari/napari/releases/tag/v0.8.0)
 
-### 3. `VispyTranscriptLayer`
+### 3. `VispyTiledPointsLayer`
 
 For the first backend, I recommend:
 
@@ -291,11 +291,11 @@ It contains exactly one synthetic, already-in-memory tile. Its purpose is to val
 Conceptually:
 
 ```text
-TranscriptLayerModel
+TiledPointsLayerModel
         │
         │ napari private visual registration
         ▼
-VispyTranscriptLayer
+VispyTiledPointsLayer
         │
         ▼
 One synthetic tile visual / buffer
@@ -304,7 +304,7 @@ One synthetic tile visual / buffer
 napari canvas, camera, transforms and blending
 ```
 
-## 1. Custom `TranscriptLayerModel`
+## 1. Custom `TiledPointsLayerModel`
 
 Create the smallest viable subclass of `napari.layers.Layer`.
 
@@ -337,14 +337,14 @@ Otherwise reset-view and fit-to-data would jump around whenever tiles are loaded
 
 ## 2. Private napari registration
 
-Napari 0.8 still selects VisPy implementations using internal registration mappings. The custom layer class must be associated with a custom `VispyTranscriptLayer`. A minimal layer-controls registration will probably also be required.
+Napari 0.8 still selects VisPy implementations using internal registration mappings. The custom layer class must be associated with a custom `VispyTiledPointsLayer`. A minimal layer-controls registration will probably also be required.
 
 This is the deliberately risky part: these are private napari APIs, rather than a stable public custom-layer plugin interface.
 
 The spike should put all private imports and registrations in one small compatibility module, for example:
 
 ```text
-viewer/transcripts/
+viewer/tiled_points/
     _layer.py
     _vispy_layer.py
     _napari_registration.py

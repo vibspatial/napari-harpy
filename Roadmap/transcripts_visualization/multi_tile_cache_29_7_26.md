@@ -468,7 +468,7 @@ Backed SpatialData points element
                          │
           ┌──────────────┴──────────────┐
           ▼                             ▼
- TranscriptTileStore             freshness/status
+ TiledPointsTileStore            freshness/status
           │
           ▼
  planner → scheduler → backend → napari
@@ -526,23 +526,23 @@ The runtime flow is:
                          napari camera + canvas + dims
                                       │
                                       ▼
-TranscriptLayerModel ───────► TranscriptTilePlanner
+TiledPointsLayerModel ───────► TiledPointsTilePlanner
 persistent user state             viewport + LOD policy
          │                              │
          │                              ▼
-         │                     TranscriptTileScheduler
+         │                     TiledPointsTileScheduler
          │                 generations + priorities + CPU LRU
          │                              │
          │                    tile requests / immutable payloads
          │                              │
-         └──────────────► TranscriptTileStore
+         └──────────────► TiledPointsTileStore
                            metadata + manifest + PyArrow
                                       │
                                       ▼
                          RenderSnapshot + TilePayloads
                                       │
                                       ▼
-                         TranscriptRenderBackend
+                         TiledPointsRenderBackend
                                       │
                                       └── VisPy backend
                                           GPU LRU + upload queue
@@ -550,7 +550,7 @@ persistent user state             viewport + LOD policy
                                           value palette
 ```
 
-### `TranscriptLayerModel`
+### `TiledPointsLayerModel`
 
 The layer model is the persistent, view-independent object shown in napari's
 layer list.
@@ -584,13 +584,13 @@ Napari already uses `Layer.source` for provenance. Use a name such as
 The layer extent always reports complete dataset bounds. It must not change as
 tiles enter and leave the viewport.
 
-### `TranscriptDatasetRef`
+### `TiledPointsDatasetRef`
 
 This immutable value object identifies one cache and its canonical source:
 
 ```python
 @dataclass(frozen=True)
-class TranscriptDatasetRef:
+class TiledPointsDatasetRef:
     spatialdata_identity: object
     points_name: str
     coordinate_system: str
@@ -603,7 +603,7 @@ class TranscriptDatasetRef:
 The concrete `cache_location` API must leave room for a future filesystem/URI
 abstraction even if the first writer supports local paths only.
 
-### `TranscriptTileStore`
+### `TiledPointsTileStore`
 
 The store is independent of Qt, napari, and VisPy.
 
@@ -620,9 +620,9 @@ It owns:
 Core operations:
 
 ```python
-class TranscriptTileStore:
+class TiledPointsTileStore:
     @classmethod
-    def from_path(cls, path: Path) -> "TranscriptTileStore": ...
+    def from_path(cls, path: Path) -> "TiledPointsTileStore": ...
 
     def tiles_intersecting(
         self,
@@ -668,7 +668,7 @@ One logical tile may consist of several physical row-group shards. The store
 combines those shards into one immutable `TilePayload`; the renderer does not
 need to know how many files or row groups backed the tile.
 
-### `TranscriptTilePlanner`
+### `TiledPointsTilePlanner`
 
 The planner is pure policy. Given a view description and cache metadata, it
 returns a render plan without starting IO.
@@ -713,7 +713,7 @@ causes unnecessary coarse LOD selection, core tiles must remain hard-bounded
 while prefetch becomes a soft, separately capped budget. That choice is part of
 the Phase 2 planner benchmark.
 
-### `TranscriptTileScheduler`
+### `TiledPointsTileScheduler`
 
 There is one scheduler per `(viewer canvas, transcript layer)` pair.
 
@@ -775,16 +775,16 @@ selection from satisfying or activating a new selection's snapshot.
 The renderer activates a pending cross-level snapshot only when all core tiles
 are GPU-ready.
 
-### `TranscriptRenderBackend`
+### `TiledPointsRenderBackend`
 
 The scheduler depends on a small protocol rather than on VisPy:
 
 ```python
-class TranscriptRenderBackend(Protocol):
+class TiledPointsRenderBackend(Protocol):
     def enqueue_upload(self, tile: "TilePayload") -> None: ...
     def is_ready(self, key: "TileKey") -> bool: ...
     def activate(self, snapshot: RenderSnapshot) -> None: ...
-    def update_style(self, style: "TranscriptStyle") -> None: ...
+    def update_style(self, style: "TiledPointsStyle") -> None: ...
     def evict(self, key: "TileKey") -> None: ...
     def close(self) -> None: ...
 ```
@@ -2384,7 +2384,7 @@ Exit criteria:
 
 Implement:
 
-- dedicated TranscriptLayerModel;
+- dedicated TiledPointsLayerModel;
 - private registration adapter;
 - layer controls and status;
 - active value selection wired to immediate selection-aware replanning;

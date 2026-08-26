@@ -34,11 +34,11 @@ and scheduler are complete.
 The first implementation is a deliberately narrow vertical spike:
 
 ```text
-TranscriptLayerModel
+TiledPointsLayerModel
         │
         │ private napari 0.7.1 registration
         ▼
-VispyTranscriptLayer
+VispyTiledPointsLayer
         │
         ▼
 one synthetic in-memory tile
@@ -164,7 +164,7 @@ module allowed to mutate napari's private registries.
 
 ### Model role
 
-`TranscriptLayerModel` is the persistent, view-independent object shown in
+`TiledPointsLayerModel` is the persistent, view-independent object shown in
 napari's layer list.
 
 It owns:
@@ -386,7 +386,7 @@ screen scale, the contract may replace the scalar with an explicitly named
 projected-scale representation. It must not silently treat a scalar camera zoom
 as data units per pixel under an arbitrary layer affine.
 
-`TranscriptLayerModel._update_draw(...)` must:
+`TiledPointsLayerModel._update_draw(...)` must:
 
 1. call `super()._update_draw(...)`;
 2. inverse-transform all four world viewport corners into layer data
@@ -450,7 +450,7 @@ is tested independently from VisPy resource cleanup.
 
 ## Initial VisPy layer contract
 
-`VispyTranscriptLayer` subclasses `VispyBaseLayer` and owns one root compound
+`VispyTiledPointsLayer` subclasses `VispyBaseLayer` and owns one root compound
 visual. For the spike it owns exactly one marker subvisual and uploads the
 synthetic positions once.
 
@@ -569,8 +569,8 @@ The recommended ownership is:
 ```text
 points selection/value UI
         ├── direct Points workflow
-        └── TiledTranscriptSession
-                ├── TranscriptLayerModel
+        └── TiledPointsSession
+                ├── TiledPointsLayerModel
                 ├── store/planner/scheduler
                 └── canvas-specific VisPy backend
 ```
@@ -621,7 +621,7 @@ Exit criteria:
 
 Deliverables:
 
-- implement the minimal `TranscriptLayerModel` subclass;
+- implement the minimal `TiledPointsLayerModel` subclass;
 - implement its minimal slicing-state support;
 - expose the logical dataset reference through `data`;
 - report complete data/world extent;
@@ -660,7 +660,7 @@ Exit criteria:
 
 Deliverables:
 
-- implement `VispyTranscriptLayer` with one compound marker subvisual;
+- implement `VispyTiledPointsLayer` with one compound marker subvisual;
 - upload one recognizable synthetic tile;
 - apply the tile origin at the subvisual boundary;
 - instrument coordinate upload count;
