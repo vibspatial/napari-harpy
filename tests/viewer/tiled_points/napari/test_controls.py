@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import numpy as np
+
 from napari_harpy.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
@@ -16,11 +18,16 @@ def test_controls_update_layer_style_and_read_only_status(qtbot) -> None:
             cache_generation_id=str(uuid4()),
             points_name="spots",
             value_column="feature_name",
+            value_count=3,
+            x_origin=0.0,
+            y_origin=0.0,
             x_min=3.0,
             x_max=23.0,
             y_min=2.0,
             y_max=12.0,
-        )
+        ),
+        value_palette=np.full((3, 4), 255, dtype=np.uint8),
+        max_gpu_tile_bytes=1_000_000,
     )
     controls = QtTiledPointsLayerControls(layer)
     qtbot.addWidget(controls)
