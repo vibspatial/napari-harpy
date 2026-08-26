@@ -2115,7 +2115,7 @@ idempotent cleanup. The opt-in real-canvas test compares the adopted visual to
 standard markers under the large-origin affine case; it is skipped in ordinary
 headless runs and enabled explicitly for renderer qualification.
 
-### Slice I7: compose the real cache-to-canvas session
+### Slice I7: compose the real cache-to-canvas session — resolved
 
 I7 is a composition and lifecycle slice. The expensive pieces already exist
 independently: the layer emits intrinsic viewports, the coordinator owns the
@@ -2253,6 +2253,32 @@ change, ordinary empty view, complete sampled omission, over-budget view,
 recoverable failure, and close with work in flight. Assert both sides of the
 thread boundary: cache/Zarr work stays on the worker thread and model/status/
 VisPy mutation stays on the GUI thread.
+
+#### I7 implementation evidence
+
+The adopted `_TiledPointsLayerRuntime` is the dedicated GUI-thread composition
+owner. It receives an already-created `TiledPointsLayerModel`, the published
+cache root, and explicit `_CacheSessionSettings`; constructs the session and
+coordinator; validates the worker-reported cache identity against the layer's
+complete `TiledPointsDatasetReference`; installs the request, result, status,
+error, and teardown listeners; and starts the worker session. It exposes the
+selected-value change boundary needed by the later application binding and an
+idempotent explicit `close()` for layer-removal ownership.
+
+The implementation communicates with the renderer only through
+`TiledPointsLayerModel.events.render_snapshot`. It retains the last accepted
+status while work is active, retains the prior visual for over-budget, cache,
+and renderer failures, and applies zero-tile snapshots for ordinary empty views
+and complete sampled omission. Replacing the layer's logical dataset terminates
+the generation-bound runtime and requires a new composition owner.
+
+Focused composition tests cover the complete model-to-renderer signal path,
+over-budget and cache-failure retention, sampled-omission clearing,
+GPU-capacity-failure rollback and status, cache/layer identity mismatch,
+generation replacement, idempotent close, and rejection of late results. The
+small real-Zarr-cache test covers first view, a one-tile expansion, unchanged
+viewport suppression, selected-value-index replacement, GUI-thread snapshot
+delivery, CPU/GPU tile reuse, and terminal worker-thread closure.
 
 Exit criteria:
 
