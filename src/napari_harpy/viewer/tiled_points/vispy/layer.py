@@ -374,7 +374,15 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
                 cast(_VispyTileResource, resource).opacity = self.layer.opacity
 
     def _on_data_change(self) -> None:
-        """Drop generation-bound GPU resources after logical data replacement."""
+        """Reset renderer state after logical layer-data replacement.
+
+        ``VispyBaseLayer`` connects ``layer.events.set_data`` to this override.
+        ``TiledPointsLayerModel.data`` emits that event after accepting a new
+        same-vocabulary dataset reference. Because retained tile resources and
+        active/pending keys belong to the preceding cache generation, release
+        them before a new snapshot arrives. Reapply the matrix afterward because
+        the replacement reference may also carry a different cache origin.
+        """
         if getattr(self, "_closed", False):
             return
         gpu_tile_residency = getattr(self, "_gpu_tile_residency", None)
@@ -382,7 +390,6 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
             gpu_tile_residency.clear()
             self._active_keys = ()
             self._clear_pending()
-        self.node.update()
         self._on_matrix_change()
 
     def _on_matrix_change(self) -> None:
