@@ -273,19 +273,199 @@ logical storage tiles
         -> one VisPy visual and one active VBO
 ```
 
-A two-buffer ping-pong variant can retain atomic activation semantics: prepare and upload the pending snapshot into an inactive VBO, then swap which buffer is visible. This still bounds the renderer to two visuals and two VBOs rather than one resource per logical tile.
+The initial renderer should use one visual, one shader/program path, and one replaceable VBO. The worker prepares and validates the complete immutable batch before the GUI mutates that VBO. This is the smallest architecture that removes the measured resource and draw-submission bottleneck.
 
-Tile offsets should be folded into the assembled positions relative to a snapshot-local or batch-local origin. Precomposing that origin into the root transform preserves the existing protection against float32 precision loss from large absolute coordinates.
+A second fixed ping-pong VBO is an optional hardening or performance follow-up, not an initial requirement. It should be added only if real-canvas measurements show active-buffer update stalls or visible replacement artifacts, or if failure-injection establishes a product requirement to keep the previous GPU payload drawable after `VertexBuffer.set_data()` begins. If needed, both VBOs should belong to the same visual/program; two complete visual nodes are unnecessary.
+
+For the first implementation, tile offsets should be folded into cache-relative assembled positions. This is algebraically identical to the current `a_position + u_tile_offset` shader path and leaves the cache-origin matrix handling unchanged. A snapshot-local origin can be considered later if measurements show a precision need; it should not be mixed into the initial batching change.
 
 The shared palette texture remains applicable. Logical CPU tile residency can also remain unchanged so warm pan and zoom requests reuse decoded data. Per-logical-tile GPU residency is no longer needed; if profiling later justifies GPU-side page reuse, it should use a small fixed pool of larger pages rather than thousands of scene nodes.
 
 This design directly addresses all three renderer symptoms:
 
 - resource creation becomes constant in visual count;
-- first draw performs one or two VBO uploads and shader/program preparations;
+- each accepted snapshot performs one bounded VBO upload, and first draw prepares only one active shader/program path;
 - warm frames issue one active point draw instead of thousands of draw submissions.
 
 It also makes the GPU budget representative of the resources it controls. The current logical vertex-byte accounting does not capture per-visual Python, program, scene-node, VBO-wrapper, and driver overhead.
+
+### Concrete refactor in the current code base
+
+The renderer boundary remains the primary place to remove per-tile GPU resources. Decoded CPU tile residency and request scheduling should remain unchanged. The first constant-resource renderer slice can consume `TiledPointsRenderSnapshot.tiles` directly as an instrumented scaffold, but the completed smooth-frame design should extend the snapshot contract with a worker-prepared immutable render batch so NumPy packing does not consume GUI-thread frame time.
+
+The current path is:
+
+```text
+cache_session._read_viewport_snapshot()
+        -> TiledPointsRenderSnapshot(tiles=...)
+        -> composition._on_snapshot_ready()
+        -> VispyTiledPointsLayer.apply_snapshot()
+        -> one _VispyTileResource / _TiledPointsTileVisual / VBO per tile
+```
+
+The first renderer slice may temporarily use this instrumented scaffold:
+
+```text
+cache_session._read_viewport_snapshot()
+        -> TiledPointsRenderSnapshot(tiles=...)
+        -> composition._on_snapshot_ready()
+        -> VispyTiledPointsLayer.apply_snapshot()
+        -> pack all snapshot tiles into one bounded vertex array on the GUI thread
+        -> replace the one snapshot VBO payload
+        -> draw the updated snapshot visual
+```
+
+The completed target path is:
+
+```text
+cache_session._read_viewport_snapshot()
+        -> assemble ordered logical tiles on the worker
+        -> pack one immutable, bounded render batch on the worker
+        -> TiledPointsRenderSnapshot(tiles=..., render_batch=...)
+        -> composition._on_snapshot_ready()
+        -> VispyTiledPointsLayer.apply_snapshot()
+        -> replace the one snapshot VBO payload on the GUI thread
+        -> draw the updated snapshot visual
+```
+
+The affected responsibilities are:
+
+| File | Current responsibility | Responsibility after the refactor |
+|---|---|---|
+| `vispy/layer.py` | Creates, retains, hides, and evicts one `_VispyTileResource` per logical tile. | Owns one snapshot visual and one VBO, replaces that VBO from a worker-prepared batch, and commits logical state without a NumPy tile loop. |
+| `vispy/visuals.py` | `_TiledPointsTileVisual` packs and uploads one tile and applies `u_tile_offset` in the shader. | A snapshot visual owns one VBO and replaces its complete packed vertex payload; no per-tile visual or tile-offset uniform is needed. |
+| `vispy/residency.py` | `_GpuTileResidency` tracks thousands of tile-keyed GPU resources and performs retention/eviction bookkeeping. | Its tile-resource role disappears. Single-buffer byte accounting can be kept directly in the layer or in a small snapshot-buffer helper. |
+| `contracts.py` | Carries a tuple of logical render tiles in `TiledPointsRenderSnapshot`. | Defines and validates an immutable, C-contiguous packed render batch and carries it with the generation-bound snapshot. The tile tuple can remain during the migration for CPU-residency identity and diagnostics. |
+| `runtime/cache_session.py` | Assembles the ordered logical tile tuple. | Packs the render batch after final ordered tile assembly and before returning an accepted snapshot, with cancellation and generation checks preserved. |
+| `runtime/composition.py` | Delivers the snapshot to the layer event. | Forwards the snapshot and packed batch unchanged; it remains unaware of VisPy and VBO ownership. |
+
+#### Snapshot packing
+
+Add one pure NumPy packing helper in a GUI-neutral module such as `viewer/tiled_points/render_batch.py`. It must not live under `viewer/tiled_points/vispy/`: importing that package imports the VisPy layer and its GUI dependencies, which the cache worker should not acquire. The helper should:
+
+1. Allocate one structured array sized exactly to `snapshot.rendered_point_count`.
+2. Use the existing vertex fields: `position` as two `float32` values and `value_id` as one `float32`, for 12 bytes per point.
+3. Fill consecutive slices in snapshot tile order. For a tile `(tile_x, tile_y)`, calculate cache-relative positions as:
+
+   ```text
+   packed.position = tile.location + (tile_x * tile_size, tile_y * tile_size)
+   packed.value_id = tile.value_id
+   ```
+
+4. Validate that the final write cursor equals the declared rendered point count.
+5. Handle an empty snapshot without constructing a dummy per-tile resource.
+
+The simple helper should allocate one primary output and fill slices. Repeated `numpy.concatenate` calls inside the tile loop or constructing one intermediate structured array per tile would reintroduce avoidable allocation and copy overhead. A single whole-snapshot concatenate/repeat strategy is a distinct, measured optimization and remains acceptable if its extra transient memory is justified.
+
+#### Measured packing cost
+
+Packing was benchmarked against the actual full-extent AAMP snapshot already resident in memory:
+
+```text
+4,453 tiles
+60,512 points
+median 5 points per tile
+0.693 MiB packed vertex payload
+```
+
+| CPU packing operation | Median | p90 |
+|---|---:|---:|
+| Allocate the structured output only | 0.14 ms | 0.16 ms |
+| Iterate tile intervals only | 0.14 ms | 0.15 ms |
+| Copy positions and value IDs without offsets | 1.92 ms | 1.99 ms |
+| Literal tile loop with coordinate offsets | **7.04 ms** | **7.36 ms** |
+| Per-tile `numpy.add(..., out=...)` | 7.24 ms | 7.40 ms |
+| One whole-snapshot concatenate/repeat strategy | **2.22 ms** | **2.33 ms** |
+
+The cost is dominated by thousands of NumPy dispatches over very small arrays, not by arithmetic over 60,512 points. Seven milliseconds is negligible relative to the current multi-second renderer preparation and approximately one-second warm draw, so it does not weaken the snapshot-VBO design. It is nevertheless material within a 16.7-millisecond 60 Hz frame budget, especially because VBO upload and drawing still follow it. The completed implementation should therefore keep this work off the GUI thread.
+
+The literal loop remains a reasonable first worker implementation because it is simple, bounded, easy to validate, and permits cancellation checks between groups of tiles. The 2.22-millisecond concatenate/repeat variant uses approximately a few MiB of bounded transient memory at the 100,000-point cap and should remain an optional worker-side optimization if end-to-end worker latency later matters.
+
+#### Snapshot visual and VBO ownership
+
+Replace `_TiledPointsTileVisual` with a `_TiledPointsSnapshotVisual`-style implementation that owns:
+
+- one VisPy `VertexBuffer`;
+- one shader program and the existing shared palette texture;
+- the current uploaded point count;
+- a method that replaces the complete vertex payload; and
+- deterministic buffer cleanup.
+
+The vertex shader can consume the packed cache-relative position directly and remove `u_tile_offset`. The layer's existing cache-origin transform remains responsible for moving cache-relative coordinates into world space. `_prepare_draw()` should decline drawing when the visual contains zero points.
+
+`VispyTiledPointsLayer` should construct exactly one of these visuals as the child of its existing `Compound` node. That visual owns exactly one VBO in the initial implementation. Each accepted snapshot replaces the complete bounded payload with one `VertexBuffer.set_data()` call and produces one point draw.
+
+Palette changes remain texture updates. Point diameter and opacity update one visual's uniforms and must not cause a vertex re-upload.
+
+#### `apply_snapshot()` transaction
+
+`VispyTiledPointsLayer.apply_snapshot()` should become a bounded single-buffer replacement:
+
+1. Validate the snapshot and reject a point- or byte-budget violation before changing the active visual.
+2. Record `pending_keys` for logical diagnostics only; tile keys are no longer GPU resource identities.
+3. Validate that the worker-prepared render batch is immutable, C-contiguous, reconciles with `rendered_point_count`, and has the expected 12-byte vertex format.
+4. Preflight that the new payload fits the configured single-buffer byte budget before mutating the VBO.
+5. Replace the sole VBO payload with the prepared array using the selected copy-safe lifetime semantics.
+6. If `set_data()` raises a Python exception, emit the render error, clear pending state, and do not commit the candidate generation or keys. The previous GPU payload is not guaranteed to remain drawable after mutation has begun.
+7. On success, update the point count, set visual drawability according to whether the snapshot is empty, and commit `active_keys` plus the accepted result.
+8. Request one scene update.
+
+Packing failures now occur on the worker before a candidate snapshot is submitted. They should follow the existing worker-error path and leave the active visual untouched. `apply_snapshot()` must not contain the snapshot tile loop in the completed implementation.
+
+This deliberately changes overlap behavior: a changed accepted snapshot performs one bounded upload even when it shares tiles with the preceding snapshot. Warm CPU tile reuse still avoids Zarr reads and decoding. The renderer trades per-tile GPU reuse for a constant scene graph and a single draw submission; at the 100,000-point cap that is the correct trade.
+
+Validation, cancellation, stale-generation rejection, over-budget rejection, and byte-capacity rejection all occur before `set_data()` and therefore continue to preserve the active payload. The initial one-VBO design deliberately does not promise rollback after VBO replacement starts. VisPy defers the actual GPU operation until rendering, so even a ping-pong design would require explicit draw-error handling before it could claim verified GPU-upload rollback.
+
+`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, and per-tile GPU eviction cease to be part of the normal renderer. `active_keys` and `pending_keys` may remain because they are useful for request identity and diagnostics, but they must not own resources. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
+
+#### Budget implications
+
+With the existing 12-byte vertex format:
+
+```text
+100,000 points * 12 bytes = 1,200,000 bytes = approximately 1.15 MiB for the VBO
+optional two-VBO ping-pong maximum = approximately 2.29 MiB
+```
+
+The initial patch can retain the existing GPU-byte configuration name to limit configuration churn, but its enforcement should cover the one snapshot payload rather than a sum of tile estimates. The bounded worker batch and any temporary CPU copy made by VisPy should be reported separately from logical GPU bytes. A later cleanup can rename the setting to a snapshot-buffer budget or derive it directly from the hard point budget. This is far below the current 512 MiB default, so the important initial guard is against malformed or unexpectedly unbounded snapshots rather than ordinary viewport data.
+
+#### Threading boundary and required implementation slices
+
+VisPy visual and VBO mutation must remain on the GUI thread. Pure NumPy packing should run on the existing cache worker after it has restored the complete tile plan's spatial order and immediately before final snapshot construction. The packed array must own its allocation, be read-only after validation, and cross the Qt object signal by reference. The existing immutable-tile snapshot delivery measured 0.14 milliseconds and did not deep-copy child arrays; delivery must be remeasured with the packed batch rather than merely assumed to remain equivalent.
+
+The work should be separated into two reviewable renderer slices:
+
+1. **Constant GPU-resource topology**
+
+   Replace per-tile visuals and GPU residency with one snapshot visual/program and one replaceable VBO. A temporarily GUI-packed batch is acceptable as an instrumented scaffold in this slice because it isolates resource ownership, shader, coordinate, colour, and real-canvas behavior. Acceptance requires exactly one visual, one VBO, one payload replacement per accepted snapshot, and one point draw submission. Capacity and validation failures must still preserve the active payload because they are rejected before VBO mutation. This slice alone is not the completed smooth-frame implementation.
+
+2. **Worker-prepared render batch**
+
+   Move the pure NumPy helper to the worker path, extend the generation-bound render contract, preserve cancellation before and during packing, and make the GUI consume only the prepared batch. Packing failures and obsolete requests must not reach VBO upload. This is a required smooth-frame completion slice, not an optional optimization.
+
+The slices may be implemented together if that proves simpler, but the roadmap should preserve their separate acceptance evidence. The GUI-side scaffold must not become the final architecture merely because its cost is much smaller than the renderer it replaces.
+
+An optional third slice may introduce a second fixed VBO owned by the same snapshot visual/program. It is justified only by measured active-buffer synchronization stalls, visible replacement artifacts, or a required and tested recovery policy for staging/draw failures. The acceptance evidence must show that the second VBO solves the observed problem. It must not introduce a second visual or a second draw submission merely to obtain ping-pong storage.
+
+#### Required verification changes
+
+The packing, delivery, and renderer tests should be rewritten around snapshot-batch semantics:
+
+- worker-packed positions, snapshot order, and value IDs are correct across multiple tiles;
+- the packed batch owns a C-contiguous allocation, is read-only after construction, and reconciles with the snapshot count and byte budget;
+- packing failures, cancellations, and obsolete request generations do not submit a renderer candidate;
+- queued Qt delivery of a maximum-budget packed batch does not deep-copy its vertex storage;
+- completed GUI activation performs no NumPy tile-packing loop;
+- one accepted non-empty snapshot causes one VBO payload upload;
+- palette, opacity, and point-diameter updates do not upload vertex data;
+- validation and capacity failures preserve the previous active payload because they occur before VBO mutation;
+- an injected synchronous `set_data()` failure reports an error and does not commit candidate logical state, without asserting that the previous GPU payload remains drawable;
+- an empty accepted snapshot hides the active draw without creating resources;
+- closing the layer releases the one visual and VBO exactly once;
+- a real-canvas test verifies position and colour, including a large cache origin; and
+- the former overlapping-tile GPU-reuse test is replaced by an assertion that visual count and VBO identity remain constant across changing snapshots.
+
+The cache-to-canvas benchmark should stop reporting per-tile renderer construction as the primary renderer metric. It should separately measure worker snapshot assembly, worker packing, queued packed-batch delivery, single-VBO replacement staging, activation, first draw, and warm draw, while confirming that exactly one point visual is submitted. It should also look for frame stalls or blank/corrupted frames across repeated payload-size changes; those measurements determine whether optional ping-pong storage is justified. The acceptance target is not merely a lower construction time: first draw and subsequent camera-interaction frames must lose their dependence on the number of logical tiles in the snapshot, and GUI-thread activation must contain no tile-proportional CPU packing.
 
 ## Conclusion
 
@@ -305,8 +485,8 @@ There are three proven bottlenecks:
 
 The practical priority is therefore:
 
-1. Fix the quadratic CPU and GPU residency paths.
-2. Replace one-visual-per-logical-tile rendering with one active snapshot VBO or a two-buffer ping-pong renderer. Preserve logical tiles only at the storage and CPU-residency boundaries.
+1. Replace one-visual-per-logical-tile rendering with one snapshot visual/program and one VBO fed by worker-prepared immutable render batches. This removes the quadratic GPU residency path rather than optimizing a tile-resource design that is no longer needed. Preserve logical tiles only at the storage and CPU-residency boundaries, and keep tile-proportional packing off the GUI thread. Add a second VBO only if measured behavior justifies ping-pong storage.
+2. Fix the quadratic CPU residency path, which remains useful for reusing decoded logical tiles across viewport requests.
 3. Stop reading point-level `value_id` for proper selected-value requests; reconstruct it from the already resolved value ranges or represent a one-value snapshot with a uniform.
 4. Prototype a per-level value-major coordinate payload alongside the existing tile-major payload. Compare it with 128- and 256-row `location` chunks using cold-read wall time, decoded bytes, physical operations, cache size, and startup memory.
 5. Treat fewer buckets and cross-bucket concurrency as secondary tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
