@@ -212,6 +212,115 @@ def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: _Rea
         assert intrinsic_x.tolist() == expected_x.tolist()
 
 
+def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
+    reader_fixture: _ReaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    def reject_payload_read(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Viewport planning attempted point-payload IO.")
+
+    monkeypatch.setattr(_BucketReader, "read_display_payloads", reject_payload_read)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        info = reader.dataset_info
+        assert info.cache_generation_id == reader.cache_generation_id
+        assert (info.points_name, info.value_column, info.value_names) == (
+            "transcripts",
+            "gene",
+            ("A", "B", "C"),
+        )
+        assert (info.x_origin, info.y_origin) == (0.0, 0.0)
+        assert (info.x_min, info.x_max, info.y_min, info.y_max) == (0.5, 11.5, 0.5, 8.5)
+        assert tuple(level.kind for level in info.levels) == ("exact", "bridge", "spatial")
+        assert info.overview_point_budget == 100
+
+        plan = reader.plan_viewport(0, full)
+        assert reader.open_bucket_reader_count == 0
+        assert plan.cache_generation_id == reader.cache_generation_id
+        assert plan.requested_value_ids is None
+        assert plan.tile_keys == ((0, 0, 0), (0, 1, 0))
+        assert plan.required_bucket_keys == ((0, 0),)
+        assert all(request.applicable_value_ids is None for request in plan.requests)
+
+
+def test_planned_subset_reads_only_missing_tiles_and_preserves_plan_order(
+    reader_fixture: _ReaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_tile = _IntrinsicViewport(0, 0, 10, 10)
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        _load_bucket_lookup_indexes(reader, levels=(0,))
+        bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
+        original = bucket_reader.read_display_payloads
+        calls: list[tuple[int, ...]] = []
+
+        def tracked_batch(
+            requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
+        ) -> tuple[_PointDisplayPayload | None, ...]:
+            calls.append(tuple(descriptor.bucket_tile_index for descriptor, _ in requests))
+            return original(requests)
+
+        monkeypatch.setattr(bucket_reader, "read_display_payloads", tracked_batch)
+        first_plan = reader.plan_viewport(0, first_tile)
+        first_result = reader.read_planned_tiles(first_plan, first_plan.tile_keys)
+        assert [(tile.tile_x, tile.tile_y) for tile in first_result.tiles] == [(0, 0)]
+
+        # A warm wider viewport already owns tile (0, 0), so only the newly
+        # visible tile is supplied to the physical bucket batch.
+        full_plan = reader.plan_viewport(0, full)
+        missing = (full_plan.tile_keys[1],)
+        missing_result = reader.read_planned_tiles(full_plan, missing)
+        assert [(tile.tile_x, tile.tile_y) for tile in missing_result.tiles] == [(1, 0)]
+        assert calls == [(0,), (1,)]
+
+        empty = reader.read_planned_tiles(full_plan, ())
+        assert empty.tiles == ()
+        assert calls == [(0,), (1,)]
+
+        reverse_input = reader.read_planned_tiles(full_plan, tuple(reversed(full_plan.tile_keys)))
+        assert [(tile.tile_x, tile.tile_y) for tile in reverse_input.tiles] == [(0, 0), (1, 0)]
+        assert calls[-1] == (0, 1)
+
+
+def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_subsets(
+    reader_fixture: _ReaderFixture,
+) -> None:
+    selected_a_and_c = np.array([0, 2], dtype=np.uint32)
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = _load_selected_value_index(reader, selected_a_and_c)
+        plan = reader.plan_viewport(0, full, value_index=value_index)
+        assert plan.requested_value_ids == (0, 2)
+        assert [
+            request.applicable_value_ids.tolist() if request.applicable_value_ids is not None else None
+            for request in plan.requests
+        ] == [[0], [2]]
+        assert all(
+            request.applicable_value_ids is not None and not request.applicable_value_ids.flags.writeable
+            for request in plan.requests
+        )
+
+        unknown_tile = (0, 99, 0)
+        with pytest.raises(ValueError, match="absent from the viewport plan"):
+            reader.read_planned_tiles(plan, (unknown_tile,))
+        with pytest.raises(ValueError, match="duplicates"):
+            reader.read_planned_tiles(plan, (plan.tile_keys[0], plan.tile_keys[0]))
+        with pytest.raises(ValueError, match=r"\(level, tile_x, tile_y\)"):
+            reader.read_planned_tiles(plan, ((0, 0),))  # type: ignore[arg-type]
+
+        foreign_generation = "12345678-1234-5678-9234-567812345678"
+        foreign_plan = replace(
+            plan,
+            cache_generation_id=foreign_generation,
+        )
+        with pytest.raises(ValueError, match="another cache generation"):
+            reader.read_planned_tiles(foreign_plan, foreign_plan.tile_keys)
+
+
 def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -270,7 +379,7 @@ def test_reader_cache_retains_bucket_metadata_across_levels(reader_fixture: _Rea
         assert reader.loaded_bucket_lookup_index_count == 3
 
 
-def test_bucket_lookup_priming_is_explicit_immutable_and_byte_accounted(
+def test_bucket_lookup_index_loading_is_explicit_immutable_and_byte_accounted(
     reader_fixture: _ReaderFixture,
 ) -> None:
     progress: list[tuple[int, int]] = []
@@ -306,6 +415,25 @@ def test_bucket_lookup_priming_is_explicit_immutable_and_byte_accounted(
         assert lookup.resident_bytes == projected
 
 
+def test_reader_loads_lookup_indexes_without_configured_memory_limits(
+    reader_fixture: _ReaderFixture,
+) -> None:
+    selected_a = np.array([0], dtype=np.uint32)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        resident_bytes = reader.load_bucket_lookup_indexes(
+            levels=(0,),
+            max_resident_bytes=None,
+        )
+        value_index = reader.load_selected_value_index(
+            selected_a,
+            max_resident_bytes=None,
+        )
+
+        assert resident_bytes == reader.project_bucket_lookup_index_bytes(levels=(0,))
+        assert value_index is not None
+        assert value_index.resident_bytes > 0
+
+
 def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -331,7 +459,7 @@ def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
         assert reader.resident_bucket_lookup_bytes == 0
 
 
-def test_bucket_lookup_priming_rolls_back_new_indexes_after_failure(
+def test_bucket_lookup_index_loading_rolls_back_new_indexes_after_failure(
     reader_fixture: _ReaderFixture,
 ) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
@@ -382,7 +510,7 @@ def test_primed_display_reads_do_not_reread_bucket_lookup_arrays(
     assert selected is not None and selected.value_id.tolist() == [0, 0]
 
 
-def test_bucket_lookup_priming_reads_only_resident_lookup_arrays(
+def test_bucket_lookup_index_loading_reads_only_resident_lookup_arrays(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -402,7 +530,7 @@ def test_bucket_lookup_priming_reads_only_resident_lookup_arrays(
         def record_lookup_array(name: str) -> object:
             observed_names.append(name)
             if name not in expected_names:
-                raise AssertionError(f"Lookup priming read an unrelated array: {name}.")
+                raise AssertionError(f"Lookup-index loading read an unrelated array: {name}.")
             return original_array(name)
 
         monkeypatch.setattr(bucket_reader, "_array", record_lookup_array)

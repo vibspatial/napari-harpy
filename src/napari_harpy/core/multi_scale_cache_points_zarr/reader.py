@@ -69,6 +69,181 @@ class _IntrinsicViewport:
 
 
 @dataclass(frozen=True)
+class _CacheLevelInfo:
+    """Expose one serialized level without leaking cache-format models."""
+
+    level: int
+    kind: str
+    tile_size: int
+    grid_width: int
+    grid_height: int
+    max_points_per_tile: int | None
+    bucket_count: int
+    tile_count: int
+    point_count: int
+
+    def __post_init__(self) -> None:
+        _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
+        if self.kind not in {"exact", "bridge", "spatial"}:
+            raise ValueError("`kind` must be exact, bridge, or spatial.")
+        for name, maximum in (
+            ("tile_size", _INT64_MAX),
+            ("grid_width", _UINT32_MAX + 1),
+            ("grid_height", _UINT32_MAX + 1),
+            ("bucket_count", _UINT32_MAX + 1),
+            ("tile_count", _INT64_MAX),
+            ("point_count", _INT64_MAX),
+        ):
+            _require_integer_in_range(getattr(self, name), name, minimum=1, maximum=maximum)
+        if self.max_points_per_tile is not None:
+            _require_integer_in_range(
+                self.max_points_per_tile,
+                "max_points_per_tile",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
+
+
+@dataclass(frozen=True)
+class _CacheDatasetInfo:
+    """Expose immutable cache information needed by a transcript viewer."""
+
+    cache_generation_id: str
+    points_name: str
+    value_column: str
+    value_names: tuple[str, ...]
+    x_origin: float
+    y_origin: float
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    levels: tuple[_CacheLevelInfo, ...]
+    overview_point_budget: int
+
+    def __post_init__(self) -> None:
+        _require_cache_generation_id(self.cache_generation_id)
+        if not self.points_name or not self.value_column:
+            raise ValueError("Dataset point and value-column names must be nonempty.")
+        if not self.value_names or any(not isinstance(value, str) or not value for value in self.value_names):
+            raise ValueError("`value_names` must contain nonempty strings.")
+        if len(set(self.value_names)) != len(self.value_names):
+            raise ValueError("`value_names` must be unique.")
+        for name in ("x_origin", "y_origin", "x_min", "x_max", "y_min", "y_max"):
+            value = getattr(self, name)
+            if type(value) is not float or not math.isfinite(value):
+                raise ValueError(f"`{name}` must be a finite float.")
+        if self.x_min > self.x_max or self.y_min > self.y_max:
+            raise ValueError("Dataset bounds must not be inverted.")
+        if (
+            not isinstance(self.levels, tuple)
+            or not self.levels
+            or not all(isinstance(level, _CacheLevelInfo) for level in self.levels)
+            or tuple(level.level for level in self.levels) != tuple(range(len(self.levels)))
+        ):
+            raise ValueError("`levels` must contain consecutive cache-level summaries.")
+        _require_integer_in_range(
+            self.overview_point_budget,
+            "overview_point_budget",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
+
+
+@dataclass(frozen=True)
+class _PlannedTileRead:
+    """Retain one plan-private physical read and its logical tile coordinates.
+
+    ``applicable_value_ids`` is the subset of the plan's requested values that
+    actually occurs in this tile. ``None`` represents an all-values read.
+
+    A later ``read_planned_tiles()`` call forwards these IDs through
+    ``_read_manifest_requests()`` to the bucket reader. Retaining them in the
+    plan avoids repeating selected-value-to-manifest discovery after the caller
+    has chosen which planned tiles to read.
+    """
+
+    level: int
+    tile_x: int
+    tile_y: int
+    manifest_row: int
+    bucket_id: int
+    applicable_value_ids: npt.NDArray[np.uint32] | None
+
+    def __post_init__(self) -> None:
+        _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
+        _require_integer_in_range(self.tile_x, "tile_x", maximum=_UINT32_MAX)
+        _require_integer_in_range(self.tile_y, "tile_y", maximum=_UINT32_MAX)
+        _require_integer_in_range(self.manifest_row, "manifest_row", maximum=_INT64_MAX)
+        _require_integer_in_range(self.bucket_id, "bucket_id", maximum=_UINT32_MAX)
+        if self.applicable_value_ids is None:
+            return
+        applicable_value_ids = _read_only_index_array(
+            self.applicable_value_ids,
+            "applicable_value_ids",
+            np.uint32,
+        )
+        if len(applicable_value_ids) == 0 or bool((applicable_value_ids[1:] <= applicable_value_ids[:-1]).any()):
+            raise ValueError("`applicable_value_ids` must be nonempty and strictly increasing.")
+        object.__setattr__(self, "applicable_value_ids", applicable_value_ids)
+
+    @property
+    def tile_key(self) -> tuple[int, int, int]:
+        """Return the hashable logical identity ``(level, tile_x, tile_y)``."""
+        return self.level, self.tile_x, self.tile_y
+
+
+@dataclass(frozen=True)
+class _ViewportReadPlan:
+    """Describe an immutable, generation-bound viewport read without payload IO.
+
+    ``requested_value_ids`` records the complete value selection once for the
+    plan. Each private request separately retains only its tile-applicable
+    subset needed for sparse bucket lookup.
+    """
+
+    cache_generation_id: str
+    requested_value_ids: tuple[int, ...] | None
+    level: int
+    requests: tuple[_PlannedTileRead, ...]
+
+    def __post_init__(self) -> None:
+        _require_cache_generation_id(self.cache_generation_id)
+        _require_requested_value_ids(self.requested_value_ids)
+        _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
+        if not isinstance(self.requests, tuple) or not all(
+            isinstance(request, _PlannedTileRead) for request in self.requests
+        ):
+            raise ValueError("`requests` must be a tuple of _PlannedTileRead values.")
+        keys = tuple(request.tile_key for request in self.requests)
+        if len(set(keys)) != len(keys):
+            raise ValueError("Viewport plan tile keys must be unique.")
+        if tuple((tile_y, tile_x) for _, tile_x, tile_y in keys) != tuple(
+            sorted((tile_y, tile_x) for _, tile_x, tile_y in keys)
+        ):
+            raise ValueError("Viewport plan tiles must follow manifest spatial order.")
+        if any(level != self.level for level, _, _ in keys):
+            raise ValueError("Every viewport plan request must belong to the plan level.")
+        for request in self.requests:
+            applicable = request.applicable_value_ids
+            if self.requested_value_ids is None:
+                if applicable is not None:
+                    raise ValueError("An all-values plan cannot contain tile-specific value IDs.")
+            elif applicable is None or not set(applicable.tolist()).issubset(self.requested_value_ids):
+                raise ValueError("Applicable tile values must belong to the plan's requested values.")
+
+    @property
+    def tile_keys(self) -> tuple[tuple[int, int, int], ...]:
+        """Return positive logical tiles in manifest spatial order."""
+        return tuple(request.tile_key for request in self.requests)
+
+    @property
+    def required_bucket_keys(self) -> tuple[tuple[int, int], ...]:
+        """Return sorted physical bucket addresses needed by the complete plan."""
+        return tuple(sorted({(self.level, request.bucket_id) for request in self.requests}))
+
+
+@dataclass(frozen=True)
 class _TileReadResult:
     """Return display rows for one nonempty logical tile.
 
@@ -291,7 +466,7 @@ class _PointsCacheReader:
     Entering validates the frozen root and array layouts, then materializes only
     the compact manifest, value pointer table, and value totals. It deliberately
     does not replay complete staged validation. Bucket stores are opened lazily
-    or by explicit lookup priming and retained for this reader's lifetime.
+    or by explicit lookup-index loading and retained for this reader's lifetime.
     Display payload reads require their bucket lookup indexes to be resident;
     they never load lookup metadata implicitly on the viewport path.
     """
@@ -302,6 +477,7 @@ class _PointsCacheReader:
         self._catalog: _CatalogReader | None = None
         self._bucket_cache: _BucketReaderCache | None = None
         self._attributes: _CacheAttributes | None = None
+        self._dataset_info: _CacheDatasetInfo | None = None
         self._manifest_level_indptr: npt.NDArray[np.uint64] | None = None
         self._manifest_bucket_id: npt.NDArray[np.uint32] | None = None
         self._manifest_bucket_tile_index: npt.NDArray[np.uint32] | None = None
@@ -327,6 +503,8 @@ class _PointsCacheReader:
             attributes = catalog.attributes
             if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
                 raise ValueError("Cache root publication_state is not 'complete'.")
+            # Size the cache to retain all bucket readers and reuse their lookup
+            # indexes throughout the visualization session.
             bucket_cache = stack.enter_context(
                 _BucketReaderCache(
                     self._cache_root,
@@ -336,6 +514,7 @@ class _PointsCacheReader:
             self._catalog = catalog
             self._attributes = attributes
             self._bucket_cache = bucket_cache
+            self._dataset_info = _dataset_info_from_attributes(attributes)
             self._load_runtime_indexes()
         except Exception:
             stack.close()
@@ -365,6 +544,14 @@ class _PointsCacheReader:
     def value_names(self) -> tuple[str, ...]:
         """Return canonical value labels in implicit value-ID order."""
         return self._attributes_or_raise().value_names
+
+    @property
+    def dataset_info(self) -> _CacheDatasetInfo:
+        """Return the immutable viewer-facing description of this cache."""
+        self._require_open()
+        if self._dataset_info is None:
+            raise RuntimeError("Cache dataset information is not loaded.")
+        return self._dataset_info
 
     @property
     def cache_generation_id(self) -> str:
@@ -416,12 +603,12 @@ class _PointsCacheReader:
     def load_bucket_lookup_indexes(
         self,
         *,
-        max_resident_bytes: int,
+        max_resident_bytes: int | None,
         levels: tuple[int, ...] | None = None,
         bucket_keys: tuple[tuple[int, int], ...] | None = None,
         progress: Callable[[int, int], None] | None = None,
     ) -> int:
-        """Explicitly load an immutable, byte-bounded bucket lookup set.
+        """Explicitly load an immutable bucket lookup set.
 
         The complete requested set is projected before any large lookup array is
         read. Loading is atomic with respect to indexes introduced by this call:
@@ -433,6 +620,8 @@ class _PointsCacheReader:
         max_resident_bytes
             Positive upper bound for all cached bucket lookup-index array bytes
             after the operation, including indexes cached by earlier calls.
+            ``None`` disables the configured limit; projection and exact
+            post-load byte reconciliation still run.
         levels
             Optional sorted unique levels to load. ``None`` with no
             ``bucket_keys`` requests every serialized bucket.
@@ -448,26 +637,22 @@ class _PointsCacheReader:
         int
             Exact bytes retained by all loaded bucket lookup indexes.
         """
-        _require_integer_in_range(
-            max_resident_bytes,
-            "max_resident_bytes",
-            minimum=1,
-            maximum=_INT64_MAX,
-        )
+        if max_resident_bytes is not None:
+            _require_integer_in_range(
+                max_resident_bytes,
+                "max_resident_bytes",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
         if progress is not None and not callable(progress):
             raise ValueError("`progress` must be callable or None.")
         keys = self._requested_bucket_keys(levels=levels, bucket_keys=bucket_keys)
         cache = self._bucket_cache_or_raise()
-        readers = {
-            key: cache.get(level=key[0], bucket_id=key[1])
-            for key in keys
-        }
+        readers = {key: cache.get(level=key[0], bucket_id=key[1]) for key in keys}
         projected_total = cache.resident_lookup_bytes + sum(
-            reader.projected_lookup_bytes
-            for reader in readers.values()
-            if not reader.lookup_index_loaded
+            reader.projected_lookup_bytes for reader in readers.values() if not reader.lookup_index_loaded
         )
-        if projected_total > max_resident_bytes:
+        if max_resident_bytes is not None and projected_total > max_resident_bytes:
             raise ValueError(
                 f"Bucket lookup indexes require {projected_total} resident bytes, "
                 f"exceeding `max_resident_bytes={max_resident_bytes}`."
@@ -528,7 +713,7 @@ class _PointsCacheReader:
         self,
         value_ids: npt.NDArray[np.uint32],
         *,
-        max_resident_bytes: int,
+        max_resident_bytes: int | None,
     ) -> _SelectedValueIndex | None:
         """Read and retain selected value-to-tile records for every level.
 
@@ -542,8 +727,9 @@ class _PointsCacheReader:
         The resident representation is compact relative to point payloads: it
         retains only selected value-to-tile manifest rows, aligned point counts,
         and per-value pointers—not point coordinates or point-level value IDs.
-        Its exact NumPy-buffer footprint is projected and checked against
-        ``max_resident_bytes`` before either large catalog array is read.
+        Its exact NumPy-buffer footprint is projected before either large
+        catalog array is read. A configured ``max_resident_bytes`` is checked
+        against that projection.
 
         Parameters
         ----------
@@ -551,6 +737,8 @@ class _PointsCacheReader:
             Nonempty sorted unique canonical value IDs.
         max_resident_bytes
             Maximum retained NumPy-buffer bytes allowed for the loaded index.
+            ``None`` disables the configured limit; projection and exact
+            post-load byte reconciliation still run.
 
         Returns
         -------
@@ -561,12 +749,13 @@ class _PointsCacheReader:
         value_ids = self._require_value_ids(value_ids)
         if value_ids is None:
             raise ValueError("`value_ids` must be supplied when loading a selected-value index.")
-        _require_integer_in_range(
-            max_resident_bytes,
-            "max_resident_bytes",
-            minimum=1,
-            maximum=_INT64_MAX,
-        )
+        if max_resident_bytes is not None:
+            _require_integer_in_range(
+                max_resident_bytes,
+                "max_resident_bytes",
+                minimum=1,
+                maximum=_INT64_MAX,
+            )
         if len(value_ids) == len(self.value_names):
             return None
 
@@ -575,7 +764,7 @@ class _PointsCacheReader:
         record_counts = pointers[:, indexes + 1] - pointers[:, indexes]
         projected_bytes = value_ids.nbytes + pointers.shape[0] * (len(value_ids) + 1) * np.dtype(np.uint64).itemsize
         projected_bytes += int(record_counts.sum(dtype=np.uint64)) * 2 * np.dtype(np.uint64).itemsize
-        if projected_bytes > max_resident_bytes:
+        if max_resident_bytes is not None and projected_bytes > max_resident_bytes:
             raise ValueError(
                 f"Selected-value index requires {projected_bytes} resident bytes, "
                 f"exceeding `max_resident_bytes={max_resident_bytes}`."
@@ -603,14 +792,14 @@ class _PointsCacheReader:
             raise RuntimeError("Selected-value index bytes differ from the preflight projection.")
         return value_index
 
-    def read_viewport(
+    def plan_viewport(
         self,
         level: int,
         viewport: _IntrinsicViewport,
         *,
         value_index: _SelectedValueIndex | None = None,
-    ) -> _ViewportReadResult:
-        """Read positive logical tiles intersecting one intrinsic viewport.
+    ) -> _ViewportReadPlan:
+        """Plan positive viewport tiles entirely from resident catalog indexes.
 
         Parameters
         ----------
@@ -622,33 +811,109 @@ class _PointsCacheReader:
         value_index
             Loaded selected-value index, or ``None`` for all values.
 
+        Returns
+        -------
+        _ViewportReadPlan
+            Immutable generation- and selection-bound read instructions in
+            manifest spatial order.
+
         Notes
         -----
-        Positive-tile discovery uses only resident manifest and selected-index arrays.
-        Every positive bucket's lookup index must already be resident. The
-        subsequent bucket-local point payload reads remain I/O by design.
+        Planning reads no point payload and opens no bucket. It retains private
+        manifest and bucket addresses so a later subset read does not repeat
+        catalog discovery, while callers operate only on logical tile keys.
         """
         self._require_level(level)
         value_index = self._require_selected_value_index(value_index)
+        requested_value_ids = (
+            None if value_index is None else tuple(int(value_id) for value_id in value_index.value_ids)
+        )
         visible_rows = self._visible_manifest_rows(level, viewport)
-        if len(visible_rows) == 0:
-            return _ViewportReadResult(level=level, tiles=())
 
-        # Each request pairs a global manifest row with either None for all
-        # values or the selected value IDs known to be present in that tile.
+        # ``manifest_selections`` pairs each visible global manifest row (one
+        # logical tile) with the selected value IDs present in that tile.
+        # Its entries have shape:
+        #     (global_manifest_row, applicable_value_ids_or_None)
+        # For example:
+        #     all values:      (100, None), (101, None)
+        #     values 3 and 9:  (100, uint32[3]), (102, uint32[3, 9])
+        # ``None`` requests every value in an all-values tile; a uint32 array
+        # requests only selected values known to occur in that manifest tile.
+        # Keeping this intermediate as an iterator lets the common construction
+        # below add logical tile and physical bucket identity exactly once.
+        manifest_selections: Iterator[tuple[int, npt.NDArray[np.uint32] | None]]
         if value_index is None:
-            requests = tuple((int(row), None) for row in visible_rows)
+            manifest_selections = ((int(row), None) for row in visible_rows)
         else:
             # Intersect the immutable selected-value index with the visible manifest
             # rows. Catalog Zarr I/O is forbidden on this viewport-time path.
             value_ids_by_manifest_row = self._selected_value_manifest(level, visible_rows, value_index)
-            requests = tuple(
+            manifest_selections = (
                 (manifest_row, value_ids_by_manifest_row[manifest_row])
                 for manifest_row in sorted(value_ids_by_manifest_row)
             )
+        planned = tuple(
+            _PlannedTileRead(
+                level=level,
+                tile_x=self._descriptors[manifest_row].tile_x,
+                tile_y=self._descriptors[manifest_row].tile_y,
+                manifest_row=manifest_row,
+                bucket_id=self._descriptors[manifest_row].bucket_id,
+                applicable_value_ids=selected,
+            )
+            for manifest_row, selected in manifest_selections
+        )
+        return _ViewportReadPlan(
+            cache_generation_id=self.cache_generation_id,
+            requested_value_ids=requested_value_ids,
+            level=level,
+            requests=planned,
+        )
+
+    def read_planned_tiles(
+        self,
+        plan: _ViewportReadPlan,
+        tile_keys_to_read: tuple[tuple[int, int, int], ...],
+    ) -> _ViewportReadResult:
+        """Read a unique subset of one viewport plan in original plan order.
+
+        ``tile_keys_to_read`` identifies the plan subset to read physically.
+        An empty subset performs no bucket IO. Nonempty requests reuse the
+        canonical one-batch-per-bucket display path.
+        """
+        self._require_viewport_plan_compatible(plan)
+        if not isinstance(tile_keys_to_read, tuple) or any(
+            not isinstance(key, tuple)
+            or len(key) != 3
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in key)
+            for key in tile_keys_to_read
+        ):
+            raise ValueError("`tile_keys_to_read` must contain (level, tile_x, tile_y) integer tuples.")
+        if len(set(tile_keys_to_read)) != len(tile_keys_to_read):
+            raise ValueError("`tile_keys_to_read` must not contain duplicates.")
+        tile_keys_to_read_set = set(tile_keys_to_read)
+        unknown = tile_keys_to_read_set - set(plan.tile_keys)
+        if unknown:
+            raise ValueError("`tile_keys_to_read` contains a tile absent from the viewport plan.")
+        requests = tuple(
+            (request.manifest_row, request.applicable_value_ids)
+            for request in plan.requests
+            if request.tile_key in tile_keys_to_read_set
+        )
         if not requests:
-            return _ViewportReadResult(level=level, tiles=())
-        return self._read_manifest_requests(level, requests)
+            return _ViewportReadResult(level=plan.level, tiles=())
+        return self._read_manifest_requests(plan.level, requests)
+
+    def read_viewport(
+        self,
+        level: int,
+        viewport: _IntrinsicViewport,
+        *,
+        value_index: _SelectedValueIndex | None = None,
+    ) -> _ViewportReadResult:
+        """Conveniently plan and read every positive tile in one viewport."""
+        plan = self.plan_viewport(level, viewport, value_index=value_index)
+        return self.read_planned_tiles(plan, plan.tile_keys)
 
     def select_level(
         self,
@@ -859,8 +1124,7 @@ class _PointsCacheReader:
         for descriptor in self._descriptors:
             descriptors_by_bucket.setdefault((descriptor.level, descriptor.bucket_id), []).append(descriptor)
         self._descriptors_by_bucket = {
-            key: tuple(bucket_descriptors)
-            for key, bucket_descriptors in descriptors_by_bucket.items()
+            key: tuple(bucket_descriptors) for key, bucket_descriptors in descriptors_by_bucket.items()
         }
         self._manifest_row_by_tile = lookup
 
@@ -1425,6 +1689,21 @@ class _PointsCacheReader:
             raise ValueError("Selected-value index contains an ID outside the serialized vocabulary.")
         return value_index
 
+    def _require_viewport_plan_compatible(self, plan: _ViewportReadPlan) -> None:
+        """Require a plan compatible with the currently opened cache.
+
+        ``_ViewportReadPlan`` owns its internal request consistency. This check
+        only binds that immutable plan to the active generation, serialized
+        levels, and value vocabulary without rescanning every planned tile.
+        """
+        if not isinstance(plan, _ViewportReadPlan):
+            raise ValueError("`plan` must be _ViewportReadPlan.")
+        if plan.cache_generation_id != self.cache_generation_id:
+            raise ValueError("Viewport plan belongs to another cache generation.")
+        self._require_level(plan.level)
+        if plan.requested_value_ids is not None and plan.requested_value_ids[-1] >= len(self.value_names):
+            raise ValueError("Viewport plan selection contains an ID outside the serialized vocabulary.")
+
     def _require_level(self, level: int) -> _LevelMetadata:
         attributes = self._attributes_or_raise()
         _require_integer_in_range(level, "level", maximum=len(attributes.levels) - 1)
@@ -1485,6 +1764,7 @@ class _PointsCacheReader:
         self._catalog = None
         self._bucket_cache = None
         self._attributes = None
+        self._dataset_info = None
         self._manifest_level_indptr = None
         self._manifest_bucket_id = None
         self._manifest_bucket_tile_index = None
@@ -1498,6 +1778,65 @@ class _PointsCacheReader:
         self._manifest_row_by_tile = {}
         self._resident_index_bytes = 0
         self._open = False
+
+
+def _dataset_info_from_attributes(attributes: _CacheAttributes) -> _CacheDatasetInfo:
+    """Copy validated cache metadata into the narrow viewer-facing contract."""
+    return _CacheDatasetInfo(
+        cache_generation_id=attributes.cache_generation_id,
+        points_name=attributes.source.points_name,
+        value_column=attributes.source.value_column,
+        value_names=attributes.value_names,
+        x_origin=attributes.geometry.x_origin,
+        y_origin=attributes.geometry.y_origin,
+        x_min=attributes.geometry.x_min,
+        x_max=attributes.geometry.x_max,
+        y_min=attributes.geometry.y_min,
+        y_max=attributes.geometry.y_max,
+        levels=tuple(
+            _CacheLevelInfo(
+                level=level.level,
+                kind=level.kind,
+                tile_size=level.tile_size,
+                grid_width=level.grid_width,
+                grid_height=level.grid_height,
+                max_points_per_tile=level.max_points_per_tile,
+                bucket_count=level.bucket_count,
+                tile_count=level.tile_count,
+                point_count=level.point_count,
+            )
+            for level in attributes.levels
+        ),
+        overview_point_budget=attributes.build.overview_point_budget,
+    )
+
+
+def _require_cache_generation_id(value: object) -> None:
+    """Require the canonical UUID form used by published cache generations."""
+    if not isinstance(value, str):
+        raise ValueError("`cache_generation_id` must be a canonical UUID string.")
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as error:
+        raise ValueError("`cache_generation_id` must be a canonical UUID string.") from error
+    if str(parsed) != value:
+        raise ValueError("`cache_generation_id` must be a canonical lowercase UUID string.")
+
+
+def _require_requested_value_ids(value: object) -> None:
+    """Require the canonical all-values or requested-value plan identity."""
+    if value is None:
+        return
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or any(
+            not isinstance(value_id, int) or isinstance(value_id, bool) or not 0 <= value_id <= _UINT32_MAX
+            for value_id in value
+        )
+        or value != tuple(sorted(set(value)))
+    ):
+        raise ValueError("`requested_value_ids` must be None or a nonempty sorted unique value-ID tuple.")
 
 
 def _read_only_array(catalog: _CatalogReader, name: str) -> np.ndarray:

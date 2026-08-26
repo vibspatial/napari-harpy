@@ -140,6 +140,23 @@ Open the widgets from the napari plugin menu:
 - `Plugins -> napari-harpy -> Object Classification`
 - `Plugins -> napari-harpy -> Annotation`
 
+### Optional real-OpenGL renderer qualification
+
+The tiled-points renderer includes one opt-in real-canvas qualification test at
+[`tests/viewer/tiled_points/vispy/test_real_canvas.py`](tests/viewer/tiled_points/vispy/test_real_canvas.py).
+It is skipped during ordinary test runs because it requires a working
+Qt, VisPy, and OpenGL environment. Run it explicitly with:
+
+```bash
+NAPARI_HARPY_RUN_REAL_GL_TESTS=1 \
+.venv/bin/pytest -q tests/viewer/tiled_points/vispy/test_real_canvas.py
+```
+
+The focused renderer unit tests remain part of ordinary test runs; this
+additional qualification creates a real canvas, compiles and executes the
+custom shaders, and compares the framebuffer result with standard VisPy
+markers.
+
 ## Debug script
 
 A small local debug script is available at
