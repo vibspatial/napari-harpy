@@ -9,6 +9,7 @@ from napari._vispy.layers.base import VispyBaseLayer
 from vispy.scene.visuals import Compound
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TileResidencyKey,
@@ -156,15 +157,17 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         point_diameter event       --->  point-size uniforms
         value_palette event        --->  palette-texture update
         render_snapshot event      --->  atomic tile activation
+        render_snapshot_result     <---  generation-bound applied acknowledgement
         base layer events          --->  visibility, opacity, blending,
                                           ordering, and layer transform
 
     The logical model never contains visible point coordinates or owns GPU
     resources. This renderer performs no cache planning, Zarr reads, or value
     selection; it accepts complete immutable snapshots produced by the worker
-    boundary and mutates VisPy only on the GUI thread. It reads but does not
-    choose or mutate the model's palette. Closure disconnects model events and
-    releases renderer-owned buffers, texture, scene nodes, and residency state.
+    boundary, acknowledges whether each candidate was applied, and mutates
+    VisPy only on the GUI thread. It reads but does not choose or mutate the
+    model's palette. Closure disconnects model events and releases
+    renderer-owned buffers, texture, scene nodes, and residency state.
     """
 
     def __init__(self, layer: TiledPointsLayerModel, font_info: FontInfo) -> None:
@@ -332,7 +335,17 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         self._pending_keys = ()
 
     def _on_render_snapshot(self, event: Event) -> None:
-        self.apply_snapshot(event.value)
+        snapshot = event.value
+        if not isinstance(snapshot, TiledPointsRenderSnapshot):
+            raise ValueError("The render-snapshot event must carry TiledPointsRenderSnapshot.")
+        applied = self.apply_snapshot(snapshot)
+        self.layer.events.render_snapshot_result(
+            value=TiledPointsRenderResult(
+                request_generation=snapshot.request_generation,
+                selection_generation=snapshot.selection_generation,
+                applied=applied,
+            )
+        )
 
     def _on_value_palette_change(self, event: Event) -> None:
         """Upload the shared palette and schedule its use in the next frame.

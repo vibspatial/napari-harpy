@@ -111,13 +111,15 @@ class TiledPointsLayerModel(Layer):
             visible=visible,
         )
         # ``viewport`` carries an outbound normalized viewport request;
-        # ``render_snapshot`` carries the accepted render result back into the
-        # layer. The model coordinates these events but performs no cache IO.
+        # ``render_snapshot`` carries renderer input; ``render_snapshot_result``
+        # acknowledges whether that candidate was atomically applied. The model
+        # coordinates these events but performs no cache IO.
         self.events.add(
             display_status=Event,
             point_diameter=Event,
             render_error=Event,
             render_snapshot=Event,
+            render_snapshot_result=Event,
             value_palette=Event,
             viewport=Event,
         )

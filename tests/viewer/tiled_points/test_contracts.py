@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TiledPointsViewportState,
@@ -157,6 +158,32 @@ def test_render_snapshot_rejects_omissions_outside_selected_values() -> None:
             omitted_value_ids=(2,),
             **common,
         )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        TiledPointsRenderResult(4, 2, True),
+        TiledPointsRenderResult(4, 2, False),
+    ],
+)
+def test_render_result_preserves_generation_bound_applied_state(result: TiledPointsRenderResult) -> None:
+    assert result.request_generation == 4
+    assert result.selection_generation == 2
+    assert isinstance(result.applied, bool)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        (0, 2, True),
+        (4, -1, True),
+        (4, 2, 1),
+    ],
+)
+def test_render_result_rejects_invalid_identity_or_applied_state(args: tuple[object, object, object]) -> None:
+    with pytest.raises(ValueError):
+        TiledPointsRenderResult(*args)  # type: ignore[arg-type]
 
 
 def test_viewport_request_preserves_gui_generations_and_budget() -> None:

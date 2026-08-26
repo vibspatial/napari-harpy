@@ -428,6 +428,31 @@ class TiledPointsRenderSnapshot:
 
 
 @dataclass(frozen=True)
+class TiledPointsRenderResult:
+    """Acknowledge whether the renderer applied one generation-bound snapshot.
+
+    Parameters
+    ----------
+    request_generation
+        Viewport-request generation copied from the candidate snapshot.
+    selection_generation
+        Value-selection generation copied from the candidate snapshot.
+    applied
+        Whether the renderer atomically activated the candidate tile set.
+    """
+
+    request_generation: int
+    selection_generation: int
+    applied: bool
+
+    def __post_init__(self) -> None:
+        _require_positive_integer(self.request_generation, "request_generation")
+        _require_nonnegative_integer(self.selection_generation, "selection_generation")
+        if not isinstance(self.applied, bool):
+            raise ValueError("`applied` must be bool.")
+
+
+@dataclass(frozen=True)
 class _ViewportRequest:
     """Carry one GUI-stamped viewport request to the cache worker.
 

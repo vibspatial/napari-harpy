@@ -9,6 +9,7 @@ from napari._vispy.utils.qt_font import FontInfo
 from napari_harpy.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
+    TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TileResidencyKey,
@@ -138,6 +139,22 @@ def test_renderer_reuses_overlapping_tiles_and_style_changes_do_not_upload(
         assert created_keys == [first.key, second.key, third.key]
         assert visual.palette_update_count == 1
         assert visual.palette_gpu_bytes == 12
+    finally:
+        visual.close()
+
+
+def test_render_snapshot_event_emits_generation_bound_application_result(
+    maximum_texture_size: None,
+) -> None:
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    results: list[TiledPointsRenderResult] = []
+    layer.events.render_snapshot_result.connect(lambda event: results.append(event.value))
+    snapshot = _snapshot(layer, (_tile(layer, 0),), generation=3)
+    try:
+        layer.events.render_snapshot(value=snapshot)
+
+        assert results == [TiledPointsRenderResult(3, 0, True)]
     finally:
         visual.close()
 
