@@ -197,7 +197,7 @@ A read-only scan of the supplied cache's Exact-level range metadata was used to 
 | Value-major layout inside the existing 69 buckets, 4,096-row chunks | 69 | 282,624 | 4.7× | 69 |
 | One value-major array for the complete level, 4,096-row chunks | 16 | 65,536 | 1.08× | 1 |
 
-Smaller chunks greatly reduce decoded content without changing physical row order. They do not reduce the number of sparse selections, and they increase the number of independently handled inner chunks from 4,291 to 5,305 in the 64-row case. They also leave all 1,067 current shards involved because AAMP is distributed throughout the full tissue. Smaller `location` chunks are therefore a useful intermediate experiment, but they do not provide the locality of a value-major payload.
+Smaller chunks greatly reduce decoded content without changing physical row order. They do not reduce the number of sparse selections, and they increase the number of independently handled inner chunks from 4,291 to 5,305 in the 64-row case. They also leave all 1,067 current shards involved because AAMP is distributed throughout the full tissue. The completed smaller-chunk benchmarks did not materially solve the end-to-end latency, so this is no longer a primary implementation direction. Smaller chunks remain useful only as a comparison baseline for a value-major prototype.
 
 ### Fewer buckets are not a primary fix for the current layout
 
@@ -230,23 +230,84 @@ The two physical representations serve different access patterns:
 | All values or complete logical tiles | Existing tile-major bucket payload |
 | One or a small subset of values | Per-level value-major coordinate payload |
 
-The cache catalog already persists value-to-tile records in `(level, value_id, manifest_index)` order. A value-major coordinate payload can follow that same record order and use compact per-level/value point pointers plus the existing record counts for exact addressing.
+#### What is physically duplicated
 
-For a proper selected-value request, point-level `value_id` does not need to be stored in or read from the value-major payload: the requested value and the catalog intervals already identify it. A full-extent AAMP read would become one contiguous value interval; a rectangular partial viewport would normally become a small number of spatial runs within that value instead of one interval per positive tile.
+This is genuine physical duplication of the coordinate rows. A Zarr array has one physical row order, so the same logical coordinates must be materialized once in tile-major order and once in value-major order. An alternate index into the existing tile-major rows would not solve the decode problem: the index could find AAMP's rows, but those rows would still be scattered across the same tile-major chunks.
+
+It is not necessary to duplicate the complete cache or every per-point field:
+
+| Existing structure | Value-major sidecar | Reason |
+|---|---|---|
+| `location` | Duplicate and reorder | These are the bytes that must become contiguous for selected-value reads. |
+| `value_id` | Omit | The requested value and its catalog interval already identify every returned row. |
+| `point_id` | Omit | It can establish deterministic construction order and then be discarded from the display sidecar. |
+| tile manifest and transforms | Reuse | `manifest_index` still identifies the tile offset for tile-relative coordinates. |
+| value-to-tile catalog and range metadata | Reuse | The catalog already identifies each value's positive tiles and point counts. |
+
+A minimal representation is therefore conceptually:
+
+```text
+value_major/
+    level_0/
+        location              # float32 [N_exact, 2]
+        record_point_indptr   # compact offsets aligned with catalog records
+```
+
+Rows in `location` are ordered by `(value_id, manifest_index, point_id)`, but only the coordinates are persisted. `record_point_indptr` can either be stored directly or derived once from the catalog's record counts. It maps the existing value/tile records to coordinate intervals without adding point-level IDs.
+
+The cache catalog already persists value-to-tile records in `(level, value_id, manifest_index)` order. The sidecar follows that same record order. A full-extent AAMP read becomes one contiguous value interval; a rectangular partial viewport becomes a small set of value-major spatial runs rather than one interval in each positive tile. The returned tile-relative coordinates can still be split by catalog record and combined with the existing manifest tile offsets by the snapshot packer.
+
+#### Measured storage consequence
+
+The supplied cache currently occupies approximately 1.57 GiB of physical file bytes. Its compressed physical components include:
+
+| Component | Measured physical size |
+|---|---:|
+| Complete cache | 1.57 GiB |
+| `location`, all levels | 1.09 GiB |
+| `location`, Exact level only | 0.79 GiB |
+| `point_id`, all levels | 300 MiB |
+| `value_id`, all levels | 107 MiB |
+| ranges plus catalog/metadata | approximately 88 MiB |
+
+If reordered coordinates compress similarly to the current coordinates, the storage projections are:
+
+| Sidecar scope | Estimated added size | Estimated new cache size | Increase |
+|---|---:|---:|---:|
+| Exact-level `location` only | 0.79 GiB | 2.37 GiB | approximately 50% |
+| All-level `location` only | 1.09 GiB | 2.67 GiB | approximately 69% |
+
+These are estimates, not rebuilt-cache measurements. Changing row order can improve or worsen compression, so actual compressed bytes must be recorded by the prototype. The important distinction is that the proposed Exact-only sidecar duplicates approximately 0.79 GiB of coordinates, not the full 1.57 GiB cache and not `point_id` or `value_id`.
+
+#### Recommended staged prototype
+
+The first cache-side prototype should be deliberately narrow:
+
+1. Build an **Exact-level-only, coordinate-only** value-major sidecar in `(value_id, manifest_index, point_id)` order.
+2. Reuse the existing manifest and value-to-tile catalog, adding only compact coordinate offsets where required.
+3. Route proper selected-value Exact reads through the sidecar. Preserve the current tile-major path for all-value and complete-tile reads.
+4. Measure construction time, actual compressed size, cold and warm selected-value reads, decoded bytes, physical operations, and startup memory for sparse and dense genes at full and partial viewports.
+5. Add Bridge or other spatial levels only if runtime evidence shows that selected-value reads at those levels remain an important bottleneck.
+
+Cache construction time is intentionally not an acceptance constraint unless it becomes operationally prohibitive. The main acceptance question is whether the extra approximately 0.79 GiB removes the scattered-decode latency sufficiently to improve interaction after renderer batching.
+
+If that storage increase is unacceptable, lower-storage variants can be evaluated without pretending that an index alone fixes locality:
+
+- build persistent value-major coordinates lazily for selected or frequently used values; AAMP's 60,512 float32 two-dimensional coordinates are only approximately 0.46 MiB raw, excluding metadata;
+- store explicitly validated, display-only quantized tile-relative coordinates, for example `uint16`, which halves the raw coordinate width but introduces a precision contract; or
+- offer a value-major-only cache profile for workflows that do not require efficient all-value or complete-tile reads, accepting the loss of the current primary access order.
 
 This design deliberately spends cache-construction time and storage to improve runtime behavior. It also creates a path that does not require the complete 568.4 MiB bucket sparse-range lookup to be resident for selected-value reads. The existing small selected-value catalog index can perform discovery, while the value-major payload provides direct coordinate access.
 
-### Lower-risk cache improvements
+### Complementary cache improvements and comparison baselines
 
-Before or independently of the dual-layout work, two smaller changes are justified:
+One smaller runtime change remains independently justified:
 
 1. **Do not read point-level `value_id` for proper subsets.**
 
    `resolve_selected_tile_intervals()` already knows the selected value associated with each range. Reconstructing the aligned IDs from the resolved ranges would remove the measured 1.86-second `value_id` Zarr boundary for AAMP. A one-value renderer could alternatively use a uniform value ID.
 
-2. **Give `location` an independent, smaller chunk-row setting.**
-
-   A 128- or 256-row prototype would reduce AAMP coordinate decode amplification substantially without forcing construction-only `point_id` storage to use the same very small chunks. The benchmark must include cache size, inner-chunk index size, physical reads, and wall time; decoded-row reduction alone is not sufficient acceptance evidence.
+The existing smaller-chunk and fewer-bucket benchmarks did not materially solve the end-to-end problem. A 128- or 256-row `location` setting may be retained as a controlled comparison when measuring the value-major prototype, but it is not a recommended implementation slice on its own. Any further comparison must include cache size, inner-chunk index size, physical reads, and wall time; decoded-row reduction alone is not sufficient acceptance evidence.
 
 An uncompressed or memory-mappable display payload is another possible local-cache tradeoff. It would let the operating system service sparse fixed-width rows without codec amplification, at the cost of larger storage and a more local-filesystem-specific backend. The dual value-major Zarr payload should be evaluated first because it fixes locality while retaining the current storage model.
 
@@ -527,8 +588,8 @@ The practical priority is therefore:
 1. Replace one-visual-per-logical-tile rendering with one snapshot visual/program and one VBO fed by worker-prepared immutable render batches. This removes the quadratic GPU residency path rather than optimizing a tile-resource design that is no longer needed. Preserve logical tiles only at the storage and CPU-residency boundaries, and keep tile-proportional packing off the GUI thread. Add a second VBO only if measured behavior justifies ping-pong storage.
 2. Fix the quadratic CPU residency path, which remains useful for reusing decoded logical tiles across viewport requests.
 3. Stop reading point-level `value_id` for proper selected-value requests; reconstruct it from the already resolved value ranges or represent a one-value snapshot with a uniform.
-4. Prototype a per-level value-major coordinate payload alongside the existing tile-major payload. Compare it with 128- and 256-row `location` chunks using cold-read wall time, decoded bytes, physical operations, cache size, and startup memory.
-5. Treat fewer buckets and cross-bucket concurrency as secondary tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
+4. Prototype an Exact-level-only, coordinate-only value-major sidecar alongside the existing tile-major payload. This deliberately duplicates the Exact coordinate bytes, projected at approximately 0.79 GiB and a 50% cache increase, while reusing the manifest and value-to-tile catalog and omitting duplicate `value_id` and `point_id` arrays. Measure actual compressed size, cold and warm selected-value wall time, decoded bytes, physical operations, and startup memory. Extend the sidecar to other levels only if runtime evidence justifies their additional storage.
+5. Treat smaller chunks, fewer buckets, and cross-bucket concurrency as secondary comparisons or tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
 6. Add viewport debounce to avoid starting expensive cold requests for transient zoom states after the underlying read and render costs are controlled.
 
 The synthetic 1,000,000-point packing benchmark does not change the current 100,000-point implementation priority. It establishes forward-looking scalability evidence and the additional acceptance work required before the render budget is deliberately increased.
