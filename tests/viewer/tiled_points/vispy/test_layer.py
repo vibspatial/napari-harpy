@@ -89,6 +89,23 @@ def _snapshot(
     )
 
 
+def _track_tile_resource_creation(
+    visual: VispyTiledPointsLayer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[TileResidencyKey]:
+    """Record test-local tile uploads without retaining history in the renderer."""
+    created_keys: list[TileResidencyKey] = []
+    create_tile_resource = visual._create_tile_resource
+
+    def _record(tile: TiledPointsRenderTile):
+        resource = create_tile_resource(tile)
+        created_keys.append(tile.key)
+        return resource
+
+    monkeypatch.setattr(visual, "_create_tile_resource", _record)
+    return created_keys
+
+
 @pytest.fixture
 def maximum_texture_size(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("napari._vispy.layers.base.get_max_texture_sizes", lambda: (8192, 2048))
@@ -96,19 +113,21 @@ def maximum_texture_size(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_renderer_reuses_overlapping_tiles_and_style_changes_do_not_upload(
     maximum_texture_size: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = _layer(gpu_bytes=48)
     visual = VispyTiledPointsLayer(layer, FontInfo())
+    created_keys = _track_tile_resource_creation(visual, monkeypatch)
     first, second, third = (_tile(layer, tile_x) for tile_x in range(3))
     try:
         assert visual.apply_snapshot(_snapshot(layer, (first, second), generation=1))
-        assert visual.coordinate_upload_count == 2
+        assert created_keys == [first.key, second.key]
         assert visual.resident_gpu_tile_bytes == 24
 
         assert visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
         assert visual.active_keys == (second.key, third.key)
-        assert visual.coordinate_upload_count == 3
-        assert visual.coordinate_uploads_by_key[second.key] == 1
+        assert created_keys == [first.key, second.key, third.key]
+        assert created_keys.count(second.key) == 1
         assert visual.resident_gpu_tile_bytes == 36
 
         layer.point_diameter = 7.0
@@ -116,7 +135,7 @@ def test_renderer_reuses_overlapping_tiles_and_style_changes_do_not_upload(
         replacement[[0, 1]] = replacement[[1, 0]]
         layer.value_palette = replacement
 
-        assert visual.coordinate_upload_count == 3
+        assert created_keys == [first.key, second.key, third.key]
         assert visual.palette_update_count == 1
         assert visual.palette_gpu_bytes == 12
     finally:
@@ -125,6 +144,7 @@ def test_renderer_reuses_overlapping_tiles_and_style_changes_do_not_upload(
 
 def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
     maximum_texture_size: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = TiledPointsLayerModel(
         TiledPointsDatasetReference(
@@ -150,10 +170,11 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
         shear=(0.2,),
     )
     visual = VispyTiledPointsLayer(layer, FontInfo())
+    created_keys = _track_tile_resource_creation(visual, monkeypatch)
     tile = _tile(layer, 2)
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
-        upload_count = visual.coordinate_upload_count
+        assert created_keys == [tile.key]
 
         relative_x = tile.key.tile_x * tile.tile_size + float(tile.location[0, 0])
         relative_y = tile.key.tile_y * tile.tile_size + float(tile.location[0, 1])
@@ -166,7 +187,7 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
         )
 
         assert np.allclose(observed_xy, np.asarray(expected_yx)[::-1])
-        assert visual.coordinate_upload_count == upload_count
+        assert created_keys == [tile.key]
 
         layer.translate = (23.0, -29.0)
         remapped_xy = np.asarray(visual.node.transform.map((relative_x, relative_y, 0.0, 1.0)))[:2]
@@ -177,20 +198,24 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
             )
         )
         assert np.allclose(remapped_xy, np.asarray(remapped_yx)[::-1])
-        assert visual.coordinate_upload_count == upload_count
+        assert created_keys == [tile.key]
 
         layer.opacity = 0.25
         layer.visible = False
         assert visual.node.opacity == 0.25
         assert not visual.node.visible
-        assert visual.coordinate_upload_count == upload_count
+        assert created_keys == [tile.key]
     finally:
         visual.close()
 
 
-def test_renderer_capacity_failure_preserves_active_snapshot(maximum_texture_size: None) -> None:
+def test_renderer_capacity_failure_preserves_active_snapshot(
+    maximum_texture_size: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     layer = _layer(gpu_bytes=24)
     visual = VispyTiledPointsLayer(layer, FontInfo())
+    created_keys = _track_tile_resource_creation(visual, monkeypatch)
     first, second, third = (_tile(layer, tile_x) for tile_x in range(3))
     errors: list[Exception] = []
     layer.events.render_error.connect(lambda event: errors.append(event.value))
@@ -199,7 +224,7 @@ def test_renderer_capacity_failure_preserves_active_snapshot(maximum_texture_siz
         assert not visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
 
         assert visual.active_keys == (first.key, second.key)
-        assert visual.coordinate_upload_count == 2
+        assert created_keys == [first.key, second.key]
         assert visual.resident_gpu_tile_bytes == 24
         assert len(errors) == 1
         assert "max_gpu_tile_bytes=24" in str(errors[0])
@@ -241,9 +266,11 @@ def test_renderer_upload_failure_rolls_back_pending_resources(
 
 def test_zero_tile_snapshot_clears_active_membership_but_over_budget_does_not(
     maximum_texture_size: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = _layer()
     visual = VispyTiledPointsLayer(layer, FontInfo())
+    created_keys = _track_tile_resource_creation(visual, monkeypatch)
     tile = _tile(layer, 0)
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
@@ -253,7 +280,7 @@ def test_zero_tile_snapshot_clears_active_membership_but_over_budget_does_not(
         assert visual.apply_snapshot(_snapshot(layer, (), generation=3))
         assert visual.active_keys == ()
         assert visual.resident_tile_count == 1
-        assert visual.coordinate_upload_count == 1
+        assert created_keys == [tile.key]
     finally:
         visual.close()
 

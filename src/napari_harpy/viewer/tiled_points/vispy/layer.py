@@ -182,7 +182,6 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         self._gpu_tile_residency = _GpuTileResidency(layer.max_gpu_tile_bytes)
         self._active_keys: tuple[TileResidencyKey, ...] = ()
         self._pending_keys: tuple[TileResidencyKey, ...] = ()
-        self._coordinate_uploads: dict[TileResidencyKey, int] = {}
         self._palette_update_count = 0
 
         layer.events.render_snapshot.connect(self._on_render_snapshot)
@@ -219,16 +218,6 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
     def palette_gpu_bytes(self) -> int:
         """Return logical bytes occupied by the shared palette texture."""
         return self._palette.resident_bytes
-
-    @property
-    def coordinate_upload_count(self) -> int:
-        """Return the number of successfully created tile GPU resources."""
-        return sum(self._coordinate_uploads.values())
-
-    @property
-    def coordinate_uploads_by_key(self) -> dict[TileResidencyKey, int]:
-        """Return a copy of per-key coordinate upload counts."""
-        return dict(self._coordinate_uploads)
 
     @property
     def eviction_count(self) -> int:
@@ -289,7 +278,6 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
                     resource.close()
                     raise
                 created.append(tile.key)
-                self._coordinate_uploads[tile.key] = self._coordinate_uploads.get(tile.key, 0) + 1
             if missing:
                 # The Compound root was empty when napari first applied its GL
                 # state, so propagate the current blending mode to new children.
