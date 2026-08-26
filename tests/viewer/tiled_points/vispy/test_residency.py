@@ -15,7 +15,7 @@ _GENERATION = str(uuid4())
 
 
 @dataclass
-class _Resource:
+class _TrackingGpuTileResource:
     key: TileResidencyKey
     point_count: int = 1
     resident_bytes: int = 12
@@ -25,8 +25,8 @@ class _Resource:
         self.closed = True
 
 
-def _resource(tile_x: int, *, resident_bytes: int = 12) -> _Resource:
-    return _Resource(
+def _resource(tile_x: int, *, resident_bytes: int = 12) -> _TrackingGpuTileResource:
+    return _TrackingGpuTileResource(
         TileResidencyKey(
             cache_generation_id=_GENERATION,
             requested_value_ids=(1,),
