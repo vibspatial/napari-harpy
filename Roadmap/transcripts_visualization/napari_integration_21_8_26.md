@@ -2117,17 +2117,30 @@ headless runs and enabled explicitly for renderer qualification.
 
 ### Slice I7: compose the real cache-to-canvas session
 
-Deliverables:
+I7 is a composition and lifecycle slice. The expensive pieces already exist
+independently: the layer emits intrinsic viewports, the coordinator owns the
+latest-request mailbox, the worker session owns the cache reader and CPU tile
+residency, and the VisPy layer consumes complete immutable snapshots. Introduce
+one dedicated GUI-thread composition owner for one already-created
+`TiledPointsLayerModel` and make it own:
 
-- bind the real worker session and coordinator to `TiledPointsLayerModel`;
-- connect `TiledPointsLayerModel.events.viewport` to the GUI-side coordinator
-  callback, and disconnect it during layer/session teardown;
-- keep that callback non-blocking: it only submits or replaces the latest
-  request and performs no cache IO;
-- deliver worker results through queued GUI-thread signals;
-- connect render snapshots to the VisPy backend;
-- make the composition/listener docstring the authoritative description of the
-  complete request/result wiring and teardown ownership::
+```text
+TiledPointsLayerModel
+_TiledPointsCacheSession
+_TiledPointsViewportCoordinator
+their signal connections and terminal teardown
+```
+
+The composition owner is the only missing bridge between these boundaries. It
+must not absorb cache planning, Zarr reading, rendering, or application-specific
+points-panel policy. I8's `TiledPointsLayerBinding` will own or call this generic
+runtime composition when the napari-harpy points workflow is replaced.
+
+#### Compose the request and result paths
+
+Connect `TiledPointsLayerModel.events.viewport` to the GUI-side coordinator and
+connect accepted coordinator snapshots back to
+`TiledPointsLayerModel.events.render_snapshot`:
 
       TiledPointsLayerModel.events.viewport
               |
@@ -2163,22 +2176,93 @@ Deliverables:
               v
       VispyTiledPointsLayer
 
-  The source docstring must describe the concrete runtime contract without
-  referring to roadmap slices. Keep the model documentation limited to the
-  semantic direction of its outbound viewport and inbound snapshot events;
-- report Exact/Bridge/Spatial, selected counts, omitted values, and errors;
-- when `all_exact_present_values_omitted` is true, atomically apply the
-  zero-tile snapshot and report that the selected values are not represented at
-  the sampled LOD; do not retain stale points or describe this as biological
-  absence;
-- retain the prior snapshot during reads and selection changes;
-- exercise the complete flow with a small real Zarr cache.
+The outbound viewport callback runs on the GUI thread and must remain
+non-blocking. It only calls
+`_TiledPointsViewportCoordinator.submit_viewport()`, which either dispatches
+the request or replaces the one pending request. It performs no cache IO and
+does not wait for the worker. The existing one-active/one-latest-pending policy
+remains the sole camera-request coalescing boundary.
+
+The worker result crosses back through Qt queued signals. The coordinator first
+rejects obsolete request or selection generations and emits only an accepted
+complete `TiledPointsRenderSnapshot`. The composition owner then emits that
+snapshot through the model's `render_snapshot` event. The registered
+`VispyTiledPointsLayer` already listens to that event and performs GUI-thread
+GPU-resource preparation and complete tile-set activation.
+
+Make the composition owner's source docstring the authoritative description of
+this concrete request/result wiring and teardown ownership, using the explicit
+class names above and no roadmap terminology. Keep the model documentation
+limited to the semantic direction of its outbound `viewport` and inbound
+`render_snapshot` events.
+
+#### Preserve the active visual until a complete replacement exists
+
+Do not clear the current render snapshot merely because a viewport read or
+selected-value-index replacement starts. The preceding accepted snapshot stays
+visible while level selection, Zarr reads, value-index replacement, or mailbox
+waiting is in progress. Only an accepted complete within-budget snapshot
+atomically replaces it.
+
+Handle the terminal result cases distinctly:
+
+- a normal empty viewport applies its zero-tile snapshot and clears stale
+  points;
+- when `all_exact_present_values_omitted` is true, apply the zero-tile snapshot
+  and report that the selected values are not represented at the sampled LOD;
+  do not retain stale points and do not describe this as biological absence;
+- an over-budget snapshot performs no point IO or GPU work, retains the prior
+  accepted visual, and reports that no serialized level satisfied the runtime
+  budget;
+- a cache or render failure retains the prior accepted visual and reports the
+  structured failure.
+
+#### Publish presentation status
+
+Translate accepted snapshots and failures into `TiledPointsLayerStatus` and
+assign it through `TiledPointsLayerModel.display_status`. Report:
+
+- Exact, Bridge, or Spatial level;
+- rendered point and tile counts;
+- whether the level is sampled;
+- omitted selected value IDs;
+- loading, ready, empty, sampled-omission, over-budget, and failure messages.
+
+The existing Qt controls remain passive consumers of the model's
+`display_status` event. The composition owner supplies runtime status; the
+controls must not inspect the cache session or infer cache state themselves.
+
+#### Own startup and teardown
+
+Construction installs all signal connections and starts the cache session. The
+session opens only the published Zarr cache and its resident lookup indexes; it
+does not inspect or scan the original points dataframe.
+
+Closure is terminal and idempotent. Disconnect the layer viewport listener and
+all result/status listeners first, close the coordinator so it discards active
+and pending GUI requests, and then request cache-session closure. Reader cleanup
+continues on the reader's worker thread. A queued or already-running result may
+finish warming worker-owned residency, but after disconnection and generation
+checks it cannot update a removed layer or its VisPy resources.
+
+#### Exercise the composed runtime
+
+Add focused composition tests plus one complete small real-Zarr-cache flow.
+Cover first view, unchanged viewport, one-tile pan, LOD change, selected-value
+change, ordinary empty view, complete sampled omission, over-budget view,
+recoverable failure, and close with work in flight. Assert both sides of the
+thread boundary: cache/Zarr work stays on the worker thread and model/status/
+VisPy mutation stays on the GUI thread.
 
 Exit criteria:
 
 - opening the layer never scans the source dataframe;
 - first view, warm pan, LOD change, selection change, empty view, over-budget
   view, and close all follow the documented flow;
+- reads and selected-value-index changes retain the prior accepted snapshot
+  until a complete replacement is available;
+- ordinary empty and complete sampled-omission snapshots clear stale tiles,
+  while over-budget and failed requests retain the prior visual and report why;
 - a viewport whose tile set is unchanged performs neither point IO nor upload;
 - a one-tile pan reads/uploads only the entering tile;
 - all VisPy mutation is observed on the GUI thread;
