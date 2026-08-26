@@ -41,6 +41,25 @@ the signal wiring around one already-created layer::
             v
     _TiledPointsLayerRuntime commits display status
 
+Renderer failures follow a parallel acknowledgement path::
+
+    VispyTiledPointsLayer encounters a specific exception
+            |
+            v
+    TiledPointsLayerModel.events.render_error(error)
+            |
+            v
+    _TiledPointsLayerRuntime._on_render_error()
+            |-- records the error on _PendingRenderActivation
+            `-- publishes the specific failure status
+            |
+            v
+    TiledPointsRenderResult(applied=False)
+            |
+            v
+    _TiledPointsLayerRuntime clears the pending activation without replacing
+    the specific error with a generic renderer-declined error
+
 The runtime performs no cache IO and does not address the VisPy layer directly.
 Its viewport callback only submits to the coordinator's latest-request mailbox.
 Worker results return through queued Qt signals, and the runtime emits only
@@ -323,6 +342,9 @@ class _TiledPointsLayerRuntime(QObject):
             return
         pending = self._pending_render_activation
         if pending is not None:
+            # Preserve the renderer's specific failure so the subsequent
+            # ``applied=False`` acknowledgement does not publish a second,
+            # generic renderer-declined error.
             pending.error = event.value
         self._set_transient_status(f"Display failed: {_error_message(event.value)}")
 
