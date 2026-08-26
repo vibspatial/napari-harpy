@@ -38,12 +38,28 @@ class TiledPointsLayerModel(Layer):
     bounds. Visible point payloads remain runtime and renderer state; they are
     never assigned to this model. The layer consequently keeps a stable extent
     while viewport tiles, value selections, and levels of detail change.
+
+    Before the first instance is added to napari, integration code calls
+    ``napari_harpy.viewer.tiled_points.napari.register_tiled_points_layer()``.
+    That function installs napari's private
+    ``TiledPointsLayerModel -> VispyTiledPointsLayer`` mapping. Constructing this
+    model alone does not construct a renderer. When the instance is later
+    inserted into a GUI viewer's layer list, napari's layer-insertion callback
+    consults the mapping and constructs
+    ``VispyTiledPointsLayer(model, font_info)`` on the GUI thread.
+
+    This model owns persistent logical and presentation state: dataset
+    identity, extent, transforms, palette, point style, and renderer input
+    events. The corresponding VisPy layer owns scene nodes and GPU resources.
+    The model itself performs no cache reads.
     """
 
     def __init__(
         self,
         data: TiledPointsDatasetReference,
         *,
+        value_palette: npt.NDArray[np.uint8],
+        max_gpu_tile_bytes: int,
         affine: Any | None = None,
         blending: str = "translucent",
         metadata: dict[str, Any] | None = None,
@@ -62,6 +78,8 @@ class TiledPointsLayerModel(Layer):
         if not isinstance(data, TiledPointsDatasetReference):
             raise ValueError("`data` must be TiledPointsDatasetReference.")
         self._data = data
+        self._value_palette = _validated_value_palette(value_palette, value_count=data.value_count)
+        self._max_gpu_tile_bytes = _require_positive_integer(max_gpu_tile_bytes, "max_gpu_tile_bytes")
         self._point_diameter = _require_point_diameter(point_diameter)
         self._hard_render_point_budget = _require_positive_integer(
             hard_render_point_budget,
@@ -92,10 +110,15 @@ class TiledPointsLayerModel(Layer):
             units=units,
             visible=visible,
         )
+        # ``viewport`` carries an outbound normalized viewport request;
+        # ``render_snapshot`` carries the accepted render result back into the
+        # layer. The model coordinates these events but performs no cache IO.
         self.events.add(
             display_status=Event,
             point_diameter=Event,
+            render_error=Event,
             render_snapshot=Event,
+            value_palette=Event,
             viewport=Event,
         )
         self.editable = False
@@ -112,6 +135,10 @@ class TiledPointsLayerModel(Layer):
             raise ValueError("`data` must be TiledPointsDatasetReference.")
         if data == self._data:
             return
+        if data.value_count != self._data.value_count:
+            raise ValueError(
+                "Replacement data must preserve `value_count`; construct a new layer for a new vocabulary."
+            )
         self._data = data
         self._clear_extent()
         self.events.data(value=data)
@@ -119,6 +146,24 @@ class TiledPointsLayerModel(Layer):
         # emit ``set_data`` again and also repeat no-op slicing, placeholder
         # thumbnail, and highlighting work for this logical 2D layer.
         self.events.set_data(value=data)
+
+    @property
+    def value_palette(self) -> npt.NDArray[np.uint8]:
+        """Return the complete immutable value-ID-aligned RGBA palette."""
+        return self._value_palette
+
+    @value_palette.setter
+    def value_palette(self, value: npt.NDArray[np.uint8]) -> None:
+        palette = _validated_value_palette(value, value_count=self.data.value_count)
+        if np.array_equal(palette, self._value_palette):
+            return
+        self._value_palette = palette
+        self.events.value_palette(value=palette)
+
+    @property
+    def max_gpu_tile_bytes(self) -> int:
+        """Return the logical GPU byte budget for retained tile resources."""
+        return self._max_gpu_tile_bytes
 
     @property
     def point_diameter(self) -> float:
@@ -288,3 +333,21 @@ def _require_positive_finite_float(value: float, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"`{name}` must be a positive finite number.")
     return float(value)
+
+
+def _validated_value_palette(
+    value: npt.NDArray[np.uint8],
+    *,
+    value_count: int,
+) -> npt.NDArray[np.uint8]:
+    """Return an owned read-only copy of one complete RGBA value palette."""
+    if (
+        not isinstance(value, np.ndarray)
+        or value.dtype != np.dtype(np.uint8)
+        or value.ndim != 2
+        or value.shape != (value_count, 4)
+    ):
+        raise ValueError(f"`value_palette` must be a uint8 array with shape ({value_count}, 4).")
+    palette = np.array(value, dtype=np.uint8, order="C", copy=True)
+    palette.flags.writeable = False
+    return palette
