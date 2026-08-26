@@ -119,6 +119,25 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
                         v
         VispyTiledPointsLayer(model, font_info)
 
+    Like napari's standard layer renderers, this adapter exposes one root
+    ``node`` that napari attaches to the canvas scene. Here that node is a
+    ``Compound`` containing the dynamically retained tile visuals::
+
+        napari canvas
+                |
+                +-- view.scene
+                        |
+                        +-- VispyTiledPointsLayer.node
+                                Compound root for the complete logical layer
+                                |
+                                +-- _TiledPointsTileVisualNode A
+                                +-- _TiledPointsTileVisualNode B
+                                +-- _TiledPointsTileVisualNode C
+
+    The root-node contract and use of a compound visual follow napari's normal
+    rendering architecture. The dynamic, independently retained tile
+    subvisuals are specific to this cache-backed renderer.
+
     The model-to-renderer contract is::
 
         model state or event              renderer responsibility
