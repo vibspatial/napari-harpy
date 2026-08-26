@@ -2175,6 +2175,13 @@ connect accepted coordinator snapshots back to
               |
               v
       VispyTiledPointsLayer
+              |
+              | TiledPointsRenderResult
+              v
+      TiledPointsLayerModel.events.render_snapshot_result
+              |
+              v
+      composition/listener commits display status
 
 The outbound viewport callback runs on the GUI thread and must remain
 non-blocking. It only calls
@@ -2188,13 +2195,17 @@ rejects obsolete request or selection generations and emits only an accepted
 complete `TiledPointsRenderSnapshot`. The composition owner then emits that
 snapshot through the model's `render_snapshot` event. The registered
 `VispyTiledPointsLayer` already listens to that event and performs GUI-thread
-GPU-resource preparation and complete tile-set activation.
+GPU-resource preparation and complete tile-set activation. It then emits one
+generation-bound `TiledPointsRenderResult` through `render_snapshot_result`.
+The composition owner commits the candidate `TiledPointsLayerStatus` only when
+that acknowledgement reports `applied=True`; `render_error` continues to carry
+the actual capacity or upload exception.
 
 Make the composition owner's source docstring the authoritative description of
 this concrete request/result wiring and teardown ownership, using the explicit
 class names above and no roadmap terminology. Keep the model documentation
-limited to the semantic direction of its outbound `viewport` and inbound
-`render_snapshot` events.
+limited to the semantic direction of its outbound `viewport`, renderer-input
+`render_snapshot`, and renderer-acknowledgement `render_snapshot_result` events.
 
 #### Preserve the active visual until a complete replacement exists
 
@@ -2265,8 +2276,11 @@ error, and teardown listeners; and starts the worker session. It exposes the
 selected-value change boundary needed by the later application binding and an
 idempotent explicit `close()` for layer-removal ownership.
 
-The implementation communicates with the renderer only through
-`TiledPointsLayerModel.events.render_snapshot`. It retains the last accepted
+The implementation communicates with the renderer through the paired
+`TiledPointsLayerModel.events.render_snapshot` command and
+`render_snapshot_result` acknowledgement. It commits candidate display status
+only after a matching generation-bound `applied=True` result, while
+`render_error` retains the actual diagnostic. It retains the last accepted
 status while work is active, retains the prior visual for over-budget, cache,
 and renderer failures, and applies zero-tile snapshots for ordinary empty views
 and complete sampled omission. Replacing the layer's logical dataset terminates
