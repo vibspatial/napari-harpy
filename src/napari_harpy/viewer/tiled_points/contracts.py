@@ -19,6 +19,16 @@ _UINT32_MAX = np.iinfo(np.uint32).max
 class TiledPointsDatasetReference:
     """Identify one logical tiled-points dataset without storing point rows.
 
+    The napari layer keeps neither eager point payloads nor a cache reader on
+    the GUI thread. This reference therefore carries the stable dataset metadata
+    needed to interpret runtime tiles: ``value_count`` validates that the
+    presentation palette has exactly one row per canonical cache value, while
+    ``x_origin`` and ``y_origin`` are consumed by
+    ``VispyTiledPointsLayer._on_matrix_change()``. That method precomposes the
+    shared cache origin into the layer's root transform, reconstructing intrinsic
+    coordinates while tile vertex buffers retain their smaller tile-local
+    float32 positions.
+
     Parameters
     ----------
     cache_generation_id
@@ -27,6 +37,15 @@ class TiledPointsDatasetReference:
         Name of the source SpatialData points element.
     value_column
         Source column represented by cache ``value_id`` rows.
+    value_count
+        Complete canonical cache-vocabulary size. This belongs to the dataset
+        contract rather than being inferred from the presentation palette.
+    x_origin, y_origin
+        Intrinsic origin shared by every serialized tile grid. The VisPy layer
+        precomposes it into the root layer transform; together with a tile's
+        logical coordinates and size, this positions tile-local point rows in
+        the complete intrinsic dataset coordinate system without rewriting the
+        point buffers as large absolute float32 coordinates.
     x_min, x_max, y_min, y_max
         Complete observed intrinsic-coordinate bounds of the cache.
     """
@@ -34,6 +53,9 @@ class TiledPointsDatasetReference:
     cache_generation_id: str
     points_name: str
     value_column: str
+    value_count: int
+    x_origin: float
+    y_origin: float
     x_min: float
     x_max: float
     y_min: float
@@ -45,12 +67,20 @@ class TiledPointsDatasetReference:
             raise ValueError("`points_name` must be a nonempty string.")
         if not isinstance(self.value_column, str) or not self.value_column:
             raise ValueError("`value_column` must be a nonempty string.")
-        for name in ("x_min", "x_max", "y_min", "y_max"):
+        if (
+            not isinstance(self.value_count, int)
+            or isinstance(self.value_count, bool)
+            or not 1 <= self.value_count <= _UINT32_MAX + 1
+        ):
+            raise ValueError("`value_count` must be a positive integer addressable by uint32 value IDs.")
+        for name in ("x_origin", "y_origin", "x_min", "x_max", "y_min", "y_max"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
                 raise ValueError(f"`{name}` must be a finite number.")
         if self.x_min > self.x_max or self.y_min > self.y_max:
             raise ValueError("Dataset minima must not exceed maxima.")
+        if self.x_origin > self.x_min or self.y_origin > self.y_min:
+            raise ValueError("Dataset origins must not exceed their corresponding observed minima.")
 
 
 @dataclass(frozen=True)
@@ -160,13 +190,16 @@ class TiledPointsViewportState:
 
 @dataclass(frozen=True)
 class TileResidencyKey:
-    """Key one decoded tile in the viewer's in-memory CPU residency cache.
+    """Identify one logical tile across CPU and renderer tile residency.
 
     This is not a physical Zarr address. It combines the published cache
     generation, requested value selection, and logical tile coordinates so a
-    decoded payload is reused only for the dataset and selection that produced
-    it. ``logical_tile_key`` exposes the smaller ``(level, tile_x, tile_y)``
-    identity expected by the core cache reader.
+    decoded CPU payload and its corresponding VisPy/GPU resource are reused only
+    for the dataset and selection that produced them. The CPU residency maps this
+    key to a ``TiledPointsRenderTile``; renderer residency maps the same key to
+    the tile's retained rendering resource. ``logical_tile_key`` exposes the
+    smaller ``(level, tile_x, tile_y)`` identity expected by the core cache
+    reader.
     """
 
     cache_generation_id: str
