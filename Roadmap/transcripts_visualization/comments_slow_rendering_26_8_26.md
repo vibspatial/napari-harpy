@@ -381,6 +381,29 @@ The cost is dominated by thousands of NumPy dispatches over very small arrays, n
 
 The literal loop remains a reasonable first worker implementation because it is simple, bounded, easy to validate, and permits cancellation checks between groups of tiles. The 2.22-millisecond concatenate/repeat variant uses approximately a few MiB of bounded transient memory at the 100,000-point cap and should remain an optional worker-side optimization if end-to-end worker latency later matters.
 
+#### One-million-point scaling benchmark
+
+A separate in-memory benchmark exercised the same packing functions with synthetic snapshots containing 1,000,000 points. This isolates packing scalability; it does not include Zarr reads, Qt delivery, `VertexBuffer.set_data()`, deferred GPU upload, or physical drawing. The synthetic 60,512-point/4,453-tile baseline measured 6.35 milliseconds for the literal loop, close to the 7.04 milliseconds measured with the actual AAMP snapshot, so it reproduces the relevant packing behavior sufficiently for a scaling experiment.
+
+| Synthetic snapshot shape | Literal tile loop, median | Whole-snapshot concatenate/repeat, median |
+|---|---:|---:|
+| 1,000,000 points in 1 tile | 5.62 ms | 4.13 ms |
+| 1,000,000 points in 4,453 tiles | 11.97 ms | 6.12 ms |
+| 1,000,000 points in 7,294 tiles | 15.57 ms | 7.46 ms |
+| 1,000,000 points in 100,000 tiles | 145.89 ms | 47.90 ms |
+
+The 7,294-tile case represents the maximum Exact-level tile count in the supplied cache. The 100,000-tile case is deliberately pathological and represents a possible future much larger tissue rather than a layout the current cache can produce.
+
+Packing has two scaling terms:
+
+```text
+packing work = per-point memory work + per-tile dispatch work
+```
+
+One million points alone does not make packing problematic. With the current cache geometry, the literal worker implementation remains approximately 12–16 milliseconds and the whole-snapshot variant approximately 6–8 milliseconds. Extreme tile fragmentation is the important risk: a point-count budget alone does not fully bound snapshot-preparation work.
+
+The runtime should therefore record both point count and tile count for every packed snapshot. A hard tile-count limit should not be introduced from this synthetic result alone because sparse selected values may legitimately span many tiles. Instrumentation should first establish a point-plus-tile work model that can inform LOD planning or a future preparation-work budget. Packing must remain cancellable so obsolete highly fragmented requests do not occupy the worker unnecessarily.
+
 #### Snapshot visual and VBO ownership
 
 Replace `_TiledPointsTileVisual` with a `_TiledPointsSnapshotVisual`-style implementation that owns:
@@ -425,9 +448,13 @@ With the existing 12-byte vertex format:
 ```text
 100,000 points * 12 bytes = 1,200,000 bytes = approximately 1.15 MiB for the VBO
 optional two-VBO ping-pong maximum = approximately 2.29 MiB
+1,000,000 points * 12 bytes = 12,000,000 bytes = approximately 11.44 MiB for one VBO or packed batch
+optional two-VBO ping-pong maximum at 1,000,000 points = approximately 22.89 MiB
 ```
 
-The initial patch can retain the existing GPU-byte configuration name to limit configuration churn, but its enforcement should cover the one snapshot payload rather than a sum of tile estimates. The bounded worker batch and any temporary CPU copy made by VisPy should be reported separately from logical GPU bytes. A later cleanup can rename the setting to a snapshot-buffer budget or derive it directly from the hard point budget. This is far below the current 512 MiB default, so the important initial guard is against malformed or unexpectedly unbounded snapshots rather than ordinary viewport data.
+The initial patch can retain the existing GPU-byte configuration name to limit configuration churn, but its enforcement should cover the one snapshot payload rather than a sum of tile estimates. The bounded worker batch and any temporary CPU copy made by VisPy should be reported separately from logical GPU bytes. At 1,000,000 points, the worker output is approximately 11.44 MiB, the VBO is approximately 11.44 MiB, and `set_data(copy=True)` may temporarily retain another approximately 11.44 MiB CPU staging copy. A whole-snapshot concatenate/repeat implementation also uses temporary coordinate, value-ID, and repeated-origin arrays; its peak must be measured rather than inferred from the final VBO size alone.
+
+A later cleanup can rename the setting to a snapshot-buffer budget or derive it directly from the hard point budget. Both the 100,000- and 1,000,000-point final VBOs are far below the current 512 MiB default, but an increase to 1,000,000 points still requires deliberate end-to-end memory, upload, and draw evidence rather than only a logical byte calculation.
 
 #### Threading boundary and required implementation slices
 
@@ -465,7 +492,19 @@ The packing, delivery, and renderer tests should be rewritten around snapshot-ba
 - a real-canvas test verifies position and colour, including a large cache origin; and
 - the former overlapping-tile GPU-reuse test is replaced by an assertion that visual count and VBO identity remain constant across changing snapshots.
 
+Before increasing the current 100,000-point budget, add a 1,000,000-point scalability case that measures:
+
+- worker packing across representative dense, current-maximum-tile, and highly fragmented shapes;
+- cancellation latency for an obsolete in-progress pack;
+- queued Qt delivery and whether the packed allocation is copied;
+- single-VBO replacement staging and deferred upload;
+- repeated replacements with changing payload sizes, including driver stalls or blank/corrupted frames;
+- first and warm physical draws; and
+- representative point diameters and overlap, because fragment overdraw may dominate once draw-submission overhead is removed.
+
 The cache-to-canvas benchmark should stop reporting per-tile renderer construction as the primary renderer metric. It should separately measure worker snapshot assembly, worker packing, queued packed-batch delivery, single-VBO replacement staging, activation, first draw, and warm draw, while confirming that exactly one point visual is submitted. It should also look for frame stalls or blank/corrupted frames across repeated payload-size changes; those measurements determine whether optional ping-pong storage is justified. The acceptance target is not merely a lower construction time: first draw and subsequent camera-interaction frames must lose their dependence on the number of logical tiles in the snapshot, and GUI-thread activation must contain no tile-proportional CPU packing.
+
+The synthetic scaling benchmark proves only that packing 1,000,000 points is reasonable for the current tile geometry when performed on the worker. It does not establish that uploading or physically drawing 1,000,000 points is smooth.
 
 ## Conclusion
 
@@ -491,6 +530,8 @@ The practical priority is therefore:
 4. Prototype a per-level value-major coordinate payload alongside the existing tile-major payload. Compare it with 128- and 256-row `location` chunks using cold-read wall time, decoded bytes, physical operations, cache size, and startup memory.
 5. Treat fewer buckets and cross-bucket concurrency as secondary tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
 6. Add viewport debounce to avoid starting expensive cold requests for transient zoom states after the underlying read and render costs are controlled.
+
+The synthetic 1,000,000-point packing benchmark does not change the current 100,000-point implementation priority. It establishes forward-looking scalability evidence and the additional acceptance work required before the render budget is deliberately increased.
 
 Larger storage tiles would reduce chunks and visual objects, but the benchmark shows that renderer batching can remove the dominant visual-object cost without sacrificing the existing 512-unit spatial read granularity.
 
