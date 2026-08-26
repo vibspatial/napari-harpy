@@ -2332,6 +2332,24 @@ mailbox, CPU/GPU residency, and cache-to-canvas composition. I8 connects those
 components to napari-harpy's existing points panel. It must not reimplement
 cache planning, point reads, or rendering inside the widget or viewer adapter.
 
+#### I8 entry condition: close Gate I before the production cutover
+
+Implementation may prepare the descriptor, binding, controller, and tests in
+isolation, but do not replace the production points-panel path until Gate I has
+recorded one retained-Xenium image/points alignment smoke test. Open the
+existing completed full-Xenium cache together with its corresponding image in a
+real napari scene, apply the same SpatialData coordinate-system transform, and
+record visual evidence that Exact and sampled tiled points align with the image.
+This is a focused product qualification, not another cache benchmark or an
+exhaustive visual parameter sweep.
+
+Retain with that evidence the already adopted main-thread/worker-thread and
+cleanup observations, CPU/GPU residency and warm-pan behavior, automatic
+over-budget rejection, and the accepted one-visual-per-positive-tile policy.
+Any alignment, transform, teardown, or unsupported-registration issue found by
+this smoke test blocks the points-panel cutover and is fixed at its owning I1-I7
+boundary rather than being hidden inside the I8 controller.
+
 The current points-selection path is:
 
 ```text
@@ -2409,6 +2427,28 @@ binding. The existing viewer-layer removal listener remains the authoritative
 place to notice manual removal from napari. Closing the binding stops viewport
 scheduling and asks the worker-owned reader to close; a late result cannot
 mutate the removed layer.
+
+#### Supply an explicit product residency policy
+
+The generic session and layer deliberately have no machine-wide memory-policy
+defaults. I8 supplies one immutable, injectable application configuration with
+these initial values:
+
+```text
+max_bucket_lookup_bytes         = None
+max_selected_value_index_bytes  = None
+max_cpu_tile_bytes              = 536,870,912  # 512 MiB
+max_gpu_tile_bytes              = 268,435,456  # 256 MiB
+```
+
+`None` for the two metadata limits follows the adopted policy of retaining all
+bucket lookup indexes and the complete current selected-value index while the
+session is alive. Projection, exact byte accounting, and progress reporting
+still run. The decoded CPU-tile and logical GPU-tile stores remain independently
+bounded LRUs. These are initial product values, not claims about physical GPU
+capacity; keep them injectable in focused tests and application construction so
+I11 can revise them from measured Xenium residency and eviction evidence without
+changing the reader or renderer contracts.
 
 #### Load a small cache descriptor before constructing the layer
 
@@ -2498,6 +2538,39 @@ Layer insertion then constructs the registered VisPy layer and Qt controls;
 the first normalized viewport is retained or dispatched through the existing
 coordinator/session boundary. Do not perform cache IO from insertion callbacks.
 
+The first Add / Update action may request a proper value subset before the new
+cache session reaches `READY`. Extend the runtime/coordinator startup contract
+to retain one latest desired selection while the worker opens the cache and
+loads bucket indexes. Do not call the session's ready-only selection API early,
+and do not dispatch an all-values viewport for a requested proper subset:
+
+```text
+construct layer/runtime with desired initial value selection
+        |
+        | viewport changes may replace the retained latest viewport
+        | selection changes may replace the retained desired selection
+        v
+cache session becomes READY
+        |
+        +-- all values (`None`) -> dispatch the latest viewport
+        |
+        `-- proper subset       -> load the selected-value index first
+                                         |
+                                         v
+                                  selection commits
+                                         |
+                                         v
+                                  dispatch the latest viewport
+```
+
+The initial proper subset follows the same selection-generation and stale-result
+rules as later changes. A newer selection made during startup replaces the older
+desired selection; it does not form another queue entry. If initial selected-
+value-index loading fails, report the recoverable selection failure and perform
+no fallback all-values point read. This startup ordering prevents a potentially
+large or visually misleading all-values frame before the user's requested
+subset becomes resident.
+
 After first insertion, a selection or camera change must preserve the exact
 napari layer object. It therefore also preserves layer-list order, active-layer
 identity, camera state, visibility, opacity, point diameter, and any compatible
@@ -2518,10 +2591,19 @@ the root scene transform while individual vertex buffers retain tile-local
 float32 coordinates. I8 must not add that origin to the layer affine or point
 rows a second time.
 
-A coordinate-system change must update the binding/model transformation through
-one explicit lifecycle operation and must not compound the new transform with
-the preceding coordinate-system transform. Selection-only updates never touch
-the affine.
+Treat coordinate system as part of the tiled binding's logical identity:
+
+```text
+(sdata identity, points_name, coordinate_system, value_column)
+```
+
+The completed cache generation is an additional compatibility requirement for
+reusing that binding. A coordinate-system change therefore finds or creates the
+binding for the new identity and assigns the absolute SpatialData affine for
+that coordinate system once when its model is constructed. Do not mutate one
+layer by composing a new coordinate-system affine onto the preceding affine.
+Returning to an already-live compatible binding may activate that layer as-is.
+Selection-only updates never touch the affine.
 
 #### Build one complete canonical palette
 
@@ -2606,6 +2688,30 @@ unchanged for remaining consumers. Do not delete the old Dask selection types
 or helpers in this slice; after the adopted path has real application coverage,
 I10 performs the consumer scan and removal.
 
+Implement the application controller as a fresh cache-backed points controller
+and switch the existing points panel to that controller. Do not incrementally
+mix cache lifecycle state into the old Dask worker state machine. Keep the old
+controller and its `PointsLoadRequest` types temporarily available but unused
+by the adopted cache-backed path; I10 removes them after the consumer scan. The
+new controller may share storage-neutral widget inputs and status-card helpers,
+but it does not call old source-validation, selection-materialization, or native
+Points application functions.
+
+#### Internal implementation order
+
+Implement I8 in four reviewable internal steps while keeping the slice's exit
+criteria atomic:
+
+1. add the lightweight cache descriptor, canonical value-name/ID mapping,
+   canonical palette construction, and product residency settings;
+2. add `TiledPointsLayerBinding`, startup-selection retention, adapter lookup,
+   and terminal runtime teardown;
+3. add the fresh cache-backed controller and connect the existing points panel
+   to persistent layer creation, selection changes, activation, and status;
+4. add the composed application tests, native-Points regression coverage, and
+   the retained-Xenium Gate I alignment evidence before enabling the production
+   cutover.
+
 #### Focused I8 tests
 
 Add focused tests covering:
@@ -2619,9 +2725,14 @@ Add focused tests covering:
   fallback;
 - registration happens before first tiled-layer insertion;
 - the first selection creates one binding, model, and runtime;
+- a proper initial subset waits for selected-index commitment and never issues
+  an intervening all-values viewport read;
+- startup selection changes retain only the latest desired subset;
+- product residency defaults are explicit and remain injectable in tests;
 - later selections reuse the same napari layer and preserve camera/layer state;
 - selected-value and camera updates do not execute Dask;
-- coordinate-system transformation is applied exactly once;
+- coordinate-system identity finds or creates the correct binding and its
+  absolute transformation is applied exactly once;
 - layer removal and widget shutdown close the runtime once;
 - cache, LOD, sampled-omission, over-budget, and failure status reach the points
   panel;
@@ -2629,15 +2740,19 @@ Add focused tests covering:
 
 Exit criteria:
 
+- the retained-Xenium Gate I image/points alignment smoke test is recorded
+  before the production panel cutover;
 - the existing points panel is the application entry point for a completed
   compatible cache;
 - selecting values updates the existing tiled-points layer;
+- an initial proper subset cannot produce an all-values point read or frame;
 - ordinary selection and camera changes do not execute Dask;
 - no normal cache-backed selection constructs `PointsLoadRequest`,
   `PointsValueSelection.coordinates`, or a native napari `Points` layer;
 - the layer remains at the same layer-list identity and camera state;
 - canonical value IDs and colours remain stable when selection order changes;
-- changing coordinate system applies the transform exactly once;
+- changing coordinate system selects the corresponding binding identity and
+  applies its absolute transform exactly once;
 - a value-column/cache mismatch is actionable;
 - layer removal and shutdown close the worker-owned runtime without late model
   or VisPy mutation;
