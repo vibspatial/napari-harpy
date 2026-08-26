@@ -19,11 +19,16 @@ def _layer(**kwargs: object) -> TiledPointsLayerModel:
             cache_generation_id=str(uuid4()),
             points_name="spots",
             value_column="feature_name",
+            value_count=3,
+            x_origin=-128.0,
+            y_origin=-256.0,
             x_min=-100.0,
             x_max=500.0,
             y_min=-200.0,
             y_max=600.0,
         ),
+        value_palette=np.full((3, 4), 255, dtype=np.uint8),
+        max_gpu_tile_bytes=1_000_000,
         **kwargs,
     )
 
