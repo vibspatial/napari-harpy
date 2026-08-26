@@ -344,6 +344,33 @@ def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_s
         visual.close()
 
 
+def test_runtime_applies_ordinary_empty_snapshot_and_clears_active_visual(maximum_texture_size: None) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    try:
+        layer.events.viewport(value=_viewport())
+        populated_request = session.viewport_requests[-1]
+        populated_tile = _tile(layer, populated_request)
+        session.complete_viewport(_snapshot(layer, populated_request, (populated_tile,)))
+        assert visual.active_keys == (populated_tile.key,)
+
+        layer.events.viewport(value=_viewport(10.0))
+        empty_request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, empty_request, ()))
+
+        assert visual.active_keys == ()
+        assert layer.display_status.rendered_point_count == 0
+        assert layer.display_status.rendered_tile_count == 0
+        assert layer.display_status.omitted_value_ids == ()
+        assert layer.display_status.message == "No points in view"
+    finally:
+        runtime.close()
+        visual.close()
+
+
 def test_runtime_reports_renderer_failure_without_committing_candidate_status(maximum_texture_size: None) -> None:
     info = _dataset_info()
     layer = _layer(info, max_gpu_tile_bytes=12)
