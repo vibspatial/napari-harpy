@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from types import ModuleType
 from uuid import uuid4
 
+import numpy as np
 import pytest
 from napari._qt.layer_controls import qt_layer_controls_container
 from napari._qt.layer_controls.qt_layer_controls_container import create_qt_layer_controls
@@ -30,11 +31,16 @@ def _layer() -> TiledPointsLayerModel:
             cache_generation_id=str(uuid4()),
             points_name="spots",
             value_column="feature_name",
+            value_count=3,
+            x_origin=0.0,
+            y_origin=0.0,
             x_min=3.0,
             x_max=23.0,
             y_min=2.0,
             y_max=12.0,
-        )
+        ),
+        value_palette=np.full((3, 4), 255, dtype=np.uint8),
+        max_gpu_tile_bytes=1_000_000,
     )
 
 
