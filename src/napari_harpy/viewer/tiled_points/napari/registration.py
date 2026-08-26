@@ -47,15 +47,25 @@ def register_tiled_points_layer() -> None:
         register_tiled_points_layer()
                     |
                     v
-        TiledPointsLayerModel -> VispyTiledPointsLayer mapping
-                    |
+        +-- layer_to_visual
+        |       TiledPointsLayerModel -> VispyTiledPointsLayer
+        |
+        +-- layer_to_controls
+                TiledPointsLayerModel -> QtTiledPointsLayerControls
+
+        later:
+
         TiledPointsLayerModel instance inserted into a GUI viewer
                     |
-                    v
-        napari constructs VispyTiledPointsLayer(model, font_info)
+                    +-- napari constructs
+                    |       VispyTiledPointsLayer(model, font_info)
+                    |
+                    +-- napari constructs
+                            QtTiledPointsLayerControls(model)
 
     Call this before inserting the first ``TiledPointsLayerModel``. The layer
-    list insertion event, not this function, triggers visual construction.
+    list insertion event, not this function, triggers visual and controls
+    construction through their respective factories.
     """
     compatibility = _load_napari_compatibility()
     _require_supported_versions(compatibility)
