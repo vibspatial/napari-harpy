@@ -8,7 +8,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.hashing as hashing_module
 import napari_harpy.core.multi_scale_cache_points_zarr.writer.exact as exact_module
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
@@ -76,7 +75,7 @@ def _source(tmp_path: Path) -> ParquetPointsSource:
     return source
 
 
-def _config(*, workers: int = 2) -> _ExactWriterConfig:
+def _config(*, workers: int = 2, target_points_per_bucket: int = 2_000_000) -> _ExactWriterConfig:
     return _ExactWriterConfig(
         zarr_settings=_ZarrWriteSettings(
             point_chunk_rows=2,
@@ -86,6 +85,7 @@ def _config(*, workers: int = 2) -> _ExactWriterConfig:
             codec_id="zstd-v1",
         ),
         dask_worker_count=workers,
+        target_points_per_bucket=target_points_per_bucket,
     )
 
 
@@ -95,6 +95,7 @@ def _build_exact(
     *,
     name: str,
     workers: int = 2,
+    target_points_per_bucket: int = 2_000_000,
 ) -> tuple[_LevelWriteResult, ValidatedPointsSource, _PointsCacheBuildPlan, Path, Path]:
     validated = validate_parquet_points_source(source, max_batch_rows=2)
     plan = _plan_points_cache(validated, leaf_tile_size=10, overview_point_budget=10)
@@ -107,7 +108,7 @@ def _build_exact(
         plan,
         staging_root=staging,
         temporary_directory_root=temporary,
-        config=_config(workers=workers),
+        config=_config(workers=workers, target_points_per_bucket=target_points_per_bucket),
     )
     return result, validated, plan, staging, temporary
 
@@ -205,11 +206,11 @@ def test_exact_writer_builds_deterministic_validated_zarr_from_row_groups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = _source(tmp_path)
-    monkeypatch.setattr(hashing_module, "TARGET_POINTS_PER_BUCKET", 2)
     first, validated, first_plan, first_staging, first_temporary = _build_exact(
         source,
         tmp_path,
         name="first",
+        target_points_per_bucket=2,
     )
     original_specs = exact_module._source_row_group_read_specs
     monkeypatch.setattr(
@@ -221,6 +222,7 @@ def test_exact_writer_builds_deterministic_validated_zarr_from_row_groups(
         source,
         tmp_path,
         name="second",
+        target_points_per_bucket=2,
     )
 
     assert first == second

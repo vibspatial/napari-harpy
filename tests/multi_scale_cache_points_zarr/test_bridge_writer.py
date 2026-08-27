@@ -147,7 +147,7 @@ def test_bridge_writer_reads_exact_zarr_and_persists_deterministic_subsets(
     plan = _plan()
     # Exercise multiple output buckets despite the tiny fixture. Tile hashing
     # leaves destination IDs nonempty at both zero and one.
-    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level: 2)
+    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level, **_kwargs: 2)
 
     result = _write_bridge_level(
         exact_result,
@@ -194,7 +194,7 @@ def test_bridge_membership_does_not_depend_on_exact_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
     first_staging = tmp_path / "first"
     changed_staging = tmp_path / "changed"
     first = _write_bridge_level(
@@ -231,7 +231,7 @@ def test_bridge_default_reader_capacity_keeps_every_exact_bucket_open(
         return reader_cache(cache_root, max_open_readers=max_open_readers)
 
     monkeypatch.setattr(bridge_module, "_BucketReaderCache", recording_reader_cache)
-    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
 
     _write_bridge_level(
         exact_result,
@@ -283,7 +283,7 @@ def test_bridge_failure_removes_current_partial_bucket_but_preserves_exact(
 ) -> None:
     staging = tmp_path / "staging"
     exact_result = _write_exact_fixture(staging)
-    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
     monkeypatch.setattr(
         bridge_module,
         "_select_sampled_tile_indices",
@@ -312,7 +312,7 @@ def test_bridge_injected_io_failure_closes_and_removes_current_bucket(
 ) -> None:
     staging = tmp_path / failure
     exact_result = _write_exact_fixture(staging)
-    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(bridge_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
     if failure == "read":
         monkeypatch.setattr(
             _BucketReader,
