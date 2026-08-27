@@ -2324,7 +2324,7 @@ Approval requires:
 - one accepted policy for the 127-tile scene-node observation;
 - no unresolved unsupported-version or registry-cleanup behavior.
 
-### Slice I8: replace the napari-harpy points selection workflow
+### Slice I8: replace the napari-harpy points selection workflow — resolved
 
 I8 is the application-integration slice. I1 through I7 provide the generic
 cache reader, custom napari layer, VisPy renderer, worker session, viewport
@@ -2437,8 +2437,8 @@ these initial values:
 ```text
 max_bucket_lookup_bytes         = None
 max_selected_value_index_bytes  = None
-max_cpu_tile_bytes              = 536,870,912  # 512 MiB
-max_gpu_tile_bytes              = 268,435,456  # 256 MiB
+max_cpu_tile_bytes              = 1,073,741,824  # 1 GiB
+max_gpu_tile_bytes              = 536,870,912    # 512 MiB
 ```
 
 `None` for the two metadata limits follows the adopted policy of retaining all
@@ -2447,7 +2447,7 @@ session is alive. Projection, exact byte accounting, and progress reporting
 still run. The decoded CPU-tile and logical GPU-tile stores remain independently
 bounded LRUs. These are initial product values, not claims about physical GPU
 capacity; keep them injectable in focused tests and application construction so
-I11 can revise them from measured Xenium residency and eviction evidence without
+I12 can revise them from measured Xenium residency and eviction evidence without
 changing the reader or renderer contracts.
 
 #### Load a small cache descriptor before constructing the layer
@@ -2480,7 +2480,7 @@ runtime indexes onto the GUI thread is not.
 I8 assumes this completed cache exists. A missing, incomplete, or incompatible
 cache produces an actionable points-panel state and never falls back to hidden
 source materialization. Cache discovery plus explicit Build/Rebuild actions are
-I9 responsibilities.
+I10 responsibilities.
 
 Require the cache's points name, element path, and value column to agree with
 the panel selection. In particular, selecting one index column while opening a
@@ -2686,13 +2686,13 @@ I8 changes only the cache-backed points-element selection path. Keep native
 `PointsLayerBinding`, native Points styling, and shapes-as-points behavior
 unchanged for remaining consumers. Do not delete the old Dask selection types
 or helpers in this slice; after the adopted path has real application coverage,
-I10 performs the consumer scan and removal.
+I11 performs the consumer scan and removal.
 
 Implement the application controller as a fresh cache-backed points controller
 and switch the existing points panel to that controller. Do not incrementally
 mix cache lifecycle state into the old Dask worker state machine. Keep the old
 controller and its `PointsLoadRequest` types temporarily available but unused
-by the adopted cache-backed path; I10 removes them after the consumer scan. The
+by the adopted cache-backed path; I11 removes them after the consumer scan. The
 new controller may share storage-neutral widget inputs and status-card helpers,
 but it does not call old source-validation, selection-materialization, or native
 Points application functions.
@@ -2738,6 +2738,31 @@ Add focused tests covering:
   panel;
 - unrelated native Points and shapes-as-points focused tests remain unchanged.
 
+#### Gate I retained-Xenium evidence (2026-08-26)
+
+The production cutover was qualified in a shown napari/OpenGL window using:
+
+- SpatialData store
+  `sdata_xenium_full_data_core.zarr`;
+- points element `transcripts_global_ROI1` and its retained completed
+  136,578,750-point cache generation;
+- image element `morphology_focus_global_ROI1_rechunked_512`, channel 0 in
+  grayscale;
+- shared SpatialData coordinate system `global_ROI1`, which is the identity
+  transform for both elements.
+
+The overview rendered Spatial L8 with 100,000 points in one tile. The zoomed
+view rendered Exact with 36,139 points in one tile. The corresponding real-
+canvas screenshots were inspected at full resolution: sampled overview points
+followed the complete tissue outline, holes, folds, and internal morphology,
+while the Exact view preserved the same alignment at cellular scale. No
+translation, axis swap, duplicated cache-origin offset, tile seam, stale mixed-
+LOD frame, or renderer teardown failure was observed. The qualifying captures
+were written to `/private/tmp/napari-harpy-gate-i/` as
+`xenium-overview-spatial.png` and `xenium-zoom-exact.png`; the numerical and
+visual conclusions above are the durable gate record rather than a committed
+binary test artifact.
+
 Exit criteria:
 
 - the retained-Xenium Gate I image/points alignment smoke test is recorded
@@ -2758,7 +2783,181 @@ Exit criteria:
   or VisPy mutation;
 - native Points behavior used by unrelated features remains unchanged.
 
-### Slice I9: integrate cache discovery, build, and rebuild
+### Slice I9: make sparse selected-value interaction responsive
+
+The integrated AAMP evaluation exposed a workload that the earlier 127-tile
+renderer qualification did not cover. At full extent, 60,512 Exact AAMP points
+fit the 100,000-point budget but are distributed over 4,453 logical tiles and
+all 69 Exact buckets. Point count is therefore a poor estimate of either read
+work or renderer work for a spatially widespread sparse value.
+
+The measured cache shapes were:
+
+| Level | AAMP points | Positive tiles | Buckets | Cold payload read |
+|---:|---:|---:|---:|---:|
+| Exact L0 | 60,512 | 4,453 | 69 | approximately 2.48 s |
+| Bridge L1 | 7,394 | 3,839 | 17 | approximately 2.24 s |
+| Spatial L2 | 4,078 | 1,405 | 9 | approximately 0.86 s |
+| Spatial L3 | 2,230 | 430 | 5 | approximately 0.32 s |
+| Spatial L4 | 1,204 | 124 | 3 | approximately 0.12 s |
+| Spatial L5 | 647 | 34 | 2 | approximately 0.05 s |
+
+A complete cold Exact worker snapshot took approximately 2.9 seconds; the same
+snapshot took approximately 35 ms after all logical tiles became CPU-resident.
+Its actual point arrays occupy only approximately 0.69 MiB. Raising CPU or GPU
+byte limits therefore cannot address this case. The costs are fragmented point
+reads, thousands of Python/VisPy objects, thousands of draw calls, and viewport
+requests started for transient camera states.
+
+Do not solve this primarily by imposing a hard 128-logical-tile LOD limit. Such
+a limit would control latency by forcing a coarser sampled level even when the
+requested Exact points fit comfortably in memory and on screen. Keep the point
+budget as the content/overdraw policy and treat positive logical tile count as
+diagnostic work evidence, not an automatic loss-of-detail rule.
+
+#### Decouple logical cache tiles from renderer batches
+
+Retain the 512-unit Exact logical tiles as the reader and CPU-residency unit.
+They provide precise viewport intersection, sparse-range addressing, overlap
+reuse, and bounded all-values overfetch. Do not increase their serialized size
+merely to reduce VisPy object count: the existing cache already contains a
+512-unit dense Exact tile of approximately 108,598 points, and larger logical
+tiles would combine complete all-values payloads and make Exact unavailable in
+dense close views.
+
+Refactor the renderer boundary so one logical tile no longer implies one VisPy
+visual, shader program, VBO set, and draw call. Pack every accepted snapshot
+into one or a small fixed maximum number of renderer-owned point buffers:
+
+```text
+precise 512-unit logical cache tiles
+        |
+        +-- remain independent in worker CPU residency
+        |
+        v
+accepted immutable snapshot
+        |
+        v
+pack tile-local points into cache-origin-relative coordinates
+        |
+        v
+one or a small bounded set of reusable VisPy point-buffer nodes
+        |
+        v
+atomic activation of the complete snapshot
+```
+
+The cache origin remains precomposed into the layer's float64 scene transform;
+packing adds only each logical tile's grid offset to its tile-local float32
+coordinates. Preserve canonical `value_id` rows and the shared palette. A
+representative CPU packing microbenchmark at the AAMP shape—4,453 small arrays
+and 60,512 points—took approximately 9.6 ms and produced approximately 0.69 MiB
+of packed rows. Qualify the real VisPy upload and draw before choosing between
+one buffer and a small page pool; do not infer physical GPU timing from
+`set_data()` submission alone.
+
+Use double buffering or an equivalent prepared/active boundary. The preceding
+accepted visual remains complete and visible while the next buffers are
+prepared. Activation swaps the whole snapshot atomically; failure retains the
+preceding visual. Logical `TileResidencyKey` remains the worker CPU-cache reuse
+identity, but it must no longer require one renderer resource per key. Update
+GPU accounting to describe the actual retained renderer buffers rather than
+the sum of logical tile payload views.
+
+#### Avoid work for transient viewport states
+
+Keep the one-active/one-latest-pending generation mailbox, but add a short
+GUI-side trailing viewport debounce before dispatch. The delay must be
+configurable and evaluated on ordinary isolated pans as well as continuous
+wheel/pinch zooming. Its purpose is to avoid starting cache work for camera
+states that are replaced a few milliseconds later; it is not a substitute for
+generation checks or atomic snapshot activation.
+
+An already-running synchronous Zarr selection remains non-preemptive. Continue
+to retain only the newest pending viewport and reject stale activation. Record
+how often the debounce prevents dispatch and how often an active request still
+finishes stale. Consider a shared latest-generation checkpoint between bucket
+groups only if measured stale active reads remain important; do not attempt to
+cancel a Zarr call already decoding chunks.
+
+#### Evaluate bucket-read fragmentation without prematurely changing tiles
+
+The Exact writer currently targets approximately two million points per
+SplitMix64-distributed bucket. This balances construction partitions but
+spreads nearby viewport tiles across many independent stores. The reader
+batches all requests within one bucket, then processes bucket groups
+sequentially. Consequently, Zarr cannot coordinate chunk work across the 69
+stores touched by full-extent AAMP.
+
+First benchmark bounded concurrent reads of the existing independent bucket
+groups. Compare the current serial baseline with small bounded worker counts
+using the same cache and the same AAMP full, half-dimension, and close
+viewports. Preserve deterministic result order, one owner session, bounded
+temporary payload memory, generation checks, and failure cleanup. Adopt
+cross-bucket concurrency only when it materially lowers complete snapshot
+latency without starving the GUI or multiplying Zarr's own inner concurrency.
+
+Separately evaluate future cache topology; do not rebuild the adopted cache as
+part of the renderer change. Candidate construction experiments are:
+
+1. fewer larger buckets, initially 8--16 rather than 69 at Exact;
+2. spatially contiguous or locality-preserving bucket assignment so a local
+   viewport touches fewer stores;
+3. one sharded Zarr bucket per level, but only with a writer design that can
+   stream or externally sort the 136-million-row Exact level without
+   materializing it as one enormous in-memory partition.
+
+One bucket per level is representable in Zarr and would expose one coordinated
+row selection to Zarr, but it is not a one-constant change. It changes shuffle,
+finalization, write parallelism, recovery granularity, and the cache-format
+construction policy. Require a separately reviewed construction experiment
+before adopting it. Increasing logical tile size is not one of these topology
+experiments: physical store grouping and logical spatial read granularity must
+remain separate decisions.
+
+#### Focused I9 qualification
+
+Measure the following boundaries independently for AAMP and one dense or
+all-values control:
+
+```text
+viewport event and debounce
+        -> LOD/manifest planning
+        -> bucket payload IO
+        -> CPU snapshot assembly and packing
+        -> Qt delivery
+        -> VisPy buffer submission
+        -> first physical draw
+        -> subsequent warm frame
+```
+
+Cover a full view, continuous zoom, isolated zoom, overlapping pan, LOD change,
+selection change, cold point payloads, warm CPU residency, and warm renderer
+buffers. Record logical tile count, physical bucket count, touched point chunks,
+packed renderer-buffer count, stale requests, and GUI-thread callback duration.
+Do not collapse these measurements into one unexplained `Loading view` time.
+
+Exit criteria:
+
+- AAMP Exact is not forced to a sampled level solely because it occupies more
+  than 128 logical cache tiles;
+- one accepted AAMP snapshot no longer constructs or toggles 4,453 VisPy
+  scene nodes;
+- renderer buffer count has a small explicit bound independent of logical tile
+  count;
+- the preceding complete snapshot remains visible during preparation and a
+  complete replacement activates atomically;
+- continuous zoom does not dispatch every transient viewport state;
+- a warm overlapping view reuses logical CPU tiles without thousands of
+  GUI-thread visibility mutations;
+- cold reader latency and renderer latency are reported separately;
+- any adopted cross-bucket concurrency is bounded and demonstrates a material
+  improvement on the retained Xenium cache;
+- no change increases the serialized 512-unit Exact logical tile size;
+- any proposal to change bucket count or locality is accompanied by a
+  memory-bounded construction plan and a fresh cache-format evaluation.
+
+### Slice I10: integrate cache discovery, build, and rebuild
 
 Deliverables:
 
@@ -2779,7 +2978,7 @@ Exit criteria:
 - failed/cancelled construction cannot invalidate a previous completed cache;
 - rebuild cannot leave a reader using a replaced path.
 
-### Slice I10: remove the old transcript display path
+### Slice I11: remove the old transcript display path
 
 Deliverables:
 
@@ -2804,7 +3003,7 @@ Exit criteria:
 - focused existing viewer tests and all new tiled-points tests pass;
 - native Points and shapes-as-points features still pass their focused tests.
 
-### Slice I11: full-Xenium product evaluation
+### Slice I12: full-Xenium product evaluation
 
 Use the retained completed cache without rebuilding it for renderer and reader
 evaluation. Record one coherent run covering:
@@ -2818,7 +3017,8 @@ evaluation. Record one coherent run covering:
 - warm pan with entering/leaving tiles;
 - Exact-to-coarse and coarse-to-Exact transitions;
 - selection change while a viewport request is active;
-- CPU and GPU tile residency, bytes, evictions, and coordinate uploads;
+- logical CPU-tile residency plus GPU renderer-buffer residency, bytes,
+  evictions, packing, and coordinate uploads;
 - GUI callback duration and visible frame behavior;
 - full-extent common-value rendering with approximately 127 positive tiles;
 - small-canvas screen-density budget and `within_budget=False` behavior;
@@ -2842,14 +3042,13 @@ draw-call/frame cost
 
 Optimize the measured boundary rather than adding speculative concurrency.
 
-### Optional Slice I12: investigate renderer preparation and first-draw latency
+### Optional Slice I13: investigate residual renderer preparation and first-draw latency
 
-Run this slice only if the integrated I7/I11 evaluation shows an unacceptable
-GUI pause during first view, LOD or selection changes, or multi-tile pans. The
-current renderer deliberately creates missing tile resources sequentially on
-the GUI/OpenGL thread. `VertexBuffer.set_data()` may stage work that VisPy
-defers until draw, so do not describe the complete loop duration as physical
-GPU-upload time.
+Run this slice only if the batched renderer introduced in I9 and the integrated
+I7/I12 evaluation still show an unacceptable GUI pause during first view, LOD
+or selection changes, or multi-tile pans. `VertexBuffer.set_data()` may stage
+work that VisPy defers until draw, so do not describe the complete preparation
+duration as physical GPU-upload time.
 
 Measure the following boundaries separately:
 
@@ -2857,7 +3056,7 @@ Measure the following boundaries separately:
 TiledPointsRenderSnapshot received
         |
         v
-sequential CPU packing per missing tile
+CPU packing into the adopted bounded renderer-buffer set
         |
         v
 VisPy visual/VBO construction and set_data submission
@@ -2872,17 +3071,18 @@ shader compilation/linking
 subsequent warm frame
 ```
 
-Cover one entering tile during a warm pan, several entering tiles, an
-Exact/coarse LOD transition, and the measured 127-tile stress viewport. Record
-structured-array packing, VisPy resource creation/submission, first draw, warm
-draw, and total GUI-thread blocking independently.
+Cover a small warm pan, several entering logical tiles, an Exact/coarse LOD
+transition, the measured 127-tile stress viewport, and the 4,453-logical-tile
+AAMP case. Record structured-array packing, VisPy resource
+creation/submission, first draw, warm draw, and total GUI-thread blocking
+independently.
 
 Evaluate candidate remedies in this order:
 
 1. reuse or warm compatible shader programs where the supported VisPy contract
    permits it;
-2. pool logical tiles into fewer renderer-owned VBO/program pages while
-   retaining `TileResidencyKey` bookkeeping;
+2. tune the adopted one-versus-few renderer-buffer policy and reuse compatible
+   allocated buffers where the supported VisPy contract permits it;
 3. prepare resources incrementally across GUI frames while leaving the prior
    snapshot visible;
 4. consider shared or multiple OpenGL contexts only if simpler approaches fail
@@ -2893,7 +3093,7 @@ Any adopted optimization must preserve:
 
 - atomic snapshot activation, without partial mixtures of levels or value
   selections;
-- tile-level CPU/GPU reuse;
+- logical tile-level CPU reuse and bounded renderer-buffer reuse;
 - bounded logical GPU byte accounting;
 - the prior snapshot during incremental preparation;
 - an explicit distinction between VisPy submission and physical work deferred
@@ -2973,7 +3173,7 @@ selected-index bytes
 bucket lookup-index bytes
 CPU resident tile/point/byte counts
 point-read count by tile identity
-GPU resident tile/point/byte counts
+GPU resident renderer-buffer/point/byte counts
 coordinate upload and eviction counts
 stale result count
 last planning, read, delivery, upload, and activation durations
@@ -3114,7 +3314,8 @@ quiesce the reader before rebuild publication in the initial workflow.
 - No active snapshot mixes cache generations, selections, or levels.
 - `within_budget=False` never triggers an automatic payload read.
 - Style and transform changes never reupload coordinate buffers.
-- A resident tile uploads at most once before GPU eviction.
+- Renderer-buffer preparation remains explicitly bounded and atomically
+  activated independently of the number of resident logical CPU tiles.
 - Upload-induced draws do not schedule an identical request.
 - Stale worker results cannot activate themselves.
 - Layer removal disconnects events and releases worker and GPU resources.
@@ -3130,6 +3331,9 @@ quiesce the reader before rebuild publication in the initial workflow.
 5. Implement I6 and hold the real-canvas renderer review.
 6. Compose I7 and hold Gate I using a small real cache.
 7. Replace the napari-harpy points workflow in I8.
-8. Add product cache construction/rebuild handling in I9.
-9. Remove the superseded direct transcript path in I10.
-10. Run and record the retained full-Xenium product evaluation in I11.
+8. Implement and qualify sparse selected-value responsiveness in I9.
+9. Add product cache construction/rebuild handling in I10.
+10. Remove the superseded direct transcript path in I11.
+11. Run and record the retained full-Xenium product evaluation in I12.
+12. Run optional residual renderer investigation I13 only if the adopted
+    batched path remains insufficient.
