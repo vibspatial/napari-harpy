@@ -578,7 +578,6 @@ class _PointsCacheReader:
     def loaded_bucket_lookup_index_count(self) -> int:
         """Return the number of buckets with resident lookup metadata."""
         return self._bucket_cache_or_raise().loaded_lookup_index_count
-
     @property
     def resident_bucket_lookup_bytes(self) -> int:
         """Return bytes retained by all loaded bucket lookup indexes."""
@@ -1778,6 +1777,20 @@ class _PointsCacheReader:
         self._manifest_row_by_tile = {}
         self._resident_index_bytes = 0
         self._open = False
+
+
+def _read_cache_dataset_info(cache_root: str | Path) -> _CacheDatasetInfo:
+    """Read the small semantic descriptor of one completed cache generation.
+
+    Unlike entering :class:`_PointsCacheReader`, this seam does not materialize
+    catalog indexes, open bucket stores, or read point payloads. It is intended
+    for application discovery before a long-lived worker-owned reader exists.
+    """
+    with _CatalogReader(Path(cache_root)) as catalog:
+        attributes = catalog.attributes
+        if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
+            raise ValueError("Cache root publication_state is not 'complete'.")
+        return _dataset_info_from_attributes(attributes)
 
 
 def _dataset_info_from_attributes(attributes: _CacheAttributes) -> _CacheDatasetInfo:

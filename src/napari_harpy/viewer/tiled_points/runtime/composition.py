@@ -124,6 +124,9 @@ class _TiledPointsLayerRuntime(QObject):
     settings
         Explicit metadata-index and decoded CPU-tile memory policy for the
         cache session. Renderer residency remains configured on ``layer``.
+    initial_requested_value_ids
+        Initial proper subset to make resident before the first viewport is
+        dispatched. ``None`` selects all canonical values.
 
     Notes
     -----
@@ -138,13 +141,18 @@ class _TiledPointsLayerRuntime(QObject):
         cache_root: str | Path,
         settings: _CacheSessionSettings,
         *,
+        initial_requested_value_ids: tuple[int, ...] | None = None,
         session_factory: _SessionFactory = _TiledPointsCacheSession,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._layer = layer
         self._session = session_factory(Path(cache_root), settings)
-        self._coordinator = _TiledPointsViewportCoordinator(self._session, parent=self)
+        self._coordinator = _TiledPointsViewportCoordinator(
+            self._session,
+            initial_requested_value_ids=initial_requested_value_ids,
+            parent=self,
+        )
         self._dataset_reference = layer.data
         self._dataset_verified = False
         self._closed = False
@@ -253,7 +261,10 @@ class _TiledPointsLayerRuntime(QObject):
             self._publish_error(error)
             self.close()
             return
-        message = "Loading view" if self._coordinator.active_request_generation is not None else "Ready"
+        if self._coordinator.selection_update_pending:
+            message = "Updating selected-value index"
+        else:
+            message = "Loading view" if self._coordinator.active_request_generation is not None else "Ready"
         self._set_transient_status(message)
 
     @Slot(object, int)

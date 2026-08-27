@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 import dask.array as da
@@ -52,6 +53,13 @@ from napari_harpy.viewer.shapes_styling import (
 from napari_harpy.viewer.shapes_styling import (
     apply_primary_shapes_layer_style as _apply_primary_shapes_layer_style,
 )
+from napari_harpy.viewer.tiled_points.application import (
+    TiledPointsApplicationSettings,
+    TiledPointsCacheDescriptor,
+    canonical_value_palette,
+)
+from napari_harpy.viewer.tiled_points.napari import TiledPointsLayerModel, register_tiled_points_layer
+from napari_harpy.viewer.tiled_points.runtime.composition import _TiledPointsLayerRuntime
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -291,6 +299,26 @@ class PointsLayerBinding(BaseLayerBinding):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TiledPointsLayerBinding(BaseLayerBinding):
+    """Own one persistent tiled-points model and its terminal runtime lifecycle."""
+
+    layer: TiledPointsLayerModel
+    element_type: Literal["points"] = "points"
+    value_column: str
+    cache_root: Path
+    cache_generation_id: str
+    runtime: _TiledPointsLayerRuntime
+
+    def __post_init__(self) -> None:
+        if not self.value_column:
+            raise ValueError("Tiled points bindings require a non-empty value column.")
+        if not isinstance(self.cache_root, Path):
+            raise ValueError("Tiled points bindings require a pathlib.Path cache root.")
+        if self.cache_generation_id != self.layer.data.cache_generation_id:
+            raise ValueError("Binding and tiled-points layer cache generations must match.")
+
+
+@dataclass(frozen=True, kw_only=True)
 class ShapesLayerBinding(BaseLayerBinding):
     """Binding metadata specific to shapes layers.
 
@@ -345,7 +373,15 @@ class ShapesLayerBinding(BaseLayerBinding):
             raise ValueError("Styled shapes bindings require a style specification.")
 
 
-LayerBinding = LabelsLayerBinding | ImageLayerBinding | PointsLayerBinding | ShapesLayerBinding
+LayerBinding = LabelsLayerBinding | ImageLayerBinding | PointsLayerBinding | TiledPointsLayerBinding | ShapesLayerBinding
+
+
+@dataclass(frozen=True)
+class TiledPointsLoadResult:
+    """Report whether a persistent tiled-points binding was created or reused."""
+
+    binding: TiledPointsLayerBinding
+    created: bool
 
 
 @dataclass(frozen=True)
@@ -566,6 +602,32 @@ class LayerBindingRegistry:
             coordinate_system=coordinate_system,
             sdata_id=_get_sdata_id(sdata),
             index_column=index_column,
+        )
+        self._register_binding(binding)
+        return binding
+
+    def register_tiled_points_layer(
+        self,
+        layer: TiledPointsLayerModel,
+        *,
+        element_name: str,
+        coordinate_system: str,
+        sdata: SpatialData,
+        value_column: str,
+        cache_root: Path,
+        cache_generation_id: str,
+        runtime: _TiledPointsLayerRuntime,
+    ) -> TiledPointsLayerBinding:
+        """Register one cache-backed tiled-points layer binding."""
+        binding = TiledPointsLayerBinding(
+            layer=layer,
+            element_name=element_name,
+            coordinate_system=coordinate_system,
+            sdata_id=id(sdata),
+            value_column=value_column,
+            cache_root=cache_root,
+            cache_generation_id=cache_generation_id,
+            runtime=runtime,
         )
         self._register_binding(binding)
         return binding
@@ -828,6 +890,30 @@ class ViewerAdapter(QObject):
         self._handle_registered_binding(binding)
         return binding
 
+    def register_tiled_points_binding(
+        self,
+        layer: TiledPointsLayerModel,
+        *,
+        points_name: str,
+        coordinate_system: str,
+        sdata: SpatialData,
+        value_column: str,
+        cache_root: Path,
+        cache_generation_id: str,
+        runtime: _TiledPointsLayerRuntime,
+    ) -> TiledPointsLayerBinding:
+        """Register a persistent cache-backed points layer."""
+        return self._layer_bindings.register_tiled_points_layer(
+            layer,
+            element_name=points_name,
+            coordinate_system=coordinate_system,
+            sdata=sdata,
+            value_column=value_column,
+            cache_root=cache_root,
+            cache_generation_id=cache_generation_id,
+            runtime=runtime,
+        )
+
     def register_shapes_layer(
         self,
         layer: Shapes | Points,
@@ -917,7 +1003,10 @@ class ViewerAdapter(QObject):
 
     def unregister_layer(self, layer: Layer) -> LayerBinding | None:
         """Remove a layer from the shared binding registry."""
-        return self._layer_bindings.unregister_layer(layer)
+        binding = self._layer_bindings.unregister_layer(layer)
+        if isinstance(binding, TiledPointsLayerBinding):
+            binding.runtime.close()
+        return binding
 
     def _connect_layer_events(self) -> None:
         """Keep the registry synchronized with the viewer's layer list when possible."""
@@ -1235,6 +1324,99 @@ class ViewerAdapter(QObject):
             selected_value_count=style_result.selected_value_count,
             categorical_limit=style_result.categorical_limit,
         )
+
+    def get_loaded_tiled_points_binding(
+        self,
+        sdata: SpatialData,
+        points_name: str,
+        coordinate_system: str,
+        value_column: str,
+    ) -> TiledPointsLayerBinding | None:
+        """Return the live tiled binding for one logical points identity."""
+        for layer in self._iter_candidate_layers():
+            binding = self._layer_bindings.get_binding(layer)
+            if (
+                isinstance(binding, TiledPointsLayerBinding)
+                and binding.sdata_id == id(sdata)
+                and binding.element_name == points_name
+                and binding.coordinate_system == coordinate_system
+                and binding.value_column == value_column
+            ):
+                return binding
+        return None
+
+    def ensure_tiled_points_layer(
+        self,
+        *,
+        sdata: SpatialData,
+        points_name: str,
+        coordinate_system: str,
+        descriptor: TiledPointsCacheDescriptor,
+        requested_value_ids: tuple[int, ...] | None,
+        hard_render_point_budget: int,
+        settings: TiledPointsApplicationSettings,
+    ) -> TiledPointsLoadResult:
+        """Create or update one persistent cache-backed points layer."""
+        info = descriptor.dataset_info
+        if info.points_name != points_name:
+            raise ValueError(
+                f"Cache {descriptor.cache_root} describes points element {info.points_name!r}, "
+                f"not selected element {points_name!r}."
+            )
+        existing = self.get_loaded_tiled_points_binding(
+            sdata,
+            points_name,
+            coordinate_system,
+            info.value_column,
+        )
+        if existing is not None and existing.runtime.closed:
+            self._remove_layer_from_viewer_and_registry(existing.layer)
+            existing = None
+        if existing is not None and existing.cache_generation_id == info.cache_generation_id:
+            existing.layer.hard_render_point_budget = hard_render_point_budget
+            existing.runtime.set_selected_value_ids(requested_value_ids)
+            return TiledPointsLoadResult(binding=existing, created=False)
+        if existing is not None:
+            self._remove_layer_from_viewer_and_registry(existing.layer)
+
+        affine = _get_points_affine_transform(sdata, points_name, coordinate_system)
+        if affine is None:
+            raise ValueError(
+                f"Coordinate system {coordinate_system!r} is not available for points element {points_name!r}."
+            )
+        register_tiled_points_layer()
+        layer = TiledPointsLayerModel(
+            descriptor.dataset_reference,
+            value_palette=canonical_value_palette(len(info.value_names)),
+            max_gpu_tile_bytes=settings.max_gpu_tile_bytes,
+            affine=affine,
+            name=points_name,
+            hard_render_point_budget=hard_render_point_budget,
+        )
+        runtime = _TiledPointsLayerRuntime(
+            layer,
+            descriptor.cache_root,
+            settings.cache_session_settings,
+            initial_requested_value_ids=requested_value_ids,
+        )
+        try:
+            _add_layer_to_viewer(self._viewer, layer)
+            binding = self.register_tiled_points_binding(
+                layer,
+                points_name=points_name,
+                coordinate_system=coordinate_system,
+                sdata=sdata,
+                value_column=info.value_column,
+                cache_root=descriptor.cache_root,
+                cache_generation_id=info.cache_generation_id,
+                runtime=runtime,
+            )
+        except Exception:
+            runtime.close()
+            if self._is_layer_loaded_in_viewer(layer):
+                _remove_layer_from_viewer(self._viewer, layer)
+            raise
+        return TiledPointsLoadResult(binding=binding, created=True)
 
     def ensure_labels_loaded(self, sdata: SpatialData, labels_name: str, coordinate_system: str) -> LabelsLoadResult:
         """Load a primary Labels layer without restyling an existing one.
@@ -1889,6 +2071,12 @@ class ViewerAdapter(QObject):
             self._remove_layer_from_viewer_and_registry(binding.layer)
 
         return removed_bindings
+
+    def close_tiled_points_runtimes(self) -> None:
+        """Terminally close every registered cache-backed points runtime."""
+        for binding in self._layer_bindings.iter_bindings():
+            if isinstance(binding, TiledPointsLayerBinding):
+                binding.runtime.close()
 
     def _iter_candidate_layers(self) -> Iterable[Layer]:
         layers = getattr(self._viewer, "layers", None)

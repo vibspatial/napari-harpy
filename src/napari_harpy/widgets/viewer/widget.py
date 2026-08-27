@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype, is_object_dtype, is_string_dtype
@@ -79,6 +80,7 @@ from napari_harpy.widgets.viewer.styles import (
     EMPTY_STATE_STYLESHEET,
     INPUT_CONTROL_STYLESHEET,
 )
+from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
 
 if TYPE_CHECKING:
     import napari
@@ -86,23 +88,51 @@ if TYPE_CHECKING:
 
 
 _SUMMARY_COORDINATE_SYSTEM_MAX_LENGTH = 32
+_EXPERIMENTAL_TILED_POINTS_ENV = "NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS"
+_TRUE_ENV_VALUES = frozenset({"1", "on", "true", "yes"})
+
+
+def _experimental_tiled_points_enabled(explicit: bool | None) -> bool:
+    """Resolve the process-start opt-in, allowing an explicit override."""
+    if explicit is not None:
+        return explicit
+    return os.environ.get(_EXPERIMENTAL_TILED_POINTS_ENV, "").strip().casefold() in _TRUE_ENV_VALUES
 
 
 class ViewerWidget(QWidget):
-    """Shared viewer widget backed by `HarpyAppState` and `ViewerAdapter`."""
+    """Shared viewer widget backed by `HarpyAppState` and `ViewerAdapter`.
 
-    def __init__(self, napari_viewer: napari.Viewer | None = None) -> None:
+    Points use the in-memory backend by default. Pass
+    ``experimental_tiled_points=True`` or set
+    ``NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS=1`` before starting napari to opt
+    into the cache-backed tiled renderer for this widget's lifetime.
+    """
+
+    def __init__(
+        self,
+        napari_viewer: napari.Viewer | None = None,
+        *,
+        experimental_tiled_points: bool | None = None,
+    ) -> None:
         super().__init__()
         self.setObjectName("viewer_widget")
         apply_widget_surface(self)
         self.setMinimumWidth(WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
         self._app_state = get_or_create_app_state(napari_viewer)
-        self._points_controller = PointsController(
-            on_state_changed=self._on_points_controller_state_changed,
-            on_value_source_loaded=self._on_points_value_source_loaded,
-            on_points_loaded=self._on_points_loaded,
-        )
+        self._experimental_tiled_points = _experimental_tiled_points_enabled(experimental_tiled_points)
+        if self._experimental_tiled_points:
+            self._points_controller = TiledPointsController(
+                self._app_state.viewer_adapter,
+                on_state_changed=self._on_points_controller_state_changed,
+                on_values_loaded=self._on_points_values_loaded,
+            )
+        else:
+            self._points_controller = PointsController(
+                on_state_changed=self._on_points_controller_state_changed,
+                on_value_source_loaded=self._on_points_value_source_loaded,
+                on_points_loaded=self._on_points_loaded,
+            )
         self._last_points_load_request: PointsLoadRequest | None = None
         self._last_points_load_result: PointsLoadResult | None = None
         self._labels_cards: list[_LabelsCardWidget] = []
@@ -281,10 +311,20 @@ class ViewerWidget(QWidget):
         self._app_state.viewer_adapter.image_layers_changed.connect(self._on_image_layers_changed)
         self.refresh_from_sdata(self._app_state.sdata)
 
+    def closeEvent(self, event: Any) -> None:
+        """Stop points work before the panel is destroyed."""
+        self._points_controller.shutdown()
+        super().closeEvent(event)
+
     @property
     def app_state(self) -> HarpyAppState:
         """Return the shared Harpy app state for this widget."""
         return self._app_state
+
+    @property
+    def points_visualization_backend(self) -> Literal["in-memory", "tiled-cache"]:
+        """Return the points backend fixed for this widget's lifetime."""
+        return "tiled-cache" if self._experimental_tiled_points else "in-memory"
 
     @property
     def labels_cards(self) -> list[_LabelsCardWidget]:
@@ -706,6 +746,11 @@ class ViewerWidget(QWidget):
             coordinate_system,
             index_column,
         )
+        if self._experimental_tiled_points:
+            if not changed:
+                self.points_widget.render_controller_state(self._points_controller)
+            return
+
         if changed:
             self._last_points_load_request = None
             self._last_points_load_result = None
@@ -715,6 +760,13 @@ class ViewerWidget(QWidget):
             self.points_widget.render_controller_state(self._points_controller)
 
     def _add_or_update_points_selection(self, values: Sequence[str] | Literal["all"], render_point_budget: int) -> None:
+        if self._experimental_tiled_points:
+            self._points_controller.apply_selection(
+                values,
+                render_point_budget=render_point_budget,
+            )
+            return
+
         self._last_points_load_request = None
         self._last_points_load_result = None
         self._points_controller.load_selection(
@@ -729,6 +781,9 @@ class ViewerWidget(QWidget):
 
     def _on_points_value_source_loaded(self, value_source: PointsValueSource) -> None:
         self.points_widget.set_value_source(value_source)
+
+    def _on_points_values_loaded(self, values: tuple[str, ...]) -> None:
+        self.points_widget.set_available_values(values)
 
     def _on_points_loaded(self, request: PointsLoadRequest) -> None:
         try:

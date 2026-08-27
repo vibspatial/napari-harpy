@@ -27,6 +27,25 @@ def test_bucket_count_uses_the_provisional_two_million_point_policy() -> None:
     assert _bucket_count_for_level(_level(136_578_750)) == 69
 
 
+def test_bucket_count_accepts_an_explicit_target() -> None:
+    assert (
+        _bucket_count_for_level(
+            _level(136_578_750),
+            target_points_per_bucket=17_072_344,
+        )
+        == 8
+    )
+
+
+@pytest.mark.parametrize("target", [0, -1, True, 1.5])
+def test_bucket_count_rejects_an_invalid_explicit_target(target: object) -> None:
+    with pytest.raises(ValueError, match="target_points_per_bucket"):
+        _bucket_count_for_level(  # type: ignore[arg-type]
+            _level(10),
+            target_points_per_bucket=target,
+        )
+
+
 def test_bucket_count_rejects_a_count_that_cannot_fit_uint32() -> None:
     with pytest.raises(ValueError, match="bucket count"):
         _bucket_count_for_level(_level(2**63 - 1))

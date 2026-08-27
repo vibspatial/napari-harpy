@@ -379,7 +379,7 @@ def test_spatial_writer_builds_nested_multilevel_zarr_pyramid(
     monkeypatch.setattr(
         spatial_module,
         "_bucket_count_for_level",
-        lambda level: 2 if level.level == 2 else 1,
+        lambda level, **_kwargs: 2 if level.level == 2 else 1,
     )
     observed_reader_caches: list[tuple[int, object]] = []
     reader_cache = spatial_module._BucketReaderCache
@@ -463,7 +463,7 @@ def test_spatial_writer_applies_explicit_reader_bound_to_each_level(
 ) -> None:
     staging = tmp_path / "staging"
     bridge_result = _write_bridge_fixture(staging)
-    monkeypatch.setattr(spatial_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(spatial_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
     observed_capacities: list[int] = []
     reader_cache = spatial_module._BucketReaderCache
 
@@ -491,7 +491,7 @@ def test_spatial_failure_removes_active_bucket_and_preserves_bridge(
 ) -> None:
     staging = tmp_path / failure
     bridge_result = _write_bridge_fixture(staging)
-    monkeypatch.setattr(spatial_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(spatial_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
     if failure == "read":
         monkeypatch.setattr(
             _BucketReader,
@@ -537,7 +537,7 @@ def test_spatial_later_level_failure_preserves_completed_prerequisites(
 ) -> None:
     staging = tmp_path / "staging"
     bridge_result = _write_bridge_fixture(staging)
-    monkeypatch.setattr(spatial_module, "_bucket_count_for_level", lambda _level: 1)
+    monkeypatch.setattr(spatial_module, "_bucket_count_for_level", lambda _level, **_kwargs: 1)
     sample = spatial_module._select_sampled_tile_indices
 
     def fail_terminal(*args: object, **kwargs: object) -> np.ndarray:

@@ -88,16 +88,28 @@ class _TiledPointsViewportCoordinator(QObject):
     snapshot_ready = Signal(object)
     viewport_failed = Signal(int, object)
 
-    def __init__(self, session: _TiledPointsCacheSession, *, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        session: _TiledPointsCacheSession,
+        *,
+        initial_requested_value_ids: tuple[int, ...] | None = None,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent)
+        _require_requested_value_ids(initial_requested_value_ids)
         self._session = session
         self._request_generation = 0
-        self._selection_generation = 0
+        self._selection_generation = int(initial_requested_value_ids is not None)
+        self._desired_value_ids = initial_requested_value_ids
         self._latest_submission: _ViewportSubmission | None = None
         self._active_request: _ViewportRequest | None = None
         self._pending_submission: _ViewportSubmission | None = None
-        self._selection_update_pending = False
+        # A proper initial subset must become resident before the first viewport
+        # is dispatched; otherwise startup could briefly request all values.
+        self._selection_update_pending = initial_requested_value_ids is not None
         self._selection_failure_pending = False
+        self._initial_subset_uncommitted = initial_requested_value_ids is not None
+        self._block_viewport_after_initial_selection_failure = False
         self._closed = False
 
         session.ready.connect(self._on_session_ready)
@@ -127,6 +139,11 @@ class _TiledPointsViewportCoordinator(QObject):
     def pending_request_generation(self) -> int | None:
         """Return the replaceable pending request generation, if any."""
         return None if self._pending_submission is None else self._pending_submission.request_generation
+
+    @property
+    def selection_update_pending(self) -> bool:
+        """Return whether viewport dispatch waits for a value-index update."""
+        return self._selection_update_pending
 
     def submit_viewport(self, viewport: TiledPointsViewportState) -> int:
         """Stamp and submit or retain the newest immutable viewport state.
@@ -198,12 +215,26 @@ class _TiledPointsViewportCoordinator(QObject):
             coordinator dispatches latest retained viewport
         """
         self._require_open()
-        accepted = self._session.set_selected_value_ids(requested_value_ids)
-        if not accepted:
+        _require_requested_value_ids(requested_value_ids)
+        if requested_value_ids == self._desired_value_ids and not self._block_viewport_after_initial_selection_failure:
             return False
+        startup = self._session.state in {
+            _CacheSessionState.NEW,
+            _CacheSessionState.STARTING,
+            _CacheSessionState.LOADING_BUCKET_INDEXES,
+        }
+        session_change_pending = False
+        if not startup:
+            session_change_pending = self._session.set_selected_value_ids(requested_value_ids)
+            if not session_change_pending and requested_value_ids != self._session.selected_value_ids:
+                return False
+        self._desired_value_ids = requested_value_ids
         self._selection_generation += 1
-        self._selection_update_pending = True
+        self._selection_update_pending = (startup and requested_value_ids is not None) or session_change_pending
         self._selection_failure_pending = False
+        self._block_viewport_after_initial_selection_failure = False
+        if requested_value_ids is None:
+            self._initial_subset_uncommitted = False
         self._pending_submission = None
         if self._latest_submission is not None:
             # A selection change needs a fresh request generation even when the
@@ -216,6 +247,7 @@ class _TiledPointsViewportCoordinator(QObject):
             )
             self._latest_submission = submission
             self._pending_submission = submission
+        self._dispatch_pending()
         return True
 
     @Slot()
@@ -230,6 +262,15 @@ class _TiledPointsViewportCoordinator(QObject):
 
     @Slot()
     def _on_session_ready(self) -> None:
+        if self._selection_update_pending and self._session.state is _CacheSessionState.READY:
+            if self._desired_value_ids is None:
+                self._selection_update_pending = False
+                self._initial_subset_uncommitted = False
+            elif self._session.set_selected_value_ids(self._desired_value_ids):
+                return
+            else:
+                self._selection_update_pending = False
+                self._initial_subset_uncommitted = False
         self._dispatch_pending()
 
     @Slot(object, int)
@@ -239,6 +280,8 @@ class _TiledPointsViewportCoordinator(QObject):
             return
         self._selection_update_pending = False
         self._selection_failure_pending = False
+        self._initial_subset_uncommitted = False
+        self._block_viewport_after_initial_selection_failure = False
         self._dispatch_pending()
 
     @Slot(object)
@@ -273,7 +316,13 @@ class _TiledPointsViewportCoordinator(QObject):
         if self._closed:
             return
         if failure.phase == "selection" and self._selection_update_pending:
-            self._selection_failure_pending = True
+            if self._initial_subset_uncommitted:
+                # There is no preceding user-approved selection to fall back to:
+                # dispatching here would issue the forbidden startup all-values read.
+                self._selection_update_pending = False
+                self._block_viewport_after_initial_selection_failure = True
+            else:
+                self._selection_failure_pending = True
 
     @Slot(object)
     def _on_session_state_changed(self, state: _CacheSessionState) -> None:
@@ -290,6 +339,7 @@ class _TiledPointsViewportCoordinator(QObject):
             or self._active_request is not None
             or self._pending_submission is None
             or self._selection_update_pending
+            or self._block_viewport_after_initial_selection_failure
             or self._session.state is not _CacheSessionState.READY
         ):
             return
@@ -307,3 +357,15 @@ class _TiledPointsViewportCoordinator(QObject):
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("The tiled-points viewport coordinator is closed.")
+
+
+def _require_requested_value_ids(value: object) -> None:
+    if value is None:
+        return
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or any(not isinstance(value_id, int) or isinstance(value_id, bool) or value_id < 0 for value_id in value)
+        or tuple(sorted(set(value))) != value
+    ):
+        raise ValueError("`requested_value_ids` must be None or sorted unique nonnegative integers.")

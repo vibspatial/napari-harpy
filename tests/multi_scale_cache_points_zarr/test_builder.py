@@ -49,11 +49,12 @@ def _validated_source(tmp_path: Path) -> ValidatedPointsSource:
     return validate_parquet_points_source(source, max_batch_rows=2)
 
 
-def _config(*, overview_point_budget: int) -> _PointsCacheBuilderConfig:
+def _config(*, overview_point_budget: int, target_points_per_bucket: int = 2_000_000) -> _PointsCacheBuilderConfig:
     return _PointsCacheBuilderConfig(
         leaf_tile_size=10,
         overview_point_budget=overview_point_budget,
         dask_worker_count=2,
+        target_points_per_bucket=target_points_per_bucket,
         zarr_settings=_ZarrWriteSettings(
             point_chunk_rows=2,
             point_shard_rows=4,
@@ -117,6 +118,23 @@ def test_builder_publishes_complete_exact_only_generation(tmp_path: Path) -> Non
     assert (tmp_path / "temporary").is_dir()
     assert not any((tmp_path / "temporary").iterdir())
     _assert_publication_released(tmp_path)
+
+
+def test_builder_persists_and_validates_configured_bucket_target(tmp_path: Path) -> None:
+    validated = _validated_source(tmp_path)
+    temporary_root = tmp_path / "temporary"
+    temporary_root.mkdir()
+
+    output = _build_points_cache_zarr(
+        validated,
+        output_path=tmp_path / "transcripts_vis_zarr",
+        temporary_directory_root=temporary_root,
+        config=_config(overview_point_budget=10, target_points_per_bucket=2),
+    )
+
+    with _CatalogReader(output) as reader:
+        reader.validate_contents()
+        assert reader.attributes.build.target_points_per_bucket == 2
 
 
 def test_builder_publishes_complete_multilevel_generation(tmp_path: Path) -> None:
