@@ -51,6 +51,7 @@ def _write_staged_cache_catalog(
     staging_root: Path,
     cache_generation_id: str,
     settings: _CatalogWriteSettings,
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET,
 ) -> None:
     """Write and reconcile one complete Zarr-only cache catalog.
 
@@ -67,7 +68,12 @@ def _write_staged_cache_catalog(
     if not isinstance(settings, _CatalogWriteSettings):
         raise ValueError("`settings` must be _CatalogWriteSettings.")
     _require_existing_staging_root(staging_root)
-    _require_level_results_match_plan(validated, plan, level_results)
+    _require_level_results_match_plan(
+        validated,
+        plan,
+        level_results,
+        target_points_per_bucket=target_points_per_bucket,
+    )
     _require_catalog_targets_absent(staging_root)
     _require_bucket_inventory_matches_results(staging_root, level_results)
 
@@ -161,6 +167,7 @@ def _write_staged_cache_catalog(
             zarr_settings=zarr_settings,
             value_names=value_names,
             catalog_metadata=catalog_metadata,
+            target_points_per_bucket=target_points_per_bucket,
         )
         writer.finalize(attributes)
 
@@ -298,6 +305,7 @@ def _build_cache_attributes(
     zarr_settings: _ZarrWriteSettings,
     value_names: tuple[str, ...],
     catalog_metadata: _CatalogMetadata,
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET,
 ) -> _CacheAttributes:
     columns = validated.source.columns
     selected_schema = tuple(
@@ -334,7 +342,7 @@ def _build_cache_attributes(
     build = _BuildMetadata(
         leaf_tile_size=plan.leaf_tile_size,
         overview_point_budget=plan.overview_point_budget,
-        target_points_per_bucket=TARGET_POINTS_PER_BUCKET,
+        target_points_per_bucket=target_points_per_bucket,
         bucket_hash_method=BUCKET_HASH_METHOD,
         sampling_method=SAMPLING_METHOD,
         sampling_seed=SAMPLING_SEED,
@@ -399,6 +407,8 @@ def _require_level_results_match_plan(
     validated: ValidatedPointsSource,
     plan: _PointsCacheBuildPlan,
     level_results: object,
+    *,
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET,
 ) -> None:
     """Require completed level results to match the source and build plan.
 
@@ -413,7 +423,10 @@ def _require_level_results_match_plan(
     for level_plan, result in zip(plan.levels, level_results, strict=True):
         if result.level != level_plan.level:
             raise ValueError("Level results must follow planned serialized order.")
-        planned_bucket_count = _bucket_count_for_level(level_plan)
+        planned_bucket_count = _bucket_count_for_level(
+            level_plan,
+            target_points_per_bucket=target_points_per_bucket,
+        )
         if any(bucket.bucket_id >= planned_bucket_count for bucket in result.buckets):
             raise ValueError("A result bucket ID lies outside the planned hash space.")
         if result.point_count > level_plan.point_count_upper_bound:

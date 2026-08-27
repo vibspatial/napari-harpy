@@ -18,6 +18,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _PointsCacheBuildPlan,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+    TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
     _tile_bucket_ids,
 )
@@ -53,10 +54,13 @@ class _ExactWriterConfig:
     dask_worker_count
         Positive number of local threaded-scheduler workers. This also bounds
         concurrently materialized shuffled buckets and active bucket writers.
+    target_points_per_bucket
+        Positive target used to derive the deterministic Exact bucket count.
     """
 
     zarr_settings: _ZarrWriteSettings
     dask_worker_count: int
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET
 
     def __post_init__(self) -> None:
         if not isinstance(self.zarr_settings, _ZarrWriteSettings):
@@ -64,6 +68,12 @@ class _ExactWriterConfig:
         _require_integer_in_range(
             self.dask_worker_count,
             "dask_worker_count",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
+        _require_integer_in_range(
+            self.target_points_per_bucket,
+            "target_points_per_bucket",
             minimum=1,
             maximum=_INT64_MAX,
         )
@@ -265,7 +275,10 @@ def _write_exact_level(
     if sum(spec.expected_row_count for spec in read_specs) != validated.row_count:
         raise ValueError("Row-group read specifications do not reconcile to the validated source count.")
 
-    bucket_count = _bucket_count_for_level(exact)
+    bucket_count = _bucket_count_for_level(
+        exact,
+        target_points_per_bucket=config.target_points_per_bucket,
+    )
     # Materialize the validated vocabulary in ID order; each tuple position is
     # the canonical uint32 value ID defined by `ValidatedPointsSource.value_table`.
     value_labels_by_id: tuple[str, ...] = tuple(validated.value_table["value"].to_pylist())

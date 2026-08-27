@@ -21,6 +21,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
     _parse_cache_attributes,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _require_parquet_source_unchanged
@@ -67,6 +68,10 @@ class _PointsCacheBuilderConfig:
         Maximum planned representative count in the terminal overview level.
     dask_worker_count
         Positive local threaded-worker count used by Exact construction.
+    target_points_per_bucket
+        Positive target used to derive deterministic bucket counts at every
+        serialized level. The default preserves the adopted two-million-point
+        policy and the configured value is persisted in cache metadata.
     zarr_settings
         One physical chunk, shard, and codec profile shared by every level.
     catalog_settings
@@ -82,6 +87,7 @@ class _PointsCacheBuilderConfig:
     leaf_tile_size: int
     overview_point_budget: int
     dask_worker_count: int
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET
     zarr_settings: _ZarrWriteSettings = field(default_factory=_default_zarr_write_settings)
     catalog_settings: _CatalogWriteSettings = field(default_factory=_CatalogWriteSettings)
     max_open_exact_readers: int | None = None
@@ -98,6 +104,12 @@ class _PointsCacheBuilderConfig:
         _require_integer_in_range(
             self.dask_worker_count,
             "dask_worker_count",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
+        _require_integer_in_range(
+            self.target_points_per_bucket,
+            "target_points_per_bucket",
             minimum=1,
             maximum=_INT64_MAX,
         )
@@ -202,6 +214,7 @@ def _build_points_cache_zarr(
                 config=_ExactWriterConfig(
                     zarr_settings=config.zarr_settings,
                     dask_worker_count=config.dask_worker_count,
+                    target_points_per_bucket=config.target_points_per_bucket,
                 ),
             )
             if len(plan.levels) == 1:
@@ -213,6 +226,7 @@ def _build_points_cache_zarr(
                     staging_root=staging_root,
                     config=_BridgeWriterConfig(
                         zarr_settings=config.zarr_settings,
+                        target_points_per_bucket=config.target_points_per_bucket,
                         max_open_exact_readers=config.max_open_exact_readers,
                     ),
                 )
@@ -222,6 +236,7 @@ def _build_points_cache_zarr(
                     staging_root=staging_root,
                     config=_SpatialWriterConfig(
                         zarr_settings=config.zarr_settings,
+                        target_points_per_bucket=config.target_points_per_bucket,
                         max_open_finer_readers=config.max_open_finer_readers,
                     ),
                 )
@@ -234,6 +249,7 @@ def _build_points_cache_zarr(
                 staging_root=staging_root,
                 cache_generation_id=cache_generation_id,
                 settings=config.catalog_settings,
+                target_points_per_bucket=config.target_points_per_bucket,
             )
             del exact_result, level_results, plan
             _validate_staged_cache(staging_root)

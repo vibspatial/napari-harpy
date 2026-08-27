@@ -17,13 +17,21 @@ _SPLITMIX64_MULTIPLIER_1 = np.uint64(0xBF58476D1CE4E5B9)
 _SPLITMIX64_MULTIPLIER_2 = np.uint64(0x94D049BB133111EB)
 
 
-def _bucket_count_for_level(level: _LevelBuildPlan) -> int:
-    """Return the provisional deterministic bucket count for one level."""
+def _bucket_count_for_level(
+    level: _LevelBuildPlan,
+    *,
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET,
+) -> int:
+    """Return the deterministic bucket count for one level and target size."""
     if not isinstance(level, _LevelBuildPlan):
         raise ValueError("`level` must be a _LevelBuildPlan.")
+    if not isinstance(target_points_per_bucket, int) or isinstance(target_points_per_bucket, bool):
+        raise ValueError("`target_points_per_bucket` must be a positive integer.")
+    if target_points_per_bucket <= 0:
+        raise ValueError("`target_points_per_bucket` must be a positive integer.")
     bucket_count = max(
         1,
-        (level.point_count_upper_bound + TARGET_POINTS_PER_BUCKET - 1) // TARGET_POINTS_PER_BUCKET,
+        (level.point_count_upper_bound + target_points_per_bucket - 1) // target_points_per_bucket,
     )
     if bucket_count > _MAX_BUCKET_COUNT:
         raise ValueError("The planned bucket count exceeds the supported uint32 space.")

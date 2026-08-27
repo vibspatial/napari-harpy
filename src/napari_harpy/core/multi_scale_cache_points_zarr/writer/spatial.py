@@ -14,6 +14,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _PointsCacheBuildPlan,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+    TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
     _tile_bucket_ids,
 )
@@ -50,14 +51,23 @@ class _SpatialWriterConfig:
         retained while constructing one Spatial level. ``None`` retains every
         nonempty input bucket and is the default. A fresh level-scoped cache is
         closed before the completed output becomes the next level's input.
+    target_points_per_bucket
+        Positive target used to derive every deterministic Spatial bucket count.
     """
 
     zarr_settings: _ZarrWriteSettings
+    target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET
     max_open_finer_readers: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.zarr_settings, _ZarrWriteSettings):
             raise ValueError("`zarr_settings` must be _ZarrWriteSettings.")
+        _require_integer_in_range(
+            self.target_points_per_bucket,
+            "target_points_per_bucket",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
         if self.max_open_finer_readers is not None:
             _require_integer_in_range(
                 self.max_open_finer_readers,
@@ -231,7 +241,10 @@ def _write_spatial_level(
     )
     tiles_by_bucket = _assign_spatial_buckets(
         coarser_tiles,
-        bucket_count=_bucket_count_for_level(coarser_level),
+        bucket_count=_bucket_count_for_level(
+            coarser_level,
+            target_points_per_bucket=config.target_points_per_bucket,
+        ),
     )
 
     level_directory.mkdir(parents=True)

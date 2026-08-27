@@ -10,10 +10,7 @@ from typing import Any, Final
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
-    BUCKET_HASH_METHOD,
-    TARGET_POINTS_PER_BUCKET,
-)
+from napari_harpy.core.multi_scale_cache_points_zarr.hashing import BUCKET_HASH_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
@@ -217,8 +214,7 @@ class _BuildMetadata:
         _require_nonempty_string(self.bucket_hash_method, "build.bucket_hash_method")
         _require_nonempty_string(self.sampling_method, "build.sampling_method")
         if (
-            self.target_points_per_bucket != TARGET_POINTS_PER_BUCKET
-            or self.bucket_hash_method != BUCKET_HASH_METHOD
+            self.bucket_hash_method != BUCKET_HASH_METHOD
             or self.sampling_method != SAMPLING_METHOD
             or self.sampling_seed != SAMPLING_SEED
             or self.sampling_microgrid_edge != SAMPLED_TILE_MICROGRID_EDGE
