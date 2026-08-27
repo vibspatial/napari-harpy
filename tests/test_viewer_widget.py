@@ -43,8 +43,9 @@ from napari_harpy.widgets.shared_styles import (
 )
 from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedToolButton
 from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
-from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
+from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest
 from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
+from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
 from napari_harpy.widgets.viewer.widget import ViewerWidget
 
 
@@ -266,6 +267,11 @@ def _make_points_load_request(sdata: object) -> PointsLoadRequest:
     )
 
 
+@pytest.fixture(autouse=True)
+def _disable_experimental_tiled_points_by_default(monkeypatch) -> None:
+    monkeypatch.delenv(viewer_widget_module._EXPERIMENTAL_TILED_POINTS_ENV, raising=False)
+
+
 def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     widget = ViewerWidget()
 
@@ -286,6 +292,28 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     assert widget.image_cards == []
     assert widget.labels_cards == []
     assert widget.shape_cards == []
+    assert widget.points_visualization_backend == "in-memory"
+    assert isinstance(widget._points_controller, PointsController)
+
+
+def test_viewer_widget_tiled_points_backend_is_opt_in(qtbot, monkeypatch) -> None:
+    monkeypatch.setenv(viewer_widget_module._EXPERIMENTAL_TILED_POINTS_ENV, "1")
+
+    widget = ViewerWidget()
+    qtbot.addWidget(widget)
+
+    assert widget.points_visualization_backend == "tiled-cache"
+    assert isinstance(widget._points_controller, TiledPointsController)
+
+
+def test_viewer_widget_explicit_points_backend_overrides_environment(qtbot, monkeypatch) -> None:
+    monkeypatch.setenv(viewer_widget_module._EXPERIMENTAL_TILED_POINTS_ENV, "true")
+
+    widget = ViewerWidget(experimental_tiled_points=False)
+    qtbot.addWidget(widget)
+
+    assert widget.points_visualization_backend == "in-memory"
+    assert isinstance(widget._points_controller, PointsController)
 
 
 def test_elided_label_only_shows_tooltip_when_text_is_truncated(qtbot, monkeypatch) -> None:
@@ -743,6 +771,34 @@ def test_viewer_widget_points_section_populates_and_starts_value_loading(qtbot, 
     assert load_value_calls == 1
 
 
+def test_viewer_widget_opt_in_tiled_points_starts_cache_descriptor_loading(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer, experimental_tiled_points=True)
+    fake_sdata = _make_points_sdata()
+    bound_sources: list[tuple[object, str | None, str | None, str | None]] = []
+
+    qtbot.addWidget(widget)
+
+    _patch_coordinate_system_names(monkeypatch, ["global"])
+    monkeypatch.setattr(viewer_widget_module, "_get_images_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_labels_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(viewer_widget_module, "_get_shapes_in_coordinate_system", lambda sdata, coordinate_system: [])
+    monkeypatch.setattr(
+        viewer_widget_module, "_get_points_in_coordinate_system", lambda sdata, coordinate_system: ["transcripts"]
+    )
+
+    def record_binding(sdata, points_name, coordinate_system, value_column) -> bool:
+        bound_sources.append((sdata, points_name, coordinate_system, value_column))
+        return True
+
+    monkeypatch.setattr(widget._points_controller, "bind_source", record_binding)
+
+    with qtbot.waitSignal(widget.app_state.sdata_changed):
+        widget.app_state.set_sdata(fake_sdata)
+
+    assert bound_sources[-1] == (fake_sdata, "transcripts", "global", "gene")
+
+
 def test_viewer_widget_points_add_update_request_calls_controller(qtbot, monkeypatch) -> None:
     viewer = DummyViewer()
     widget = ViewerWidget(viewer)
@@ -756,6 +812,44 @@ def test_viewer_widget_points_add_update_request_calls_controller(qtbot, monkeyp
         lambda values, *, render_point_budget, random_state=42: (
             recorded_requests.append((values, render_point_budget)) or True
         ),
+    )
+    widget.points_widget.set_points_names(["transcripts"])
+    widget.points_widget.set_index_columns(["gene"])
+    widget.points_widget.set_value_source(
+        SimpleNamespace(value_table=SimpleNamespace(values=pd.DataFrame({"value": ["AAMP", "AXL"]})))
+    )
+    widget.points_widget.render_controller_state(
+        SimpleNamespace(
+            can_load_values=True,
+            can_visualize=True,
+            is_loading=False,
+            is_loading_values=False,
+            status_message="Points: ready.",
+            status_kind="success",
+        )
+    )
+    widget.points_widget.value_input.setText("AAMP")
+    widget.points_widget.add_value_button.click()
+    widget.points_widget.value_input.setText("AXL")
+    widget.points_widget.add_value_button.click()
+    widget.points_widget.render_point_budget_input.setText("50_000")
+
+    widget.points_widget.add_update_button.click()
+
+    assert recorded_requests == [(("AAMP", "AXL"), 50_000)]
+
+
+def test_viewer_widget_opt_in_tiled_points_add_update_calls_cache_controller(qtbot, monkeypatch) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer, experimental_tiled_points=True)
+    recorded_requests: list[tuple[object, int]] = []
+
+    qtbot.addWidget(widget)
+
+    monkeypatch.setattr(
+        widget._points_controller,
+        "apply_selection",
+        lambda values, *, render_point_budget: recorded_requests.append((values, render_point_budget)) or True,
     )
     widget.points_widget.set_points_names(["transcripts"])
     widget.points_widget.set_index_columns(["gene"])
@@ -800,6 +894,18 @@ def test_viewer_widget_on_points_loaded_applies_layer_and_status(qtbot) -> None:
     assert "Points Layer Created" in widget.global_action_feedback_label.text()
     assert "2 point" in widget.global_action_feedback_label.text()
     assert not widget.global_action_feedback_label.isHidden()
+
+
+def test_viewer_widget_opt_in_cache_values_populate_existing_points_panel(qtbot) -> None:
+    viewer = DummyViewer()
+    widget = ViewerWidget(viewer, experimental_tiled_points=True)
+
+    qtbot.addWidget(widget)
+
+    widget._on_points_values_loaded(("AAMP", "AXL"))
+
+    assert widget.points_widget._value_completer_model.stringList() == ["AAMP", "AXL"]
+    assert len(viewer.layers) == 0
 
 
 def test_viewer_widget_progressive_disclosure_expands_sections_and_elements(qtbot, sdata_blobs) -> None:

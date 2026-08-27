@@ -151,3 +151,62 @@ def test_selection_failure_replans_latest_with_previous_committed_values() -> No
     retry = session.viewport_requests[1]
     assert retry.selection_generation == 1
     assert retry.requested_value_ids is None
+
+
+def test_initial_subset_is_committed_before_the_first_viewport_dispatch() -> None:
+    session = _ControllableSession()
+    session.state = _CacheSessionState.NEW
+    coordinator = _TiledPointsViewportCoordinator(  # type: ignore[arg-type]
+        session,
+        initial_requested_value_ids=(1,),
+    )
+
+    coordinator.submit_viewport(_viewport(0.0))
+    assert session.viewport_requests == []
+
+    session.state = _CacheSessionState.READY
+    session.ready.emit()
+    assert session.requested_selection == (1,)
+    assert session.viewport_requests == []
+
+    session.complete_selection()
+    assert len(session.viewport_requests) == 1
+    assert session.viewport_requests[0].requested_value_ids == (1,)
+
+
+def test_startup_selection_replacement_retains_only_latest_subset() -> None:
+    session = _ControllableSession()
+    session.state = _CacheSessionState.NEW
+    coordinator = _TiledPointsViewportCoordinator(  # type: ignore[arg-type]
+        session,
+        initial_requested_value_ids=(0,),
+    )
+
+    assert coordinator.set_selected_value_ids((1,))
+    coordinator.submit_viewport(_viewport(0.0))
+    session.state = _CacheSessionState.READY
+    session.ready.emit()
+
+    assert session.requested_selection == (1,)
+    assert session.viewport_requests == []
+
+
+def test_initial_subset_failure_never_falls_back_to_an_all_values_viewport() -> None:
+    session = _ControllableSession()
+    session.state = _CacheSessionState.NEW
+    coordinator = _TiledPointsViewportCoordinator(  # type: ignore[arg-type]
+        session,
+        initial_requested_value_ids=(1,),
+    )
+    coordinator.submit_viewport(_viewport(0.0))
+    session.state = _CacheSessionState.READY
+    session.ready.emit()
+
+    session.fail_selection()
+    assert session.viewport_requests == []
+
+    # An explicit later choice of all values reconciles with the session's
+    # already-committed default and releases the retained latest viewport.
+    assert coordinator.set_selected_value_ids(None)
+    assert len(session.viewport_requests) == 1
+    assert session.viewport_requests[0].requested_value_ids is None
