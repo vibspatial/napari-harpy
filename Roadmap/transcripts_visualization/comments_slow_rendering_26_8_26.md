@@ -664,6 +664,7 @@ The following constraints apply to every slice:
 | 8 | Run the integrated acceptance matrix and decide sidecar expansion | Slices 1–7 | Evidence-backed decision on Bridge/spatial sidecars |
 | 9 | Add viewport debounce only if dispatch churn remains material | Slice 8 | Conditional reduction of obsolete cold reads |
 | 10 | Evaluate optional ping-pong storage and a larger point budget | Slice 8 | Conditional hardening/scaling work, not part of the initial solution |
+| 11 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
 
 Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 5 and 6 form one cache-locality milestone: publishing a sidecar that no read path consumes is useful only as a short-lived, testable construction boundary.
 
@@ -1068,6 +1069,72 @@ Do not raise the budget until end-to-end tests cover worker packing, Qt delivery
 
 Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the dual-ordering prototype has measured results, and keep each in its own schema/benchmark slice.
 
+### Slice 11 — Explicit coordinator selection arming
+
+This slice is a lifecycle and API cleanup rather than a rendering optimization. It makes the product rule explicit: selecting or inspecting a points element may load metadata and available values, but a regular or tiled napari points layer is created only after an explicit Add/Update action.
+
+The current production call path already follows that rule. `TiledPointsController.apply_selection()` is reached from the Add/Update action and passes the requested values to `ViewerAdapter.ensure_tiled_points_layer()` before the adapter constructs the layer and runtime. The current `initial_requested_value_ids` branch does not itself add a layer; it prevents an explicitly created proper-subset layer from briefly issuing an unintended all-values viewport while its first selected-value index is still loading.
+
+The behavior is necessary, but the API is ambiguous:
+
+```python
+initial_requested_value_ids: tuple[int, ...] | None = None
+```
+
+Here `None` is both the constructor default and the valid semantic representation of an explicit all-values selection. The coordinator therefore cannot distinguish “the application has not configured a selection” from “the user explicitly selected all values.” The constructor also needs special initial-subset flags and failure branches that partly duplicate `set_selected_value_ids()`.
+
+**Production changes**
+
+1. Remove `initial_requested_value_ids` from `_TiledPointsViewportCoordinator.__init__()`.
+2. Start the coordinator in an explicit internal `SELECTION_NOT_CONFIGURED` state. Use a private sentinel or selection-state enum; do not use `None` for this state because `None` remains the valid explicit all-values selection.
+3. A viewport submitted while selection is not configured may be generation-stamped and retained as the latest desired viewport, but it must not cross into `_TiledPointsCacheSession` or trigger cache reads.
+4. Route both first and subsequent selections through one `set_selected_value_ids()` state transition:
+   - `None` explicitly arms the coordinator for all values;
+   - a nonempty sorted tuple explicitly arms it for a proper subset; and
+   - omission is no longer a valid way to select all values.
+5. Rename `_TiledPointsLayerRuntime`'s input to required `requested_value_ids` and remove its `= None` default. After constructing the coordinator and connecting listeners, the runtime must explicitly call `set_selected_value_ids(requested_value_ids)` before starting the cache session.
+6. Keep `ViewerAdapter.ensure_tiled_points_layer()`'s `requested_value_ids` argument required. It already receives this value only from the explicit controller Add/Update path.
+7. Preserve the safe first-subset ordering:
+   - retain the latest viewport while the worker commits the selected-value index;
+   - dispatch the first viewport only after that commit succeeds; and
+   - if the first subset commit fails, report the failure and do not fall back to the session's internal all-values default.
+8. Preserve later-update rollback behavior. If a changed selection fails after an earlier explicit selection was committed, keep the earlier committed selection and replan only according to the existing failure policy.
+9. Replace the constructor-specific flags such as `_initial_subset_uncommitted` with state derived from explicit desired and committed selections. The coordinator should be able to answer separately whether a selection has been configured, is pending, has been committed, or failed before any commit.
+10. Keep layer creation policy outside the coordinator. The coordinator schedules an already explicitly created layer; the controller and adapter remain responsible for deciding whether that layer should exist.
+
+The intended lifecycle becomes:
+
+```text
+user selects points element
+        -> cache descriptor/value discovery only
+        -> no napari points layer
+
+user clicks Add / Update
+        -> controller resolves requested_value_ids
+        -> adapter constructs layer/runtime
+        -> runtime constructs unconfigured coordinator
+        -> runtime explicitly arms coordinator with requested_value_ids
+        -> cache session starts
+        -> first viewport waits for an explicit subset commit when required
+```
+
+**Focused tests**
+
+- Selecting/binding a points element and completing descriptor loading does not call `ensure_tiled_points_layer()` or add a napari layer.
+- Clicking Add/Update creates or updates exactly one layer through the requested backend.
+- A newly constructed, unconfigured coordinator never dispatches a retained viewport when the session becomes ready.
+- Explicit pre-start `None` permits the first all-values viewport after readiness.
+- Explicit pre-start subset IDs block the first viewport until the selected-value index is committed.
+- Initial subset failure never dispatches an all-values viewport.
+- A later failed subset change retains the previously committed explicit selection.
+- Replacing a pre-start selection retains only the latest explicit selection and generation.
+- Runtime construction or startup without an explicit `requested_value_ids` argument fails immediately rather than defaulting to all values.
+- Existing-layer Add/Update continues to call the same selection transition without reconstructing the layer.
+
+**Exit condition**
+
+No constructor default can implicitly mean all values, and no viewport cache read can start before the application has explicitly configured the layer's value selection. Metadata discovery remains automatic inside the opt-in panel, while creation of both regular and tiled napari points layers remains an explicit Add/Update action.
+
 ### Definition of done for the complete plan
 
 The initial optimization programme is complete when:
@@ -1082,7 +1149,8 @@ The initial optimization programme is complete when:
 8. uncovered levels retain a correct tile-major fallback;
 9. bucket sparse ranges are lazy and byte bounded rather than eagerly resident;
 10. benchmark reports demonstrate improved cold reads, warm activation, first draw, warm draw, startup RSS, and steady memory on the supplied cache; and
-11. debounce, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
+11. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
+12. debounce, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
 
 ## Conclusion
 
