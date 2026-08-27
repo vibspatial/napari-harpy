@@ -228,7 +228,8 @@ The two physical representations serve different access patterns:
 | Access pattern | Physical payload |
 |---|---|
 | All values or complete logical tiles | Existing tile-major bucket payload |
-| One or a small subset of values | Per-level value-major coordinate payload |
+| Proper value subset at a level with a sidecar | Per-level value-major coordinate payload |
+| Proper value subset at a level without a sidecar | Existing tile-major filtered fallback |
 
 #### What is physically duplicated
 
@@ -242,7 +243,8 @@ It is not necessary to duplicate the complete cache or every per-point field:
 | `value_id` | Omit | The requested value and its catalog interval already identify every returned row. |
 | `point_id` | Omit | It can establish deterministic construction order and then be discarded from the display sidecar. |
 | tile manifest and transforms | Reuse | `manifest_index` still identifies the tile offset for tile-relative coordinates. |
-| value-to-tile catalog and range metadata | Reuse | The catalog already identifies each value's positive tiles and point counts. |
+| value-to-tile catalog | Reuse | The catalog already identifies each value's positive tiles and point counts. |
+| bucket sparse-range metadata | Do not duplicate | Retain it initially only for filtered tile-major fallback; the value-major path does not consume it. |
 
 A minimal representation is therefore conceptually:
 
@@ -250,12 +252,14 @@ A minimal representation is therefore conceptually:
 value_major/
     level_0/
         location              # float32 [N_exact, 2]
-        record_point_indptr   # compact offsets aligned with catalog records
+        value_point_indptr    # compact start/stop per canonical value
 ```
 
-Rows in `location` are ordered by `(value_id, manifest_index, point_id)`, but only the coordinates are persisted. `record_point_indptr` can either be stored directly or derived once from the catalog's record counts. It maps the existing value/tile records to coordinate intervals without adding point-level IDs.
+Rows in `location` are ordered by `(value_id, manifest_index, point_id)`, but only the coordinates are persisted. `value_point_indptr` gives each canonical value's complete coordinate interval. It is compact because it has one pointer per level/value rather than one pointer per value/tile record.
 
-The cache catalog already persists value-to-tile records in `(level, value_id, manifest_index)` order. The sidecar follows that same record order. A full-extent AAMP read becomes one contiguous value interval; a rectangular partial viewport becomes a small set of value-major spatial runs rather than one interval in each positive tile. The returned tile-relative coordinates can still be split by catalog record and combined with the existing manifest tile offsets by the snapshot packer.
+The cache catalog already persists value-to-tile records in `(level, value_id, manifest_index)` order. The sidecar follows that same record order. The current selected-value index retains the aligned `manifest_index` and `n_points` records only for the active selection. A cumulative sum of those selected counts derives per-record coordinate offsets in memory; a cache-wide persisted or resident `record_point_indptr` is therefore unnecessary. A full-extent AAMP read becomes one contiguous value interval; a rectangular partial viewport becomes a small set of value-major spatial runs rather than one interval in each positive tile. The returned tile-relative coordinates can still be split by catalog record and combined with the existing manifest tile offsets by the snapshot packer.
+
+Both orderings should belong to one atomically published cache generation and share its generation ID, manifest, value vocabulary, and value-to-tile catalog. They are two physical payloads inside one logical cache, not two independently versioned caches that can drift out of sync.
 
 #### Measured storage consequence
 
@@ -279,15 +283,66 @@ If reordered coordinates compress similarly to the current coordinates, the stor
 
 These are estimates, not rebuilt-cache measurements. Changing row order can improve or worsen compression, so actual compressed bytes must be recorded by the prototype. The important distinction is that the proposed Exact-only sidecar duplicates approximately 0.79 GiB of coordinates, not the full 1.57 GiB cache and not `point_id` or `value_id`.
 
+#### Persisted versus resident sparse-range policy
+
+The current runtime retains five bucket lookup arrays for every bucket across every level:
+
+```text
+tile_offset
+ranges/tile_indptr
+ranges/value_id
+ranges/row_start
+ranges/row_count
+```
+
+This supplied cache requires 596,026,272 resident NumPy-buffer bytes, approximately 568.4 MiB, for that complete lookup. Exact alone accounts for 295,919,608 bytes, approximately 282.2 MiB. By comparison, the always-resident compact manifest/value-pointer arrays require 821,488 bytes, and the complete AAMP selected-value index across all levels requires 164,964 bytes. The tile and range pointer arrays together account for only 276,112 bytes; the three arrays repeated for every value/tile range account for almost all of the 568.4 MiB.
+
+The initial dual-ordering cache should preserve the existing bucket sparse ranges on disk. They remain necessary because an Exact-only sidecar does not cover a proper-subset request whose point-budget LOD decision selects Bridge or Spatial, and they preserve the existing filtered tile-major fallback and validation contract.
+
+They should no longer be one indivisible, eagerly resident startup index. The runtime policy should be:
+
+| Index data | Residency policy |
+|---|---|
+| manifest, value pointers, value totals | Always resident |
+| active selected value-to-tile records and counts | Resident for the committed selection |
+| `value_point_indptr` for sidecar addressing | Always resident; compact |
+| tile-major `tile_offset` | Always resident or derived once; compact |
+| bucket `ranges/{tile_indptr,value_id,row_start,row_count}` | Load only for selected-value tile-major fallback; retain under a byte-bounded eviction policy |
+
+A value-major request must not load the bucket sparse-range arrays. An all-values tile-major request needs only the complete tile interval and point-level `value_id`; it also does not need the sparse-range arrays. If Bridge or Spatial fallback needs them, load only the chosen level's required buckets—preferably only buckets containing CPU-residency misses—and prevent successive viewports from accumulating every bucket indefinitely.
+
+Keep `ranges/row_start` on disk for the first sidecar slice to avoid combining a cache-format rewrite with the locality experiment. It is a candidate for a later schema simplification because validated ranges partition each tile contiguously: their starts can be reconstructed from `tile_offset` plus a cumulative sum of `range_count`. Removing it requires explicit size, startup, and fallback-read evidence and should be a separate change.
+
+Point-level `bucket/value_id` is distinct from `ranges/value_id`. Keep the point-level array in the tile-major payload initially because all-values rendering needs a colour ID aligned with every coordinate. Proper-subset reads on either physical ordering should construct the output IDs from the known value intervals instead of decoding that point-level array.
+
+#### Explicit physical-payload routing
+
+LOD selection must happen before physical-payload selection. The semantic level still comes from the viewport, selected values, and point budget; the existence of a sidecar must not force Exact when the request requires a coarser level.
+
+After the level is selected, use this deterministic initial routing rule:
+
+| Request after LOD selection | Physical payload | Large bucket sparse-range index |
+|---|---|---|
+| Over budget | Read neither payload | Not needed |
+| All canonical values | Tile-major at the selected level | Not needed |
+| Complete-tile or construction access | Tile-major | Not needed for complete row access; publication validation remains separate |
+| Proper value subset and sidecar exists for the selected level | Value-major sidecar | Not needed |
+| Proper value subset and no sidecar exists for the selected level | Tile-major filtered fallback | Load lazily for required buckets |
+
+Selecting the complete vocabulary is already normalized to the all-values state, so it follows the tile-major branch. For the supplied full-extent, 100,000-point case, AAMP selects Exact with 60,512 points and therefore uses the Exact value-major sidecar; the all-values request selects Spatial level 8 with 100,000 points and therefore uses that level's tile-major payload.
+
+For the initial prototype, any proper subset should use the sidecar when the chosen level has one. This makes routing reproducible and the benchmark interpretable. A later measured cost model may route a dense, near-all-values subset back to tile-major when that is cheaper. Such a model should compare projected touched chunks, physical operations, or selected-row coverage rather than using only the number of selected genes. The backend decision belongs to the generation-bound read plan or cache reader, not the GUI or renderer, and should be made once per snapshot so both paths produce the same logical tile payload and reuse the same CPU-residency contract.
+
 #### Recommended staged prototype
 
 The first cache-side prototype should be deliberately narrow:
 
 1. Build an **Exact-level-only, coordinate-only** value-major sidecar in `(value_id, manifest_index, point_id)` order.
-2. Reuse the existing manifest and value-to-tile catalog, adding only compact coordinate offsets where required.
-3. Route proper selected-value Exact reads through the sidecar. Preserve the current tile-major path for all-value and complete-tile reads.
-4. Measure construction time, actual compressed size, cold and warm selected-value reads, decoded bytes, physical operations, and startup memory for sparse and dense genes at full and partial viewports.
-5. Add Bridge or other spatial levels only if runtime evidence shows that selected-value reads at those levels remain an important bottleneck.
+2. Reuse the existing manifest and value-to-tile catalog, persist only compact per-value coordinate pointers, and derive selected per-record offsets from catalog counts.
+3. Apply the post-LOD routing table above: proper-subset Exact reads use the sidecar, all-values and complete-tile reads use tile-major, and proper-subset non-Exact reads use the tile-major fallback.
+4. Split the current eager bucket lookup policy so value-major and all-values requests do not retain sparse-range arrays. Lazily load and byte-bound only the fallback indexes actually required.
+5. Measure construction time, actual compressed size, cold and warm selected-value reads, decoded bytes, physical operations, startup and peak lookup memory, and fallback-index churn for sparse and dense genes at full and partial viewports.
+6. Add Bridge or other spatial levels only if runtime evidence shows that selected-value reads at those levels remain an important bottleneck.
 
 Cache construction time is intentionally not an acceptance constraint unless it becomes operationally prohibitive. The main acceptance question is whether the extra approximately 0.79 GiB removes the scattered-decode latency sufficiently to improve interaction after renderer batching.
 
@@ -587,8 +642,8 @@ The practical priority is therefore:
 
 1. Replace one-visual-per-logical-tile rendering with one snapshot visual/program and one VBO fed by worker-prepared immutable render batches. This removes the quadratic GPU residency path rather than optimizing a tile-resource design that is no longer needed. Preserve logical tiles only at the storage and CPU-residency boundaries, and keep tile-proportional packing off the GUI thread. Add a second VBO only if measured behavior justifies ping-pong storage.
 2. Fix the quadratic CPU residency path, which remains useful for reusing decoded logical tiles across viewport requests.
-3. Stop reading point-level `value_id` for proper selected-value requests; reconstruct it from the already resolved value ranges or represent a one-value snapshot with a uniform.
-4. Prototype an Exact-level-only, coordinate-only value-major sidecar alongside the existing tile-major payload. This deliberately duplicates the Exact coordinate bytes, projected at approximately 0.79 GiB and a 50% cache increase, while reusing the manifest and value-to-tile catalog and omitting duplicate `value_id` and `point_id` arrays. Measure actual compressed size, cold and warm selected-value wall time, decoded bytes, physical operations, and startup memory. Extend the sidecar to other levels only if runtime evidence justifies their additional storage.
+3. Stop reading point-level `value_id` for proper selected-value requests; construct it from the requested values and resolved catalog or fallback intervals, or represent a one-value snapshot with a uniform.
+4. Prototype an Exact-level-only, coordinate-only value-major sidecar alongside the existing tile-major payload. This deliberately duplicates the Exact coordinate bytes, projected at approximately 0.79 GiB and a 50% cache increase, while reusing the manifest and value-to-tile catalog and omitting duplicate point-level `value_id` and `point_id` arrays. Choose LOD first, then route all-values and complete-tile reads to tile-major, proper-subset reads to a sidecar available at the chosen level, and uncovered proper-subset levels to tile-major fallback. Replace eager retention of the complete 568.4 MiB sparse bucket lookup with compact always-resident addressing plus lazy, byte-bounded fallback indexes. Measure actual compressed size, cold and warm selected-value wall time, decoded bytes, physical operations, startup and peak lookup memory, and fallback churn. Extend the sidecar to other levels only if runtime evidence justifies their additional storage.
 5. Treat smaller chunks, fewer buckets, and cross-bucket concurrency as secondary comparisons or tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
 6. Add viewport debounce to avoid starting expensive cold requests for transient zoom states after the underlying read and render costs are controlled.
 
