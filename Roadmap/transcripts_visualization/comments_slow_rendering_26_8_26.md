@@ -622,6 +622,468 @@ The cache-to-canvas benchmark should stop reporting per-tile renderer constructi
 
 The synthetic scaling benchmark proves only that packing 1,000,000 points is reasonable for the current tile geometry when performed on the worker. It does not establish that uploading or physically drawing 1,000,000 points is smooth.
 
+## 11. Comprehensive implementation plan from the current code base
+
+This section translates the preceding findings into ordered, reviewable implementation slices. Each slice has one primary responsibility, keeps the experimental renderer opt-in, and must leave the repository in a working state with focused tests and benchmark evidence. Cache-format work is deliberately separated from renderer work so performance changes can be attributed to one boundary at a time.
+
+### Starting point and non-negotiable constraints
+
+The current working tree has the following starting architecture:
+
+- `ViewerWidget` uses the original in-memory points backend by default. The tiled-cache backend is selected for the lifetime of a new widget only when `experimental_tiled_points=True` is passed directly or `NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS=1` is set before the Viewer widget is constructed.
+- The cache-backed path is wired end to end through `TiledPointsController`, the adapter, the napari layer, the viewport coordinator, the worker-owned cache session, and the VisPy renderer.
+- Logical storage tiles and decoded CPU tile residency are useful and remain part of the design.
+- The renderer still owns one VisPy visual and VBO per logical tile.
+- Cache startup still loads every bucket sparse-range lookup index across every level.
+- Proper-subset tile-major reads still decode both `location` and point-level `value_id`.
+- The cache contains only the existing tile-major physical payload; no value-major sidecar exists yet.
+
+The following constraints apply to every slice:
+
+1. The in-memory backend remains the default and must not construct or bind a cache controller, open cache metadata, or change behavior because a tiled slice landed.
+2. Cache failures in opt-in mode remain visible. Do not silently switch an active tiled widget to the in-memory backend.
+3. The backend remains fixed for a widget lifetime. Live backend switching is outside this plan.
+4. Keep the current 100,000-point hard render budget throughout these slices. A larger budget has a separate evidence gate.
+5. Preserve generation checks, latest-only activation, cancellation, exact point-budget enforcement, palette semantics, transforms, and deterministic cleanup.
+6. Keep VisPy and VBO mutation on the GUI thread. Zarr access, logical tile assembly, and final NumPy snapshot packing belong to the worker.
+7. Do not combine a cache-schema change with a renderer-ownership change in one review slice.
+8. Run focused unit tests for the changed boundary and the cache-to-canvas benchmark for performance claims. Real-canvas tests remain explicitly gated where required by the existing test infrastructure.
+
+### Delivery sequence
+
+| Slice | Primary result | Depends on | Status after merge |
+|---|---|---|---|
+| 0 | Preserve the opt-in boundary and freeze the baseline | Current code | Completed starting point |
+| 1 | Replace per-tile GPU resources with one visual and one VBO | Slice 0 | Dominant draw-submission problem removed; temporary GUI packing allowed |
+| 2 | Move complete render-batch packing to the worker | Slice 1 | Completed smooth-frame renderer architecture |
+| 3 | Make CPU tile retention linear for the no-eviction case | Slice 0 | Cold CPU assembly defect removed |
+| 4 | Stop decoding point-level `value_id` for proper subsets | Slice 0 | One of two selected-value Zarr reads removed |
+| 5 | Add an Exact-only coordinate value-major sidecar to the cache format and writer | Slice 0 | New payload is constructible and validated but not yet used by the viewer |
+| 6 | Route proper-subset Exact reads through the sidecar | Slices 4 and 5 | Sparse selected values gain contiguous coordinate reads |
+| 7 | Replace eager sparse-range residency with lazy byte-bounded fallback indexes | Slice 6 | Startup time and lookup RSS are reduced |
+| 8 | Run the integrated acceptance matrix and decide sidecar expansion | Slices 1–7 | Evidence-backed decision on Bridge/spatial sidecars |
+| 9 | Add viewport debounce only if dispatch churn remains material | Slice 8 | Conditional reduction of obsolete cold reads |
+| 10 | Evaluate optional ping-pong storage and a larger point budget | Slice 8 | Conditional hardening/scaling work, not part of the initial solution |
+
+Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 5 and 6 form one cache-locality milestone: publishing a sidecar that no read path consumes is useful only as a short-lived, testable construction boundary.
+
+### Slice 0 — Preserve the opt-in boundary and freeze the baseline
+
+This is the completed starting checkpoint, not a new performance implementation.
+
+**Scope**
+
+- Keep ordinary `ViewerWidget(...)` and `Interactive(sdata)` construction on `PointsController` unless the environment opt-in was set before Viewer construction.
+- Keep explicit `ViewerWidget(..., experimental_tiled_points=True)` available for tests and direct programmatic use.
+- Record the selected backend through `points_visualization_backend` for diagnostics.
+- Preserve the current AAMP baseline report and benchmark command parameters.
+
+**Required regression coverage**
+
+- Default construction selects `PointsController` and executes the existing `load_value_source()` and `load_selection()` callbacks.
+- Environment or constructor opt-in selects `TiledPointsController` and executes descriptor loading and `apply_selection()`.
+- An explicit constructor value overrides the environment.
+- Changing the environment after a Viewer widget exists does not mutate that widget's backend.
+
+**Exit condition**
+
+The existing `tests/test_viewer_widget.py` backend tests remain green through all subsequent slices. Every performance benchmark states explicitly that the tiled backend is enabled.
+
+### Slice 1 — Constant GPU-resource topology
+
+This slice addresses the dominant measured problem: 4,453 visuals, VBO wrappers, shader/program paths, and draw submissions for 60,512 points.
+
+**Production changes**
+
+1. In `viewer/tiled_points/vispy/visuals.py`, replace `_TiledPointsTileVisual` with a snapshot visual that owns:
+   - one shader/program path;
+   - one shared palette texture binding;
+   - one `VertexBuffer`;
+   - one current point count; and
+   - deterministic `replace_vertices()`, empty-state, uniform-update, and `close()` behavior.
+2. Remove `u_tile_offset` from the vertex shader. Pack cache-relative positions before upload and keep the existing cache-origin transform unchanged.
+3. In `viewer/tiled_points/vispy/layer.py`, construct exactly one snapshot visual under the existing `Compound` root during renderer initialization.
+4. Change `apply_snapshot()` to:
+   - validate generation, point count, vertex format, and byte capacity before VBO mutation;
+   - pack the accepted snapshot into one bounded vertex array as a temporary scaffold;
+   - call `VertexBuffer.set_data()` once;
+   - commit logical `active_keys` only after synchronous staging succeeds; and
+   - request one scene update.
+5. Remove `_GpuTileResidency`, `_VispyTileResource`, per-tile visibility changes, and per-tile GPU LRU behavior from the normal renderer path. Do not spend a separate slice optimizing the quadratic GPU consistency scan because this slice removes its ownership model.
+6. Keep `active_keys` and `pending_keys` only as logical request diagnostics; they no longer own renderer resources.
+7. Retain the current GPU-byte setting name for one compatibility transition if necessary, but enforce it against the single candidate vertex payload rather than a sum of tile resources.
+8. Replace GPU tile metrics with visual count, VBO count, active point count, active vertex bytes, payload-replacement count, and synchronous staging time. Compatibility aliases may exist for one transition only if a current internal consumer needs them.
+9. Preserve palette, opacity, point-diameter, blending, large-origin transforms, empty snapshots, close behavior, and render-error signaling.
+
+Introduce the canonical vertex dtype and one pure helper in a new GUI-neutral `viewer/tiled_points/render_batch.py` for this scaffold. The helper runs on the GUI thread only in this slice and is moved, not duplicated, in Slice 2.
+
+**Focused tests**
+
+- Rewrite `tests/viewer/tiled_points/vispy/test_layer.py` around one stable visual and VBO identity across changing snapshots.
+- Assert one payload replacement for a nonempty accepted snapshot and no replacement for over-budget, invalid, or capacity-rejected snapshots.
+- Preserve stale request/selection rejection at the coordinator/layer integration boundary and prove that a stale result never calls VisPy `apply_snapshot()`.
+- Assert that palette, opacity, and point-diameter changes do not replace vertex data.
+- Assert that an empty accepted snapshot suppresses drawing without allocating another resource.
+- Inject a synchronous `set_data()` exception and assert render-error emission and no logical candidate commit. Do not claim that the previous GPU payload remains drawable after mutation starts.
+- Replace the overlapping-tile GPU-reuse test with constant-resource assertions.
+- Update `tests/viewer/tiled_points/vispy/test_real_canvas.py` to verify position and palette-indexed colour with one visual, including a large cache origin.
+- Delete or quarantine `vispy/test_residency.py` only when no production consumer remains.
+
+**Benchmark evidence**
+
+Update `scripts/benchmark_tiled_points_cache_to_canvas.py` to report visual count, VBO count, packed bytes, payload staging, first draw, and warm draw. Retain the old baseline field names only long enough to compare reports.
+
+On the supplied full-extent AAMP case:
+
+- visual count is exactly one;
+- VBO count is exactly one;
+- one accepted snapshot causes one point draw submission;
+- warm draw time no longer scales with the 4,453 logical tile count;
+- warm full-view draw improves by at least an order of magnitude from the 1.087-second baseline; and
+- process RSS no longer grows by hundreds of MiB merely because thousands of logical tiles are present.
+
+If one visual still misses an interactive frame target, profile point/fragment cost and VisPy staging before changing the architecture. Do not reintroduce per-tile visuals.
+
+**Exit condition**
+
+The renderer has constant GPU-resource topology and correct rendering. The remaining known defect is that tile-proportional packing still occurs on the GUI thread; this is explicitly resolved by Slice 2.
+
+### Slice 2 — Worker-prepared immutable render batch
+
+This slice completes the renderer milestone by removing the tile loop from GUI activation.
+
+**Production changes**
+
+1. Extend and reuse the Slice 1 helper in `viewer/tiled_points/render_batch.py` so it:
+   - allocates exactly one primary structured array;
+   - fills consecutive slices in snapshot tile order;
+   - folds `(tile_x * tile_size, tile_y * tile_size)` into `float32` positions;
+   - writes canonical value IDs as exactly representable `float32` values;
+   - validates the final cursor and maximum palette ID;
+   - accepts an optional cancellation callback and checks it periodically between tile groups; and
+   - returns a C-contiguous, owning, read-only allocation, including a valid empty batch.
+2. In `viewer/tiled_points/contracts.py`, add an immutable render-batch contract and carry it on `TiledPointsRenderSnapshot`. Validate dtype, shape, ownership, contiguity, immutability, and byte count. For a within-budget snapshot, reconcile the batch count with `estimated_point_count` and the logical tiles; an over-budget metadata-only snapshot carries an empty batch even when its estimate is nonzero.
+3. In `runtime/cache_session.py`, pack after the complete logical tile tuple has been restored to plan order and before constructing the final accepted snapshot. Check cancellation before packing, during fragmented packing, and after packing.
+4. Keep the logical tile tuple during this migration because it still supplies CPU-residency identity and diagnostics. The renderer must consume only `render_batch`.
+5. Keep `runtime/composition.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership.
+6. In `vispy/layer.py`, remove the scaffold packing call. GUI activation validates the already prepared batch, preflights capacity, stages one VBO payload, commits logical state, and updates the scene.
+7. Initially use the copy-safe `VertexBuffer.set_data()` lifetime behavior already relied on by the renderer and report any CPU staging copy separately. A later zero-copy change requires explicit lifetime and deferred-upload evidence.
+
+**Focused tests**
+
+- Add direct packing tests for multiple tiles, sparse tiles, ordering, offsets, values, empty batches, large cache-relative positions, incorrect declared counts, and palette overflow.
+- Assert the packed batch owns one read-only C-contiguous allocation and uses the expected 12 bytes per point.
+- Add cache-session tests proving that resident and newly read tiles are packed in final plan order.
+- Add cancellation tests before and during a highly fragmented pack.
+- Assert that obsolete request generations never submit their completed batch to the renderer.
+- Add a queued Qt-delivery test for a maximum-budget batch and verify that the vertex allocation identity is preserved across signal delivery.
+- Instrument `apply_snapshot()` in tests and assert that it performs no tile iteration or NumPy coordinate packing.
+
+**Benchmark evidence**
+
+The cache-to-canvas report must separate:
+
+```text
+logical snapshot assembly
+worker render-batch packing
+queued Qt delivery
+GUI VBO staging
+first physical draw
+warm physical draw
+```
+
+Record both point count and logical tile count for every packed batch. Re-run the actual AAMP case and the synthetic 1,000,000-point cases. At the current 100,000-point cap, GUI activation must contain no tile-proportional work. Qt delivery must remain effectively reference transfer rather than a deep copy.
+
+**Exit condition**
+
+The completed path is worker tiles → immutable packed batch → queued delivery → one GUI-thread VBO replacement → one draw. No normal renderer code creates a resource per logical tile.
+
+### Slice 3 — Linear CPU tile retention
+
+This slice removes the measured approximately 852-millisecond CPU-residency defect without changing residency semantics.
+
+**Production changes**
+
+1. In `runtime/residency.py`, make `_evict_until_fits()` return before materializing the key collection when the requested payload already fits.
+2. When eviction is required, traverse the LRU once, skip protected keys, and stop immediately after enough bytes are available.
+3. Keep byte reconciliation outside the per-tile insertion loop. Debug-only deep consistency checks must not rescan the complete residency after every inserted tile in production.
+4. Preserve oversized-transient behavior, protected-active entries, deterministic LRU order, duplicate-key replacement, and exact byte accounting.
+
+**Focused tests**
+
+- Extend `runtime/test_residency.py` with no-eviction bulk retention, protected eviction, insufficient-capacity, replacement, and oversized-transient cases.
+- Add an instrumentation-based regression test showing that a fitting insertion does not enumerate existing keys.
+- Retain exact accounting assertions after complete operations.
+
+**Benchmark evidence**
+
+Re-run retention with 4,453 AAMP-shaped tiles and a budget large enough to avoid eviction. The benchmark-machine target is to reduce this phase from approximately 852 milliseconds to tens of milliseconds, with near-linear scaling when the tile count doubles.
+
+**Exit condition**
+
+CPU retention is no longer visible as a major cold-snapshot phase, and warm CPU tile reuse remains unchanged.
+
+### Slice 4 — Eliminate point-level `value_id` reads for proper subsets
+
+This slice reduces selected-value tile-major IO before introducing a new physical layout.
+
+**Production changes**
+
+1. Extend the internal selected-range result in `storage/bucket_reader.py` so every resolved interval retains the canonical value ID that produced it.
+2. For proper-subset requests, read only `location` from Zarr and construct the aligned output IDs in memory from interval value IDs and row counts.
+3. Preserve deterministic selected-value and tile order across multi-value requests and bucket batching.
+4. Continue reading point-level `value_id` for all-values or complete-tile display requests; those rows contain multiple values and the tile-major payload remains their canonical source.
+5. Keep the external `_PointDisplayPayload`, `_TileReadResult`, CPU residency, snapshot, and renderer contracts unchanged.
+
+**Focused tests**
+
+- Update `test_bucket_reader.py` to patch the point-level `value_id` array so any access fails during proper-subset reads.
+- Cover one value, several nonadjacent values, adjacent ranges, missing values, multiple tiles in one bucket, and restoration of request order.
+- Compare reconstructed IDs and coordinates byte-for-byte with the existing canonical result on fixtures.
+- Assert that all-values reads still access and return point-level IDs.
+
+**Benchmark evidence**
+
+For full-extent AAMP, point-level `value_id` Zarr calls must fall from 69 to zero while the returned 60,512 IDs remain correct. Report the remaining `location` time independently; this slice is expected to remove the measured approximately 1.86-second value-ID boundary but does not fix scattered coordinate decoding.
+
+**Exit condition**
+
+Proper-subset tile-major fallback performs coordinate-only physical reads and synthesizes IDs from already validated metadata.
+
+### Slice 5 — Exact-level value-major sidecar schema and writer
+
+This slice makes the new physical ordering constructible, atomically published, and independently validated. It does not route viewer reads to it yet.
+
+**Schema and compatibility decisions**
+
+1. Introduce an explicit sidecar descriptor in root cache metadata rather than inferring capability from directory presence. It records covered levels, row ordering, coordinate dtype, dimensionality, chunk/shard settings, and sidecar schema version.
+2. Bump the cache schema for sidecar-aware generations and keep a compatibility reader for the current tile-major-only generation. An older cache is interpreted as having no sidecar and continues to use fallback routing.
+3. Store the initial sidecar under one unambiguous generation-owned path such as:
+
+   ```text
+   value_major/
+       level_0/
+           location
+           value_point_indptr
+   ```
+
+4. Persist only Exact `location` and compact `value_point_indptr`. Do not duplicate point-level `value_id`, `point_id`, the manifest, or the value-to-tile catalog.
+5. Make Exact sidecar construction an explicit builder option during the prototype. Do not silently add approximately 0.79 GiB to every cache until Slice 8 accepts the tradeoff.
+
+**Writer changes**
+
+1. Add a dedicated storage writer rather than extending `_BucketWriter` with a second unrelated row order.
+2. Build inside the same unique staging generation as the tile-major payload and before `_validate_staged_cache()` and publication.
+3. Write rows in `(value_id, manifest_index, point_id)` order. Reuse existing per-value catalog records and their counts to determine output intervals. `point_id` establishes deterministic order during construction but is not persisted in the sidecar.
+4. Construct the sidecar out of core. Bound temporary memory by a configured construction batch; cache-construction time is secondary to runtime locality but unbounded RAM is not acceptable.
+5. Reconcile every value pointer interval with the Exact catalog count and reconcile the final pointer with the Exact manifest total.
+6. Include sidecar files in staging validation and atomic publication. Any sidecar write or validation failure must leave the preceding completed generation recoverable.
+7. Thread the explicit Exact-sidecar option through the public builder configuration and `scripts/build_tiled_points_cache_variant.py` so the supplied-cache prototype is reproducible from one recorded command.
+
+**Focused tests**
+
+- Add small-fixture tests for ordering, value pointers, empty values, several tiles per value, deterministic point order, chunk boundaries, and final row-count reconciliation.
+- Add corruption tests for metadata, dtype, shape, pointer monotonicity, pointer terminal value, and coordinate count.
+- Extend builder and staging-validation tests to cover successful publication, rollback on sidecar failure, and tile-major-only compatibility.
+- Verify that an unrecognized sidecar schema is rejected rather than ignored.
+
+**Construction evidence**
+
+Build the supplied cache with an Exact coordinate sidecar and record construction duration, peak RSS, sidecar logical bytes, actual compressed physical bytes, total cache size, and compression ratio. Construction duration is reported but is not a rejection criterion unless operationally prohibitive.
+
+**Exit condition**
+
+A completed cache generation can truthfully advertise and validate an Exact coordinate value-major sidecar, while old tile-major-only caches remain readable.
+
+### Slice 6 — Post-LOD physical-payload routing and sidecar reads
+
+This slice realizes the cold-read improvement while preserving one logical tile/snapshot contract above the reader.
+
+**Production changes**
+
+1. Keep `select_level()` unchanged and execute it before physical-payload selection.
+2. Extend the generation-bound viewport plan with an explicit physical route:
+
+   ```text
+   over budget                         -> no payload
+   all values                          -> tile-major complete-tile reads
+   proper subset + sidecar at level    -> value-major coordinate reads
+   proper subset + no sidecar at level -> tile-major filtered fallback
+   ```
+
+3. Make the route decision once per plan in `_PointsCacheReader`; do not decide independently in the GUI, cache session, or per bucket.
+4. Add a dedicated sidecar reader that opens the compact per-value pointers and `location` array. Full-extent one-value reads become one value interval. Partial viewports derive only the selected value/manifest-record runs needed for CPU-residency misses.
+5. Use the existing selected-value index's aligned `manifest_index` and `n_points` records. Derive per-record sidecar offsets with cumulative counts; do not introduce a cache-wide resident `record_point_indptr`.
+6. Split returned coordinate runs back into the same ordered logical `_TileReadResult` values used by tile-major reads. Construct `value_id` arrays from the known value intervals.
+7. Keep `_read_viewport_snapshot()`, CPU tile residency, render-batch packing, composition, and VisPy unaware of which physical payload supplied a tile.
+8. Expose route, sidecar selection count, touched chunks/shards, selected rows, decoded rows, and physical bytes in benchmark diagnostics.
+
+**Focused tests**
+
+- Prove that LOD is identical with and without a sidecar.
+- Cover proper-subset Exact sidecar routing, all-values Exact tile-major routing, proper-subset Bridge/spatial fallback, and old-cache fallback.
+- Compare sidecar and tile-major results for one value, several values, full extent, partial viewport, CPU-residency misses, and empty intersections.
+- Assert identical tile keys, tile order, coordinates, value IDs, estimated counts, omitted values, and cache-origin behavior.
+- Patch sparse bucket-range loading to fail and prove it is not touched by a sidecar request.
+- Exercise cancellation and stale generations during a multi-run sidecar read.
+
+**Benchmark evidence**
+
+For full-extent AAMP at Exact:
+
+- the route is `value_major_subset`;
+- selected coordinate rows remain 60,512;
+- touched `location` chunks fall from 4,291 toward the projected 16 rather than remaining proportional to positive tiles;
+- no point-level `value_id` array is decoded;
+- no bucket sparse-range array is needed for the request; and
+- cold selected-value payload time improves materially from the 4.14-second aligned-array baseline. A practical prototype target is below one second on the same benchmark machine and filesystem state, but the report must retain raw chunk, byte, and call evidence rather than accepting wall time alone.
+
+Also benchmark a dense gene, multiple genes, a partial viewport, and all values to ensure the new route does not regress the tile-major use cases.
+
+**Exit condition**
+
+The reader chooses physical locality after semantic LOD selection and returns the existing logical tile contract. Exact sparse-value reads use the sidecar; uncovered levels fall back correctly.
+
+### Slice 7 — Lazy, byte-bounded sparse-range fallback indexes
+
+This slice removes the approximately 8.1-second startup and 568.4-MiB eager lookup policy.
+
+**Production changes**
+
+1. Split bucket addressing into:
+   - compact complete-tile offsets; and
+   - large sparse selected-value ranges.
+2. Keep compact manifest, value pointers, totals, sidecar pointers, and complete-tile addressing resident. Prefer deriving bucket-local complete-tile offsets once from manifest order and `n_points` so startup does not have to open every bucket merely to read `tile_offset`; validate them against a bucket when that bucket is opened. Do not treat all five current bucket lookup arrays as one indivisible load unit.
+3. Remove the unconditional all-level `project_bucket_lookup_index_bytes()` and `load_bucket_lookup_indexes()` sequence from `_TiledPointsCacheWorker.start()`.
+4. Sidecar requests load no bucket sparse ranges. All-values complete-tile requests also load no sparse ranges.
+5. Before a selected-value tile-major fallback read, identify only the required bucket keys and load their sparse ranges on the worker thread.
+6. Add a byte-bounded LRU for sparse-range indexes. Account exact NumPy bytes, evict only inactive indexes, and prevent successive viewports and levels from accumulating every bucket indefinitely.
+7. Retain open-reader and sparse-index residency as separate policies. Opening lightweight Zarr metadata must not imply retaining its large lookup arrays.
+8. Rename the runtime setting to describe a sparse-range-index byte cap, or provide one compatibility alias while migrating `TiledPointsApplicationSettings` and `_CacheSessionSettings`. It must no longer mean that every bucket index must fit simultaneously.
+9. Preserve persisted `ranges/row_start` in this slice. Any schema simplification is later, separate work.
+10. Replace startup progress/status that assumes a complete index load with ready-state and on-demand fallback-index diagnostics.
+
+**Focused tests**
+
+- Session startup reaches ready without loading sparse ranges.
+- Sidecar and all-values requests leave sparse resident bytes at zero.
+- Proper-subset fallback loads only required buckets and reuses them on a warm request.
+- The LRU evicts deterministically under its byte cap and never evicts an index in active use.
+- Load failure leaves preceding resident indexes valid and reports the viewport failure without corrupting session state.
+- Repeated level/view changes remain within the configured cap.
+- Old tile-major-only caches still function through lazy fallback.
+
+**Benchmark evidence**
+
+Report startup metadata time, time to ready, compact resident bytes, open bucket readers, sparse resident bytes, on-demand load time, eviction count, and peak RSS. For an Exact-sidecar AAMP startup, sparse resident bytes must remain zero and the previous 568.4-MiB eager allocation must disappear. Fallback benchmarks must demonstrate a stable memory ceiling across repeated viewports.
+
+**Exit condition**
+
+Large sparse ranges are a bounded fallback resource rather than a mandatory session-wide startup index.
+
+### Slice 8 — Integrated acceptance matrix and sidecar expansion decision
+
+This slice consolidates evidence; it is not permission to broaden the format automatically.
+
+**Benchmark matrix**
+
+Run the same cache generation and renderer across:
+
+- sparse one-value AAMP, full extent and partial viewport;
+- at least one dense value;
+- several selected values;
+- all values;
+- Exact, Bridge, and representative spatial LOD decisions;
+- cold application caches and repeated warm CPU-resident requests;
+- full → partial → full camera transitions;
+- 100,000-point real-canvas rendering; and
+- synthetic 1,000,000-point packing only, without raising the product budget.
+
+For every case report:
+
+```text
+LOD and physical route
+planned/returned tile and point counts
+physical calls, chunks, shards, decoded rows and bytes
+fallback-index load/resident/eviction metrics
+CPU residency lookup/read/retain time
+worker pack time and peak transient bytes
+Qt delivery time and allocation identity
+VBO staging time and active bytes
+visual/VBO/draw count
+first and warm physical draw
+process RSS at startup, snapshot, staging and first draw
+```
+
+**Decision rules**
+
+- Keep the Exact sidecar only if selected-value interaction improves enough to justify its measured compressed size.
+- Add a Bridge or spatial sidecar only when benchmark traces show that proper-subset reads at that level remain a material interaction bottleneck and projected storage is acceptable.
+- Do not add all-level sidecars merely because construction is available.
+- Do not substitute smaller chunks, fewer buckets, or cross-bucket threading for the sidecar unless new end-to-end evidence contradicts the existing results.
+- Do not increase the point budget based on packing time alone.
+
+**Exit condition**
+
+Publish one comparison report containing the pre-change baseline and each accepted slice. Record explicit keep, revise, or reject decisions for Exact sidecar defaulting and any further levels.
+
+### Slice 9 — Conditional viewport debounce
+
+Debounce is deliberately last because it avoids work but does not make an accepted request cheaper.
+
+**Entry condition**
+
+Proceed only if Slice 8 instrumentation shows that rapid camera gestures still dispatch multiple physical reads that become obsolete despite the existing one-active/one-latest-pending mailbox.
+
+**Production changes if justified**
+
+1. Add a short configurable GUI-thread single-shot timer at the coordinator submission boundary. Do not place timers or sleeps on the cache worker.
+2. Advance request generation immediately when a viewport event arrives so older results become stale immediately, but delay physical dispatch until the debounce settles.
+3. Do not debounce value-selection changes, startup readiness, explicit refresh, or an already completed isolated request unless measurements justify that latency.
+4. Preserve one-active/one-latest-pending behavior, selection-generation rules, close behavior, and failure recovery.
+5. Report events received, requests dispatched, requests superseded before dispatch, active reads completed stale, and isolated-request added latency.
+
+**Focused tests**
+
+- Deterministic fake-clock tests for one isolated event, a rapid burst, events arriving during an active read, selection changes during the timer, failure, and close.
+- Assert that the final viewport of a burst is dispatched exactly once and older generations cannot activate.
+
+**Acceptance evidence**
+
+Use recorded camera traces rather than synthetic event counts alone. The debounce must materially reduce obsolete cold reads without making an isolated pan or zoom feel delayed. If it does not, retain the current mailbox policy and reject this slice.
+
+### Slice 10 — Optional hardening and scaling gates
+
+These are explicit decision gates, not assumed follow-up work.
+
+#### Optional second VBO
+
+Add a second VBO to the existing single snapshot visual/program only if repeated real-canvas replacements show active-buffer synchronization stalls, blank/corrupted frames, or a product requirement for stronger post-mutation recovery. Evidence must show that ping-pong storage fixes the observed issue. Keep one visual and one draw submission.
+
+#### Optional 1,000,000-point product budget
+
+Do not raise the budget until end-to-end tests cover worker packing, Qt delivery, VBO staging/deferred upload, repeated changing payload sizes, first and warm physical draws, fragment overdraw at representative point diameters, peak RSS, cancellation latency, and visual correctness. The 11.44-MiB logical vertex size alone is not sufficient evidence.
+
+#### Deferred cache simplifications
+
+Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the dual-ordering prototype has measured results, and keep each in its own schema/benchmark slice.
+
+### Definition of done for the complete plan
+
+The initial optimization programme is complete when:
+
+1. the default in-memory backend remains unchanged;
+2. opt-in tiled rendering uses one visual, one VBO, one worker-prepared batch, and one draw submission;
+3. GUI activation contains no tile-proportional packing or resource loop;
+4. CPU residency no longer has quadratic no-eviction behavior;
+5. proper-subset reads never decode point-level `value_id`;
+6. proper-subset Exact reads use a validated value-major coordinate sidecar after LOD selection;
+7. all-values and complete-tile requests retain tile-major routing;
+8. uncovered levels retain a correct tile-major fallback;
+9. bucket sparse ranges are lazy and byte bounded rather than eagerly resident;
+10. benchmark reports demonstrate improved cold reads, warm activation, first draw, warm draw, startup RSS, and steady memory on the supplied cache; and
+11. debounce, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
+
 ## Conclusion
 
 There are three proven bottlenecks:
@@ -651,4 +1113,4 @@ The synthetic 1,000,000-point packing benchmark does not change the current 100,
 
 Larger storage tiles would reduce chunks and visual objects, but the benchmark shows that renderer batching can remove the dominant visual-object cost without sacrificing the existing 512-unit spatial read granularity.
 
-This follow-up investigation changed only this roadmap document. No repository source code was changed.
+This implementation-planning update changes only this roadmap document; it does not implement the slices above.
