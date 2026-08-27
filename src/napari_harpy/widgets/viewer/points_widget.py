@@ -36,6 +36,7 @@ from napari_harpy.widgets.shared_styles import (
 
 if TYPE_CHECKING:
     from napari_harpy.widgets.viewer.points_controller import PointsController, PointsValueSource
+    from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
 
 POINTS_RENDER_BUDGET_MIN = 1_000
 POINTS_RENDER_BUDGET_MAX = 1_000_000
@@ -232,21 +233,29 @@ class PointsValueWidget(QFrame):
         self._refresh_value_input_state()
 
     def set_value_source(self, value_source: PointsValueSource | None) -> None:
-        """Update the value completer from a prepared value source."""
+        """Legacy adapter for the pre-cache points controller."""
         if value_source is None:
-            values: list[str] = []
+            self.set_available_values(())
+        else:
+            self.set_available_values(tuple(str(value) for value in value_source.value_table.values["value"]))
+
+    def set_available_values(self, values: tuple[str, ...]) -> None:
+        """Update value selection from the cache's canonical ordered labels."""
+        if not isinstance(values, tuple) or any(not isinstance(value, str) or not value for value in values):
+            raise ValueError("`values` must be a tuple of nonempty strings.")
+        if len(set(values)) != len(values):
+            raise ValueError("`values` must be unique.")
+        if not values:
             self._selected_values.clear()
             self._clear_value_selection_warning()
-        else:
-            values = list(dict.fromkeys(str(value) for value in value_source.value_table.values["value"]))
-        self._available_values = tuple(values)
+        self._available_values = values
         self._available_values_by_casefold = {value.casefold(): value for value in self._available_values}
-        self._value_completer_model.setStringList(values)
+        self._value_completer_model.setStringList(list(values))
         self._drop_selected_values_not_in_available_values()
         self._render_selected_values_summary()
         self._refresh_value_input_state()
 
-    def render_controller_state(self, controller: PointsController) -> None:
+    def render_controller_state(self, controller: PointsController | TiledPointsController) -> None:
         """Render controller state into controls and the points status card."""
         self._refresh_enabled_state(
             can_visualize=controller.can_visualize,
