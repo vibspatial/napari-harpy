@@ -695,6 +695,31 @@ The existing `tests/test_viewer_widget.py` backend tests remain green through al
 
 This slice addresses the dominant measured problem: 4,453 visuals, VBO wrappers, shader/program paths, and draw submissions for 60,512 points.
 
+**Current-to-target interpretation**
+
+This is a renderer-ownership change, not a cache-layout or logical-tile change. The worker continues to return a `TiledPointsRenderSnapshot` containing the complete ordered tuple of logical `TiledPointsRenderTile` objects for the accepted viewport. CPU tile residency also remains unchanged.
+
+Today, `VispyTiledPointsLayer.apply_snapshot()` looks up every logical tile in `_GpuTileResidency`, creates a `_VispyTileResource` for every residency miss, inserts that resource's visual and VBO under the `Compound` root, and then loops over old and new tile keys to change visibility. Consequently, thousands of logical storage tiles become thousands of independently traversed VisPy resources.
+
+After this slice, the ownership is fixed at renderer construction:
+
+```text
+VispyTiledPointsLayer
+└── Compound root
+    └── snapshot visual
+        ├── one shader/program path
+        ├── one VertexBuffer
+        └── one shared palette-texture binding
+```
+
+The snapshot may still contain 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. `active_keys` and `pending_keys` retain only logical generation/request diagnostics.
+
+The packed `a_position` values are relative to the shared cache origin. Packing adds each tile's `(tile_x * tile_size, tile_y * tile_size)` offset to its tile-local coordinates, which allows the per-visual `u_tile_offset` uniform to disappear. These are not large absolute world coordinates: the existing float64 root transform continues to add the shared cache origin and apply the napari layer transform.
+
+For this slice only, the one-array tile loop runs synchronously inside GUI-thread snapshot activation. This temporary scaffold isolates and validates the renderer topology change. Slice 2 moves the same packing helper to the worker and transports an immutable render batch; it does not introduce a second packing implementation.
+
+The single-VBO failure boundary must also be explicit. Validation, byte-capacity checking, and packing happen before `VertexBuffer.set_data()`, so failures in those phases leave the preceding payload untouched. Logical `active_keys` are committed only after `set_data()` succeeds. If `set_data()` itself raises after mutation has begun, report the render failure and do not commit the candidate, but do not claim that the preceding GPU contents remain drawable. A second or ping-pong VBO remains an evidence-gated hardening option rather than part of this slice.
+
 **Production changes**
 
 1. In `viewer/tiled_points/vispy/visuals.py`, replace `_TiledPointsTileVisual` with a snapshot visual that owns:
