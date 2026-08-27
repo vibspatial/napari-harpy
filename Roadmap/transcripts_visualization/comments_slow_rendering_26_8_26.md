@@ -684,7 +684,8 @@ This is the completed starting checkpoint, not a new performance implementation.
 - Default construction selects `PointsController` and executes the existing `load_value_source()` and `load_selection()` callbacks.
 - Environment or constructor opt-in selects `TiledPointsController` and executes descriptor loading and `apply_selection()`.
 - An explicit constructor value overrides the environment.
-- Changing the environment after a Viewer widget exists does not mutate that widget's backend.
+
+There is intentionally no dedicated regression test for changing the environment after a Viewer widget already exists. The environment opt-in is temporary, is sampled only during widget construction, and will be removed in a future version. Backend lifetime is therefore kept as an implementation contract, while the required coverage remains focused on construction-time selection and the two real callback paths.
 
 **Exit condition**
 
