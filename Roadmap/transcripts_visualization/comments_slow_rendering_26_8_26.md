@@ -692,6 +692,8 @@ The existing `tests/test_viewer_widget.py` backend tests remain green through al
 
 ### Slice 1 — Constant GPU-resource topology
 
+**Status: Implemented**
+
 This slice addresses the dominant measured problem: 4,453 visuals, VBO wrappers, shader/program paths, and draw submissions for 60,512 points.
 
 **Current-to-target interpretation**
