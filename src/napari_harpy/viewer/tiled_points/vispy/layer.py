@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -10,14 +9,13 @@ from napari._vispy.layers.base import VispyBaseLayer
 from vispy.scene.visuals import Compound
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
 )
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 from napari_harpy.viewer.tiled_points.render_batch import (
     MAX_EXACT_FLOAT32_INTEGER,
-    TILED_POINTS_VERTEX_DTYPE,
-    pack_snapshot_vertices,
 )
 from napari_harpy.viewer.tiled_points.vispy.visuals import (
     _TiledPointsSnapshotVisualNode,
@@ -74,7 +72,7 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         --------------------              -----------------------
         data geometry and origins   --->  coordinate transform
         value_palette              --->  shared palette texture
-        max_gpu_tile_bytes         --->  candidate vertex-payload byte bound
+        max_vertex_payload_bytes   --->  candidate vertex-payload byte bound
         point_diameter event       --->  point-size uniforms
         value_palette event        --->  palette-texture update
         render_snapshot event      --->  one packed payload replacement
@@ -110,8 +108,6 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         )
         self.node.add_subvisual(self._snapshot_visual)
         self._palette_update_count = 0
-        self._last_pack_ms = 0.0
-
         layer.events.render_snapshot.connect(self._on_render_snapshot)
         layer.events.value_palette.connect(self._on_value_palette_change)
         layer.events.point_diameter.connect(self._on_point_diameter_change)
@@ -143,11 +139,6 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         return self._snapshot_visual.payload_replacement_count
 
     @property
-    def last_pack_ms(self) -> float:
-        """Return GUI-thread packing time for the latest accepted snapshot."""
-        return self._last_pack_ms
-
-    @property
     def last_vertex_staging_ms(self) -> float:
         """Return synchronous staging time for the latest accepted payload."""
         return self._snapshot_visual.last_staging_ms
@@ -171,8 +162,8 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         """Prepare and atomically activate one complete within-budget snapshot.
 
         An over-budget snapshot performs no renderer work and leaves the active
-        visual unchanged. Validation, capacity, and packing failures happen
-        before VBO mutation. A staging failure declines the candidate activation,
+        visual unchanged. Batch validation and capacity failures happen before
+        VBO mutation. A staging failure declines the candidate activation,
         but the single-VBO design cannot promise that physical contents remain
         drawable after mutation begins because VisPy may defer the actual GPU
         upload until drawing. If stronger recovery becomes necessary, one
@@ -191,29 +182,27 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         if not snapshot.within_budget:
             return False
 
-        point_count = snapshot.rendered_point_count
-        required_bytes = point_count * TILED_POINTS_VERTEX_DTYPE.itemsize
+        render_batch = snapshot.render_batch
+        point_count = render_batch.point_count
+        required_bytes = render_batch.nbytes
         try:
             if point_count > self.layer.hard_render_point_budget:
                 raise _SnapshotPayloadCapacityError(
                     f"Snapshot contains {point_count} points, exceeding "
                     f"hard_render_point_budget={self.layer.hard_render_point_budget}."
                 )
-            if required_bytes > self.layer.max_gpu_tile_bytes:
+            if required_bytes > self.layer.max_vertex_payload_bytes:
                 raise _SnapshotPayloadCapacityError(
                     f"Snapshot vertex payload requires {required_bytes} bytes, exceeding "
-                    f"max_gpu_tile_bytes={self.layer.max_gpu_tile_bytes}."
+                    f"max_vertex_payload_bytes={self.layer.max_vertex_payload_bytes}."
                 )
-            started = time.perf_counter()
-            vertices = pack_snapshot_vertices(snapshot, value_count=self.layer.data.value_count)
-            pack_ms = (time.perf_counter() - started) * 1_000.0
+            vertices = render_batch.vertices
             self._validate_vertex_payload(vertices, point_count=point_count, required_bytes=required_bytes)
             self._snapshot_visual.replace_vertices(vertices)
         except Exception as error:  # noqa: BLE001
             self.layer.events.render_error(value=error)
             return False
 
-        self._last_pack_ms = pack_ms
         self.node.update()
         return True
 
@@ -235,6 +224,7 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
             or vertices.dtype != TILED_POINTS_VERTEX_DTYPE
             or not vertices.flags.c_contiguous
             or not vertices.flags.owndata
+            or vertices.flags.writeable
             or len(vertices) != point_count
             or vertices.nbytes != required_bytes
         ):
