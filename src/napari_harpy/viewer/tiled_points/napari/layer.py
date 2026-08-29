@@ -34,10 +34,12 @@ _SERIALIZATION_ERROR = (
 class TiledPointsLayerModel(Layer):
     """Represent a complete tiled-points cache without storing point coordinates.
 
-    ``data`` identifies the logical cache generation and its complete intrinsic
-    bounds. Visible point payloads remain runtime and renderer state; they are
-    never assigned to this model. The layer consequently keeps a stable extent
-    while viewport tiles, value selections, and levels of detail change.
+    ``data`` immutably identifies the logical cache generation and its complete
+    intrinsic bounds. Visible point payloads remain runtime and renderer state;
+    they are never assigned to this model. The layer consequently keeps a stable
+    dataset identity and extent while viewport tiles, value selections, and
+    levels of detail change. Switching cache generations requires constructing a
+    new layer and cache runtime.
 
     Before the first instance is added to napari, integration code calls
     ``napari_harpy.viewer.tiled_points.napari.register_tiled_points_layer()``.
@@ -128,7 +130,7 @@ class TiledPointsLayerModel(Layer):
 
     @property
     def data(self) -> TiledPointsDatasetReference:
-        """Return the logical dataset reference, never resident point rows."""
+        """Return the immutable logical dataset reference, never resident point rows."""
         return self._data
 
     @data.setter
@@ -137,17 +139,14 @@ class TiledPointsLayerModel(Layer):
             raise ValueError("`data` must be TiledPointsDatasetReference.")
         if data == self._data:
             return
-        if data.value_count != self._data.value_count:
-            raise ValueError(
-                "Replacement data must preserve `value_count`; construct a new layer for a new vocabulary."
-            )
-        self._data = data
-        self._clear_extent()
-        self.events.data(value=data)
-        # Notify the VisPy boundary directly. A generic ``refresh()`` would
-        # emit ``set_data`` again and also repeat no-op slicing, placeholder
-        # thumbnail, and highlighting work for this logical 2D layer.
-        self.events.set_data(value=data)
+        # The palette, cache session, generation-bound requests, and renderer all
+        # interpret value IDs and tile keys relative to this exact cache
+        # generation. Rebinding only the model reference would leave those owners
+        # inconsistent, so cache replacement recreates the complete layer/runtime
+        # ownership graph instead.
+        raise ValueError(
+            "Tiled-points layer data cannot be replaced; construct a new layer and cache runtime."
+        )
 
     @property
     def value_palette(self) -> npt.NDArray[np.uint8]:
