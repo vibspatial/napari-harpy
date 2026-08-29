@@ -541,13 +541,12 @@ Palette changes remain texture updates. Point diameter and opacity update one vi
 `VispyTiledPointsLayer.apply_snapshot()` should become a bounded single-buffer replacement:
 
 1. Validate the snapshot and reject a point- or byte-budget violation before changing the active visual.
-2. Record `pending_keys` for logical diagnostics only; tile keys are no longer GPU resource identities.
-3. Validate that the worker-prepared render batch is immutable, C-contiguous, reconciles with `rendered_point_count`, and has the expected 12-byte vertex format.
-4. Preflight that the new payload fits the configured single-buffer byte budget before mutating the VBO.
-5. Replace the sole VBO payload with the prepared array using the selected copy-safe lifetime semantics.
-6. If `set_data()` raises a Python exception, emit the render error, clear pending state, and do not commit the candidate generation or keys. The previous GPU payload is not guaranteed to remain drawable after mutation has begun.
-7. On success, update the point count, set visual drawability according to whether the snapshot is empty, and commit `active_keys` plus the accepted result.
-8. Request one scene update.
+2. Validate that the worker-prepared render batch is immutable, C-contiguous, reconciles with `rendered_point_count`, and has the expected 12-byte vertex format.
+3. Preflight that the new payload fits the configured single-buffer byte budget before mutating the VBO.
+4. Replace the sole VBO payload with the prepared array using the selected copy-safe lifetime semantics.
+5. If `set_data()` raises a Python exception, emit the render error and decline the candidate activation. The previous GPU payload is not guaranteed to remain drawable after mutation has begun.
+6. On success, update the point count, set visual drawability according to whether the snapshot is empty, and acknowledge the accepted result.
+7. Request one scene update.
 
 Packing failures now occur on the worker before a candidate snapshot is submitted. They should follow the existing worker-error path and leave the active visual untouched. `apply_snapshot()` must not contain the snapshot tile loop in the completed implementation.
 
@@ -555,7 +554,7 @@ This deliberately changes overlap behavior: a changed accepted snapshot performs
 
 Validation, cancellation, stale-generation rejection, over-budget rejection, and byte-capacity rejection all occur before `set_data()` and therefore continue to preserve the active payload. The initial one-VBO design deliberately does not promise rollback after VBO replacement starts. VisPy defers the actual GPU operation until rendering, so even a ping-pong design would require explicit draw-error handling before it could claim verified GPU-upload rollback.
 
-`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, and per-tile GPU eviction cease to be part of the normal renderer. `active_keys` and `pending_keys` may remain because they are useful for request identity and diagnostics, but they must not own resources. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
+`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, per-tile GPU eviction, and renderer-owned active or pending tile-key tuples cease to be part of the normal renderer. The snapshot and runtime already carry generation-bound logical identity; the renderer needs only the active point count and payload metrics. If Slice 12 is later accepted, it introduces a dedicated worker-prepared physical-payload identity rather than reconstructing tile-key identity on the GUI thread. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
 
 #### Budget implications
 
@@ -712,13 +711,13 @@ VispyTiledPointsLayer
         └── one shared palette-texture binding
 ```
 
-The snapshot may still contain 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. `active_keys` and `pending_keys` retain only logical generation/request diagnostics.
+The snapshot may still contain 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 12.
 
 The packed `a_position` values are relative to the shared cache origin. Packing adds each tile's `(tile_x * tile_size, tile_y * tile_size)` offset to its tile-local coordinates, which allows the per-visual `u_tile_offset` uniform to disappear. These are not large absolute world coordinates: the existing float64 root transform continues to add the shared cache origin and apply the napari layer transform.
 
 For this slice only, the one-array tile loop runs synchronously inside GUI-thread snapshot activation. This temporary scaffold isolates and validates the renderer topology change. Slice 2 moves the same packing helper to the worker and transports an immutable render batch; it does not introduce a second packing implementation.
 
-The single-VBO failure boundary must also be explicit. Validation, byte-capacity checking, and packing happen before `VertexBuffer.set_data()`, so failures in those phases leave the preceding payload untouched. Logical `active_keys` are committed only after `set_data()` succeeds. If `set_data()` itself raises after mutation has begun, report the render failure and do not commit the candidate, but do not claim that the preceding GPU contents remain drawable. A second or ping-pong VBO remains an evidence-gated hardening option rather than part of this slice.
+The single-VBO failure boundary must also be explicit. Validation, byte-capacity checking, and packing happen before `VertexBuffer.set_data()`, so failures in those phases leave the preceding payload untouched. A candidate is acknowledged only after `set_data()` succeeds. If `set_data()` itself raises after mutation has begun, report the render failure and decline the candidate, but do not claim that the preceding GPU contents remain drawable. A second or ping-pong VBO remains an evidence-gated hardening option rather than part of this slice.
 
 **Production changes**
 
@@ -734,10 +733,10 @@ The single-VBO failure boundary must also be explicit. Validation, byte-capacity
    - validate generation, point count, vertex format, and byte capacity before VBO mutation;
    - pack the accepted snapshot into one bounded vertex array as a temporary scaffold;
    - call `VertexBuffer.set_data()` once;
-   - commit logical `active_keys` only after synchronous staging succeeds; and
+   - acknowledge the candidate only after synchronous staging succeeds; and
    - request one scene update.
 5. Remove `_GpuTileResidency`, `_VispyTileResource`, per-tile visibility changes, and per-tile GPU LRU behavior from the normal renderer path. Do not spend a separate slice optimizing the quadratic GPU consistency scan because this slice removes its ownership model.
-6. Keep `active_keys` and `pending_keys` only as logical request diagnostics; they no longer own renderer resources.
+6. Do not retain or reconstruct active or pending tile-key tuples in the renderer. Slice 12 must add its dedicated physical-payload identity only if its evidence gate is met.
 7. Retain the current `max_gpu_tile_bytes` name only for the Slice 1 scaffold and enforce it against the single candidate vertex payload rather than a sum of tile resources. This temporary implementation state is not a compatibility promise; Slice 2 removes the old name completely.
 8. Replace GPU tile metrics with visual count, VBO count, active point count, active vertex bytes, payload-replacement count, and synchronous staging time. Compatibility aliases may exist for one transition only if a current internal consumer needs them.
 9. Preserve palette, opacity, point-diameter, blending, large-origin transforms, empty snapshots, close behavior, and render-error signaling.

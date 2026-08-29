@@ -125,7 +125,6 @@ def test_renderer_keeps_one_visual_and_vbo_across_full_snapshot_replacements(
         assert visual.payload_replacement_count == 0
 
         assert visual.apply_snapshot(_snapshot(layer, (first, second), generation=1))
-        assert visual.active_keys == (first.key, second.key)
         assert visual.active_point_count == 2
         assert visual.active_vertex_bytes == 24
         assert visual.point_draw_submission_count == 1
@@ -133,7 +132,6 @@ def test_renderer_keeps_one_visual_and_vbo_across_full_snapshot_replacements(
         assert staged_point_counts == [2]
 
         assert visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
-        assert visual.active_keys == (second.key, third.key)
         assert visual.active_point_count == 2
         assert visual.active_vertex_bytes == 24
         assert visual.payload_replacement_count == 2
@@ -168,7 +166,6 @@ def test_generic_layer_refresh_preserves_active_snapshot(
 
         layer.refresh()
 
-        assert visual.active_keys == (tile.key,)
         assert visual.active_point_count == tile.point_count
         assert visual.payload_replacement_count == 1
         assert visual._snapshot_visual.vertex_buffer is vertex_buffer
@@ -255,7 +252,7 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
         visual.close()
 
 
-def test_renderer_capacity_failure_preserves_logical_active_snapshot(
+def test_renderer_capacity_failure_preserves_active_snapshot(
     maximum_texture_size: None,
 ) -> None:
     layer = _layer(gpu_bytes=12)
@@ -267,13 +264,11 @@ def test_renderer_capacity_failure_preserves_logical_active_snapshot(
         assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
         assert not visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
 
-        assert visual.active_keys == (first.key,)
         assert visual.active_point_count == 1
         assert visual.active_vertex_bytes == 12
         assert visual.payload_replacement_count == 1
         assert len(errors) == 1
         assert "max_gpu_tile_bytes=12" in str(errors[0])
-        assert visual.pending_keys == ()
     finally:
         visual.close()
 
@@ -289,7 +284,6 @@ def test_renderer_hard_point_budget_failure_does_not_pack_or_stage(
     try:
         assert not visual.apply_snapshot(_snapshot(layer, (first, second), generation=1))
 
-        assert visual.active_keys == ()
         assert visual.active_point_count == 0
         assert visual.payload_replacement_count == 0
         assert len(errors) == 1
@@ -317,16 +311,15 @@ def test_renderer_invalid_packed_payload_does_not_replace_active_snapshot(
 
         assert not visual.apply_snapshot(_snapshot(layer, (second,), generation=2))
 
-        assert visual.active_keys == (first.key,)
+        assert visual.active_point_count == first.point_count
         assert visual.payload_replacement_count == 1
-        assert visual.pending_keys == ()
         assert len(errors) == 1
         assert "canonical vertex-payload contract" in str(errors[0])
     finally:
         visual.close()
 
 
-def test_renderer_upload_failure_does_not_commit_candidate_keys(
+def test_renderer_upload_failure_does_not_count_candidate_replacement(
     maximum_texture_size: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -345,9 +338,8 @@ def test_renderer_upload_failure_does_not_commit_candidate_keys(
         monkeypatch.setattr(visual._snapshot_visual.vertex_buffer, "set_data", _fail_upload)
         assert not visual.apply_snapshot(_snapshot(layer, (second,), generation=2))
 
-        assert visual.active_keys == (first.key,)
+        assert visual.active_point_count == first.point_count
         assert visual.payload_replacement_count == 1
-        assert visual.pending_keys == ()
         assert len(errors) == 1
         assert str(errors[0]) == "synthetic upload failure"
     finally:
@@ -364,11 +356,10 @@ def test_empty_snapshot_suppresses_one_visual_without_replacing_its_vbo(
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
         assert not visual.apply_snapshot(_snapshot(layer, (), generation=2, within_budget=False))
-        assert visual.active_keys == (tile.key,)
+        assert visual.active_point_count == tile.point_count
         assert visual.payload_replacement_count == 1
 
         assert visual.apply_snapshot(_snapshot(layer, (), generation=3))
-        assert visual.active_keys == ()
         assert visual.active_point_count == 0
         assert visual.active_vertex_bytes == 0
         assert visual.point_draw_submission_count == 0
@@ -392,5 +383,4 @@ def test_renderer_close_releases_fixed_resources_and_ignores_late_snapshot(maxim
     assert visual.visual_count == 0
     assert visual.vbo_count == 0
     assert visual.active_point_count == 0
-    assert visual.active_keys == ()
     assert not visual.apply_snapshot(snapshot)

@@ -253,7 +253,7 @@ def test_runtime_connects_layer_viewports_to_complete_renderer_snapshots(maximum
         tile = _tile(layer, request)
         session.complete_viewport(_snapshot(layer, request, (tile,)))
 
-        assert visual.active_keys == (tile.key,)
+        assert visual.active_point_count == tile.point_count
         assert layer.display_status.level == 0
         assert layer.display_status.rendered_point_count == 1
         assert layer.display_status.rendered_tile_count == 1
@@ -277,7 +277,7 @@ def test_runtime_never_submits_a_stale_snapshot_to_vispy(maximum_texture_size: N
         session.complete_viewport(_snapshot(layer, stale_request, (_tile(layer, stale_request),)))
 
         assert visual.payload_replacement_count == 0
-        assert visual.active_keys == ()
+        assert visual.active_point_count == 0
         latest_request = session.viewport_requests[-1]
         assert latest_request.request_generation > stale_request.request_generation
 
@@ -285,7 +285,7 @@ def test_runtime_never_submits_a_stale_snapshot_to_vispy(maximum_texture_size: N
         session.complete_viewport(_snapshot(layer, latest_request, (latest_tile,)))
 
         assert visual.payload_replacement_count == 1
-        assert visual.active_keys == (latest_tile.key,)
+        assert visual.active_point_count == latest_tile.point_count
     finally:
         runtime.close()
         visual.close()
@@ -320,7 +320,7 @@ def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_s
                 estimated_point_count=101,
             )
         )
-        assert visual.active_keys == (tile.key,)
+        assert visual.active_point_count == tile.point_count
         assert len(rendered_snapshots) == 1
         assert layer.display_status.rendered_point_count == 1
         assert "retaining the previous view" in layer.display_status.message
@@ -328,7 +328,7 @@ def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_s
         layer.events.viewport(value=_viewport(20.0))
         failed_request = session.viewport_requests[-1]
         session.fail_viewport(failed_request.request_generation)
-        assert visual.active_keys == (tile.key,)
+        assert visual.active_point_count == tile.point_count
         assert layer.display_status.rendered_point_count == 1
         assert "synthetic viewport failure" in layer.display_status.message
 
@@ -344,7 +344,7 @@ def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_s
                 level=2,
             )
         )
-        assert visual.active_keys == ()
+        assert visual.active_point_count == 0
         assert len(rendered_snapshots) == 2
         assert layer.display_status.level == 2
         assert layer.display_status.rendered_point_count == 0
@@ -366,13 +366,13 @@ def test_runtime_applies_ordinary_empty_snapshot_and_clears_active_visual(maximu
         populated_request = session.viewport_requests[-1]
         populated_tile = _tile(layer, populated_request)
         session.complete_viewport(_snapshot(layer, populated_request, (populated_tile,)))
-        assert visual.active_keys == (populated_tile.key,)
+        assert visual.active_point_count == populated_tile.point_count
 
         layer.events.viewport(value=_viewport(10.0))
         empty_request = session.viewport_requests[-1]
         session.complete_viewport(_snapshot(layer, empty_request, ()))
 
-        assert visual.active_keys == ()
+        assert visual.active_point_count == 0
         assert layer.display_status.rendered_point_count == 0
         assert layer.display_status.rendered_tile_count == 0
         assert layer.display_status.omitted_value_ids == ()
@@ -402,7 +402,8 @@ def test_runtime_reports_renderer_failure_without_committing_candidate_status(ma
         )
         session.complete_viewport(_snapshot(layer, second_request, second_tiles))
 
-        assert visual.active_keys == (first_tile.key,)
+        assert visual.active_point_count == first_tile.point_count
+        assert visual.payload_replacement_count == 1
         assert layer.display_status.rendered_point_count == 1
         assert layer.display_status.rendered_tile_count == 1
         assert "max_gpu_tile_bytes=12" in layer.display_status.message
@@ -483,7 +484,7 @@ def test_real_cache_flows_from_layer_viewport_to_renderer_and_selected_values(
 
         assert observed[-1].rendered_point_count == 3
         assert observed[-1].rendered_tile_count == 1
-        assert visual.active_keys == tuple(tile.key for tile in observed[-1].tiles)
+        assert visual.active_point_count == observed[-1].rendered_point_count
         assert visual.payload_replacement_count == 1
         assert visual.visual_count == 1
         assert visual.vbo_count == 1
