@@ -164,7 +164,11 @@ class TiledPointsLayerModel(Layer):
 
     @property
     def max_gpu_tile_bytes(self) -> int:
-        """Return the logical GPU byte budget for retained tile resources."""
+        """Return the byte limit for one complete packed vertex payload.
+
+        The name is retained temporarily for application-setting compatibility;
+        the constant-resource renderer no longer retains per-tile GPU objects.
+        """
         return self._max_gpu_tile_bytes
 
     @property
