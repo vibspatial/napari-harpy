@@ -20,7 +20,12 @@ DEFAULT_MAX_GPU_TILE_BYTES = 536_870_912
 
 @dataclass(frozen=True)
 class TiledPointsApplicationSettings:
-    """Define napari-harpy's injectable points-cache residency policy."""
+    """Define napari-harpy's injectable points-cache resource policy.
+
+    ``max_gpu_tile_bytes`` retains its compatibility name during the
+    constant-resource renderer transition. It bounds one complete packed
+    candidate vertex payload, not a residency cache of per-tile GPU objects.
+    """
 
     max_bucket_lookup_bytes: int | None = None
     max_selected_value_index_bytes: int | None = None
