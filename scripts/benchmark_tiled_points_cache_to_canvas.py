@@ -780,7 +780,7 @@ def main() -> None:
                 residency,
                 request,
                 max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                check_cancelled=lambda: None,
+                raise_if_cancelled=lambda: None,
             )
             cold_snapshot_ms = _elapsed_ms(started)
             cold_breakdown = timings.summary()
@@ -800,7 +800,7 @@ def main() -> None:
                 residency,
                 warm_request,
                 max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                check_cancelled=lambda: None,
+                raise_if_cancelled=lambda: None,
             )
             warm_snapshot_ms = _elapsed_ms(started)
             warm_breakdown = timings.summary()
@@ -861,7 +861,7 @@ def main() -> None:
                     viewport=subset_viewport,
                 ),
                 max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                check_cancelled=lambda: None,
+                raise_if_cancelled=lambda: None,
             )
             if not subset_snapshot.within_budget:
                 raise RuntimeError("The centered renderer subset unexpectedly exceeds the point budget.")

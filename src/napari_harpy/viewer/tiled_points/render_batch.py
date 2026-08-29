@@ -25,7 +25,7 @@ def pack_render_tiles(
     point_count: int,
     value_count: int,
     max_vertex_payload_bytes: int,
-    check_cancelled: Callable[[], None] | None = None,
+    raise_if_cancelled: Callable[[], None] | None = None,
 ) -> TiledPointsRenderBatch:
     """Pack one complete ordered tile tuple into an immutable render batch.
 
@@ -51,9 +51,11 @@ def pack_render_tiles(
     max_vertex_payload_bytes
         Maximum logical byte size permitted for the one packed allocation.
         Capacity is checked before allocation.
-    check_cancelled
-        Optional cooperative terminal-close check. It runs before allocation
-        and between bounded groups of logical tiles.
+    raise_if_cancelled
+        Optional cooperative cancellation checkpoint called before allocation
+        and between bounded groups of logical tiles. It returns normally to
+        continue or raises to abort packing; this function does not catch the
+        exception.
 
     Returns
     -------
@@ -90,8 +92,8 @@ def pack_render_tiles(
         or max_vertex_payload_bytes <= 0
     ):
         raise ValueError("`max_vertex_payload_bytes` must be a positive integer.")
-    if check_cancelled is not None and not callable(check_cancelled):
-        raise ValueError("`check_cancelled` must be callable or None.")
+    if raise_if_cancelled is not None and not callable(raise_if_cancelled):
+        raise ValueError("`raise_if_cancelled` must be callable or None.")
     point_count = int(point_count)
     value_count = int(value_count)
     max_vertex_payload_bytes = int(max_vertex_payload_bytes)
@@ -101,14 +103,18 @@ def pack_render_tiles(
             f"Render batch requires {required_bytes} bytes, exceeding "
             f"max_vertex_payload_bytes={max_vertex_payload_bytes}."
         )
-    if check_cancelled is not None:
-        check_cancelled()
+    if raise_if_cancelled is not None:
+        raise_if_cancelled()
 
     vertices = np.empty(point_count, dtype=TILED_POINTS_VERTEX_DTYPE)
     cursor = 0
     for tile_index, tile in enumerate(tiles):
-        if check_cancelled is not None and tile_index > 0 and tile_index % _CANCELLATION_CHECK_TILE_INTERVAL == 0:
-            check_cancelled()
+        if (
+            raise_if_cancelled is not None
+            and tile_index > 0
+            and tile_index % _CANCELLATION_CHECK_TILE_INTERVAL == 0
+        ):
+            raise_if_cancelled()
         stop = cursor + tile.point_count
         if stop > point_count:
             raise RuntimeError("Packed tile rows exceed the declared render-batch point count.")

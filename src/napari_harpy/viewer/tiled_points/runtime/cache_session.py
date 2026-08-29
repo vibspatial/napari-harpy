@@ -324,7 +324,7 @@ class _TiledPointsCacheWorker(QObject):
                 self._cpu_tile_residency,
                 request,
                 max_vertex_payload_bytes=self._settings.max_vertex_payload_bytes,
-                check_cancelled=self._require_not_cancelled,
+                raise_if_cancelled=self._require_not_cancelled,
             )
             self._require_not_cancelled()
             self.viewport_ready.emit(snapshot)
@@ -608,7 +608,7 @@ def _read_viewport_snapshot(
     request: _ViewportRequest,
     *,
     max_vertex_payload_bytes: int,
-    check_cancelled: Callable[[], None],
+    raise_if_cancelled: Callable[[], None],
 ) -> TiledPointsRenderSnapshot:
     """Plan one viewport and assemble its complete immutable render snapshot.
 
@@ -628,7 +628,7 @@ def _read_viewport_snapshot(
         request.viewport.effective_point_budget,
         value_index=selected_value_index,
     )
-    check_cancelled()
+    raise_if_cancelled()
     dataset_info = reader.dataset_info
     level_kind = _level_kind(level_selection.level, dataset_info.levels[level_selection.level].kind)
     omitted_value_ids = (
@@ -652,7 +652,7 @@ def _read_viewport_snapshot(
         )
 
     plan = reader.plan_viewport(level_selection.level, viewport, value_index=selected_value_index)
-    check_cancelled()
+    raise_if_cancelled()
     if plan.requested_value_ids != request.requested_value_ids:
         raise RuntimeError("Viewport plan selection differs from its generation-bound request.")
     keys = tuple(
@@ -681,7 +681,7 @@ def _read_viewport_snapshot(
             plan,
             tuple(key.logical_tile_key for key in missing_keys),
         )
-        check_cancelled()
+        raise_if_cancelled()
         key_by_logical_tile = {key.logical_tile_key: key for key in missing_keys}
         # Bucket reads expose per-tile views into shared batch allocations.
         # Copy once at the viewer-residency boundary so every render tile owns
@@ -713,9 +713,9 @@ def _read_viewport_snapshot(
         point_count=level_selection.estimated_point_count,
         value_count=len(dataset_info.value_names),
         max_vertex_payload_bytes=max_vertex_payload_bytes,
-        check_cancelled=check_cancelled,
+        raise_if_cancelled=raise_if_cancelled,
     )
-    check_cancelled()
+    raise_if_cancelled()
     return TiledPointsRenderSnapshot(
         cache_generation_id=dataset_info.cache_generation_id,
         request_generation=request.request_generation,

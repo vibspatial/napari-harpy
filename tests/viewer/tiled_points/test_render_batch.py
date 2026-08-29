@@ -43,14 +43,14 @@ def _pack(
     point_count: int | None = None,
     value_count: int = 3,
     max_vertex_payload_bytes: int = _MAX_PAYLOAD_BYTES,
-    check_cancelled: Callable[[], None] | None = None,
+    raise_if_cancelled: Callable[[], None] | None = None,
 ) -> TiledPointsRenderBatch:
     return pack_render_tiles(
         tiles,
         point_count=sum(tile.point_count for tile in tiles) if point_count is None else point_count,
         value_count=value_count,
         max_vertex_payload_bytes=max_vertex_payload_bytes,
-        check_cancelled=check_cancelled,
+        raise_if_cancelled=raise_if_cancelled,
     )
 
 
@@ -124,7 +124,7 @@ def test_pack_render_tiles_checks_cancellation_before_allocation(monkeypatch: py
 
     monkeypatch.setattr("napari_harpy.viewer.tiled_points.render_batch.np.empty", _unexpected_empty)
     with pytest.raises(RuntimeError, match="cancelled"):
-        _pack((tile,), check_cancelled=_cancel)
+        _pack((tile,), raise_if_cancelled=_cancel)
 
     assert not allocation_attempted
 
@@ -140,7 +140,7 @@ def test_pack_render_tiles_checks_cancellation_between_fragmented_tile_groups() 
             raise RuntimeError("cancelled during pack")
 
     with pytest.raises(RuntimeError, match="cancelled during pack"):
-        _pack(tiles, check_cancelled=_cancel_during_pack)
+        _pack(tiles, raise_if_cancelled=_cancel_during_pack)
 
     assert checks == 2
 

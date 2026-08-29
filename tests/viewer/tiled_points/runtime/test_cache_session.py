@@ -666,7 +666,7 @@ def test_terminal_close_cancels_worker_render_batch_packing(
     resume_pack = threading.Event()
     original_pack = cache_session_module.pack_render_tiles
 
-    def _pause_pack(*args, check_cancelled, **kwargs):
+    def _pause_pack(*args, raise_if_cancelled, **kwargs):
         checks = 0
 
         def _check() -> None:
@@ -675,9 +675,9 @@ def test_terminal_close_cancels_worker_render_batch_packing(
             if checks == pause_check:
                 pack_paused.set()
                 assert resume_pack.wait(timeout=5)
-            check_cancelled()
+            raise_if_cancelled()
 
-        return original_pack(*args, check_cancelled=_check, **kwargs)
+        return original_pack(*args, raise_if_cancelled=_check, **kwargs)
 
     monkeypatch.setattr(cache_session_module, "pack_render_tiles", _pause_pack)
     snapshots: list[object] = []
