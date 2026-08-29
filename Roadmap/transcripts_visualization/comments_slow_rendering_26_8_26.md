@@ -437,7 +437,8 @@ The completed target path is:
 cache_session._read_viewport_snapshot()
         -> assemble ordered logical tiles on the worker
         -> pack one immutable, bounded render batch on the worker
-        -> TiledPointsRenderSnapshot(tiles=..., render_batch=...)
+        -> discard transient decoded-tile references not retained by CPU residency
+        -> TiledPointsRenderSnapshot(rendered_tile_count=..., render_batch=...)
         -> composition._on_snapshot_ready()
         -> VispyTiledPointsLayer.apply_snapshot()
         -> replace the one snapshot VBO payload on the GUI thread
@@ -451,15 +452,15 @@ The affected responsibilities are:
 | `vispy/layer.py` | Creates, retains, hides, and evicts one `_VispyTileResource` per logical tile. | Owns one snapshot visual and one VBO, replaces that VBO from a worker-prepared batch, and commits logical state without a NumPy tile loop. |
 | `vispy/visuals.py` | `_TiledPointsTileVisual` packs and uploads one tile and applies `u_tile_offset` in the shader. | A snapshot visual owns one VBO and replaces its complete packed vertex payload; no per-tile visual or tile-offset uniform is needed. |
 | `vispy/residency.py` | `_GpuTileResidency` tracks thousands of tile-keyed GPU resources and performs retention/eviction bookkeeping. | Its tile-resource role disappears. Single-buffer byte accounting can be kept directly in the layer or in a small snapshot-buffer helper. |
-| `contracts.py` | Carries a tuple of logical render tiles in `TiledPointsRenderSnapshot`. | Defines and validates an immutable, C-contiguous packed render batch and carries it with the generation-bound snapshot. The tile tuple can remain during the migration for CPU-residency identity and diagnostics. |
-| `runtime/cache_session.py` | Assembles the ordered logical tile tuple. | Packs the render batch after final ordered tile assembly and before returning an accepted snapshot, with cancellation and generation checks preserved. |
+| `contracts.py` | Carries a tuple of logical render tiles in `TiledPointsRenderSnapshot`. | Defines and validates an immutable, C-contiguous packed render batch and carries it with the generation-bound snapshot. The snapshot retains only the O(1) logical-tile count; decoded tiles remain worker-local. |
+| `runtime/cache_session.py` | Assembles the ordered logical tile tuple. | Validates and packs the render batch after final ordered tile assembly, records `rendered_tile_count`, and returns no decoded tile arrays across the GUI boundary. |
 | `runtime/composition.py` | Delivers the snapshot to the layer event. | Forwards the snapshot and packed batch unchanged; it remains unaware of VisPy and VBO ownership. |
 
 #### Snapshot packing
 
 Add one pure NumPy packing helper in a GUI-neutral module such as `viewer/tiled_points/render_batch.py`. It must not live under `viewer/tiled_points/vispy/`: importing that package imports the VisPy layer and its GUI dependencies, which the cache worker should not acquire. The helper should:
 
-1. Allocate one structured array sized exactly to `snapshot.rendered_point_count`.
+1. Allocate one structured array sized exactly to the worker's declared `point_count`.
 2. Use the existing vertex fields: `position` as two `float32` values and `value_id` as one `float32`, for 12 bytes per point.
 3. Fill consecutive slices in snapshot tile order. For a tile `(tile_x, tile_y)`, calculate cache-relative positions as:
 
@@ -698,7 +699,7 @@ This slice addresses the dominant measured problem: 4,453 visuals, VBO wrappers,
 
 **Current-to-target interpretation**
 
-This is a renderer-ownership change, not a cache-layout or logical-tile change. The worker continues to return a `TiledPointsRenderSnapshot` containing the complete ordered tuple of logical `TiledPointsRenderTile` objects for the accepted viewport. CPU tile residency also remains unchanged.
+This is a renderer-ownership change, not a cache-layout or logical-tile change. At the Slice 1 boundary, the worker still returns a `TiledPointsRenderSnapshot` containing the complete ordered tuple of logical `TiledPointsRenderTile` objects for the accepted viewport. CPU tile residency also remains unchanged. Slice 2 subsequently keeps those decoded tiles worker-local and returns only their count plus the packed batch.
 
 Today, `VispyTiledPointsLayer.apply_snapshot()` looks up every logical tile in `_GpuTileResidency`, creates a `_VispyTileResource` for every residency miss, inserts that resource's visual and VBO under the `Compound` root, and then loops over old and new tile keys to change visibility. Consequently, thousands of logical storage tiles become thousands of independently traversed VisPy resources.
 
@@ -713,7 +714,7 @@ VispyTiledPointsLayer
         └── one shared palette-texture binding
 ```
 
-The snapshot may still contain 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 12.
+The accepted viewport may still comprise 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 12.
 
 The packed `a_position` values are relative to the shared cache origin. Packing adds each tile's `(tile_x * tile_size, tile_y * tile_size)` offset to its tile-local coordinates, which allows the per-visual `u_tile_offset` uniform to disappear. These are not large absolute world coordinates: the existing float64 root transform continues to add the shared cache origin and apply the napari layer transform.
 
@@ -778,6 +779,8 @@ The renderer has constant GPU-resource topology and correct rendering. The remai
 
 ### Slice 2 — Worker-prepared immutable render batch
 
+**Status: Implemented**
+
 This slice completes the renderer milestone by removing the tile loop from GUI activation.
 
 **Production changes**
@@ -791,11 +794,11 @@ This slice completes the renderer milestone by removing the tile loop from GUI a
    - validates the declared point count, final cursor, and maximum palette ID;
    - invokes the optional cancellation callback before allocation and periodically between tile groups; and
    - returns a C-contiguous, owning, read-only allocation, including a valid empty batch.
-2. In `viewer/tiled_points/contracts.py`, move the canonical `TILED_POINTS_VERTEX_DTYPE` beside a new immutable `TiledPointsRenderBatch` contract so both validation and packing depend on one definition without making `contracts.py` import `render_batch.py`. Carry the batch on `TiledPointsRenderSnapshot`. Validate dtype, one-dimensional shape, ownership, C contiguity, read-only state, and byte count. Expose O(1) batch `point_count` and `nbytes` properties. For a within-budget snapshot, validate once during worker-side construction that the batch count equals both `estimated_point_count` and the sum of logical tile point counts; an over-budget metadata-only snapshot carries an owning read-only empty batch even when its estimate is nonzero.
-3. Make `TiledPointsRenderSnapshot.rendered_point_count` return the validated render-batch point count in O(1), rather than summing `snapshot.tiles` on every access. Tile summation is permitted only while constructing and validating the snapshot on the worker. GUI-side status preparation, renderer activation, and diagnostics must not acquire their point count by iterating logical tiles.
-4. In `runtime/cache_session.py`, first restore `ordered_tiles = tuple(payloads_by_key[key] for key in keys)` in final plan order. Validate the declared count and byte capacity, pack those tiles, check cancellation again, and only then construct the final snapshot from `ordered_tiles` and the immutable batch. For an over-budget result, construct the metadata-only snapshot with the canonical empty batch and perform no point-payload allocation.
+2. In `viewer/tiled_points/contracts.py`, move the canonical `TILED_POINTS_VERTEX_DTYPE` beside a new immutable `TiledPointsRenderBatch` contract so both validation and packing depend on one definition without making `contracts.py` import `render_batch.py`. Carry the batch on `TiledPointsRenderSnapshot`. Validate dtype, one-dimensional shape, ownership, C contiguity, read-only state, and byte count. Expose O(1) batch `point_count` and `nbytes` properties. Replace the decoded `tiles` tuple on the GUI-bound snapshot with a validated nonnegative `rendered_tile_count`. For a within-budget snapshot, require that the batch count equals `estimated_point_count` and that the tile count is possible for the nonempty logical-tile contract; an over-budget metadata-only snapshot carries zero rendered tiles and an owning read-only empty batch even when its estimate is nonzero.
+3. Make `TiledPointsRenderSnapshot.rendered_point_count` return the validated render-batch point count in O(1). GUI-side status preparation, renderer activation, and diagnostics obtain both point count and logical-tile count without inspecting decoded tiles.
+4. In `runtime/cache_session.py`, first restore `ordered_tiles = tuple(payloads_by_key[key] for key in keys)` in final plan order. Validate tile-key uniqueness, spatial order, cache generation, selection and level while the tuple is still worker-local; validate the declared point count and byte capacity while packing; check cancellation again; and only then construct the final snapshot from `len(ordered_tiles)` and the immutable batch. For an over-budget result, construct the metadata-only snapshot with zero rendered tiles and the canonical empty batch, and perform no point-payload allocation.
 5. The cancellation callback used by Slice 2 is the existing cache-session terminal-close check. Check it before packing, between fragmented tile groups, and after packing so layer/session closure cannot publish a late batch. Do not add request-specific cancellation in this slice. Obsolete request generations may finish packing but must continue to be rejected by the coordinator before renderer submission.
-6. Keep the logical tile tuple during this migration because it still supplies CPU-residency identity and diagnostics. The renderer must consume only `render_batch` and must not inspect `snapshot.tiles`.
+6. Keep decoded logical tiles only in worker-local assembly and `_CpuTileResidency`. Do not transport their coordinate/value arrays in `TiledPointsRenderSnapshot`: after packing, release transient tiles that were not retained by the byte-bounded residency. Carry only `rendered_tile_count` for status and diagnostics. The renderer consumes only `render_batch`.
 7. Keep `runtime/composition.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership. Its status path consumes only O(1) snapshot counts.
 8. In `vispy/layer.py`, remove the scaffold packing call and renderer-owned pack timing. GUI activation validates the already prepared batch, independently preflights its point and byte capacity, stages exactly that one VBO payload, acknowledges the result, and updates the scene. It performs no logical-tile iteration or NumPy coordinate packing.
 9. Initially use the copy-safe `VertexBuffer.set_data()` lifetime behavior already relied on by the renderer and report any CPU staging copy separately. A later zero-copy change requires explicit lifetime and deferred-upload evidence.
@@ -827,9 +830,28 @@ warm physical draw
 
 Record both point count and logical tile count for every packed batch. Re-run the actual AAMP case and the synthetic 1,000,000-point cases. At the current 100,000-point cap, GUI activation must contain no tile-proportional work. Qt delivery must remain effectively reference transfer rather than a deep copy.
 
+**Implemented evidence (2026-08-29)**
+
+The full-extent AAMP run used 60,512 points across 4,453 logical tiles and produced one immutable 726,144-byte batch. After the decoded-tile tuple was removed from the GUI-bound snapshot, cold and warm worker packing measured 20.4 and 19.9 milliseconds. Worker-local tile/key validation measured 1.08 and 1.09 milliseconds, while construction of the final metadata-plus-batch snapshot envelope measured 0.030 and 0.017 milliseconds. Queued Qt delivery had a 0.118-millisecond median over five repeats and preserved the exact NumPy vertex-allocation identity on every delivery.
+
+The real-canvas rerun retained exactly one visual, one VBO, and one point draw submission. GUI `apply_snapshot()` measured 0.52 milliseconds, including 0.49 milliseconds of synchronous `VertexBuffer.set_data(copy=True)` staging. The first physical draw measured 16.71 milliseconds and the five-repeat warm-draw median was 3.65 milliseconds. Replacing the full payload again drew in 3.60 milliseconds, confirming that the first-draw result includes one-time pipeline work. The report is `/private/tmp/napari-harpy-slice2-cache-to-canvas-full-aamp.json`.
+
+The five-repeat synthetic 1,000,000-point packing medians were:
+
+| Logical tiles | Immutable worker-batch packing median |
+|---:|---:|
+| 1 | 6.92 ms |
+| 4,453 | 25.28 ms |
+| 7,294 | 36.84 ms |
+| 100,000 | 415.35 ms |
+
+Every synthetic batch contained 12,000,000 bytes using the canonical 12-byte vertex format. These measurements are slower than the earlier isolated scaffold measurements because they cover the production helper's input-contract validation and immutable batch construction as well as the coordinate-copy loop. They preserve the same conclusion: point count alone remains manageable, while extreme logical-tile fragmentation is the important worker-latency risk. The report is `/private/tmp/napari-harpy-slice2-synthetic-million-point.json`.
+
+Focused validation passed with 141 tiled-points tests, the opt-in native OpenGL qualification, and all 95 `test_viewer_widget.py` backend tests. The worker-session coverage includes final plan order and rejection of nonspatial order before packing, worker-local decoded-tile ownership, pre-allocation byte rejection, terminal-close cancellation before and during packing, and queued-delivery allocation identity. GUI composition coverage reads selected value IDs from the packed batch and no longer receives decoded tile arrays.
+
 **Exit condition**
 
-The completed path is ordered worker tiles → byte preflight → immutable packed batch → validated snapshot construction → queued reference delivery → one GUI-thread VBO replacement → one draw. GUI activation obtains point and byte counts in O(1), and no normal renderer code iterates or creates a resource per logical tile. `max_vertex_payload_bytes` is enforced before the worker allocation and again before VBO staging, is the sole production setting name for the complete packed-payload byte bound, and has no `max_gpu_tile_bytes` input alias or property.
+The completed path is ordered worker-local tiles → tile/key validation → byte preflight → immutable packed batch → discard nonresident decoded-tile references → validated metadata-plus-batch snapshot construction → queued reference delivery → one GUI-thread VBO replacement → one draw. GUI activation obtains point, tile and byte counts in O(1), no decoded tile arrays cross the GUI boundary, and no normal renderer code iterates or creates a resource per logical tile. `max_vertex_payload_bytes` is enforced before the worker allocation and again before VBO staging, is the sole production setting name for the complete packed-payload byte bound, and has no `max_gpu_tile_bytes` input alias or property.
 
 ### Slice 3 — Linear CPU tile retention
 
