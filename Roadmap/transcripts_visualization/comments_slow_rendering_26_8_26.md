@@ -568,9 +568,9 @@ optional two-VBO ping-pong maximum = approximately 2.29 MiB
 optional two-VBO ping-pong maximum at 1,000,000 points = approximately 22.89 MiB
 ```
 
-The initial patch can retain the existing GPU-byte configuration name to limit configuration churn, but its enforcement should cover the one snapshot payload rather than a sum of tile estimates. The bounded worker batch and any temporary CPU copy made by VisPy should be reported separately from logical GPU bytes. At 1,000,000 points, the worker output is approximately 11.44 MiB, the VBO is approximately 11.44 MiB, and `set_data(copy=True)` may temporarily retain another approximately 11.44 MiB CPU staging copy. A whole-snapshot concatenate/repeat implementation also uses temporary coordinate, value-ID, and repeated-origin arrays; its peak must be measured rather than inferred from the final VBO size alone.
+Slice 1 may retain the existing `max_gpu_tile_bytes` name only as a temporary implementation scaffold, but its enforcement covers one complete snapshot payload rather than a sum of tile estimates. The bounded worker batch and any temporary CPU copy made by VisPy should be reported separately from logical vertex-payload bytes. At 1,000,000 points, the worker output is approximately 11.44 MiB, the VBO is approximately 11.44 MiB, and `set_data(copy=True)` may temporarily retain another approximately 11.44 MiB CPU staging copy. A whole-snapshot concatenate/repeat implementation also uses temporary coordinate, value-ID, and repeated-origin arrays; its peak must be measured rather than inferred from the final VBO size alone.
 
-A later cleanup can rename the setting to a snapshot-buffer budget or derive it directly from the hard point budget. Both the 100,000- and 1,000,000-point final VBOs are far below the current 512 MiB default, but an increase to 1,000,000 points still requires deliberate end-to-end memory, upload, and draw evidence rather than only a logical byte calculation.
+Slice 2 must rename this setting to `max_vertex_payload_bytes` across application settings, the layer model, adapter construction, renderer capacity checks, diagnostics, benchmarks, and tests. This is a direct rename, not a compatibility migration: do not retain `max_gpu_tile_bytes` as a deprecated property, constructor keyword, environment/configuration alias, or internal fallback. `max_vertex_payload_bytes` remains an explicit byte bound independent of the hard point-count budget and describes the logical size of one complete packed render batch/VBO payload; it does not claim to bound total GPU, driver, worker, or transient staging memory. Both the 100,000- and 1,000,000-point final VBOs are far below the current 512 MiB default, but an increase to 1,000,000 points still requires deliberate end-to-end memory, upload, and draw evidence rather than only a logical byte calculation.
 
 #### Threading boundary and required implementation slices
 
@@ -738,7 +738,7 @@ The single-VBO failure boundary must also be explicit. Validation, byte-capacity
    - request one scene update.
 5. Remove `_GpuTileResidency`, `_VispyTileResource`, per-tile visibility changes, and per-tile GPU LRU behavior from the normal renderer path. Do not spend a separate slice optimizing the quadratic GPU consistency scan because this slice removes its ownership model.
 6. Keep `active_keys` and `pending_keys` only as logical request diagnostics; they no longer own renderer resources.
-7. Retain the current GPU-byte setting name for one compatibility transition if necessary, but enforce it against the single candidate vertex payload rather than a sum of tile resources.
+7. Retain the current `max_gpu_tile_bytes` name only for the Slice 1 scaffold and enforce it against the single candidate vertex payload rather than a sum of tile resources. This temporary implementation state is not a compatibility promise; Slice 2 removes the old name completely.
 8. Replace GPU tile metrics with visual count, VBO count, active point count, active vertex bytes, payload-replacement count, and synchronous staging time. Compatibility aliases may exist for one transition only if a current internal consumer needs them.
 9. Preserve palette, opacity, point-diameter, blending, large-origin transforms, empty snapshots, close behavior, and render-error signaling.
 
@@ -795,6 +795,7 @@ This slice completes the renderer milestone by removing the tile loop from GUI a
 5. Keep `runtime/composition.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership.
 6. In `vispy/layer.py`, remove the scaffold packing call. GUI activation validates the already prepared batch, preflights capacity, stages one VBO payload, commits logical state, and updates the scene.
 7. Initially use the copy-safe `VertexBuffer.set_data()` lifetime behavior already relied on by the renderer and report any CPU staging copy separately. A later zero-copy change requires explicit lifetime and deferred-upload evidence.
+8. Rename `max_gpu_tile_bytes` to `max_vertex_payload_bytes` throughout `TiledPointsApplicationSettings`, `TiledPointsLayerModel`, application-adapter construction, renderer capacity validation, diagnostics, benchmarks, and tests. Remove the old name outright: do not add a deprecated constructor keyword, property, configuration alias, or fallback. Continue to enforce the renamed setting against the logical byte size of one complete packed vertex payload, separately from the hard point-count budget and from measured transient memory.
 
 **Focused tests**
 
@@ -805,6 +806,7 @@ This slice completes the renderer milestone by removing the tile loop from GUI a
 - Assert that obsolete request generations never submit their completed batch to the renderer.
 - Add a queued Qt-delivery test for a maximum-budget batch and verify that the vertex allocation identity is preserved across signal delivery.
 - Instrument `apply_snapshot()` in tests and assert that it performs no tile iteration or NumPy coordinate packing.
+- Update configuration, model, adapter, renderer, error-message, and benchmark tests to use only `max_vertex_payload_bytes`; no compatibility test for the removed `max_gpu_tile_bytes` input is required.
 
 **Benchmark evidence**
 
@@ -823,7 +825,7 @@ Record both point count and logical tile count for every packed batch. Re-run th
 
 **Exit condition**
 
-The completed path is worker tiles → immutable packed batch → queued delivery → one GUI-thread VBO replacement → one draw. No normal renderer code creates a resource per logical tile.
+The completed path is worker tiles → immutable packed batch → queued delivery → one GUI-thread VBO replacement → one draw. No normal renderer code creates a resource per logical tile. `max_vertex_payload_bytes` is the sole production setting name for the complete packed-payload byte bound, and no `max_gpu_tile_bytes` input alias or property remains.
 
 ### Slice 3 — Linear CPU tile retention
 
