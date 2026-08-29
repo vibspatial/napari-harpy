@@ -473,6 +473,8 @@ def _renderer_report(
     started = time.perf_counter()
     visual = VispyTiledPointsLayer(layer, FontInfo())
     report["empty_layer_construction_ms"] = _elapsed_ms(started)
+    report["visual_count"] = visual.visual_count
+    report["vbo_count"] = visual.vbo_count
     canvas = SceneCanvas(show=True, size=(viewport.canvas_width, viewport.canvas_height))
     view = canvas.central_widget.add_view()
     view.camera = "panzoom"
@@ -489,31 +491,33 @@ def _renderer_report(
         report["empty_canvas_render_ms"] = _elapsed_ms(started)
         report["rss_before_snapshot_mib"] = _rss_mib()
 
-        timings = _TimingLog()
-        with _TemporaryPatches() as patches:
-
-            def timed_instance_method(owner: object, name: str, label: str) -> None:
-                original = getattr(owner, name)
-
-                def measured(*args: object, **kwargs: object) -> object:
-                    started = time.perf_counter()
-                    try:
-                        return original(*args, **kwargs)
-                    finally:
-                        timings.calls[label].append(_elapsed_ms(started))
-
-                patches.patch(owner, name, measured)
-
-            timed_instance_method(visual, "_create_tile_resource", "create_tile_resource")
-            timed_instance_method(visual._gpu_tile_residency, "get", "gpu_residency_get")
-            timed_instance_method(visual._gpu_tile_residency, "prepare_capacity", "gpu_prepare_capacity")
-            timed_instance_method(visual._gpu_tile_residency, "retain", "gpu_residency_retain")
-            started = time.perf_counter()
-            report["cold_apply_applied"] = visual.apply_snapshot(snapshot)
-            report["cold_apply_ms"] = _elapsed_ms(started)
-            if not report["cold_apply_applied"]:
-                raise RuntimeError("The cold render snapshot was rejected by the renderer.")
-        report["cold_apply_breakdown"] = timings.summary()
+        started = time.perf_counter()
+        report["cold_apply_applied"] = visual.apply_snapshot(snapshot)
+        report["cold_apply_ms"] = _elapsed_ms(started)
+        if not report["cold_apply_applied"]:
+            raise RuntimeError("The cold render snapshot was rejected by the renderer.")
+        report["cold_pack_ms"] = visual.last_pack_ms
+        report["cold_vertex_staging_ms"] = visual.last_vertex_staging_ms
+        report["cold_packed_vertex_bytes"] = visual.active_vertex_bytes
+        report["cold_active_point_count"] = visual.active_point_count
+        report["cold_payload_replacement_count"] = visual.payload_replacement_count
+        report["point_draw_submissions_per_frame"] = visual.point_draw_submission_count
+        # Preserve the comparison container for one transition while replacing
+        # its obsolete per-tile resource timings with the new fixed topology.
+        report["cold_apply_breakdown"] = {
+            "pack_snapshot_vertices": {
+                "calls": 1,
+                "total_ms": visual.last_pack_ms,
+                "median_ms": visual.last_pack_ms,
+                "max_ms": visual.last_pack_ms,
+            },
+            "vertex_buffer_staging": {
+                "calls": 1,
+                "total_ms": visual.last_vertex_staging_ms,
+                "median_ms": visual.last_vertex_staging_ms,
+                "max_ms": visual.last_vertex_staging_ms,
+            },
+        }
         report["rss_after_apply_mib"] = _rss_mib()
 
         started = time.perf_counter()
@@ -533,6 +537,9 @@ def _renderer_report(
         started = time.perf_counter()
         report["warm_full_apply_applied"] = visual.apply_snapshot(warm_snapshot)
         report["warm_full_apply_ms"] = _elapsed_ms(started)
+        report["warm_full_pack_ms"] = visual.last_pack_ms
+        report["warm_full_vertex_staging_ms"] = visual.last_vertex_staging_ms
+        report["warm_full_payload_replacement_count"] = visual.payload_replacement_count
         started = time.perf_counter()
         canvas.render()
         report["warm_full_draw_ms"] = _elapsed_ms(started)
@@ -549,6 +556,10 @@ def _renderer_report(
         started = time.perf_counter()
         report["warm_full_to_subset_applied"] = visual.apply_snapshot(subset)
         report["warm_full_to_subset_apply_ms"] = _elapsed_ms(started)
+        report["warm_full_to_subset_pack_ms"] = visual.last_pack_ms
+        report["warm_full_to_subset_vertex_staging_ms"] = visual.last_vertex_staging_ms
+        report["warm_full_to_subset_packed_vertex_bytes"] = visual.active_vertex_bytes
+        report["final_payload_replacement_count"] = visual.payload_replacement_count
         started = time.perf_counter()
         canvas.render()
         report["warm_subset_draw_ms"] = _elapsed_ms(started)
@@ -617,7 +628,8 @@ def _print_summary(report: dict[str, object]) -> None:
     renderer = report.get("renderer")
     if isinstance(renderer, dict):
         print(
-            f"Renderer: cold apply={renderer['cold_apply_ms']:.1f} ms, "
+            f"Renderer: visuals={renderer['visual_count']}, VBOs={renderer['vbo_count']}, "
+            f"cold apply={renderer['cold_apply_ms']:.1f} ms, "
             f"first draw={renderer['cold_first_draw_ms']:.1f} ms, "
             f"warm draw median={renderer['warm_draw_median_ms']} ms"
         )
