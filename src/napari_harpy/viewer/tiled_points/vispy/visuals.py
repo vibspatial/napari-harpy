@@ -1,26 +1,23 @@
-"""Compact palette-indexed VisPy visuals for tiled point payloads.
+"""Compact palette-indexed VisPy visual for complete point snapshots.
 
 Renderer ownership is::
 
     VispyTiledPointsLayer
             |
             +-- owns one _ValuePaletteTexture
-            |       shared by every tile visual
+            |       shared with the snapshot visual
             |
-            +-- owns _GpuTileResidency
+            +-- owns one _TiledPointsSnapshotVisualNode
                     |
-                    +-- retains one _VispyTileResource per logical tile
-                            |
-                            +-- owns one _TiledPointsTileVisualNode
-                                    |
-                                    +-- generated from _TiledPointsTileVisual
-                                    +-- owns one tile vertex buffer
-                                    +-- borrows the shared palette texture
+                    +-- generated from _TiledPointsSnapshotVisual
+                    +-- owns one stable snapshot vertex buffer
+                    +-- borrows the shared palette texture
 """
 
 from __future__ import annotations
 
 import math
+import time
 from numbers import Integral
 from typing import Final
 
@@ -30,21 +27,33 @@ from vispy.gloo import Texture2D, VertexBuffer
 from vispy.scene.visuals import create_visual_node
 from vispy.visuals import Visual
 
-_MAX_EXACT_FLOAT32_INTEGER: Final = 2**24
+from napari_harpy.viewer.tiled_points.render_batch import TILED_POINTS_VERTEX_DTYPE
 
+# Interleaved snapshot-VBO attribute contract:
+#
+# ``a_position``
+#     Float32 ``(x, y)`` position relative to the shared cache origin. Logical
+#     tile offsets are already folded in. The renderer's float64 root transform
+#     restores the cache origin and applies the napari affine.
+#
+# ``a_value_id``
+#     Canonical cache-vocabulary index encoded as an exactly representable
+#     float32 integer. The fragment shader uses it to select one RGBA texel from
+#     the shared palette texture. It is not a source gene or string value.
+#
+# These names must match the fields in ``TILED_POINTS_VERTEX_DTYPE`` because
+# ``Program.bind(VertexBuffer)`` binds structured fields by attribute name.
 _VERTEX_SHADER: Final = """
-attribute vec2 a_position;
-attribute float a_value_id;
+attribute vec2 a_position;   // Cache-relative (x, y).
+attribute float a_value_id;  // Exact integer palette index.
 
-uniform vec2 u_tile_offset;
 uniform float u_point_diameter;
 uniform float u_pixel_scale;
 
 varying float v_value_id;
 
 void main() {
-    vec2 cache_relative_position = a_position + u_tile_offset;
-    gl_Position = $transform(vec4(cache_relative_position, 0.0, 1.0));
+    gl_Position = $transform(vec4(a_position, 0.0, 1.0));
     gl_PointSize = u_point_diameter * u_pixel_scale;
     v_value_id = a_value_id;
 }
@@ -85,10 +94,10 @@ class _ValuePaletteTexture:
     """Own the renderer-wide value-ID-to-RGBA lookup texture.
 
     ``VispyTiledPointsLayer`` owns one instance and shares its texture with
-    every tile program. A point's canonical ``value_id`` selects one palette
-    texel, so palette updates change colours without replacing tile vertex
-    buffers. Tile resources borrow this object; only the layer renderer closes
-    it.
+    the snapshot program. A point's canonical ``value_id`` selects one palette
+    texel, so palette updates change colours without replacing snapshot vertex
+    data. The snapshot visual borrows this object; only the layer renderer
+    closes it.
     """
 
     def __init__(self, palette: npt.NDArray[np.uint8], *, maximum_texture_size: int) -> None:
@@ -118,7 +127,7 @@ class _ValuePaletteTexture:
 
     @property
     def texture(self) -> Texture2D:
-        """Return the shared gloo texture used by tile programs."""
+        """Return the shared gloo texture used by the snapshot program."""
         return self._texture
 
     @property
@@ -162,50 +171,32 @@ class _ValuePaletteTexture:
         return packed
 
 
-class _TiledPointsTileVisual(Visual):
-    """Define the low-level drawing implementation for one logical point tile.
+class _TiledPointsSnapshotVisual(Visual):
+    """Draw one complete packed point snapshot through one stable VBO.
 
     ``create_visual_node()`` converts this visual class into the
-    ``_TiledPointsTileVisualNode`` scene-node class. Each
-    ``_VispyTileResource`` owns one node instance, whose visual owns the tile
-    vertex buffer and shader state while borrowing the renderer's shared
-    ``_ValuePaletteTexture``.
+    ``_TiledPointsSnapshotVisualNode`` scene-node class. One renderer owns one
+    node instance for its complete lifetime. The visual owns one vertex buffer
+    and shader state while borrowing the renderer's shared palette texture.
     """
 
     def __init__(
         self,
-        location: npt.NDArray[np.float32],
-        value_id: npt.NDArray[np.uint32],
         *,
-        tile_offset: tuple[float, float],
         point_diameter: float,
         opacity: float,
         palette: _ValuePaletteTexture,
     ) -> None:
-        if len(location) != len(value_id) or len(value_id) == 0:
-            raise ValueError("Tile locations and value IDs must be nonempty and aligned.")
-        maximum_value_id = int(value_id.max())
-        if maximum_value_id >= palette.value_count:
-            raise ValueError("A tile value ID exceeds the complete value palette.")
-        if maximum_value_id > _MAX_EXACT_FLOAT32_INTEGER:
-            raise ValueError("Tile value IDs exceed exact float32 integer representation.")
-
         super().__init__(vcode=_VERTEX_SHADER, fcode=_FRAGMENT_SHADER)
-        self._point_count = len(value_id)
+        self._point_count = 0
         self._point_diameter = float(point_diameter)
         self._opacity = float(opacity)
+        self._payload_replacement_count = 0
+        self._last_staging_ms = 0.0
         self._closed = False
 
-        data = np.empty(
-            self._point_count,
-            dtype=np.dtype([("a_position", np.float32, 2), ("a_value_id", np.float32)]),
-        )
-        data["a_position"] = location
-        data["a_value_id"] = value_id
-        self._vertex_buffer = VertexBuffer()
-        self._vertex_buffer.set_data(data, copy=True)
+        self._vertex_buffer = VertexBuffer(np.empty(0, dtype=TILED_POINTS_VERTEX_DTYPE))
         self.shared_program.bind(self._vertex_buffer)
-        self.shared_program["u_tile_offset"] = tuple(float(value) for value in tile_offset)
         self.shared_program["u_point_diameter"] = self._point_diameter
         self.shared_program["u_layer_opacity"] = self._opacity
         self.shared_program["u_palette"] = palette.texture
@@ -221,8 +212,64 @@ class _TiledPointsTileVisual(Visual):
 
     @property
     def point_count(self) -> int:
-        """Return the number of uploaded tile rows."""
+        """Return the number of rows in the active snapshot payload."""
         return self._point_count
+
+    @property
+    def vertex_buffer(self) -> VertexBuffer:
+        """Return the one stable vertex buffer owned by this visual."""
+        return self._vertex_buffer
+
+    @property
+    def active_vertex_bytes(self) -> int:
+        """Return logical bytes in the active snapshot payload."""
+        return self._point_count * TILED_POINTS_VERTEX_DTYPE.itemsize
+
+    @property
+    def payload_replacement_count(self) -> int:
+        """Return successful nonempty VBO payload replacements."""
+        return self._payload_replacement_count
+
+    @property
+    def last_staging_ms(self) -> float:
+        """Return synchronous staging time for the latest nonempty payload."""
+        return self._last_staging_ms
+
+    def replace_vertices(self, vertices: npt.NDArray[np.void]) -> None:
+        """Stage one complete validated payload without replacing the VBO."""
+        if self._closed:
+            raise RuntimeError("Cannot replace vertices on a closed snapshot visual.")
+        if (
+            not isinstance(vertices, np.ndarray)
+            or vertices.ndim != 1
+            or vertices.dtype != TILED_POINTS_VERTEX_DTYPE
+            or not vertices.flags.c_contiguous
+        ):
+            raise ValueError("`vertices` must be a C-contiguous canonical tiled-points vertex array.")
+        if len(vertices) == 0:
+            self._point_count = 0
+            self._last_staging_ms = 0.0
+            return
+
+        started = time.perf_counter()
+        # VisPy defers the physical GPU upload. This visual does not retain the
+        # caller-owned array as its own immutable state, so copy it to prevent a
+        # later caller mutation from changing the queued payload before drawing.
+        self._vertex_buffer.set_data(vertices, copy=True)
+        # Program.bind() creates field views whose sizes reflect the current
+        # buffer, so refresh those views after resizing the stable VBO.
+        self.shared_program.bind(self._vertex_buffer)
+        staging_ms = (time.perf_counter() - started) * 1_000.0
+        self._point_count = len(vertices)
+        self._payload_replacement_count += 1
+        self._last_staging_ms = staging_ms
+
+    def clear_vertices(self) -> None:
+        """Suppress drawing while retaining the one VBO and its allocation."""
+        if self._closed:
+            return
+        self._point_count = 0
+        self._last_staging_ms = 0.0
 
     @property
     def point_diameter(self) -> float:
@@ -237,7 +284,7 @@ class _TiledPointsTileVisual(Visual):
 
     @property
     def opacity(self) -> float:
-        """Return the layer-opacity multiplier applied by this tile."""
+        """Return the layer-opacity multiplier applied by this snapshot."""
         return self._opacity
 
     @opacity.setter
@@ -247,26 +294,26 @@ class _TiledPointsTileVisual(Visual):
         self.update()
 
     def close(self) -> None:
-        """Release the tile vertex buffer exactly once."""
+        """Release the snapshot vertex buffer exactly once."""
         if self._closed:
             return
         self._closed = True
         self._vertex_buffer.delete()
 
-    def _prepare_transforms(self, view: _TiledPointsTileVisual) -> None:
+    def _prepare_transforms(self, view: Visual) -> None:
         view.view_program.vert["transform"] = view.get_transform()
 
-    def _prepare_draw(self, view: _TiledPointsTileVisual | None = None) -> bool:
-        if self._closed:
+    def _prepare_draw(self, view: Visual | None = None) -> bool:
+        if self._closed or self._point_count == 0:
             return False
         target = self if view is None else view
         target.view_program["u_pixel_scale"] = target.transforms.pixel_scale
         return True
 
-    def _compute_bounds(self, axis: int, view: _TiledPointsTileVisual) -> None:
+    def _compute_bounds(self, axis: int, view: Visual) -> None:
         del axis, view
         # The logical napari layer owns the complete persistent dataset extent.
         return None
 
 
-_TiledPointsTileVisualNode = create_visual_node(_TiledPointsTileVisual)
+_TiledPointsSnapshotVisualNode = create_visual_node(_TiledPointsSnapshotVisual)
