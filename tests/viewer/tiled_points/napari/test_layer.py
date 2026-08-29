@@ -35,7 +35,7 @@ def _layer(reference: TiledPointsDatasetReference | None = None, **kwargs: objec
     return TiledPointsLayerModel(
         reference,
         value_palette=np.full((reference.value_count, 4), 255, dtype=np.uint8),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
         **kwargs,
     )
 
@@ -135,7 +135,7 @@ def test_tiled_points_layer_exposes_style_and_status_events() -> None:
     np.testing.assert_array_equal(palettes[0], layer.value_palette)
     assert layer.value_palette.flags.owndata
     assert not layer.value_palette.flags.writeable
-    assert layer.max_gpu_tile_bytes == 1_000_000
+    assert layer.max_vertex_payload_bytes == 1_000_000
     assert statuses == [status]
 
 
@@ -145,8 +145,8 @@ def test_tiled_points_layer_exposes_style_and_status_events() -> None:
         (np.zeros((2, 4), dtype=np.uint8), 100, "value_palette"),
         (np.zeros((3, 3), dtype=np.uint8), 100, "value_palette"),
         (np.zeros((3, 4), dtype=np.float32), 100, "value_palette"),
-        (np.zeros((3, 4), dtype=np.uint8), 0, "max_gpu_tile_bytes"),
-        (np.zeros((3, 4), dtype=np.uint8), True, "max_gpu_tile_bytes"),
+        (np.zeros((3, 4), dtype=np.uint8), 0, "max_vertex_payload_bytes"),
+        (np.zeros((3, 4), dtype=np.uint8), True, "max_vertex_payload_bytes"),
     ],
 )
 def test_tiled_points_layer_rejects_invalid_renderer_contracts(
@@ -158,7 +158,7 @@ def test_tiled_points_layer_rejects_invalid_renderer_contracts(
         TiledPointsLayerModel(
             _dataset_reference(),
             value_palette=palette,
-            max_gpu_tile_bytes=gpu_bytes,  # type: ignore[arg-type]
+            max_vertex_payload_bytes=gpu_bytes,  # type: ignore[arg-type]
         )
 
 

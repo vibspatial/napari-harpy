@@ -18,6 +18,7 @@ from napari_harpy.viewer.tiled_points import (
     TiledPointsRenderTile,
     TileResidencyKey,
 )
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 pytestmark = pytest.mark.skipif(
@@ -42,7 +43,7 @@ def _layer() -> TiledPointsLayerModel:
             y_max=200_000_040.0,
         ),
         value_palette=np.array(((255, 0, 0, 255), (0, 255, 0, 255)), dtype=np.uint8),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
         opacity=1.0,
         point_diameter=7.0,
         scale=(1.3, 0.7),
@@ -83,7 +84,13 @@ def _apply_two_point_snapshot(
         within_budget=True,
         estimated_point_count=2,
         omitted_value_ids=(),
-        tiles=tiles,
+        rendered_tile_count=len(tiles),
+        render_batch=pack_render_tiles(
+            tiles,
+            point_count=2,
+            value_count=layer.data.value_count,
+            max_vertex_payload_bytes=1_000_000,
+        ),
     )
     assert visual.apply_snapshot(snapshot)
     assert visual.visual_count == 1

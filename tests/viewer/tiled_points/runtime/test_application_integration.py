@@ -9,7 +9,7 @@ import pytest
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
 from napari_harpy.viewer.tiled_points.application import (
     DEFAULT_MAX_CPU_TILE_BYTES,
-    DEFAULT_MAX_GPU_TILE_BYTES,
+    DEFAULT_MAX_VERTEX_PAYLOAD_BYTES,
     TiledPointsApplicationSettings,
     TiledPointsCacheDescriptor,
     canonical_value_palette,
@@ -36,7 +36,8 @@ def test_application_settings_freeze_product_residency_defaults() -> None:
     assert settings.max_bucket_lookup_bytes is None
     assert settings.max_selected_value_index_bytes is None
     assert settings.max_cpu_tile_bytes == DEFAULT_MAX_CPU_TILE_BYTES
-    assert settings.max_gpu_tile_bytes == DEFAULT_MAX_GPU_TILE_BYTES
+    assert settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
+    assert settings.cache_session_settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
 
 
 def test_canonical_value_mapping_and_palette_ignore_selection_order(real_cache_root: Path) -> None:

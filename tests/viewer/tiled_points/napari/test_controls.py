@@ -27,7 +27,7 @@ def test_controls_update_layer_style_and_read_only_status(qtbot) -> None:
             y_max=12.0,
         ),
         value_palette=np.full((3, 4), 255, dtype=np.uint8),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
     )
     controls = QtTiledPointsLayerControls(layer)
     qtbot.addWidget(controls)

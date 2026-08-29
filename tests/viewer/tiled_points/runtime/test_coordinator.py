@@ -3,6 +3,7 @@ from __future__ import annotations
 from qtpy.QtCore import QObject, Signal
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    TiledPointsRenderBatch,
     TiledPointsRenderSnapshot,
     TiledPointsViewportState,
     _ViewportRequest,
@@ -55,7 +56,8 @@ class _ControllableSession(QObject):
                 within_budget=True,
                 estimated_point_count=0,
                 omitted_value_ids=(),
-                tiles=(),
+                rendered_tile_count=0,
+                render_batch=TiledPointsRenderBatch.empty(),
             )
         )
 

@@ -23,6 +23,7 @@ from napari_harpy.viewer.tiled_points.contracts import (
     _ViewportRequest,
 )
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
@@ -147,11 +148,11 @@ def _reference(info: _CacheDatasetInfo) -> TiledPointsDatasetReference:
     )
 
 
-def _layer(info: _CacheDatasetInfo, *, max_gpu_tile_bytes: int = 1_000_000) -> TiledPointsLayerModel:
+def _layer(info: _CacheDatasetInfo, *, max_vertex_payload_bytes: int = 1_000_000) -> TiledPointsLayerModel:
     return TiledPointsLayerModel(
         _reference(info),
         value_palette=np.asarray(((255, 0, 0, 255), (0, 255, 0, 255)), dtype=np.uint8),
-        max_gpu_tile_bytes=max_gpu_tile_bytes,
+        max_vertex_payload_bytes=max_vertex_payload_bytes,
     )
 
 
@@ -160,6 +161,7 @@ def _settings() -> _CacheSessionSettings:
         max_bucket_lookup_bytes=None,
         max_selected_value_index_bytes=None,
         max_cpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
     )
 
 
@@ -207,6 +209,13 @@ def _snapshot(
     omitted_value_ids: tuple[int, ...] = (),
     level: int = 0,
 ) -> TiledPointsRenderSnapshot:
+    point_count = sum(tile.point_count for tile in tiles)
+    render_batch = pack_render_tiles(
+        tiles,
+        point_count=point_count,
+        value_count=layer.data.value_count,
+        max_vertex_payload_bytes=1_000_000,
+    )
     return TiledPointsRenderSnapshot(
         cache_generation_id=layer.data.cache_generation_id,
         request_generation=request.request_generation,
@@ -215,11 +224,10 @@ def _snapshot(
         level=level,
         level_kind="exact" if level == 0 else "bridge" if level == 1 else "spatial",
         within_budget=within_budget,
-        estimated_point_count=(
-            sum(tile.point_count for tile in tiles) if estimated_point_count is None else estimated_point_count
-        ),
+        estimated_point_count=(point_count if estimated_point_count is None else estimated_point_count),
         omitted_value_ids=omitted_value_ids,
-        tiles=tiles,
+        rendered_tile_count=len(tiles),
+        render_batch=render_batch,
     )
 
 
@@ -258,6 +266,35 @@ def test_runtime_connects_layer_viewports_to_complete_renderer_snapshots(maximum
         assert layer.display_status.rendered_point_count == 1
         assert layer.display_status.rendered_tile_count == 1
         assert layer.display_status.message == "Ready"
+    finally:
+        runtime.close()
+        visual.close()
+
+
+def test_gui_status_and_renderer_activation_do_not_iterate_logical_tiles(
+    maximum_texture_size: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        tile = _tile(layer, request)
+        snapshot = _snapshot(layer, request, (tile,))
+
+        def _unexpected_tile_point_count(_tile: TiledPointsRenderTile) -> int:
+            raise AssertionError("GUI activation must not inspect logical tile point counts")
+
+        monkeypatch.setattr(TiledPointsRenderTile, "point_count", property(_unexpected_tile_point_count))
+        session.complete_viewport(snapshot)
+
+        assert visual.active_point_count == 1
+        assert layer.display_status.rendered_point_count == 1
+        assert layer.display_status.rendered_tile_count == 1
     finally:
         runtime.close()
         visual.close()
@@ -384,7 +421,7 @@ def test_runtime_applies_ordinary_empty_snapshot_and_clears_active_visual(maximu
 
 def test_runtime_reports_renderer_failure_without_committing_candidate_status(maximum_texture_size: None) -> None:
     info = _dataset_info()
-    layer = _layer(info, max_gpu_tile_bytes=12)
+    layer = _layer(info, max_vertex_payload_bytes=12)
     session = _ControllableSession(info)
     runtime = _runtime(layer, session)
     visual = VispyTiledPointsLayer(layer, FontInfo())
@@ -406,7 +443,7 @@ def test_runtime_reports_renderer_failure_without_committing_candidate_status(ma
         assert visual.payload_replacement_count == 1
         assert layer.display_status.rendered_point_count == 1
         assert layer.display_status.rendered_tile_count == 1
-        assert "max_gpu_tile_bytes=12" in layer.display_status.message
+        assert "max_vertex_payload_bytes=12" in layer.display_status.message
     finally:
         runtime.close()
         visual.close()
@@ -508,7 +545,7 @@ def test_real_cache_flows_from_layer_viewport_to_renderer_and_selected_values(
         qtbot.waitUntil(lambda: len(observed) == 3, timeout=5_000)
         assert observed[-1].requested_value_ids == (0,)
         assert observed[-1].rendered_point_count == 2
-        assert all(bool((tile.value_id == 0).all()) for tile in observed[-1].tiles)
+        assert bool((observed[-1].render_batch.vertices["a_value_id"] == 0).all())
         assert visual.payload_replacement_count == 3
         assert callback_thread_ids and set(callback_thread_ids) == {threading.get_ident()}
     finally:

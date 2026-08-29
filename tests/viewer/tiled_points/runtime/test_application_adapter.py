@@ -99,7 +99,7 @@ def test_adapter_creates_reuses_and_closes_one_persistent_tiled_binding(
         descriptor=descriptor,
         requested_value_ids=(0,),
         hard_render_point_budget=100_000,
-        settings=TiledPointsApplicationSettings(max_cpu_tile_bytes=1_000, max_gpu_tile_bytes=1_000),
+        settings=TiledPointsApplicationSettings(max_cpu_tile_bytes=1_000, max_vertex_payload_bytes=1_000),
     )
 
     assert first.created
@@ -117,7 +117,7 @@ def test_adapter_creates_reuses_and_closes_one_persistent_tiled_binding(
         descriptor=descriptor,
         requested_value_ids=(1,),
         hard_render_point_budget=50_000,
-        settings=TiledPointsApplicationSettings(max_cpu_tile_bytes=1_000, max_gpu_tile_bytes=1_000),
+        settings=TiledPointsApplicationSettings(max_cpu_tile_bytes=1_000, max_vertex_payload_bytes=1_000),
     )
 
     assert not second.created

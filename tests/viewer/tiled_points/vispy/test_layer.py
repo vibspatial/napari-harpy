@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from napari._vispy.utils.qt_font import FontInfo
 
-import napari_harpy.viewer.tiled_points.vispy.layer as layer_module
 from napari_harpy.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
@@ -15,6 +14,7 @@ from napari_harpy.viewer.tiled_points import (
     TiledPointsRenderTile,
     TileResidencyKey,
 )
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 
@@ -45,7 +45,7 @@ def _layer(
             ),
             dtype=np.uint8,
         ),
-        max_gpu_tile_bytes=gpu_bytes,
+        max_vertex_payload_bytes=gpu_bytes,
         hard_render_point_budget=hard_render_point_budget,
     )
 
@@ -83,6 +83,13 @@ def _snapshot(
     generation: int,
     within_budget: bool = True,
 ) -> TiledPointsRenderSnapshot:
+    point_count = sum(tile.point_count for tile in tiles)
+    render_batch = pack_render_tiles(
+        tiles,
+        point_count=point_count,
+        value_count=layer.data.value_count,
+        max_vertex_payload_bytes=1_000_000,
+    )
     return TiledPointsRenderSnapshot(
         cache_generation_id=layer.data.cache_generation_id,
         request_generation=generation,
@@ -91,9 +98,10 @@ def _snapshot(
         level=0,
         level_kind="exact",
         within_budget=within_budget,
-        estimated_point_count=sum(tile.point_count for tile in tiles) if within_budget else 100,
+        estimated_point_count=point_count if within_budget else 100,
         omitted_value_ids=(),
-        tiles=tiles,
+        rendered_tile_count=len(tiles),
+        render_batch=render_batch,
     )
 
 
@@ -209,7 +217,7 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
             ((255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)),
             dtype=np.uint8,
         ),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
         scale=(1.3, 0.7),
         translate=(11.0, -17.0),
         rotate=31.0,
@@ -268,12 +276,12 @@ def test_renderer_capacity_failure_preserves_active_snapshot(
         assert visual.active_vertex_bytes == 12
         assert visual.payload_replacement_count == 1
         assert len(errors) == 1
-        assert "max_gpu_tile_bytes=12" in str(errors[0])
+        assert "max_vertex_payload_bytes=12" in str(errors[0])
     finally:
         visual.close()
 
 
-def test_renderer_hard_point_budget_failure_does_not_pack_or_stage(
+def test_renderer_hard_point_budget_failure_does_not_stage(
     maximum_texture_size: None,
 ) -> None:
     layer = _layer(hard_render_point_budget=1)
@@ -292,9 +300,8 @@ def test_renderer_hard_point_budget_failure_does_not_pack_or_stage(
         visual.close()
 
 
-def test_renderer_invalid_packed_payload_does_not_replace_active_snapshot(
+def test_renderer_revalidates_mutated_batch_before_replacing_active_snapshot(
     maximum_texture_size: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = _layer()
     visual = VispyTiledPointsLayer(layer, FontInfo())
@@ -303,13 +310,9 @@ def test_renderer_invalid_packed_payload_does_not_replace_active_snapshot(
     layer.events.render_error.connect(lambda event: errors.append(event.value))
     try:
         assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
-        monkeypatch.setattr(
-            layer_module,
-            "pack_snapshot_vertices",
-            lambda _snapshot, *, value_count: np.empty(1, dtype=np.float32),
-        )
-
-        assert not visual.apply_snapshot(_snapshot(layer, (second,), generation=2))
+        candidate = _snapshot(layer, (second,), generation=2)
+        candidate.render_batch.vertices.flags.writeable = True
+        assert not visual.apply_snapshot(candidate)
 
         assert visual.active_point_count == first.point_count
         assert visual.payload_replacement_count == 1
