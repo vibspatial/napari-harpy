@@ -1034,6 +1034,8 @@ planned/returned tile and point counts
 physical calls, chunks, shards, decoded rows and bytes
 fallback-index load/resident/eviction metrics
 CPU residency lookup/read/retain time
+viewport events, dispatched requests and accepted snapshots
+accepted snapshots whose physical render-payload identity matches the active payload
 worker pack time and peak transient bytes
 Qt delivery time and allocation identity
 VBO staging time and active bytes
@@ -1161,6 +1163,61 @@ user clicks Add / Update
 
 No constructor default can implicitly mean all values, and no viewport cache read can start before the application has explicitly configured the layer's value selection. Metadata discovery remains automatic inside the opt-in panel, while creation of both regular and tiled napari points layers remains an explicit Add/Update action.
 
+### Slice 12 — Conditional identical render-payload reuse
+
+This is an optional follow-up optimization, not part of the required constant-resource renderer or worker-packing milestones. The GPU still redraws the active points on every physical frame; this slice concerns only avoiding redundant CPU packing and VBO replacement when a newly accepted viewport resolves to exactly the same immutable point payload that is already active.
+
+Small pans can change the continuous viewport bounds while retaining the same cache generation, value selection, LOD, and ordered logical tile set. The current complete-snapshot path correctly reuses decoded CPU tiles, but it still constructs a new packed batch and replaces the complete VBO for such an accepted request. That replacement is semantically unnecessary because cache generations and their tile payloads are immutable.
+
+**Entry condition**
+
+Proceed only after Slice 2 is complete and recorded camera traces show that a material fraction of accepted snapshots repeat the active physical payload identity, or that their repeated packing or VBO upload remains a material interaction cost. Do not infer this need from raw camera-event counts: identical viewport states are already suppressed, the coordinator already coalesces active work, and stale snapshots already fail activation.
+
+**Physical payload identity**
+
+Define one canonical, GUI-neutral identity containing:
+
+```text
+cache generation
+requested value IDs
+selected LOD
+ordered logical tile keys
+```
+
+Request and selection generation counters, viewport bounds, status text, and `omitted_value_ids` are not part of the physical identity. They may change while the vertex rows remain identical and must still be acknowledged and published. Include cache, selection, and LOD explicitly even for an empty ordered tile tuple; an empty tuple by itself is not a sufficient identity.
+
+**Production changes if justified**
+
+1. Add a canonical physical-payload identity to the generation-bound snapshot or render-batch contract. Derive it from already validated fields; do not hash or scan point arrays on the GUI thread.
+2. Retain the active physical identity in `VispyTiledPointsLayer`. When an accepted candidate identity equals it, do not call `replace_vertices()` and do not increment the payload-replacement count.
+3. Treat reuse as a successful activation. Commit or acknowledge the candidate request and selection generations, clear pending state, and allow composition to publish the candidate status and omission metadata even though the physical VBO did not change.
+4. Keep normal full-payload replacement for a changed identity. A changed cache generation, requested-value tuple, LOD, tile membership, or tile order must not take the reuse path.
+5. Clear or replace the active identity consistently for an accepted empty snapshot, layer-data replacement, renderer close, and any transition that suppresses the preceding payload. A failed candidate must not commit its identity.
+6. If worker packing is still material, retain at most one last immutable packed batch, or another explicitly byte-bounded packed-batch cache, keyed by the same identity. Reusing that allocation across snapshots is valid only while it remains read-only and its lifetime across queued Qt delivery is explicit. Account this memory separately from decoded CPU tile residency and GPU bytes.
+7. Report accepted snapshot count, physical-identity match count, packed-batch reuse count, VBO replacements avoided, packing time avoided, upload bytes avoided, and retained packed-batch bytes.
+
+The initial implementation should optimize only exact physical-identity matches. Do not include viewport overscan or guard bands, a recent-viewport GPU VBO cache, incremental per-tile VBO mutation, or per-tile visual resources. Overscan changes point-budget and LOD behavior; GPU page retention introduces allocation and draw-range complexity. Either requires separate evidence if exact reuse is insufficient.
+
+**Focused tests**
+
+- Consecutive snapshots with the same physical identity acknowledge the newer request generation without packing again when worker reuse is enabled and without calling `replace_vertices()`.
+- Metadata and status changes, including changed omission metadata, are published when geometry is reused.
+- Changed cache generation, requested values, LOD, tile membership, or ordered tile identity performs a normal complete replacement.
+- Empty-to-empty reuse, nonempty-to-empty activation, and return from empty to a prior nonempty identity preserve correct drawability and replacement counts.
+- A stale or failed candidate cannot commit a reusable identity.
+- Palette, opacity, and point-diameter changes remain uniform or texture updates and do not invalidate an otherwise reusable vertex payload.
+- Any worker-side packed-batch cache remains immutable, byte bounded, generation safe, and allocation-preserving across queued Qt delivery.
+
+**Acceptance evidence**
+
+Replay recorded pan, zoom, resize, and full → partial → full traces. Compare accepted snapshots, worker packs, packed bytes, VBO replacements, upload bytes, first draw after replacement, warm draw, peak RSS, and interaction latency with reuse disabled and enabled. The optimization must materially reduce redundant work without delaying isolated viewport updates or changing visible points, LOD decisions, status, stale-generation rejection, or the one-visual/one-VBO/one-draw topology.
+
+If exact physical-identity matches are rare or their avoided work is not material after the required slices, reject this slice and retain complete snapshot replacement. It is not part of the definition of done.
+
+**Exit condition**
+
+When the evidence gate is met, repeated accepted snapshots with identical immutable geometry reuse the active physical payload while still completing the latest logical activation. Otherwise the measured rejection decision is recorded and no payload cache is added.
+
 ### Definition of done for the complete plan
 
 The initial optimization programme is complete when:
@@ -1176,7 +1233,7 @@ The initial optimization programme is complete when:
 9. bucket sparse ranges are lazy and byte bounded rather than eagerly resident;
 10. benchmark reports demonstrate improved cold reads, warm activation, first draw, warm draw, startup RSS, and steady memory on the supplied cache; and
 11. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
-12. debounce, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
+12. debounce, identical render-payload reuse, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
 
 ## Conclusion
 
@@ -1202,6 +1259,7 @@ The practical priority is therefore:
 4. Prototype an Exact-level-only, coordinate-only value-major sidecar alongside the existing tile-major payload. This deliberately duplicates the Exact coordinate bytes, projected at approximately 0.79 GiB and a 50% cache increase, while reusing the manifest and value-to-tile catalog and omitting duplicate point-level `value_id` and `point_id` arrays. Choose LOD first, then route all-values and complete-tile reads to tile-major, proper-subset reads to a sidecar available at the chosen level, and uncovered proper-subset levels to tile-major fallback. Replace eager retention of the complete 568.4 MiB sparse bucket lookup with compact always-resident addressing plus lazy, byte-bounded fallback indexes. Measure actual compressed size, cold and warm selected-value wall time, decoded bytes, physical operations, startup and peak lookup memory, and fallback churn. Extend the sidecar to other levels only if runtime evidence justifies their additional storage.
 5. Treat smaller chunks, fewer buckets, and cross-bucket concurrency as secondary comparisons or tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
 6. Add viewport debounce to avoid starting expensive cold requests for transient zoom states after the underlying read and render costs are controlled.
+7. Add exact render-payload reuse only if recorded camera traces show that accepted viewports frequently resolve to the active immutable tile identity and that avoiding their packing or upload is material.
 
 The synthetic 1,000,000-point packing benchmark does not change the current 100,000-point implementation priority. It establishes forward-looking scalability evidence and the additional acceptance work required before the render budget is deliberately increased.
 
