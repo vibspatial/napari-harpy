@@ -27,7 +27,7 @@ from vispy.gloo import Texture2D, VertexBuffer
 from vispy.scene.visuals import create_visual_node
 from vispy.visuals import Visual
 
-from napari_harpy.viewer.tiled_points.render_batch import TILED_POINTS_VERTEX_DTYPE
+from napari_harpy.viewer.tiled_points.contracts import TILED_POINTS_VERTEX_DTYPE
 
 # Interleaved snapshot-VBO attribute contract:
 #
