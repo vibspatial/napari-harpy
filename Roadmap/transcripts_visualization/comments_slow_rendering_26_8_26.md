@@ -518,7 +518,7 @@ packing work = per-point memory work + per-tile dispatch work
 
 One million points alone does not make packing problematic. With the current cache geometry, the literal worker implementation remains approximately 12–16 milliseconds and the whole-snapshot variant approximately 6–8 milliseconds. Extreme tile fragmentation is the important risk: a point-count budget alone does not fully bound snapshot-preparation work.
 
-The runtime should therefore record both point count and tile count for every packed snapshot. A hard tile-count limit should not be introduced from this synthetic result alone because sparse selected values may legitimately span many tiles. Instrumentation should first establish a point-plus-tile work model that can inform LOD planning or a future preparation-work budget. Packing must remain cancellable so obsolete highly fragmented requests do not occupy the worker unnecessarily.
+The runtime should therefore record both point count and tile count for every packed snapshot. A hard tile-count limit should not be introduced from this synthetic result alone because sparse selected values may legitimately span many tiles. Instrumentation should first establish a point-plus-tile work model that can inform LOD planning or a future preparation-work budget. Slice 2 keeps packing cooperatively cancellable through the cache session's existing terminal-close event. It does not add a second request-specific cancellation protocol: the existing one-active/one-latest-pending coordinator may let an active obsolete request finish, rejects its completed generation before renderer submission, and then dispatches the latest request. Add per-request packing cancellation only if profiling shows that obsolete, highly fragmented packs materially delay the latest request; that follow-up requires an explicit thread-safe request-cancellation token and tests distinct from session closure.
 
 #### Snapshot visual and VBO ownership
 
@@ -782,31 +782,34 @@ This slice completes the renderer milestone by removing the tile loop from GUI a
 
 **Production changes**
 
-1. Extend and reuse the Slice 1 helper in `viewer/tiled_points/render_batch.py` so it:
+1. Refactor the Slice 1 `pack_snapshot_vertices()` scaffold into a `pack_render_tiles()` helper in `viewer/tiled_points/render_batch.py`. The helper must accept the complete ordered logical tile tuple plus explicit `point_count`, `value_count`, `max_vertex_payload_bytes`, and an optional cancellation callback; it must not accept a fully constructed `TiledPointsRenderSnapshot`. This avoids a construction cycle once the final snapshot is required to contain the batch. The helper:
    - allocates exactly one primary structured array;
-   - fills consecutive slices in snapshot tile order;
+   - preflights `point_count * TILED_POINTS_VERTEX_DTYPE.itemsize` against `max_vertex_payload_bytes` before allocation;
+   - fills consecutive slices in the supplied final tile order;
    - folds `(tile_x * tile_size, tile_y * tile_size)` into `float32` positions;
    - writes canonical value IDs as exactly representable `float32` values;
-   - validates the final cursor and maximum palette ID;
-   - accepts an optional cancellation callback and checks it periodically between tile groups; and
+   - validates the declared point count, final cursor, and maximum palette ID;
+   - invokes the optional cancellation callback before allocation and periodically between tile groups; and
    - returns a C-contiguous, owning, read-only allocation, including a valid empty batch.
-2. In `viewer/tiled_points/contracts.py`, add an immutable render-batch contract and carry it on `TiledPointsRenderSnapshot`. Validate dtype, shape, ownership, contiguity, immutability, and byte count. For a within-budget snapshot, reconcile the batch count with `estimated_point_count` and the logical tiles; an over-budget metadata-only snapshot carries an empty batch even when its estimate is nonzero.
-3. In `runtime/cache_session.py`, pack after the complete logical tile tuple has been restored to plan order and before constructing the final accepted snapshot. Check cancellation before packing, during fragmented packing, and after packing.
-4. Keep the logical tile tuple during this migration because it still supplies CPU-residency identity and diagnostics. The renderer must consume only `render_batch`.
-5. Keep `runtime/composition.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership.
-6. In `vispy/layer.py`, remove the scaffold packing call. GUI activation validates the already prepared batch, preflights capacity, stages one VBO payload, commits logical state, and updates the scene.
-7. Initially use the copy-safe `VertexBuffer.set_data()` lifetime behavior already relied on by the renderer and report any CPU staging copy separately. A later zero-copy change requires explicit lifetime and deferred-upload evidence.
-8. Rename `max_gpu_tile_bytes` to `max_vertex_payload_bytes` throughout `TiledPointsApplicationSettings`, `TiledPointsLayerModel`, application-adapter construction, renderer capacity validation, diagnostics, benchmarks, and tests. Remove the old name outright: do not add a deprecated constructor keyword, property, configuration alias, or fallback. Continue to enforce the renamed setting against the logical byte size of one complete packed vertex payload, separately from the hard point-count budget and from measured transient memory.
+2. In `viewer/tiled_points/contracts.py`, move the canonical `TILED_POINTS_VERTEX_DTYPE` beside a new immutable `TiledPointsRenderBatch` contract so both validation and packing depend on one definition without making `contracts.py` import `render_batch.py`. Carry the batch on `TiledPointsRenderSnapshot`. Validate dtype, one-dimensional shape, ownership, C contiguity, read-only state, and byte count. Expose O(1) batch `point_count` and `nbytes` properties. For a within-budget snapshot, validate once during worker-side construction that the batch count equals both `estimated_point_count` and the sum of logical tile point counts; an over-budget metadata-only snapshot carries an owning read-only empty batch even when its estimate is nonzero.
+3. Make `TiledPointsRenderSnapshot.rendered_point_count` return the validated render-batch point count in O(1), rather than summing `snapshot.tiles` on every access. Tile summation is permitted only while constructing and validating the snapshot on the worker. GUI-side status preparation, renderer activation, and diagnostics must not acquire their point count by iterating logical tiles.
+4. In `runtime/cache_session.py`, first restore `ordered_tiles = tuple(payloads_by_key[key] for key in keys)` in final plan order. Validate the declared count and byte capacity, pack those tiles, check cancellation again, and only then construct the final snapshot from `ordered_tiles` and the immutable batch. For an over-budget result, construct the metadata-only snapshot with the canonical empty batch and perform no point-payload allocation.
+5. The cancellation callback used by Slice 2 is the existing cache-session terminal-close check. Check it before packing, between fragmented tile groups, and after packing so layer/session closure cannot publish a late batch. Do not add request-specific cancellation in this slice. Obsolete request generations may finish packing but must continue to be rejected by the coordinator before renderer submission.
+6. Keep the logical tile tuple during this migration because it still supplies CPU-residency identity and diagnostics. The renderer must consume only `render_batch` and must not inspect `snapshot.tiles`.
+7. Keep `runtime/composition.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership. Its status path consumes only O(1) snapshot counts.
+8. In `vispy/layer.py`, remove the scaffold packing call and renderer-owned pack timing. GUI activation validates the already prepared batch, independently preflights its point and byte capacity, stages exactly that one VBO payload, acknowledges the result, and updates the scene. It performs no logical-tile iteration or NumPy coordinate packing.
+9. Initially use the copy-safe `VertexBuffer.set_data()` lifetime behavior already relied on by the renderer and report any CPU staging copy separately. A later zero-copy change requires explicit lifetime and deferred-upload evidence.
+10. Rename `max_gpu_tile_bytes` to `max_vertex_payload_bytes` throughout `TiledPointsApplicationSettings`, `TiledPointsLayerModel`, application-adapter construction, renderer capacity validation, diagnostics, benchmarks, and tests. Remove the old name outright: do not add a deprecated constructor keyword, property, configuration alias, or fallback. Add `max_vertex_payload_bytes` to `_CacheSessionSettings` and pass it to the worker because the primary allocation now happens there. The worker preflights the declared batch size before allocation, and the renderer repeats the validation defensively before VBO staging. Continue to enforce the renamed setting against the logical byte size of one complete packed vertex payload, separately from the hard point-count budget and from measured transient memory.
 
 **Focused tests**
 
 - Add direct packing tests for multiple tiles, sparse tiles, ordering, offsets, values, empty batches, large cache-relative positions, incorrect declared counts, and palette overflow.
 - Assert the packed batch owns one read-only C-contiguous allocation and uses the expected 12 bytes per point.
 - Add cache-session tests proving that resident and newly read tiles are packed in final plan order.
-- Add cancellation tests before and during a highly fragmented pack.
+- Add terminal session-close cancellation tests before and during a highly fragmented pack; do not represent these as request-generation cancellation tests.
 - Assert that obsolete request generations never submit their completed batch to the renderer.
 - Add a queued Qt-delivery test for a maximum-budget batch and verify that the vertex allocation identity is preserved across signal delivery.
-- Instrument `apply_snapshot()` in tests and assert that it performs no tile iteration or NumPy coordinate packing.
+- Instrument GUI-side status preparation and `apply_snapshot()` in tests and assert that neither performs tile iteration or NumPy coordinate packing.
 - Update configuration, model, adapter, renderer, error-message, and benchmark tests to use only `max_vertex_payload_bytes`; no compatibility test for the removed `max_gpu_tile_bytes` input is required.
 
 **Benchmark evidence**
@@ -826,7 +829,7 @@ Record both point count and logical tile count for every packed batch. Re-run th
 
 **Exit condition**
 
-The completed path is worker tiles → immutable packed batch → queued delivery → one GUI-thread VBO replacement → one draw. No normal renderer code creates a resource per logical tile. `max_vertex_payload_bytes` is the sole production setting name for the complete packed-payload byte bound, and no `max_gpu_tile_bytes` input alias or property remains.
+The completed path is ordered worker tiles → byte preflight → immutable packed batch → validated snapshot construction → queued reference delivery → one GUI-thread VBO replacement → one draw. GUI activation obtains point and byte counts in O(1), and no normal renderer code iterates or creates a resource per logical tile. `max_vertex_payload_bytes` is enforced before the worker allocation and again before VBO staging, is the sole production setting name for the complete packed-payload byte bound, and has no `max_gpu_tile_bytes` input alias or property.
 
 ### Slice 3 — Linear CPU tile retention
 
