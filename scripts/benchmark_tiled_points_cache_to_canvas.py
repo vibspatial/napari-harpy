@@ -22,6 +22,7 @@ changes. This script deliberately defines no numerical pass/fail thresholds.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import math
 import os
@@ -43,22 +44,27 @@ from vispy.scene import SceneCanvas
 from zarr.core.array import Array
 
 import napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader as bucket_reader_module
+import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
 from napari_harpy.viewer.tiled_points.application import canonical_value_palette
 from napari_harpy.viewer.tiled_points.contracts import (
+    TILED_POINTS_VERTEX_DTYPE,
     TiledPointsDatasetReference,
     TiledPointsRenderSnapshot,
+    TiledPointsRenderTile,
     TiledPointsViewportState,
+    TileResidencyKey,
     _ViewportRequest,
 )
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.runtime.cache_session import _read_viewport_snapshot
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 _MIB = 1 << 20
 _DEFAULT_CPU_TILE_BYTES = 1 << 30
-_DEFAULT_GPU_TILE_BYTES = 512 << 20
+_DEFAULT_MAX_VERTEX_PAYLOAD_BYTES = 512 << 20
 _DEFAULT_POINT_BUDGET = 100_000
 
 
@@ -81,9 +87,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--canvas-width", type=int, default=1_200)
     parser.add_argument("--canvas-height", type=int, default=900)
     parser.add_argument("--cpu-tile-cache-bytes", type=int, default=_DEFAULT_CPU_TILE_BYTES)
-    parser.add_argument("--gpu-tile-cache-bytes", type=int, default=_DEFAULT_GPU_TILE_BYTES)
+    parser.add_argument(
+        "--max-vertex-payload-bytes",
+        type=int,
+        default=_DEFAULT_MAX_VERTEX_PAYLOAD_BYTES,
+    )
     parser.add_argument("--qt-delivery-repeats", type=int, default=25)
     parser.add_argument("--warm-draw-repeats", type=int, default=7)
+    parser.add_argument(
+        "--synthetic-million-point-packing",
+        action="store_true",
+        help="Also benchmark worker packing for 1,000,000 points across representative tile counts.",
+    )
+    parser.add_argument("--synthetic-packing-repeats", type=int, default=5)
     parser.add_argument(
         "--real-canvas",
         action="store_true",
@@ -105,10 +121,12 @@ def _require_args(args: argparse.Namespace) -> None:
         raise ValueError("--viewport-fraction must be in (0, 1].")
     if args.canvas_width <= 0 or args.canvas_height <= 0:
         raise ValueError("Canvas dimensions must be positive.")
-    if args.cpu_tile_cache_bytes <= 0 or args.gpu_tile_cache_bytes <= 0:
-        raise ValueError("CPU and GPU tile-cache byte limits must be positive.")
+    if args.cpu_tile_cache_bytes <= 0 or args.max_vertex_payload_bytes <= 0:
+        raise ValueError("CPU tile-cache and vertex-payload byte limits must be positive.")
     if args.qt_delivery_repeats < 0 or args.warm_draw_repeats < 0:
         raise ValueError("Repeat counts must be nonnegative.")
+    if args.synthetic_packing_repeats <= 0:
+        raise ValueError("--synthetic-packing-repeats must be positive.")
 
 
 def _elapsed_ms(start: float) -> float:
@@ -276,6 +294,13 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
     timed_method(bucket_reader_module, "_exact_row_selection", "exact_row_selector_construction")
     timed_method(_CpuTileResidency, "get", "cpu_residency_get")
     timed_method(_CpuTileResidency, "retain", "cpu_residency_retain")
+    timed_method(cache_session_module, "_require_ordered_render_tiles", "render_tile_validation")
+    timed_method(cache_session_module, "pack_render_tiles", "render_batch_packing")
+    timed_method(
+        cache_session_module,
+        "TiledPointsRenderSnapshot",
+        "logical_snapshot_construction",
+    )
 
     original_zarr_selection = Array.get_orthogonal_selection
 
@@ -321,10 +346,13 @@ class _DeliveryReceiver(QObject):
     def __init__(self) -> None:
         super().__init__()
         self.elapsed_ms: float | None = None
+        self.vertex_allocation_id: int | None = None
 
     @Slot(object, float)
     def receive(self, value: object, emitted_at: float) -> None:
-        del value
+        if not isinstance(value, TiledPointsRenderSnapshot):
+            raise ValueError("Qt delivery benchmark expected TiledPointsRenderSnapshot.")
+        self.vertex_allocation_id = id(value.render_batch.vertices)
         self.elapsed_ms = _elapsed_ms(emitted_at)
 
 
@@ -345,10 +373,13 @@ def _measure_qt_delivery(
     worker.delivered.connect(receiver.receive)
     thread.start()
     measurements: list[float] = []
+    expected_vertex_allocation_id = id(snapshot.render_batch.vertices)
+    preserved_allocation_identity = True
     try:
         # Discard the first delivery because it includes QThread startup scheduling.
         for _ in range(repeats + 1):
             receiver.elapsed_ms = None
+            receiver.vertex_allocation_id = None
             requester.requested.emit(snapshot)
             deadline = time.monotonic() + 10.0
             while receiver.elapsed_ms is None and time.monotonic() < deadline:
@@ -356,6 +387,7 @@ def _measure_qt_delivery(
                 time.sleep(0.0001)
             if receiver.elapsed_ms is None:
                 raise TimeoutError("Qt delivery profiling timed out.")
+            preserved_allocation_identity &= receiver.vertex_allocation_id == expected_vertex_allocation_id
             measurements.append(receiver.elapsed_ms)
     finally:
         thread.quit()
@@ -367,6 +399,7 @@ def _measure_qt_delivery(
         "minimum_ms": min(steady),
         "maximum_ms": max(steady),
         "measurements_ms": steady,
+        "vertex_allocation_identity_preserved": preserved_allocation_identity,
     }
 
 
@@ -403,52 +436,18 @@ def _snapshot_with_generation(
         within_budget=snapshot.within_budget,
         estimated_point_count=snapshot.estimated_point_count,
         omitted_value_ids=snapshot.omitted_value_ids,
-        tiles=snapshot.tiles,
-    )
-
-
-def _subset_snapshot(
-    snapshot: TiledPointsRenderSnapshot,
-    *,
-    request_generation: int,
-    viewport: TiledPointsViewportState,
-    x_origin: float,
-    y_origin: float,
-) -> TiledPointsRenderSnapshot:
-    center_x = (viewport.x_min + viewport.x_max) / 2.0
-    center_y = (viewport.y_min + viewport.y_max) / 2.0
-    half_width = (viewport.x_max - viewport.x_min) / 8.0
-    half_height = (viewport.y_max - viewport.y_min) / 8.0
-    x_min, x_max = center_x - half_width, center_x + half_width
-    y_min, y_max = center_y - half_height, center_y + half_height
-    selected = tuple(
-        tile
-        for tile in snapshot.tiles
-        if x_origin + tile.key.tile_x * tile.tile_size < x_max
-        and x_origin + (tile.key.tile_x + 1) * tile.tile_size > x_min
-        and y_origin + tile.key.tile_y * tile.tile_size < y_max
-        and y_origin + (tile.key.tile_y + 1) * tile.tile_size > y_min
-    )
-    return TiledPointsRenderSnapshot(
-        cache_generation_id=snapshot.cache_generation_id,
-        request_generation=request_generation,
-        selection_generation=snapshot.selection_generation,
-        requested_value_ids=snapshot.requested_value_ids,
-        level=snapshot.level,
-        level_kind=snapshot.level_kind,
-        within_budget=True,
-        estimated_point_count=sum(tile.point_count for tile in selected),
-        omitted_value_ids=snapshot.omitted_value_ids,
-        tiles=selected,
+        rendered_tile_count=snapshot.rendered_tile_count,
+        render_batch=snapshot.render_batch,
     )
 
 
 def _renderer_report(
     snapshot: TiledPointsRenderSnapshot,
+    subset_snapshot: TiledPointsRenderSnapshot,
     info: object,
     viewport: TiledPointsViewportState,
     *,
-    gpu_tile_cache_bytes: int,
+    max_vertex_payload_bytes: int,
     warm_draw_repeats: int,
 ) -> dict[str, object]:
     layer = TiledPointsLayerModel(
@@ -465,7 +464,7 @@ def _renderer_report(
             y_max=info.y_max,
         ),
         value_palette=canonical_value_palette(len(info.value_names)),
-        max_gpu_tile_bytes=gpu_tile_cache_bytes,
+        max_vertex_payload_bytes=max_vertex_payload_bytes,
         point_diameter=2.0,
         hard_render_point_budget=viewport.hard_render_point_budget,
     )
@@ -496,21 +495,12 @@ def _renderer_report(
         report["cold_apply_ms"] = _elapsed_ms(started)
         if not report["cold_apply_applied"]:
             raise RuntimeError("The cold render snapshot was rejected by the renderer.")
-        report["cold_pack_ms"] = visual.last_pack_ms
         report["cold_vertex_staging_ms"] = visual.last_vertex_staging_ms
         report["cold_packed_vertex_bytes"] = visual.active_vertex_bytes
         report["cold_active_point_count"] = visual.active_point_count
         report["cold_payload_replacement_count"] = visual.payload_replacement_count
         report["point_draw_submissions_per_frame"] = visual.point_draw_submission_count
-        # Preserve the comparison container for one transition while replacing
-        # its obsolete per-tile resource timings with the new fixed topology.
         report["cold_apply_breakdown"] = {
-            "pack_snapshot_vertices": {
-                "calls": 1,
-                "total_ms": visual.last_pack_ms,
-                "median_ms": visual.last_pack_ms,
-                "max_ms": visual.last_pack_ms,
-            },
             "vertex_buffer_staging": {
                 "calls": 1,
                 "total_ms": visual.last_vertex_staging_ms,
@@ -537,26 +527,17 @@ def _renderer_report(
         started = time.perf_counter()
         report["warm_full_apply_applied"] = visual.apply_snapshot(warm_snapshot)
         report["warm_full_apply_ms"] = _elapsed_ms(started)
-        report["warm_full_pack_ms"] = visual.last_pack_ms
         report["warm_full_vertex_staging_ms"] = visual.last_vertex_staging_ms
         report["warm_full_payload_replacement_count"] = visual.payload_replacement_count
         started = time.perf_counter()
         canvas.render()
         report["warm_full_draw_ms"] = _elapsed_ms(started)
 
-        subset = _subset_snapshot(
-            warm_snapshot,
-            request_generation=warm_snapshot.request_generation + 1,
-            viewport=viewport,
-            x_origin=info.x_origin,
-            y_origin=info.y_origin,
-        )
-        report["subset_tile_count"] = len(subset.tiles)
-        report["subset_point_count"] = sum(tile.point_count for tile in subset.tiles)
+        report["subset_tile_count"] = subset_snapshot.rendered_tile_count
+        report["subset_point_count"] = subset_snapshot.rendered_point_count
         started = time.perf_counter()
-        report["warm_full_to_subset_applied"] = visual.apply_snapshot(subset)
+        report["warm_full_to_subset_applied"] = visual.apply_snapshot(subset_snapshot)
         report["warm_full_to_subset_apply_ms"] = _elapsed_ms(started)
-        report["warm_full_to_subset_pack_ms"] = visual.last_pack_ms
         report["warm_full_to_subset_vertex_staging_ms"] = visual.last_vertex_staging_ms
         report["warm_full_to_subset_packed_vertex_bytes"] = visual.active_vertex_bytes
         report["final_payload_replacement_count"] = visual.payload_replacement_count
@@ -604,6 +585,63 @@ def _dense_exact_tile_report(reader: _PointsCacheReader) -> dict[str, object]:
     return measurements
 
 
+def _synthetic_million_point_packing_report(*, repeats: int) -> dict[str, object]:
+    """Measure one-million-point packing across representative fragmentation."""
+    point_count = 1_000_000
+    generation_id = "12345678-1234-5678-9234-567812345678"
+    required_bytes = point_count * TILED_POINTS_VERTEX_DTYPE.itemsize
+    cases: list[dict[str, object]] = []
+    for tile_count in (1, 4_453, 7_294, 100_000):
+        quotient, remainder = divmod(point_count, tile_count)
+        started = time.perf_counter()
+        tiles = tuple(
+            TiledPointsRenderTile(
+                key=TileResidencyKey(
+                    cache_generation_id=generation_id,
+                    requested_value_ids=None,
+                    level=0,
+                    tile_x=tile_x,
+                    tile_y=0,
+                ),
+                tile_size=1,
+                location=np.zeros((quotient + int(tile_x < remainder), 2), dtype=np.float32),
+                value_id=np.zeros(quotient + int(tile_x < remainder), dtype=np.uint32),
+            )
+            for tile_x in range(tile_count)
+        )
+        input_construction_ms = _elapsed_ms(started)
+        measurements: list[float] = []
+        batch_bytes = 0
+        for _ in range(repeats):
+            started = time.perf_counter()
+            batch = pack_render_tiles(
+                tiles,
+                point_count=point_count,
+                value_count=1,
+                max_vertex_payload_bytes=required_bytes,
+            )
+            measurements.append(_elapsed_ms(started))
+            batch_bytes = batch.nbytes
+        cases.append(
+            {
+                "tile_count": tile_count,
+                "input_construction_ms": input_construction_ms,
+                "measurements_ms": measurements,
+                "median_ms": statistics.median(measurements),
+                "maximum_ms": max(measurements),
+                "batch_bytes": batch_bytes,
+            }
+        )
+        del batch, tiles
+        gc.collect()
+    return {
+        "point_count": point_count,
+        "vertex_bytes_per_point": TILED_POINTS_VERTEX_DTYPE.itemsize,
+        "repeats": repeats,
+        "cases": cases,
+    }
+
+
 def _print_summary(report: dict[str, object]) -> None:
     startup = report["startup"]
     worker = report["worker"]
@@ -620,6 +658,9 @@ def _print_summary(report: dict[str, object]) -> None:
         f"value-index load={startup['selected_value_index_ms']:.1f} ms"
     )
     print(f"Worker snapshot: cold={worker['cold_snapshot_ms']:.1f} ms, warm={worker['warm_snapshot_ms']:.1f} ms")
+    cold_pack = worker["cold_breakdown"]["render_batch_packing"]["total_ms"]
+    warm_pack = worker["warm_breakdown"]["render_batch_packing"]["total_ms"]
+    print(f"Worker render-batch packing: cold={cold_pack:.1f} ms, warm={warm_pack:.1f} ms")
     dense = report["dense_exact_tile"]
     print(
         f"Dense Exact tile: points={dense['manifest_point_count']:,}, "
@@ -633,6 +674,10 @@ def _print_summary(report: dict[str, object]) -> None:
             f"first draw={renderer['cold_first_draw_ms']:.1f} ms, "
             f"warm draw median={renderer['warm_draw_median_ms']} ms"
         )
+    synthetic = report.get("synthetic_million_point_packing")
+    if isinstance(synthetic, dict):
+        summary = ", ".join(f"{case['tile_count']:,} tiles={case['median_ms']:.1f} ms" for case in synthetic["cases"])
+        print(f"Synthetic 1M packing: {summary}")
     print(f"JSON: {report['json_output']}")
 
 
@@ -734,6 +779,7 @@ def main() -> None:
                 selected_value_index,
                 residency,
                 request,
+                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
                 check_cancelled=lambda: None,
             )
             cold_snapshot_ms = _elapsed_ms(started)
@@ -753,6 +799,7 @@ def main() -> None:
                 selected_value_index,
                 residency,
                 warm_request,
+                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
                 check_cancelled=lambda: None,
             )
             warm_snapshot_ms = _elapsed_ms(started)
@@ -772,11 +819,17 @@ def main() -> None:
             "level_kind": snapshot.level_kind,
             "within_budget": snapshot.within_budget,
             "estimated_point_count": snapshot.estimated_point_count,
-            "tile_count": len(snapshot.tiles),
-            "point_count": sum(tile.point_count for tile in snapshot.tiles),
+            "tile_count": snapshot.rendered_tile_count,
+            "point_count": snapshot.rendered_point_count,
+            "render_batch_point_count": snapshot.render_batch.point_count,
+            "render_batch_bytes": snapshot.render_batch.nbytes,
             "omitted_value_ids": snapshot.omitted_value_ids,
         }
         report["dense_exact_tile"] = _dense_exact_tile_report(reader)
+        if args.synthetic_million_point_packing:
+            report["synthetic_million_point_packing"] = _synthetic_million_point_packing_report(
+                repeats=args.synthetic_packing_repeats
+            )
 
         if args.real_canvas:
             application = QApplication.instance() or QApplication([])
@@ -790,11 +843,34 @@ def main() -> None:
         if args.real_canvas:
             if not isinstance(application, QApplication):
                 raise RuntimeError("A QCoreApplication already exists; a QApplication is required for --real-canvas.")
+            subset_viewport = _centered_viewport(
+                info,
+                args.viewport_fraction / 4.0,
+                args.point_budget,
+                args.canvas_width,
+                args.canvas_height,
+            )
+            subset_snapshot = _read_viewport_snapshot(
+                reader,
+                selected_value_index,
+                residency,
+                _ViewportRequest(
+                    request_generation=3,
+                    selection_generation=1,
+                    requested_value_ids=requested_value_ids,
+                    viewport=subset_viewport,
+                ),
+                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
+                check_cancelled=lambda: None,
+            )
+            if not subset_snapshot.within_budget:
+                raise RuntimeError("The centered renderer subset unexpectedly exceeds the point budget.")
             report["renderer"] = _renderer_report(
                 snapshot,
+                subset_snapshot,
                 info,
                 viewport,
-                gpu_tile_cache_bytes=args.gpu_tile_cache_bytes,
+                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
                 warm_draw_repeats=args.warm_draw_repeats,
             )
     finally:
