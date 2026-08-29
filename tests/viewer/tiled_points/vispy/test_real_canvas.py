@@ -58,17 +58,20 @@ def _apply_two_point_snapshot(
 ) -> np.ndarray:
     location = np.array(((1.25, 2.75), (8.5, 7.0)), dtype=np.float32)
     value_id = np.array((0, 1), dtype=np.uint32)
-    tile = TiledPointsRenderTile(
-        key=TileResidencyKey(
-            cache_generation_id=layer.data.cache_generation_id,
-            requested_value_ids=None,
-            level=0,
-            tile_x=2,
-            tile_y=1,
-        ),
-        tile_size=10,
-        location=location,
-        value_id=value_id,
+    tiles = tuple(
+        TiledPointsRenderTile(
+            key=TileResidencyKey(
+                cache_generation_id=layer.data.cache_generation_id,
+                requested_value_ids=None,
+                level=0,
+                tile_x=tile_x,
+                tile_y=tile_y,
+            ),
+            tile_size=10,
+            location=location[index : index + 1].copy(),
+            value_id=value_id[index : index + 1].copy(),
+        )
+        for index, (tile_x, tile_y) in enumerate(((2, 1), (3, 1)))
     )
     snapshot = TiledPointsRenderSnapshot(
         cache_generation_id=layer.data.cache_generation_id,
@@ -80,10 +83,13 @@ def _apply_two_point_snapshot(
         within_budget=True,
         estimated_point_count=2,
         omitted_value_ids=(),
-        tiles=(tile,),
+        tiles=tiles,
     )
     assert visual.apply_snapshot(snapshot)
-    return location.astype(np.float64) + np.array((20.0, 10.0))
+    assert visual.visual_count == 1
+    assert visual.vbo_count == 1
+    assert visual.point_draw_submission_count == 1
+    return location.astype(np.float64) + np.array(((20.0, 10.0), (30.0, 10.0)))
 
 
 def _render(node: object, *, rect: tuple[float, float, float, float]) -> np.ndarray:

@@ -74,8 +74,9 @@ def test_tiled_points_layer_supports_model_lifecycle_without_point_rows() -> Non
     assert len(viewer.layers) == 0
 
 
-def test_tiled_points_layer_replacement_updates_extent_and_emits_data() -> None:
-    layer = _layer()
+def test_tiled_points_layer_data_reference_is_immutable() -> None:
+    reference = _dataset_reference()
+    layer = _layer(reference)
     observed: list[TiledPointsDatasetReference] = []
     set_data_count = 0
 
@@ -86,20 +87,22 @@ def test_tiled_points_layer_replacement_updates_extent_and_emits_data() -> None:
 
     layer.events.data.connect(lambda event: observed.append(event.value))
     layer.events.set_data.connect(_record_set_data)
-    replacement = _dataset_reference(
-        x_origin=-8.0,
-        y_origin=-4.0,
-        x_min=-4.0,
-        x_max=8.0,
-        y_min=-2.0,
-        y_max=6.0,
-    )
+    replacement = _dataset_reference()
 
-    layer.data = replacement
+    layer.data = reference
+    with pytest.raises(ValueError, match="cannot be replaced; construct a new layer and cache runtime"):
+        layer.data = replacement
 
-    assert observed == [replacement]
-    assert set_data_count == 1
-    np.testing.assert_array_equal(layer.extent.data, np.array(((-2.0, -4.0), (6.0, 8.0))))
+    assert layer.data is reference
+    assert observed == []
+    assert set_data_count == 0
+
+
+def test_tiled_points_layer_data_setter_rejects_other_types() -> None:
+    layer = _layer()
+
+    with pytest.raises(ValueError, match="TiledPointsDatasetReference"):
+        layer.data = np.empty((0, 2), dtype=np.float32)  # type: ignore[assignment]
 
 
 def test_tiled_points_layer_exposes_style_and_status_events() -> None:
