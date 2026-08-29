@@ -27,18 +27,18 @@ class _CpuTileResidency:
 
     Entries are ordered from least to most recently used. When one decoded
     batch exceeds the available budget, later tiles may evict earlier new tiles
-    from the same batch; the complete snapshot still owns all of its tile
-    references.
+    from the same batch; the viewport assembly retains all tile references until
+    their renderer batch has been packed.
 
     Newly decoded entries have independently owned point-array allocations at
     the viewer-residency boundary. Consequently, each tile's
     ``resident_bytes`` is the allocation released when that tile is evicted;
     it does not merely describe a view into a larger retained reader batch.
 
-    The byte budget covers only entries retained by this LRU. A caller may
-    still hold transient immutable references returned for snapshot assembly.
-    Payloads larger than the complete budget are therefore usable for one
-    result but are never reported as resident.
+    The byte budget covers only entries retained by this LRU. Viewport assembly
+    may temporarily hold immutable decoded payloads outside that budget while
+    packing them. Nonresident payloads are released before the completed snapshot
+    crosses to the GUI thread.
     """
 
     def __init__(self, max_resident_bytes: int) -> None:
