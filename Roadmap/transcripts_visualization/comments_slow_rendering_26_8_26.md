@@ -855,28 +855,58 @@ The completed path is ordered worker-local tiles → tile/key validation → byt
 
 ### Slice 3 — Linear CPU tile retention
 
-This slice removes the measured approximately 852-millisecond CPU-residency defect without changing residency semantics.
+This slice removes the measured CPU-residency defect without changing residency semantics. The latest full-extent AAMP rerun retained 4,453 decoded tiles containing approximately 0.69 MiB of point arrays but spent 846.93 milliseconds in the one `_CpuTileResidency.retain()` call, consistent with the earlier approximately 852-millisecond result.
+
+**Current defect**
+
+After viewport planning, `runtime/cache_session.py` looks up every planned key in `_CpuTileResidency`, reads and detaches misses, assembles the complete worker-local ordered tile tuple, and calls `residency.retain(new_tiles, protected_keys=resident_keys)` before render-batch packing. `get()` promotes hits to most-recently-used order; `protected_keys` prevents the resident tiles used by the current candidate viewport from being evicted while its newly decoded misses are considered.
+
+`retain()` currently calls `_evict_until_fits()` once for every eligible new tile. `_evict_until_fits()` begins with:
+
+```python
+for key in tuple(self._entries):
+    if self._resident_bytes + required_bytes <= self._max_resident_bytes:
+        return
+```
+
+Python materializes `tuple(self._entries)` before the first capacity check. Therefore, even when every tile fits and no eviction occurs, insertion 1 copies zero existing keys, insertion 2 copies one, and insertion 4,453 copies 4,452. The complete no-eviction operation copies approximately 9.9 million key references and scales as `O(N²)` rather than with the number of inserted tiles.
 
 **Production changes**
 
-1. In `runtime/residency.py`, make `_evict_until_fits()` return before materializing the key collection when the requested payload already fits.
-2. When eviction is required, traverse the LRU once, skip protected keys, and stop immediately after enough bytes are available.
-3. Keep byte reconciliation outside the per-tile insertion loop. Debug-only deep consistency checks must not rescan the complete residency after every inserted tile in production.
-4. Preserve oversized-transient behavior, protected-active entries, deterministic LRU order, duplicate-key replacement, and exact byte accounting.
+1. In `runtime/residency.py`, give `_evict_until_fits()` a constant-time capacity fast path before creating an iterator or temporary key/victim collection:
+
+   ```python
+   if self._resident_bytes + required_bytes <= self._max_resident_bytes:
+       return
+   ```
+
+2. Only when eviction is required, calculate the missing capacity and traverse the `OrderedDict` lazily from least to most recently used. Skip protected keys, collect only the oldest unprotected victims needed to release sufficient bytes, and stop as soon as that total is reached. Delete the collected victims after traversal; do not mutate the `OrderedDict` during direct iteration and do not materialize all resident keys up front.
+3. Keep the existing `_require_consistent_bytes()` reconciliation outside the per-tile insertion loop. One complete-operation `O(N)` accounting check remains acceptable; production must not perform a complete residency scan after each inserted tile.
+4. Preserve the current retention contract exactly:
+   - `get()` promotes a hit to most recently used;
+   - the oldest unprotected entries are evicted first;
+   - keys used by the current candidate viewport remain protected;
+   - entries and incoming tiles retain deterministic caller/LRU order;
+   - replacing an already resident key updates accounting and moves the successful replacement to most recently used order;
+   - a previous value is restored if its replacement cannot fit;
+   - a tile larger than the complete budget is never retained; and
+   - a tile blocked by protected capacity remains a transient worker-local payload.
+5. Do not change viewport assembly or rendering to accommodate a transient tile. The local `ordered_tiles` tuple still owns it through packing, so it appears in the current `TiledPointsRenderBatch`; only its reuse by a future viewport is forfeited.
 
 **Focused tests**
 
 - Extend `runtime/test_residency.py` with no-eviction bulk retention, protected eviction, insufficient-capacity, replacement, and oversized-transient cases.
-- Add an instrumentation-based regression test showing that a fitting insertion does not enumerate existing keys.
-- Retain exact accounting assertions after complete operations.
+- Add an instrumentation-based regression test showing that a fitting insertion does not enumerate existing keys during eviction planning. The permitted final accounting reconciliation must be measured separately rather than mistaken for an eviction scan.
+- Assert deterministic key order and exact `resident_bytes` after every complete operation, including failed insertion and replacement restoration.
+- Add a scaling case that compares fitting bulk retention at `N` and `2N`; it must reject the current approximately fourfold growth pattern.
 
 **Benchmark evidence**
 
-Re-run retention with 4,453 AAMP-shaped tiles and a budget large enough to avoid eviction. The benchmark-machine target is to reduce this phase from approximately 852 milliseconds to tens of milliseconds, with near-linear scaling when the tile count doubles.
+Re-run retention with the actual 4,453 AAMP-shaped tiles and a budget large enough to avoid eviction. Record tile count, decoded payload bytes, retention duration, and whether eviction occurred. The benchmark-machine target is to reduce this phase from 846.93 milliseconds to tens of milliseconds, with approximately linear rather than quadratic growth when the tile count doubles. Also retain one smaller eviction-required benchmark so the fast no-eviction path does not hide a regression in protected LRU traversal.
 
 **Exit condition**
 
-CPU retention is no longer visible as a major cold-snapshot phase, and warm CPU tile reuse remains unchanged.
+CPU retention is no longer visible as a major cold-snapshot phase; fitting bulk insertion is near-linear; eviction order, protection and byte accounting remain exact; and warm CPU tile reuse is unchanged.
 
 ### Slice 4 — Eliminate point-level `value_id` reads for proper subsets
 
