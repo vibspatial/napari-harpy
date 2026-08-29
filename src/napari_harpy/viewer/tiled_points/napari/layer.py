@@ -61,7 +61,7 @@ class TiledPointsLayerModel(Layer):
         data: TiledPointsDatasetReference,
         *,
         value_palette: npt.NDArray[np.uint8],
-        max_gpu_tile_bytes: int,
+        max_vertex_payload_bytes: int,
         affine: Any | None = None,
         blending: str = "translucent",
         metadata: dict[str, Any] | None = None,
@@ -81,7 +81,10 @@ class TiledPointsLayerModel(Layer):
             raise ValueError("`data` must be TiledPointsDatasetReference.")
         self._data = data
         self._value_palette = _validated_value_palette(value_palette, value_count=data.value_count)
-        self._max_gpu_tile_bytes = _require_positive_integer(max_gpu_tile_bytes, "max_gpu_tile_bytes")
+        self._max_vertex_payload_bytes = _require_positive_integer(
+            max_vertex_payload_bytes,
+            "max_vertex_payload_bytes",
+        )
         self._point_diameter = _require_point_diameter(point_diameter)
         self._hard_render_point_budget = _require_positive_integer(
             hard_render_point_budget,
@@ -144,9 +147,7 @@ class TiledPointsLayerModel(Layer):
         # generation. Rebinding only the model reference would leave those owners
         # inconsistent, so cache replacement recreates the complete layer/runtime
         # ownership graph instead.
-        raise ValueError(
-            "Tiled-points layer data cannot be replaced; construct a new layer and cache runtime."
-        )
+        raise ValueError("Tiled-points layer data cannot be replaced; construct a new layer and cache runtime.")
 
     @property
     def value_palette(self) -> npt.NDArray[np.uint8]:
@@ -162,13 +163,9 @@ class TiledPointsLayerModel(Layer):
         self.events.value_palette(value=palette)
 
     @property
-    def max_gpu_tile_bytes(self) -> int:
-        """Return the byte limit for one complete packed vertex payload.
-
-        The name is retained temporarily for application-setting compatibility;
-        the constant-resource renderer no longer retains per-tile GPU objects.
-        """
-        return self._max_gpu_tile_bytes
+    def max_vertex_payload_bytes(self) -> int:
+        """Return the logical byte limit for one complete packed payload."""
+        return self._max_vertex_payload_bytes
 
     @property
     def point_diameter(self) -> float:

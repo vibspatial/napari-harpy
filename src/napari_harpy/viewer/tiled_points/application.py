@@ -15,36 +15,31 @@ from napari_harpy.viewer.tiled_points.contracts import TiledPointsDatasetReferen
 from napari_harpy.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings
 
 DEFAULT_MAX_CPU_TILE_BYTES = 1_073_741_824
-DEFAULT_MAX_GPU_TILE_BYTES = 536_870_912
+DEFAULT_MAX_VERTEX_PAYLOAD_BYTES = 536_870_912
 
 
 @dataclass(frozen=True)
 class TiledPointsApplicationSettings:
     """Define napari-harpy's injectable points-cache resource policy.
 
-    ``max_gpu_tile_bytes`` retains its compatibility name during the
-    constant-resource renderer transition. It bounds one complete packed
-    candidate vertex payload, not a residency cache of per-tile GPU objects.
+    ``max_vertex_payload_bytes`` bounds one complete worker-prepared packed
+    candidate and its corresponding VBO payload. It is independent of decoded
+    CPU tile residency and total driver/GPU memory.
     """
 
     max_bucket_lookup_bytes: int | None = None
     max_selected_value_index_bytes: int | None = None
     max_cpu_tile_bytes: int = DEFAULT_MAX_CPU_TILE_BYTES
-    max_gpu_tile_bytes: int = DEFAULT_MAX_GPU_TILE_BYTES
+    max_vertex_payload_bytes: int = DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
 
     def __post_init__(self) -> None:
-        # Reuse the session contract for the three worker-side limits.
+        # Reuse the worker-session contract for all allocation-side limits.
         _CacheSessionSettings(
             max_bucket_lookup_bytes=self.max_bucket_lookup_bytes,
             max_selected_value_index_bytes=self.max_selected_value_index_bytes,
             max_cpu_tile_bytes=self.max_cpu_tile_bytes,
+            max_vertex_payload_bytes=self.max_vertex_payload_bytes,
         )
-        if (
-            not isinstance(self.max_gpu_tile_bytes, int)
-            or isinstance(self.max_gpu_tile_bytes, bool)
-            or self.max_gpu_tile_bytes <= 0
-        ):
-            raise ValueError("`max_gpu_tile_bytes` must be a positive integer.")
 
     @property
     def cache_session_settings(self) -> _CacheSessionSettings:
@@ -53,6 +48,7 @@ class TiledPointsApplicationSettings:
             max_bucket_lookup_bytes=self.max_bucket_lookup_bytes,
             max_selected_value_index_bytes=self.max_selected_value_index_bytes,
             max_cpu_tile_bytes=self.max_cpu_tile_bytes,
+            max_vertex_payload_bytes=self.max_vertex_payload_bytes,
         )
 
 

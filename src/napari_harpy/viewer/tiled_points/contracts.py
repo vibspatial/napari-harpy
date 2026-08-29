@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 from uuid import UUID
 
 import numpy as np
@@ -12,6 +12,7 @@ import numpy.typing as npt
 
 DEFAULT_HARD_RENDER_POINT_BUDGET = 100_000
 DEFAULT_TARGET_PIXELS_PER_POINT = 9.0
+TILED_POINTS_VERTEX_DTYPE: Final = np.dtype([("a_position", np.float32, (2,)), ("a_value_id", np.float32)])
 _UINT32_MAX = np.iinfo(np.uint32).max
 
 
@@ -26,7 +27,7 @@ class TiledPointsDatasetReference:
     ``x_origin`` and ``y_origin`` are consumed by
     ``VispyTiledPointsLayer._on_matrix_change()``. That method precomposes the
     shared cache origin into the layer's root transform, reconstructing intrinsic
-    coordinates while tile vertex buffers retain their smaller tile-local
+    coordinates while the one packed snapshot VBO retains smaller cache-relative
     float32 positions.
 
     Parameters
@@ -190,16 +191,15 @@ class TiledPointsViewportState:
 
 @dataclass(frozen=True)
 class TileResidencyKey:
-    """Identify one logical tile across CPU and renderer tile residency.
+    """Identify one logical tile in worker-owned decoded CPU residency.
 
     This is not a physical Zarr address. It combines the published cache
     generation, requested value selection, and logical tile coordinates so a
-    decoded CPU payload and its corresponding VisPy/GPU resource are reused only
-    for the dataset and selection that produced them. The CPU residency maps this
-    key to a ``TiledPointsRenderTile``; renderer residency maps the same key to
-    the tile's retained rendering resource. ``logical_tile_key`` exposes the
-    smaller ``(level, tile_x, tile_y)`` identity expected by the core cache
-    reader.
+    decoded CPU payload is reused only for the dataset and selection that
+    produced it. CPU residency maps this key to a ``TiledPointsRenderTile``;
+    the renderer consumes only the worker-prepared complete render batch and
+    does not retain these keys. ``logical_tile_key`` exposes the smaller
+    ``(level, tile_x, tile_y)`` identity expected by the core cache reader.
     """
 
     cache_generation_id: str
@@ -222,12 +222,14 @@ class TileResidencyKey:
 
 @dataclass(frozen=True)
 class TiledPointsRenderTile:
-    """Carry one immutable decoded tile payload across the renderer boundary.
+    """Retain one immutable decoded tile payload in worker CPU residency.
 
     The viewer runtime gives each newly decoded render tile independent
     ``location`` and ``value_id`` backing allocations before CPU residency.
     This dataclass validates those arrays and installs read-only views without
-    copying their point buffers again.
+    copying their point buffers again. Logical tiles remain worker-local for CPU
+    residency and render-batch construction; only the separately packed
+    ``TiledPointsRenderBatch`` crosses to the GUI renderer.
 
     Parameters
     ----------
@@ -294,8 +296,62 @@ class TiledPointsRenderTile:
 
 
 @dataclass(frozen=True)
+class TiledPointsRenderBatch:
+    """Carry one immutable renderer-ready vertex allocation across Qt.
+
+    Parameters
+    ----------
+    vertices
+        One owning, C-contiguous, read-only structured array using
+        ``TILED_POINTS_VERTEX_DTYPE``. ``a_position`` contains cache-relative
+        ``(x, y)`` coordinates with logical tile offsets already folded in;
+        ``a_value_id`` contains exact float32 palette indexes.
+
+    Notes
+    -----
+    The worker owns construction and validation of this physical payload. Qt
+    transports the enclosing snapshot as a Python object reference, and the
+    GUI renderer reads this allocation only long enough to stage the stable
+    VisPy vertex buffer with copy-safe lifetime semantics.
+    """
+
+    vertices: npt.NDArray[np.void]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.vertices, np.ndarray)
+            or self.vertices.ndim != 1
+            or self.vertices.dtype != TILED_POINTS_VERTEX_DTYPE
+            or not self.vertices.flags.c_contiguous
+            or not self.vertices.flags.owndata
+            or self.vertices.flags.writeable
+            or self.vertices.nbytes != len(self.vertices) * TILED_POINTS_VERTEX_DTYPE.itemsize
+        ):
+            raise ValueError(
+                "`vertices` must be one owning, read-only, C-contiguous canonical tiled-points vertex array."
+            )
+
+    @classmethod
+    def empty(cls) -> TiledPointsRenderBatch:
+        """Return a valid owning immutable zero-row render batch."""
+        vertices = np.empty(0, dtype=TILED_POINTS_VERTEX_DTYPE)
+        vertices.flags.writeable = False
+        return cls(vertices)
+
+    @property
+    def point_count(self) -> int:
+        """Return the number of packed renderer rows in O(1)."""
+        return len(self.vertices)
+
+    @property
+    def nbytes(self) -> int:
+        """Return the logical packed vertex-payload byte count in O(1)."""
+        return self.vertices.nbytes
+
+
+@dataclass(frozen=True)
 class TiledPointsRenderSnapshot:
-    """Describe one coherent generation-bound set of active render tiles.
+    """Describe one coherent generation-bound renderer result.
 
     A snapshot is the complete render state for one viewport, not merely the
     tiles newly read from Zarr. The worker combines CPU-resident and newly read
@@ -304,26 +360,50 @@ class TiledPointsRenderSnapshot:
         planned viewport tiles
                 |
         already resident --+
-                          +--> complete ordered tile set
-        newly read --------+
-                                  |
-                                  v
-                      TiledPointsRenderSnapshot
-                                  |
-                         worker -> GUI boundary
-                                  |
-                                  v
-                      atomically replace visual state
+                          +--> worker-local ordered tiles
+        newly read --------+              |
+                                           v
+                                 validate tile order
+                                           |
+                                           v
+                                 pack_render_tiles()
+                                 |-- preflight and allocate one vertex array
+                                 |-- fold tile-grid offsets into cache-relative a_position
+                                 |-- copy value IDs into a_value_id
+                                 `-- validate and make the allocation read-only
+                                           |
+                                           v
+                              TiledPointsRenderBatch
+                              `-- immutable vertices
+                                           |
+                                           v
+                           TiledPointsRenderSnapshot
+                           |-- render_batch: TiledPointsRenderBatch
+                           |-- request/selection generations
+                           |-- LOD and budget result
+                           |-- rendered_tile_count
+                           `-- omitted_value_ids
+                                           |
+                                           v
+                                  worker -> GUI boundary
+                              queued reference delivery
+                                           |
+                                           v
+                         VispyTiledPointsLayer.apply_snapshot()
+                                           |
+                                           v
+                                  replace the stable VBO payload
+                                           |
+                                           v
+                              atomically activate the visual state
 
     Request and selection generations let the GUI reject an obsolete snapshot
     without mixing it with a newer visual state. Level fields report the LOD
-    decision and omitted selected values. A within-budget snapshot carries all
-    active tile payloads; an over-budget snapshot deliberately carries none.
-
-    The frozen snapshot and its immutable tiles form one validated thread-boundary
-    value. Construction verifies that tiles share the snapshot's cache,
-    selection, and level, and that their decoded point total reconciles with
-    ``estimated_point_count``.
+    decision and omitted selected values. A within-budget snapshot carries one
+    immutable packed render batch; an over-budget snapshot carries an empty
+    batch and only describes why the active visual was retained. Decoded logical
+    tiles remain worker-local and are released or retained by CPU residency after
+    packing rather than crossing the GUI boundary.
 
     Parameters
     ----------
@@ -347,9 +427,13 @@ class TiledPointsRenderSnapshot:
         Requested values present in the Exact viewport but absent from the
         selected sampled level. These are sampling omissions, not evidence of
         biological absence.
-    tiles
-        Complete ordered render-tile set for the viewport. This is empty when
+    rendered_tile_count
+        Number of logical tiles packed into the render batch. This is zero when
         ``within_budget`` is false.
+    render_batch
+        Worker-prepared renderer payload for the same complete tile set. An
+        over-budget snapshot carries a valid empty batch even when its estimate
+        is nonzero.
     """
 
     cache_generation_id: str
@@ -361,7 +445,8 @@ class TiledPointsRenderSnapshot:
     within_budget: bool
     estimated_point_count: int
     omitted_value_ids: tuple[int, ...]
-    tiles: tuple[TiledPointsRenderTile, ...]
+    rendered_tile_count: int
+    render_batch: TiledPointsRenderBatch
 
     def __post_init__(self) -> None:
         _require_cache_generation_id(self.cache_generation_id)
@@ -381,34 +466,25 @@ class TiledPointsRenderSnapshot:
                 raise ValueError("An all-values snapshot cannot report omitted value IDs.")
         elif not set(self.omitted_value_ids).issubset(self.requested_value_ids):
             raise ValueError("`omitted_value_ids` must be a subset of `requested_value_ids`.")
-        if not isinstance(self.tiles, tuple) or not all(isinstance(tile, TiledPointsRenderTile) for tile in self.tiles):
-            raise ValueError("`tiles` must be a tuple of TiledPointsRenderTile values.")
-        keys = tuple(tile.key for tile in self.tiles)
-        if len(set(keys)) != len(keys):
-            raise ValueError("Snapshot tile residency keys must be unique.")
-        if tuple((key.tile_y, key.tile_x) for key in keys) != tuple(sorted((key.tile_y, key.tile_x) for key in keys)):
-            raise ValueError("Snapshot tiles must follow spatial (tile_y, tile_x) order.")
-        if any(
-            key.cache_generation_id != self.cache_generation_id
-            or key.requested_value_ids != self.requested_value_ids
-            or key.level != self.level
-            for key in keys
+        if not isinstance(self.render_batch, TiledPointsRenderBatch):
+            raise ValueError("`render_batch` must be TiledPointsRenderBatch.")
+        _require_nonnegative_integer(self.rendered_tile_count, "rendered_tile_count")
+        if not self.within_budget:
+            if self.rendered_tile_count or self.render_batch.point_count:
+                raise ValueError("An over-budget snapshot must not contain point payloads.")
+        elif (
+            self.render_batch.point_count != self.estimated_point_count
+            or (self.rendered_tile_count == 0) != (self.render_batch.point_count == 0)
+            or self.rendered_tile_count > self.render_batch.point_count
         ):
-            raise ValueError("Every snapshot tile must match its cache, selection, and level.")
-        if not self.within_budget and self.tiles:
-            raise ValueError("An over-budget snapshot must not contain point payloads.")
-        if self.within_budget and self.rendered_point_count != self.estimated_point_count:
-            raise ValueError("Within-budget snapshot payloads must reconcile to the estimated point count.")
+            raise ValueError(
+                "Within-budget rendered tile count and render batch must reconcile to the estimated point count."
+            )
 
     @property
     def rendered_point_count(self) -> int:
-        """Return the complete active decoded point count."""
-        return sum(tile.point_count for tile in self.tiles)
-
-    @property
-    def rendered_tile_count(self) -> int:
-        """Return the number of active logical tiles."""
-        return len(self.tiles)
+        """Return the validated packed point count without iterating tiles."""
+        return self.render_batch.point_count
 
     @property
     def all_exact_present_values_omitted(self) -> bool:
