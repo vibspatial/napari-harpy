@@ -924,15 +924,38 @@ CPU retention is no longer visible as a major cold-snapshot phase; fitting bulk 
 
 ### Slice 4 — Eliminate point-level `value_id` reads for proper subsets
 
-This slice reduces selected-value tile-major IO before introducing a new physical layout.
+This slice reduces selected-value tile-major IO before introducing a new physical layout. A **proper subset** means one or more canonical values, but fewer than the complete value vocabulary. Selecting the complete vocabulary continues to normalize to the all-values path.
+
+The cache contains two distinct kinds of value-ID data:
+
+- `ranges/value_id` is compact lookup metadata with one value ID per nonempty tile/value run. It is loaded into `_BucketLookupIndex` together with `ranges/row_start` and `ranges/row_count` and remains the trusted source for resolving selected ranges.
+- the point-level `value_id` array contains one value ID for every stored coordinate row. It is aligned with `location`, remains chunked on disk, and is the expensive payload this slice avoids reading for proper subsets.
+
+This slice does not remove or bypass `ranges/value_id`. It uses that already validated, resident metadata to avoid decoding point-level IDs that the reader already knows.
+
+**Current and target read flow**
+
+Today, `read_display_payloads()` resolves every selected tile/value run to an exact bucket-global row interval, combines those intervals into one row selector, and applies the same selector to both `location` and the point-level `value_id` array. It then splits the two aligned batch arrays back into per-tile `_PointDisplayPayload` values.
+
+For example, if resident metadata resolves a request to:
+
+```text
+value 0 -> rows [0:2]
+value 2 -> rows [3:5]
+```
+
+the current path reads coordinate rows `[0, 1, 3, 4]` and also reads their four point-level IDs from Zarr. After this slice, it reads only those coordinate rows and constructs the aligned IDs `[0, 0, 2, 2]` in memory from the two range values and counts. The returned payload is identical; only the physical source of its `value_id` buffer changes.
 
 **Production changes**
 
-1. Extend the internal selected-range result in `storage/bucket_reader.py` so every resolved interval retains the canonical value ID that produced it.
-2. For proper-subset requests, read only `location` from Zarr and construct the aligned output IDs in memory from interval value IDs and row counts.
-3. Preserve deterministic selected-value and tile order across multi-value requests and bucket batching.
-4. Continue reading point-level `value_id` for all-values or complete-tile display requests; those rows contain multiple values and the tile-major payload remains their canonical source.
-5. Keep the external `_PointDisplayPayload`, `_TileReadResult`, CPU residency, snapshot, and renderer contracts unchanged.
+1. Extend the internal selected-range result in `storage/bucket_reader.py` so every resolved interval retains the canonical value ID and row count that produced it, rather than returning only unlabelled `(start, stop)` bounds and a total count.
+2. Preserve those labelled logical ranges independently of the physical row selector. `_exact_row_selection()` may merge touching intervals into one slice, but ID synthesis must still know where each selected value's output span begins and ends.
+3. For proper-subset requests, apply the exact selector only to `location`. Allocate one aligned C-contiguous `uint32` output array and fill each span with its range's canonical value ID. Do not access the point-level `value_id` Zarr array on this path.
+4. Preserve deterministic selected-value order inside each tile, bucket-local tile order inside each physical batch, and restoration of the original manifest request order across bucket batching. Missing selected values contribute no interval or output rows; a tile with no requested value continues to return `None` at the bucket-reader boundary.
+5. Continue reading point-level `value_id` for all-values or complete-tile display requests. Those rows contain multiple values and the tile-major point array remains their canonical source.
+6. Keep the external `_PointDisplayPayload`, `_TileReadResult`, CPU residency, snapshot, and renderer contracts unchanged. They still receive aligned `location` and `value_id` arrays with the same dtype, shape, order, immutability, and ownership behavior. CPU-residency and packed-render byte accounting therefore remain unchanged.
+
+No cache schema change or cache rebuild is required. Existing tile-major-only caches already contain all range metadata needed for reconstruction.
 
 **Focused tests**
 
@@ -944,6 +967,8 @@ This slice reduces selected-value tile-major IO before introducing a new physica
 **Benchmark evidence**
 
 For full-extent AAMP, point-level `value_id` Zarr calls must fall from 69 to zero while the returned 60,512 IDs remain correct. Report the remaining `location` time independently; this slice is expected to remove the measured approximately 1.86-second value-ID boundary but does not fix scattered coordinate decoding.
+
+This is an IO optimization, not removal of value IDs from memory. The worker still constructs the same `uint32` IDs for CPU residency and render-batch packing. The 69 `location` calls and their tile-major chunk/shard amplification also remain. Slices 5 and 6 address that separate coordinate-locality problem with the value-major sidecar and physical-payload routing.
 
 **Exit condition**
 
