@@ -555,7 +555,7 @@ This deliberately changes overlap behavior: a changed accepted snapshot performs
 
 Validation, cancellation, stale-generation rejection, over-budget rejection, and byte-capacity rejection all occur before `set_data()` and therefore continue to preserve the active payload. The initial one-VBO design deliberately does not promise rollback after VBO replacement starts. VisPy defers the actual GPU operation until rendering, so even a ping-pong design would require explicit draw-error handling before it could claim verified GPU-upload rollback.
 
-`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, per-tile GPU eviction, and renderer-owned active or pending tile-key tuples cease to be part of the normal renderer. The snapshot and runtime already carry generation-bound logical identity; the renderer needs only the active point count and payload metrics. If Slice 12 is later accepted, it introduces a dedicated worker-prepared physical-payload identity rather than reconstructing tile-key identity on the GUI thread. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
+`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, per-tile GPU eviction, and renderer-owned active or pending tile-key tuples cease to be part of the normal renderer. The snapshot and runtime already carry generation-bound logical identity; the renderer needs only the active point count and payload metrics. If Slice 13 is later accepted, it introduces a dedicated worker-prepared physical-payload identity rather than reconstructing tile-key identity on the GUI thread. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
 
 #### Budget implications
 
@@ -657,16 +657,18 @@ The following constraints apply to every slice:
 | 1 | Replace per-tile GPU resources with one visual and one VBO | Slice 0 | Dominant draw-submission problem removed; temporary GUI packing allowed |
 | 2 | Move complete render-batch packing to the worker | Slice 1 | Completed smooth-frame renderer architecture |
 | 3 | Make CPU tile retention linear for the no-eviction case | Slice 0 | Cold CPU assembly defect removed |
-| 4 | Stop decoding point-level `value_id` for proper subsets | Slice 0 | One of two selected-value Zarr reads removed |
-| 5 | Add an Exact-only coordinate value-major sidecar to the cache format and writer | Slice 0 | New payload is constructible and validated but not yet used by the viewer |
-| 6 | Route proper-subset Exact reads through the sidecar | Slices 4 and 5 | Sparse selected values gain contiguous coordinate reads |
-| 7 | Replace eager sparse-range residency with lazy byte-bounded fallback indexes | Slice 6 | Startup time and lookup RSS are reduced |
-| 8 | Run the integrated acceptance matrix and decide sidecar expansion | Slices 1–7 | Evidence-backed decision on Bridge/spatial sidecars |
-| 9 | Add viewport debounce only if dispatch churn remains material | Slice 8 | Conditional reduction of obsolete cold reads |
-| 10 | Evaluate optional ping-pong storage and a larger point budget | Slice 8 | Conditional hardening/scaling work, not part of the initial solution |
-| 11 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
+| 4 | Enforce homogeneous bucket display batches | Slice 0 | Mixed all-values/subset batches fail before planning or physical IO |
+| 5 | Stop decoding point-level `value_id` for proper subsets | Slice 4 | One of two selected-value Zarr reads removed through one explicit batch mode |
+| 6 | Add an Exact-only coordinate value-major sidecar to the cache format and writer | Slice 0 | New payload is constructible and validated but not yet used by the viewer |
+| 7 | Route proper-subset Exact reads through the sidecar | Slices 5 and 6 | Sparse selected values gain contiguous coordinate reads |
+| 8 | Replace eager sparse-range residency with lazy byte-bounded fallback indexes | Slice 7 | Startup time and lookup RSS are reduced |
+| 9 | Run the integrated acceptance matrix and decide sidecar expansion | Slices 1–8 | Evidence-backed decision on Bridge/spatial sidecars |
+| 10 | Add viewport debounce only if dispatch churn remains material | Slice 9 | Conditional reduction of obsolete cold reads |
+| 11 | Evaluate optional ping-pong storage and a larger point budget | Slice 9 | Conditional hardening/scaling work, not part of the initial solution |
+| 12 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
+| 13 | Reuse identical render payloads only if measurements justify it | Slice 2 | Conditional reduction of redundant packing and VBO replacement |
 
-Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 5 and 6 form one cache-locality milestone: publishing a sidecar that no read path consumes is useful only as a short-lived, testable construction boundary.
+Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 6 and 7 form one cache-locality milestone: publishing a sidecar that no read path consumes is useful only as a short-lived, testable construction boundary.
 
 ### Slice 0 — Preserve the opt-in boundary and freeze the baseline
 
@@ -714,7 +716,7 @@ VispyTiledPointsLayer
         └── one shared palette-texture binding
 ```
 
-The accepted viewport may still comprise 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 12.
+The accepted viewport may still comprise 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 13.
 
 The packed `a_position` values are relative to the shared cache origin. Packing adds each tile's `(tile_x * tile_size, tile_y * tile_size)` offset to its tile-local coordinates, which allows the per-visual `u_tile_offset` uniform to disappear. These are not large absolute world coordinates: the existing float64 root transform continues to add the shared cache origin and apply the napari layer transform.
 
@@ -739,7 +741,7 @@ The single-VBO failure boundary must also be explicit. Validation, byte-capacity
    - acknowledge the candidate only after synchronous staging succeeds; and
    - request one scene update.
 5. Remove `_GpuTileResidency`, `_VispyTileResource`, per-tile visibility changes, and per-tile GPU LRU behavior from the normal renderer path. Do not spend a separate slice optimizing the quadratic GPU consistency scan because this slice removes its ownership model.
-6. Do not retain or reconstruct active or pending tile-key tuples in the renderer. Slice 12 must add its dedicated physical-payload identity only if its evidence gate is met.
+6. Do not retain or reconstruct active or pending tile-key tuples in the renderer. Slice 13 must add its dedicated physical-payload identity only if its evidence gate is met.
 7. Retain the current `max_gpu_tile_bytes` name only for the Slice 1 scaffold and enforce it against the single candidate vertex payload rather than a sum of tile resources. This temporary implementation state is not a compatibility promise; Slice 2 removes the old name completely.
 8. Replace GPU tile metrics with visual count, VBO count, active point count, active vertex bytes, payload-replacement count, and synchronous staging time. Compatibility aliases may exist for one transition only if a current internal consumer needs them.
 9. Preserve palette, opacity, point-diameter, blending, large-origin transforms, empty snapshots, close behavior, and render-error signaling.
@@ -922,9 +924,47 @@ Focused validation passed with all 9 residency tests and all 28 cache-session te
 
 CPU retention is no longer visible as a major cold-snapshot phase; fitting bulk insertion is near-linear; eviction order, protection and byte accounting remain exact; and warm CPU tile reuse is unchanged.
 
-### Slice 4 — Eliminate point-level `value_id` reads for proper subsets
+### Slice 4 — Enforce homogeneous bucket display batches
 
-This slice reduces selected-value tile-major IO before introducing a new physical layout. A **proper subset** means one or more canonical values, but fewer than the complete value vocabulary. Selecting the complete vocabulary continues to normalize to the all-values path.
+This slice makes the existing production invariant explicit before the selected-value physical-read path diverges. One bucket display batch has exactly one selection mode:
+
+```text
+complete batch -> every selected_value_ids is None
+subset batch   -> every request has a nonempty selected_value_ids array
+```
+
+The normal viewport path already constructs homogeneous requests. `_ViewportReadPlan` records one plan-wide `requested_value_ids` mode and requires every tile's `applicable_value_ids` to agree with it. Filtering a plan to CPU-residency misses and grouping those requests by bucket preserve that mode. The singleton `read_display_payload()` wrapper also creates a one-request batch, which is homogeneous by definition.
+
+The remaining ambiguity is local to `_BucketReader.read_display_payloads()`: its per-request optional selection type currently permits a caller to assemble a mixed complete/subset tuple even though no production plan does so. Supporting that hypothetical state would complicate the next slice with partial point-level ID reads and stitched output. This slice rejects it instead.
+
+**Production changes**
+
+1. At the beginning of `read_display_payloads()`, validate that `requests` is a nonempty tuple and that every member is a `(descriptor, selected_value_ids)` pair before interpreting the batch mode.
+2. Require one homogeneous mode across the complete tuple: either every `selected_value_ids` is `None`, or none is `None`. Raise a clear `ValueError` for a mixed batch.
+3. Complete this validation before allocating `batch_tile_indptr`, resolving complete or selected intervals, consulting lookup indexes, or accessing any point-payload Zarr array. Invalid input must have no planning, lookup, or physical-IO side effect.
+4. Derive the complete-versus-subset mode once for the accepted batch. Later physical-read code may branch on that batch-level invariant and must not add mixed-mode stitching.
+5. Update the method contract to state that per-tile selected arrays may differ because values occur in different tiles, but their presence or absence may not differ inside one batch.
+6. Keep `_ViewportReadPlan`'s existing plan-wide validation as the upstream construction invariant. Do not duplicate the new bucket-boundary check in `_read_manifest_requests()` or add a new request dataclass merely to encode the same fact.
+
+**Focused tests**
+
+- Reject complete-then-subset and subset-then-complete batches with the same explicit validation error.
+- Patch interval resolution, lookup access, and point-array access to fail if called, proving that mixed input is rejected before planning or physical IO.
+- Retain successful multi-tile complete and proper-subset batch tests.
+- Retain singleton complete and selected reads through the plural path.
+- Retain `_ViewportReadPlan` tests proving that all-values plans contain only `None` selections and proper-subset plans contain only tile-applicable arrays.
+
+**Benchmark evidence**
+
+None is required. This is a fail-fast internal contract slice and does not change valid-request performance or physical payloads.
+
+**Exit condition**
+
+Every accepted bucket display batch has one explicit selection mode. Mixed complete/subset input fails before allocation, interval resolution, lookup access, or physical IO, so later read paths never need mixed-mode behavior.
+
+### Slice 5 — Eliminate point-level `value_id` reads for proper subsets
+
+This slice depends on the homogeneous-batch contract established by Slice 4 and reduces selected-value tile-major IO before introducing a new physical layout. A **proper subset** means one or more canonical values, but fewer than the complete value vocabulary. Selecting the complete vocabulary continues to normalize to the all-values path.
 
 The cache contains two distinct kinds of value-ID data:
 
@@ -968,13 +1008,13 @@ No cache schema change or cache rebuild is required. Existing tile-major-only ca
 
 For full-extent AAMP, point-level `value_id` Zarr calls must fall from 69 to zero while the returned 60,512 IDs remain correct. Report the remaining `location` time independently; this slice is expected to remove the measured approximately 1.86-second value-ID boundary but does not fix scattered coordinate decoding.
 
-This is an IO optimization, not removal of value IDs from memory. The worker still constructs the same `uint32` IDs for CPU residency and render-batch packing. The 69 `location` calls and their tile-major chunk/shard amplification also remain. Slices 5 and 6 address that separate coordinate-locality problem with the value-major sidecar and physical-payload routing.
+This is an IO optimization, not removal of value IDs from memory. The worker still constructs the same `uint32` IDs for CPU residency and render-batch packing. The 69 `location` calls and their tile-major chunk/shard amplification also remain. Slices 6 and 7 address that separate coordinate-locality problem with the value-major sidecar and physical-payload routing.
 
 **Exit condition**
 
 Proper-subset tile-major fallback performs coordinate-only physical reads and synthesizes IDs from already validated metadata.
 
-### Slice 5 — Exact-level value-major sidecar schema and writer
+### Slice 6 — Exact-level value-major sidecar schema and writer
 
 This slice makes the new physical ordering constructible, atomically published, and independently validated. It does not route viewer reads to it yet.
 
@@ -992,7 +1032,7 @@ This slice makes the new physical ordering constructible, atomically published, 
    ```
 
 4. Persist only Exact `location` and compact `value_point_indptr`. Do not duplicate point-level `value_id`, `point_id`, the manifest, or the value-to-tile catalog.
-5. Make Exact sidecar construction an explicit builder option during the prototype. Do not silently add approximately 0.79 GiB to every cache until Slice 8 accepts the tradeoff.
+5. Make Exact sidecar construction an explicit builder option during the prototype. Do not silently add approximately 0.79 GiB to every cache until Slice 9 accepts the tradeoff.
 
 **Writer changes**
 
@@ -1019,7 +1059,7 @@ Build the supplied cache with an Exact coordinate sidecar and record constructio
 
 A completed cache generation can truthfully advertise and validate an Exact coordinate value-major sidecar, while old tile-major-only caches remain readable.
 
-### Slice 6 — Post-LOD physical-payload routing and sidecar reads
+### Slice 7 — Post-LOD physical-payload routing and sidecar reads
 
 This slice realizes the cold-read improvement while preserving one logical tile/snapshot contract above the reader.
 
@@ -1068,7 +1108,7 @@ Also benchmark a dense gene, multiple genes, a partial viewport, and all values 
 
 The reader chooses physical locality after semantic LOD selection and returns the existing logical tile contract. Exact sparse-value reads use the sidecar; uncovered levels fall back correctly.
 
-### Slice 7 — Lazy, byte-bounded sparse-range fallback indexes
+### Slice 8 — Lazy, byte-bounded sparse-range fallback indexes
 
 This slice removes the approximately 8.1-second startup and 568.4-MiB eager lookup policy.
 
@@ -1105,7 +1145,7 @@ Report startup metadata time, time to ready, compact resident bytes, open bucket
 
 Large sparse ranges are a bounded fallback resource rather than a mandatory session-wide startup index.
 
-### Slice 8 — Integrated acceptance matrix and sidecar expansion decision
+### Slice 9 — Integrated acceptance matrix and sidecar expansion decision
 
 This slice consolidates evidence; it is not permission to broaden the format automatically.
 
@@ -1153,13 +1193,13 @@ process RSS at startup, snapshot, staging and first draw
 
 Publish one comparison report containing the pre-change baseline and each accepted slice. Record explicit keep, revise, or reject decisions for Exact sidecar defaulting and any further levels.
 
-### Slice 9 — Conditional viewport debounce
+### Slice 10 — Conditional viewport debounce
 
 Debounce is deliberately last because it avoids work but does not make an accepted request cheaper.
 
 **Entry condition**
 
-Proceed only if Slice 8 instrumentation shows that rapid camera gestures still dispatch multiple physical reads that become obsolete despite the existing one-active/one-latest-pending mailbox.
+Proceed only if Slice 9 instrumentation shows that rapid camera gestures still dispatch multiple physical reads that become obsolete despite the existing one-active/one-latest-pending mailbox.
 
 **Production changes if justified**
 
@@ -1178,7 +1218,7 @@ Proceed only if Slice 8 instrumentation shows that rapid camera gestures still d
 
 Use recorded camera traces rather than synthetic event counts alone. The debounce must materially reduce obsolete cold reads without making an isolated pan or zoom feel delayed. If it does not, retain the current mailbox policy and reject this slice.
 
-### Slice 10 — Optional hardening and scaling gates
+### Slice 11 — Optional hardening and scaling gates
 
 These are explicit decision gates, not assumed follow-up work.
 
@@ -1194,7 +1234,7 @@ Do not raise the budget until end-to-end tests cover worker packing, Qt delivery
 
 Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the dual-ordering prototype has measured results, and keep each in its own schema/benchmark slice.
 
-### Slice 11 — Explicit coordinator selection arming
+### Slice 12 — Explicit coordinator selection arming
 
 This slice is a lifecycle and API cleanup rather than a rendering optimization. It makes the product rule explicit: selecting or inspecting a points element may load metadata and available values, but a regular or tiled napari points layer is created only after an explicit Add/Update action.
 
@@ -1260,7 +1300,7 @@ user clicks Add / Update
 
 No constructor default can implicitly mean all values, and no viewport cache read can start before the application has explicitly configured the layer's value selection. Metadata discovery remains automatic inside the opt-in panel, while creation of both regular and tiled napari points layers remains an explicit Add/Update action.
 
-### Slice 12 — Conditional identical render-payload reuse
+### Slice 13 — Conditional identical render-payload reuse
 
 This is an optional follow-up optimization, not part of the required constant-resource renderer or worker-packing milestones. The GPU still redraws the active points on every physical frame; this slice concerns only avoiding redundant CPU packing and VBO replacement when a newly accepted viewport resolves to exactly the same immutable point payload that is already active.
 
@@ -1323,14 +1363,15 @@ The initial optimization programme is complete when:
 2. opt-in tiled rendering uses one visual, one VBO, one worker-prepared batch, and one draw submission;
 3. GUI activation contains no tile-proportional packing or resource loop;
 4. CPU residency no longer has quadratic no-eviction behavior;
-5. proper-subset reads never decode point-level `value_id`;
-6. proper-subset Exact reads use a validated value-major coordinate sidecar after LOD selection;
-7. all-values and complete-tile requests retain tile-major routing;
-8. uncovered levels retain a correct tile-major fallback;
-9. bucket sparse ranges are lazy and byte bounded rather than eagerly resident;
-10. benchmark reports demonstrate improved cold reads, warm activation, first draw, warm draw, startup RSS, and steady memory on the supplied cache; and
-11. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
-12. debounce, identical render-payload reuse, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
+5. every bucket display batch has exactly one complete or proper-subset selection mode, and mixed input fails before planning or physical IO;
+6. proper-subset reads never decode point-level `value_id`;
+7. proper-subset Exact reads use a validated value-major coordinate sidecar after LOD selection;
+8. all-values and complete-tile requests retain tile-major routing;
+9. uncovered levels retain a correct tile-major fallback;
+10. bucket sparse ranges are lazy and byte bounded rather than eagerly resident;
+11. benchmark reports demonstrate improved cold reads, warm activation, first draw, warm draw, startup RSS, and steady memory on the supplied cache;
+12. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
+13. debounce, identical render-payload reuse, ping-pong storage, extra sidecar levels, and a larger point budget are accepted only when their own evidence gates are met.
 
 ## Conclusion
 
