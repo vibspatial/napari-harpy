@@ -270,7 +270,9 @@ class _BucketReader:
             Nonempty tuple of ``(descriptor, selected_value_ids)`` pairs from
             this bucket in increasing bucket-local tile order. ``None`` selects
             every point in that tile; otherwise the IDs must be strictly
-            increasing and unique.
+            increasing and unique. Every request in one batch must use the same
+            selection mode: either all ``selected_value_ids`` are ``None``, or
+            every request provides a nonempty selected-value array.
 
         Returns
         -------
@@ -287,6 +289,15 @@ class _BucketReader:
         """
         if not isinstance(requests, tuple) or not requests:
             raise ValueError("`requests` must be a nonempty tuple.")
+        if any(not isinstance(request, tuple) or len(request) != 2 for request in requests):
+            raise ValueError("Every display request must be a (descriptor, selected_value_ids) pair.")
+
+        is_subset_mode = requests[0][1] is not None
+        if any((request[1] is not None) != is_subset_mode for request in requests[1:]):
+            raise ValueError(
+                "Display requests must be homogeneous: every `selected_value_ids` must be None "
+                "or every request must provide selected value IDs."
+            )
 
         batch_tile_indptr = np.empty(len(requests) + 1, dtype=np.uint64)
         batch_tile_indptr[0] = 0
@@ -294,8 +305,6 @@ class _BucketReader:
         rows_resolved = 0
         previous_tile_index: int | None = None
         for request_index, request in enumerate(requests):
-            if not isinstance(request, tuple) or len(request) != 2:
-                raise ValueError("Every display request must be a (descriptor, selected_value_ids) pair.")
             descriptor, selected_value_ids = request
             if selected_value_ids is None:
                 interval = self.resolve_complete_tile_interval(descriptor)

@@ -221,6 +221,57 @@ def test_display_batch_reads_each_point_array_once_and_splits_payloads(
         )
 
 
+@pytest.mark.parametrize("complete_first", [True, False])
+def test_display_batch_rejects_mixed_selection_modes_before_resolution_or_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_first: bool,
+) -> None:
+    result = _build_bucket(tmp_path)
+    first, second = result.tile_descriptors
+    selected = np.array([1], dtype=np.uint32)
+    requests = ((first, None), (second, selected)) if complete_first else ((first, selected), (second, None))
+
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+
+        def reject_side_effect(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Mixed display batch reached interval resolution or physical access.")
+
+        monkeypatch.setattr(reader, "resolve_complete_tile_interval", reject_side_effect)
+        monkeypatch.setattr(reader, "resolve_selected_tile_intervals", reject_side_effect)
+        monkeypatch.setattr(reader, "_lookup_index_or_raise", reject_side_effect)
+        monkeypatch.setattr(reader, "_array", reject_side_effect)
+
+        with pytest.raises(ValueError) as error:
+            reader.read_display_payloads(requests)
+
+    assert str(error.value) == (
+        "Display requests must be homogeneous: every `selected_value_ids` must be None "
+        "or every request must provide selected value IDs."
+    )
+
+
+def test_display_batch_validates_every_request_pair_before_resolution_or_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _build_bucket(tmp_path)
+    first, second = result.tile_descriptors
+
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+
+        def reject_side_effect(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Malformed display batch reached interval resolution or physical access.")
+
+        monkeypatch.setattr(reader, "resolve_complete_tile_interval", reject_side_effect)
+        monkeypatch.setattr(reader, "resolve_selected_tile_intervals", reject_side_effect)
+        monkeypatch.setattr(reader, "_lookup_index_or_raise", reject_side_effect)
+        monkeypatch.setattr(reader, "_array", reject_side_effect)
+
+        with pytest.raises(ValueError, match="Every display request must be"):
+            reader.read_display_payloads(((first, None), (second,)))  # type: ignore[arg-type]
+
+
 def test_display_batch_omits_unrequested_row_gaps_and_preserves_empty_results(tmp_path: Path) -> None:
     result = _build_bucket(tmp_path)
     first, second = result.tile_descriptors
