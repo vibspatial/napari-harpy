@@ -272,7 +272,9 @@ class _BucketReader:
             every point in that tile; otherwise the IDs must be strictly
             increasing and unique. Every request in one batch must use the same
             selection mode: either all ``selected_value_ids`` are ``None``, or
-            every request provides a nonempty selected-value array.
+            every request provides a nonempty selected-value array. The arrays
+            may differ between requests because values occur in different tiles;
+            only their presence or absence must agree within one batch.
 
         Returns
         -------
