@@ -855,13 +855,15 @@ The completed path is ordered worker-local tiles → tile/key validation → byt
 
 ### Slice 3 — Linear CPU tile retention
 
+**Status: Implemented**
+
 This slice removes the measured CPU-residency defect without changing residency semantics. The latest full-extent AAMP rerun retained 4,453 decoded tiles containing approximately 0.69 MiB of point arrays but spent 846.93 milliseconds in the one `_CpuTileResidency.retain()` call, consistent with the earlier approximately 852-millisecond result.
 
-**Current defect**
+**Pre-implementation defect**
 
 After viewport planning, `runtime/cache_session.py` looks up every planned key in `_CpuTileResidency`, reads and detaches misses, assembles the complete worker-local ordered tile tuple, and calls `residency.retain(new_tiles, protected_keys=resident_keys)` before render-batch packing. `get()` promotes hits to most-recently-used order; `protected_keys` prevents the resident tiles used by the current candidate viewport from being evicted while its newly decoded misses are considered.
 
-`retain()` currently calls `_evict_until_fits()` once for every eligible new tile. `_evict_until_fits()` begins with:
+Before this slice, `retain()` called `_evict_until_fits()` once for every eligible new tile. `_evict_until_fits()` began with:
 
 ```python
 for key in tuple(self._entries):
@@ -869,7 +871,7 @@ for key in tuple(self._entries):
         return
 ```
 
-Python materializes `tuple(self._entries)` before the first capacity check. Therefore, even when every tile fits and no eviction occurs, insertion 1 copies zero existing keys, insertion 2 copies one, and insertion 4,453 copies 4,452. The complete no-eviction operation copies approximately 9.9 million key references and scales as `O(N²)` rather than with the number of inserted tiles.
+Python materialized `tuple(self._entries)` before the first capacity check. Therefore, even when every tile fit and no eviction occurred, insertion 1 copied zero existing keys, insertion 2 copied one, and insertion 4,453 copied 4,452. The complete no-eviction operation copied approximately 9.9 million key references and scaled as `O(N²)` rather than with the number of inserted tiles.
 
 **Production changes**
 
@@ -903,6 +905,18 @@ Python materializes `tuple(self._entries)` before the first capacity check. Ther
 **Benchmark evidence**
 
 Re-run retention with the actual 4,453 AAMP-shaped tiles and a budget large enough to avoid eviction. Record tile count, decoded payload bytes, retention duration, and whether eviction occurred. The benchmark-machine target is to reduce this phase from 846.93 milliseconds to tens of milliseconds, with approximately linear rather than quadratic growth when the tile count doubles. Also retain one smaller eviction-required benchmark so the fast no-eviction path does not hide a regression in protected LRU traversal.
+
+**Implemented evidence (2026-08-29)**
+
+`_evict_until_fits()` now returns from a constant-time capacity check before constructing an iterator or victim list. When eviction is necessary, it traverses entries lazily in LRU order, skips protected keys, stops after collecting enough unprotected payload bytes, and deletes the collected victims only after traversal. The final complete-operation byte reconciliation remains outside the insertion loop.
+
+On the full-extent AAMP case, one cold `retain()` call kept all 4,453 tiles and 0.6925 MiB under the 1-GiB budget, proving that no eviction occurred. Retention fell from 846.93 milliseconds to 3.83 milliseconds, approximately a 221-fold improvement. The complete cold worker snapshot fell from 3,199.72 to 2,103.89 milliseconds; its remaining dominant cost is tile-major decoding rather than residency bookkeeping. The report is `/private/tmp/napari-harpy-slice3-cache-to-canvas-full-aamp.json`.
+
+A fitting synthetic retention comparison measured 3.49 milliseconds for 4,453 one-point tiles and 6.76 milliseconds for 8,906 tiles, a 1.94-times increase when the tile count doubled. Deterministic unit instrumentation independently proves that the fit path performs no key or item traversal during eviction planning and visits each retained value exactly once in the final accounting reconciliation.
+
+The eviction-required control used a centered 75-tile, 1,080-point AAMP viewport with a 1,024-byte residency budget. Only 19 tiles remained resident, so the control exercised eviction rather than the capacity fast path. Cold retention measured 0.10 milliseconds; the warm request protected its 19 hits, read the remaining misses, and completed retention in 0.30 milliseconds. The report is `/private/tmp/napari-harpy-slice3-cache-to-canvas-eviction-control.json`.
+
+Focused validation passed with all 9 residency tests and all 28 cache-session tests. Coverage includes fitting bulk insertion, deterministic linear traversal counts, oldest-unprotected eviction after a protected prefix, insufficient protected capacity, successful replacement, failed-replacement restoration, exact byte accounting, oversized transient payloads, and end-to-end transient rendering.
 
 **Exit condition**
 
