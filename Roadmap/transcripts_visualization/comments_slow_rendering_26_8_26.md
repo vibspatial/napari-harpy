@@ -964,6 +964,8 @@ Every accepted bucket display batch has one explicit selection mode. Mixed compl
 
 ### Slice 5 — Eliminate point-level `value_id` reads for proper subsets
 
+**Status: Implemented**
+
 This slice depends on the homogeneous-batch contract established by Slice 4 and reduces selected-value tile-major IO before introducing a new physical layout. A **proper subset** means one or more canonical values, but fewer than the complete value vocabulary. Selecting the complete vocabulary continues to normalize to the all-values path.
 
 The cache contains two distinct kinds of value-ID data:
@@ -973,9 +975,9 @@ The cache contains two distinct kinds of value-ID data:
 
 This slice does not remove or bypass `ranges/value_id`. It uses that already validated, resident metadata to avoid decoding point-level IDs that the reader already knows.
 
-**Current and target read flow**
+**Pre-implementation and implemented read flow**
 
-Today, `read_display_payloads()` resolves every selected tile/value run to an exact bucket-global row interval, combines those intervals into one row selector, and applies the same selector to both `location` and the point-level `value_id` array. It then splits the two aligned batch arrays back into per-tile `_PointDisplayPayload` values.
+Before this slice, `read_display_payloads()` resolved every selected tile/value run to an exact bucket-global row interval, combined those intervals into one row selector, and applied the same selector to both `location` and the point-level `value_id` array. It then split the two aligned arrays back into per-tile `_PointDisplayPayload` values.
 
 For example, if resident metadata resolves a request to:
 
@@ -984,7 +986,7 @@ value 0 -> rows [0:2]
 value 2 -> rows [3:5]
 ```
 
-the current path reads coordinate rows `[0, 1, 3, 4]` and also reads their four point-level IDs from Zarr. After this slice, it reads only those coordinate rows and constructs the aligned IDs `[0, 0, 2, 2]` in memory from the two range values and counts. The returned payload is identical; only the physical source of its `value_id` buffer changes.
+the pre-implementation path read coordinate rows `[0, 1, 3, 4]` and also read their four point-level IDs from Zarr. The implemented path reads only those coordinate rows and constructs the aligned IDs `[0, 0, 2, 2]` in memory from the two range values and counts. The returned payload is identical; only the physical source of its `value_id` buffer changed.
 
 **Production changes**
 
@@ -1004,15 +1006,31 @@ No cache schema change or cache rebuild is required. Existing tile-major-only ca
 - Compare reconstructed IDs and coordinates byte-for-byte with the existing canonical result on fixtures.
 - Assert that all-values reads still access and return point-level IDs.
 
+**Implemented validation (2026-08-31)**
+
+The final focused run passed all 87 tests across `test_bucket_reader.py`, `test_reader.py`, and `runtime/test_cache_session.py`. The bucket-reader coverage makes point-level `value_id` access a hard failure for proper subsets; covers one value, nonadjacent values, adjacent ranges, missing values, and multiple tiles; compares reconstructed coordinates and IDs byte-for-byte with the canonical result; and proves that complete reads still access both `location` and point-level `value_id`.
+
 **Benchmark evidence**
 
-For full-extent AAMP, point-level `value_id` Zarr calls must fall from 69 to zero while the returned 60,512 IDs remain correct. Report the remaining `location` time independently; this slice is expected to remove the measured approximately 1.86-second value-ID boundary but does not fix scattered coordinate decoding.
+The required full-extent AAMP real-canvas run passed. It rendered the same 60,512 points across 4,453 logical tiles, reported `all_value_ids_match_selection=true`, and reduced point-level `value_id` Zarr calls from 69 to zero:
+
+| Metric | Slice 3 baseline | Slice 5 |
+|---|---:|---:|
+| Point-level `value_id` calls | 69 | 0 |
+| Point-level `value_id` time | 905.90 ms | 0 ms |
+| `location` calls | 69 | 69 |
+| `location` time | 1,047.53 ms | 1,102.38 ms |
+| Cold worker snapshot | 2,103.89 ms | 1,259.25 ms |
+| GUI activation | 0.547 ms | 0.498 ms |
+| Warm draw median | 4.052 ms | 3.924 ms |
+
+These cold measurements mean the first request in each process after lookup-index loading; they do not flush operating-system filesystem caches. The structural acceptance evidence is therefore the zero point-level calls together with the correct 60,512 returned IDs. The timing evidence is consistent with the removed read and shows no material GUI activation or rendering regression. The reports are `/private/tmp/napari-harpy-slice3-cache-to-canvas-full-aamp.json` and `/private/tmp/napari-harpy-slice5-cache-to-canvas-full-aamp.json`.
 
 This is an IO optimization, not removal of value IDs from memory. The worker still constructs the same `uint32` IDs for CPU residency and render-batch packing. The 69 `location` calls and their tile-major chunk/shard amplification also remain. Slices 6 and 7 address that separate coordinate-locality problem with the value-major sidecar and physical-payload routing.
 
 **Exit condition**
 
-Proper-subset tile-major fallback performs coordinate-only physical reads and synthesizes IDs from already validated metadata.
+Satisfied: proper-subset tile-major fallback performs coordinate-only physical reads and synthesizes IDs from already validated in-memory range metadata.
 
 ### Slice 6 — Exact-level value-major sidecar schema and writer
 
