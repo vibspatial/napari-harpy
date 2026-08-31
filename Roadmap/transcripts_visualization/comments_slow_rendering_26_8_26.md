@@ -228,8 +228,8 @@ The two physical representations serve different access patterns:
 | Access pattern | Physical payload |
 |---|---|
 | All values or complete logical tiles | Existing tile-major bucket payload |
-| Proper value subset at a level with a sidecar | Per-level value-major coordinate payload |
-| Proper value subset at a level without a sidecar | Existing tile-major filtered fallback |
+| Proper value subset at Exact | Mandatory Exact value-major coordinate payload |
+| Proper value subset at Bridge or Spatial | Existing tile-major filtered fallback until that level is deliberately given a sidecar |
 
 #### What is physically duplicated
 
@@ -281,7 +281,7 @@ If reordered coordinates compress similarly to the current coordinates, the stor
 | Exact-level `location` only | 0.79 GiB | 2.37 GiB | approximately 50% |
 | All-level `location` only | 1.09 GiB | 2.67 GiB | approximately 69% |
 
-These are estimates, not rebuilt-cache measurements. Changing row order can improve or worsen compression, so actual compressed bytes must be recorded by the prototype. The important distinction is that the proposed Exact-only sidecar duplicates approximately 0.79 GiB of coordinates, not the full 1.57 GiB cache and not `point_id` or `value_id`.
+These are estimates, not rebuilt-cache measurements. Changing row order can improve or worsen compression, so actual compressed bytes must be recorded by the first rebuilt cache. The important distinction is that the proposed Exact-only sidecar duplicates approximately 0.79 GiB of coordinates, not the full 1.57 GiB cache and not `point_id` or `value_id`.
 
 #### Persisted versus resident sparse-range policy
 
@@ -326,27 +326,27 @@ After the level is selected, use this deterministic initial routing rule:
 | Over budget | Read neither payload | Not needed |
 | All canonical values | Tile-major at the selected level | Not needed |
 | Complete-tile or construction access | Tile-major | Not needed for complete row access; publication validation remains separate |
-| Proper value subset and sidecar exists for the selected level | Value-major sidecar | Not needed |
-| Proper value subset and no sidecar exists for the selected level | Tile-major filtered fallback | Load lazily for required buckets |
+| Proper value subset and selected level is Exact | Mandatory value-major sidecar | Not needed |
+| Proper value subset and selected level is Bridge or Spatial | Tile-major filtered fallback | Load lazily for required buckets |
 
 Selecting the complete vocabulary is already normalized to the all-values state, so it follows the tile-major branch. For the supplied full-extent, 100,000-point case, AAMP selects Exact with 60,512 points and therefore uses the Exact value-major sidecar; the all-values request selects Spatial level 8 with 100,000 points and therefore uses that level's tile-major payload.
 
-For the initial prototype, any proper subset should use the sidecar when the chosen level has one. This makes routing reproducible and the benchmark interpretable. A later measured cost model may route a dense, near-all-values subset back to tile-major when that is cheaper. Such a model should compare projected touched chunks, physical operations, or selected-row coverage rather than using only the number of selected genes. The backend decision belongs to the generation-bound read plan or cache reader, not the GUI or renderer, and should be made once per snapshot so both paths produce the same logical tile payload and reuse the same CPU-residency contract.
+Every proper subset whose chosen level is Exact must use the mandatory sidecar. Proper-subset Bridge and Spatial requests retain the tile-major fallback until sidecar coverage is deliberately extended to those levels. This makes routing reproducible and the benchmark interpretable. A later measured cost model may route a dense, near-all-values subset back to tile-major when that is cheaper, but that would be an explicit routing change rather than support for an Exact cache without the sidecar. Such a model should compare projected touched chunks, physical operations, or selected-row coverage rather than using only the number of selected genes. The backend decision belongs to the generation-bound read plan or cache reader, not the GUI or renderer, and should be made once per snapshot so both paths produce the same logical tile payload and reuse the same CPU-residency contract.
 
-#### Recommended staged prototype
+#### Recommended staged implementation
 
-The first cache-side prototype should be deliberately narrow:
+The first cache-side implementation should be deliberately narrow:
 
-1. Build an **Exact-level-only, coordinate-only** value-major sidecar in `(value_id, manifest_index, point_id)` order.
+1. Always build an **Exact-level-only, coordinate-only** value-major sidecar in `(value_id, manifest_index, point_id)` order as part of the cache format.
 2. Reuse the existing manifest and value-to-tile catalog, persist only compact per-value coordinate pointers, and derive selected per-record offsets from catalog counts.
 3. Apply the post-LOD routing table above: proper-subset Exact reads use the sidecar, all-values and complete-tile reads use tile-major, and proper-subset non-Exact reads use the tile-major fallback.
 4. Split the current eager bucket lookup policy so value-major and all-values requests do not retain sparse-range arrays. Lazily load and byte-bound only the fallback indexes actually required.
 5. Measure construction time, actual compressed size, cold and warm selected-value reads, decoded bytes, physical operations, startup and peak lookup memory, and fallback-index churn for sparse and dense genes at full and partial viewports.
 6. Add Bridge or other spatial levels only if runtime evidence shows that selected-value reads at those levels remain an important bottleneck.
 
-Cache construction time is intentionally not an acceptance constraint unless it becomes operationally prohibitive. The main acceptance question is whether the extra approximately 0.79 GiB removes the scattered-decode latency sufficiently to improve interaction after renderer batching.
+Cache construction time is intentionally not an acceptance constraint unless it becomes operationally prohibitive. Measurements must show how much interaction improves for the extra approximately 0.79 GiB and may guide physical-layout tuning, but they do not make the Exact sidecar optional in newly built caches.
 
-If that storage increase is unacceptable, lower-storage variants can be evaluated without pretending that an index alone fixes locality:
+If that storage increase later proves operationally unacceptable, lower-storage variants can be evaluated as explicit future schema redesigns, not as a switch that omits the mandatory sidecar from the current schema:
 
 - build persistent value-major coordinates lazily for selected or frequently used values; AAMP's 60,512 float32 two-dimensional coordinates are only approximately 0.46 MiB raw, excluding metadata;
 - store explicitly validated, display-only quantized tile-relative coordinates, for example `uint16`, which halves the raw coordinate width but introduces a precision contract; or
@@ -362,7 +362,7 @@ One smaller runtime change remains independently justified:
 
    `resolve_selected_tile_intervals()` already knows the selected value associated with each range. Reconstructing the aligned IDs from the resolved ranges would remove the measured 1.86-second `value_id` Zarr boundary for AAMP. A one-value renderer could alternatively use a uniform value ID.
 
-The existing smaller-chunk and fewer-bucket benchmarks did not materially solve the end-to-end problem. A 128- or 256-row `location` setting may be retained as a controlled comparison when measuring the value-major prototype, but it is not a recommended implementation slice on its own. Any further comparison must include cache size, inner-chunk index size, physical reads, and wall time; decoded-row reduction alone is not sufficient acceptance evidence.
+The existing smaller-chunk and fewer-bucket benchmarks did not materially solve the end-to-end problem. A 128- or 256-row `location` setting may be retained as a controlled comparison when measuring the first value-major build, but it is not a recommended implementation slice on its own. Any further comparison must include cache size, inner-chunk index size, physical reads, and wall time; decoded-row reduction alone is not sufficient acceptance evidence.
 
 An uncompressed or memory-mappable display payload is another possible local-cache tradeoff. It would let the operating system service sparse fixed-width rows without codec amplification, at the cost of larger storage and a more local-filesystem-specific backend. The dual value-major Zarr payload should be evaluated first because it fixes locality while retaining the current storage model.
 
@@ -659,7 +659,7 @@ The following constraints apply to every slice:
 | 3 | Make CPU tile retention linear for the no-eviction case | Slice 0 | Cold CPU assembly defect removed |
 | 4 | Enforce homogeneous bucket display batches | Slice 0 | Mixed all-values/subset batches fail before planning or physical IO |
 | 5 | Stop decoding point-level `value_id` for proper subsets | Slice 4 | One of two selected-value Zarr reads removed through one explicit batch mode |
-| 6 | Add an Exact-only coordinate value-major sidecar to the cache format and writer | Slice 0 | New payload is constructible and validated but not yet used by the viewer |
+| 6 | Make an Exact-only coordinate value-major sidecar mandatory in the new cache format and writer | Slice 0 | Every newly built cache contains and validates the payload, but the viewer does not use it yet |
 | 7 | Route proper-subset Exact reads through the sidecar | Slices 5 and 6 | Sparse selected values gain contiguous coordinate reads |
 | 8 | Replace eager sparse-range residency with lazy byte-bounded fallback indexes | Slice 7 | Startup time and lookup RSS are reduced |
 | 9 | Run the integrated acceptance matrix and decide sidecar expansion | Slices 1–8 | Evidence-backed decision on Bridge/spatial sidecars |
@@ -1036,10 +1036,33 @@ Satisfied: proper-subset tile-major fallback performs coordinate-only physical r
 
 This slice makes the new physical ordering constructible, atomically published, and independently validated. It does not route viewer reads to it yet.
 
-**Schema and compatibility decisions**
+**Current-to-target interpretation**
+
+The current cache has one strict `harpy-multiscale-points-zarr-cache-0.1` root contract. `_CacheAttributes.to_dict()` always emits that version, `_parse_cache_attributes()` requires its exact root-key set, and `_CatalogReader` accepts only the four existing root groups: `levels`, `values`, `manifest`, and `value_tiles`. Exact point rows are physically ordered by tile and then by `(value_id, point_id)` within each tile. The existing `value_tiles` catalog already transposes compact range records into `(level, value_id, manifest_index)` order, but it contains counts and tile references rather than coordinates.
+
+Slice 6 adds a second Exact coordinate payload alongside the current tile-major buckets. It does not replace `_BucketWriter`, alter the tile-major payload, or change the logical tile contract. The sidecar keeps the same tile-relative `(N, 2) float32` coordinate representation and changes only physical row order:
+
+```text
+tile-major Exact payload       tile_y -> tile_x -> value_id -> point_id
+value-major Exact sidecar      value_id -> manifest_index -> point_id
+```
+
+For example, if the Exact value-to-tile catalog contains:
+
+```text
+value 0 -> manifest 2 -> 2 points
+value 0 -> manifest 8 -> 1 point
+value 1 -> manifest 1 -> 2 points
+```
+
+the sidecar stores the first two coordinates for value 0/manifest 2, the next coordinate for value 0/manifest 8, and then two coordinates for value 1/manifest 1. `value_point_indptr=[0, 3, 5]` addresses the complete per-value intervals. The existing `value_tiles` records and counts split each value interval back into its manifest tiles, so the sidecar does not need another `manifest_index` array.
+
+This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning, CPU residency, render-batch packing, composition, and VisPy continue to use the tile-major path after Slice 6. Slice 7 introduces the post-LOD route decision and consumes the sidecar.
+
+**Schema decisions**
 
 1. Introduce an explicit sidecar descriptor in root cache metadata rather than inferring capability from directory presence. It records covered levels, row ordering, coordinate dtype, dimensionality, chunk/shard settings, and sidecar schema version.
-2. Bump the cache schema for sidecar-aware generations and keep a compatibility reader for the current tile-major-only generation. An older cache is interpreted as having no sidecar and continues to use fallback routing.
+2. Bump the cache schema outright and implement only the new contract. Do not add a compatibility parser for the current tile-major-only schema: pre-change caches are rejected and must be rebuilt. An unknown cache or sidecar schema is likewise rejected.
 3. Store the initial sidecar under one unambiguous generation-owned path such as:
 
    ```text
@@ -1049,24 +1072,31 @@ This slice makes the new physical ordering constructible, atomically published, 
            value_point_indptr
    ```
 
-4. Persist only Exact `location` and compact `value_point_indptr`. Do not duplicate point-level `value_id`, `point_id`, the manifest, or the value-to-tile catalog.
-5. Make Exact sidecar construction an explicit builder option during the prototype. Do not silently add approximately 0.79 GiB to every cache until Slice 9 accepts the tradeoff.
+4. Persist only Exact tile-relative `location` and compact `value_point_indptr`. The pointer has shape `(value_count + 1,)` and dtype `uint64`; `location` has shape `(exact_point_count, 2)` and dtype `float32`. Do not duplicate point-level `value_id`, `point_id`, the manifest, or the value-to-tile catalog. A row's value is implicit in its pointer interval, manifest identity comes from the existing ordered `value_tiles` records, and `point_id` is used only to establish deterministic construction order.
+5. Build the Exact sidecar unconditionally in every cache. There is no builder enable flag, disabled state, or tile-major-only form of the new schema. Sidecar location chunk/shard settings and the construction batch bound can remain explicit configuration with defaults rather than being inherited accidentally from tile-major buckets.
 
 **Writer changes**
 
 1. Add a dedicated storage writer rather than extending `_BucketWriter` with a second unrelated row order.
-2. Build inside the same unique staging generation as the tile-major payload and before `_validate_staged_cache()` and publication.
-3. Write rows in `(value_id, manifest_index, point_id)` order. Reuse existing per-value catalog records and their counts to determine output intervals. `point_id` establishes deterministic order during construction but is not persisted in the sidecar.
-4. Construct the sidecar out of core. Bound temporary memory by a configured construction batch; cache-construction time is secondary to runtime locality but unbounded RAM is not acceptable.
+2. Given the current builder, the clean insertion point is after `_write_staged_cache_catalog()` and before `_validate_staged_cache()`. Always build the sidecar inside the same unique staging generation as the tile-major payload. The catalog therefore supplies the authoritative value-to-tile ordering and counts before the sidecar is written, while neither artifact is public yet.
+3. Stream Exact `value_tiles` records in `(value_id, manifest_index)` order. Resolve each record to its validated tile-major sparse range, consume the already canonical `(value_id, point_id)` point rows, and write the corresponding coordinates to the declared output interval. `point_id` establishes deterministic order during construction but is not persisted in the sidecar.
+4. Construct the sidecar out of core. Bound coordinate buffers by the configured construction batch and bound retained bucket readers explicitly; do not materialize the complete Exact coordinate array, point IDs, or all source rows in memory. Cache-construction time is secondary to runtime locality but unbounded RAM is not acceptable.
 5. Reconcile every value pointer interval with the Exact catalog count and reconcile the final pointer with the Exact manifest total.
 6. Include sidecar files in staging validation and atomic publication. Any sidecar write or validation failure must leave the preceding completed generation recoverable.
-7. Thread the explicit Exact-sidecar option through the public builder configuration and `scripts/build_tiled_points_cache_variant.py` so the supplied-cache prototype is reproducible from one recorded command.
+7. Thread explicit sidecar location chunk/shard settings and the construction batch bound through the public builder configuration and `scripts/build_tiled_points_cache_variant.py` so the supplied-cache build is reproducible from one recorded command. Do not expose a switch that omits the sidecar.
+
+The staged hierarchy validator must become descriptor-aware. Every generation using the new schema must contain the descriptor and exactly the advertised `value_major` group, arrays, layouts, and codec settings; a missing descriptor, group, or array is cache corruption rather than an older supported form. Independent validation then checks pointer origin, monotonicity, every per-value interval against `values/n_points`, the terminal pointer against the Exact point total, and coordinate-array row count. This extends the existing build transaction rather than creating a second publication step:
+
+```text
+Exact -> Bridge/Spatial -> catalog -> mandatory Exact sidecar
+      -> independent staged validation -> mark complete -> atomic publication
+```
 
 **Focused tests**
 
 - Add small-fixture tests for ordering, value pointers, empty values, several tiles per value, deterministic point order, chunk boundaries, and final row-count reconciliation.
 - Add corruption tests for metadata, dtype, shape, pointer monotonicity, pointer terminal value, and coordinate count.
-- Extend builder and staging-validation tests to cover successful publication, rollback on sidecar failure, and tile-major-only compatibility.
+- Extend builder and staging-validation tests to cover successful publication, rollback on sidecar failure, missing mandatory sidecar metadata or arrays, and rejection of the pre-change tile-major-only schema.
 - Verify that an unrecognized sidecar schema is rejected rather than ignored.
 
 **Construction evidence**
@@ -1075,7 +1105,7 @@ Build the supplied cache with an Exact coordinate sidecar and record constructio
 
 **Exit condition**
 
-A completed cache generation can truthfully advertise and validate an Exact coordinate value-major sidecar, while old tile-major-only caches remain readable.
+Every completed cache generation using the current schema contains and independently validates an Exact coordinate value-major sidecar. Pre-change tile-major-only caches are rejected and must be rebuilt.
 
 ### Slice 7 — Post-LOD physical-payload routing and sidecar reads
 
@@ -1089,8 +1119,8 @@ This slice realizes the cold-read improvement while preserving one logical tile/
    ```text
    over budget                         -> no payload
    all values                          -> tile-major complete-tile reads
-   proper subset + sidecar at level    -> value-major coordinate reads
-   proper subset + no sidecar at level -> tile-major filtered fallback
+   proper subset + Exact               -> mandatory value-major coordinate reads
+   proper subset + Bridge/Spatial      -> tile-major filtered fallback
    ```
 
 3. Make the route decision once per plan in `_PointsCacheReader`; do not decide independently in the GUI, cache session, or per bucket.
@@ -1102,8 +1132,8 @@ This slice realizes the cold-read improvement while preserving one logical tile/
 
 **Focused tests**
 
-- Prove that LOD is identical with and without a sidecar.
-- Cover proper-subset Exact sidecar routing, all-values Exact tile-major routing, proper-subset Bridge/spatial fallback, and old-cache fallback.
+- Prove that physical routing does not alter the LOD decision: Exact always has its sidecar, while Bridge and Spatial remain uncovered initially.
+- Cover proper-subset Exact sidecar routing, all-values Exact tile-major routing, and proper-subset Bridge/Spatial fallback.
 - Compare sidecar and tile-major results for one value, several values, full extent, partial viewport, CPU-residency misses, and empty intersections.
 - Assert identical tile keys, tile order, coordinates, value IDs, estimated counts, omitted values, and cache-origin behavior.
 - Patch sparse bucket-range loading to fail and prove it is not touched by a sidecar request.
@@ -1153,7 +1183,7 @@ This slice removes the approximately 8.1-second startup and 568.4-MiB eager look
 - The LRU evicts deterministically under its byte cap and never evicts an index in active use.
 - Load failure leaves preceding resident indexes valid and reports the viewport failure without corrupting session state.
 - Repeated level/view changes remain within the configured cap.
-- Old tile-major-only caches still function through lazy fallback.
+- Proper-subset Bridge and Spatial requests still function through lazy tile-major fallback without weakening the mandatory Exact-sidecar schema.
 
 **Benchmark evidence**
 
@@ -1201,7 +1231,7 @@ process RSS at startup, snapshot, staging and first draw
 
 **Decision rules**
 
-- Keep the Exact sidecar only if selected-value interaction improves enough to justify its measured compressed size.
+- Treat the mandatory Exact sidecar as part of the accepted cache format; use the matrix to tune its physical layout and quantify its cost rather than deciding whether newly built caches may omit it.
 - Add a Bridge or spatial sidecar only when benchmark traces show that proper-subset reads at that level remain a material interaction bottleneck and projected storage is acceptable.
 - Do not add all-level sidecars merely because construction is available.
 - Do not substitute smaller chunks, fewer buckets, or cross-bucket threading for the sidecar unless new end-to-end evidence contradicts the existing results.
@@ -1209,7 +1239,7 @@ process RSS at startup, snapshot, staging and first draw
 
 **Exit condition**
 
-Publish one comparison report containing the pre-change baseline and each accepted slice. Record explicit keep, revise, or reject decisions for Exact sidecar defaulting and any further levels.
+Publish one comparison report containing the pre-change baseline and each accepted slice. Record explicit tuning decisions for the mandatory Exact sidecar and keep, revise, or reject decisions for extending sidecars to further levels.
 
 ### Slice 10 — Conditional viewport debounce
 
@@ -1250,7 +1280,7 @@ Do not raise the budget until end-to-end tests cover worker packing, Qt delivery
 
 #### Deferred cache simplifications
 
-Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the dual-ordering prototype has measured results, and keep each in its own schema/benchmark slice.
+Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the mandatory dual-ordering implementation has measured results, and keep each in its own schema/benchmark slice.
 
 ### Slice 12 — Explicit coordinator selection arming
 
@@ -1383,7 +1413,7 @@ The initial optimization programme is complete when:
 4. CPU residency no longer has quadratic no-eviction behavior;
 5. every bucket display batch has exactly one complete or proper-subset selection mode, and mixed input fails before planning or physical IO;
 6. proper-subset reads never decode point-level `value_id`;
-7. proper-subset Exact reads use a validated value-major coordinate sidecar after LOD selection;
+7. every newly built current-schema cache contains a validated Exact value-major coordinate sidecar, and proper-subset Exact reads use it after LOD selection;
 8. all-values and complete-tile requests retain tile-major routing;
 9. uncovered levels retain a correct tile-major fallback;
 10. bucket sparse ranges are lazy and byte bounded rather than eagerly resident;
@@ -1412,7 +1442,7 @@ The practical priority is therefore:
 1. Replace one-visual-per-logical-tile rendering with one snapshot visual/program and one VBO fed by worker-prepared immutable render batches. This removes the quadratic GPU residency path rather than optimizing a tile-resource design that is no longer needed. Preserve logical tiles only at the storage and CPU-residency boundaries, and keep tile-proportional packing off the GUI thread. Add a second VBO only if measured behavior justifies ping-pong storage.
 2. Fix the quadratic CPU residency path, which remains useful for reusing decoded logical tiles across viewport requests.
 3. Stop reading point-level `value_id` for proper selected-value requests; construct it from the requested values and resolved catalog or fallback intervals, or represent a one-value snapshot with a uniform.
-4. Prototype an Exact-level-only, coordinate-only value-major sidecar alongside the existing tile-major payload. This deliberately duplicates the Exact coordinate bytes, projected at approximately 0.79 GiB and a 50% cache increase, while reusing the manifest and value-to-tile catalog and omitting duplicate point-level `value_id` and `point_id` arrays. Choose LOD first, then route all-values and complete-tile reads to tile-major, proper-subset reads to a sidecar available at the chosen level, and uncovered proper-subset levels to tile-major fallback. Replace eager retention of the complete 568.4 MiB sparse bucket lookup with compact always-resident addressing plus lazy, byte-bounded fallback indexes. Measure actual compressed size, cold and warm selected-value wall time, decoded bytes, physical operations, startup and peak lookup memory, and fallback churn. Extend the sidecar to other levels only if runtime evidence justifies their additional storage.
+4. Make an Exact-level-only, coordinate-only value-major sidecar a mandatory part of the new cache schema alongside the existing tile-major payload. This deliberately duplicates the Exact coordinate bytes, projected at approximately 0.79 GiB and a 50% cache increase, while reusing the manifest and value-to-tile catalog and omitting duplicate point-level `value_id` and `point_id` arrays. Do not implement backward compatibility: pre-change tile-major-only caches must be rebuilt. Choose LOD first, then route all-values and complete-tile reads to tile-major, proper-subset Exact reads to the mandatory sidecar, and proper-subset Bridge or Spatial reads to tile-major fallback. Replace eager retention of the complete 568.4 MiB sparse bucket lookup with compact always-resident addressing plus lazy, byte-bounded fallback indexes. Measure actual compressed size, cold and warm selected-value wall time, decoded bytes, physical operations, startup and peak lookup memory, and fallback churn. Extend the sidecar to other levels only if runtime evidence justifies their additional storage.
 5. Treat smaller chunks, fewer buckets, and cross-bucket concurrency as secondary comparisons or tuning. The current evidence does not support them as fixes for tile-major sparse decoding or per-tile rendering.
 6. Add viewport debounce to avoid starting expensive cold requests for transient zoom states after the underlying read and render costs are controlled.
 7. Add exact render-payload reuse only if recorded camera traces show that accepted viewports frequently resolve to the active immutable tile identity and that avoiding their packing or upload is material.
