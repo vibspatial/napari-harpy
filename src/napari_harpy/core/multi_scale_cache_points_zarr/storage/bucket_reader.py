@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 from types import TracebackType
 
@@ -59,6 +61,32 @@ class _PointDisplayPayload:
         value_id.flags.writeable = False
         object.__setattr__(self, "location", location)
         object.__setattr__(self, "value_id", value_id)
+
+
+@dataclass(frozen=True)
+class _ResolvedSelectedValueRange:
+    """Retain one selected value's labelled bucket-global point range."""
+
+    value_id: int
+    row_start: int
+    row_count: int
+
+    def __post_init__(self) -> None:
+        _require_integer_in_range(self.value_id, "value_id", maximum=_UINT32_MAX)
+        _require_integer_in_range(self.row_start, "row_start", maximum=_INT64_MAX)
+        _require_integer_in_range(self.row_count, "row_count", minimum=1, maximum=_INT64_MAX)
+        if self.row_start > _INT64_MAX - self.row_count:
+            raise ValueError("Selected point range exceeds the supported row domain.")
+
+    @property
+    def row_stop(self) -> int:
+        """Return the exclusive bucket-global point-row endpoint."""
+        return self.row_start + self.row_count
+
+    @property
+    def interval(self) -> tuple[int, int]:
+        """Return the unlabelled half-open interval used for physical selection."""
+        return self.row_start, self.row_stop
 
 
 @dataclass(frozen=True)
@@ -255,14 +283,19 @@ class _BucketReader:
         self,
         requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
     ) -> tuple[_PointDisplayPayload | None, ...]:
-        """Read all requested logical tiles as one coordinated bucket batch.
+        """Read requested logical tiles in one coordinated operation for this bucket.
 
         Every request first resolves to exact bucket-global point intervals from
         the resident lookup index. Physically touching intervals become one
         basic slice; otherwise one exact C-contiguous ``int64`` row selector is
-        used. Both representations pass through Zarr's orthogonal-selection API,
-        resulting in one ``location`` and one point-level ``value_id`` selection
-        for the complete nonempty batch. Point IDs are never selected.
+        used.
+
+        ``location`` is always read from Zarr using that orthogonal row selection.
+        All requests in one call use the same selection mode. In all-values mode
+        (``selected_value_ids=None``), the same selector is also applied to the
+        point-level ``value_id`` Zarr array. In selected-values mode, the aligned
+        output IDs are reconstructed from the labelled resident ranges and the
+        point-level ``value_id`` array is not accessed. Point IDs are never selected.
 
         Parameters
         ----------
@@ -270,11 +303,11 @@ class _BucketReader:
             Nonempty tuple of ``(descriptor, selected_value_ids)`` pairs from
             this bucket in increasing bucket-local tile order. ``None`` selects
             every point in that tile; otherwise the IDs must be strictly
-            increasing and unique. Every request in one batch must use the same
+            increasing and unique. Every request in one call must use the same
             selection mode: either all ``selected_value_ids`` are ``None``, or
             every request provides a nonempty selected-value array. The arrays
             may differ between requests because values occur in different tiles;
-            only their presence or absence must agree within one batch.
+            only their presence or absence must agree within one call.
 
         Returns
         -------
@@ -303,35 +336,40 @@ class _BucketReader:
 
         batch_tile_indptr = np.empty(len(requests) + 1, dtype=np.uint64)
         batch_tile_indptr[0] = 0
-        exact_intervals: list[tuple[int, int]] = []
+        complete_intervals: list[tuple[int, int]] = []
+        selected_ranges: list[_ResolvedSelectedValueRange] = []
         rows_resolved = 0
         previous_tile_index: int | None = None
         for request_index, request in enumerate(requests):
             descriptor, selected_value_ids = request
             if selected_value_ids is None:
                 interval = self.resolve_complete_tile_interval(descriptor)
-                tile_intervals = (interval,)
+                complete_intervals.append(interval)
                 tile_row_count = interval[1] - interval[0]
             else:
                 resolved = self.resolve_selected_tile_intervals(descriptor, selected_value_ids)
                 if resolved is None:
-                    tile_intervals = ()
                     tile_row_count = 0
                 else:
-                    tile_intervals, tile_row_count = resolved
+                    resolved_ranges, tile_row_count = resolved
+                    selected_ranges.extend(resolved_ranges)
             tile_index = descriptor.bucket_tile_index
             if previous_tile_index is not None and tile_index <= previous_tile_index:
                 raise ValueError("Display requests must follow increasing bucket-local tile order.")
             previous_tile_index = tile_index
-            exact_intervals.extend(tile_intervals)
             rows_resolved += tile_row_count
             batch_tile_indptr[request_index + 1] = rows_resolved
 
         if rows_resolved == 0:
             return (None,) * len(requests)
 
+        row_intervals: Iterable[tuple[int, int]]
+        if is_subset_mode:
+            row_intervals = (selected_range.interval for selected_range in selected_ranges)
+        else:
+            row_intervals = complete_intervals
         row_selection = _exact_row_selection(
-            tuple(exact_intervals),
+            row_intervals,
             point_count=self._attributes_or_raise().point_count,
             expected_row_count=rows_resolved,
         )
@@ -339,10 +377,20 @@ class _BucketReader:
             self._array("location").get_orthogonal_selection((row_selection, slice(None))),
             dtype=np.float32,
         )
-        value_id = np.ascontiguousarray(
-            self._array("value_id").get_orthogonal_selection((row_selection,)),
-            dtype=np.uint32,
-        )
+        # Selected ranges already carry canonical value IDs in row-selection
+        # order. Synthesizing the aligned IDs is intentional: reading the
+        # point-level `value_id` array here would reintroduce the sparse
+        # many-chunk decoding bottleneck that selected-value reads avoid.
+        if is_subset_mode:
+            value_id = _synthesize_selected_value_ids(
+                selected_ranges,
+                expected_row_count=rows_resolved,
+            )
+        else:
+            value_id = np.ascontiguousarray(
+                self._array("value_id").get_orthogonal_selection((row_selection,)),
+                dtype=np.uint32,
+            )
         if location.shape != (rows_resolved, 2) or value_id.shape != (rows_resolved,):
             raise RuntimeError("Bucket display selection returned unexpected aligned array shapes.")
 
@@ -431,8 +479,8 @@ class _BucketReader:
         self,
         descriptor: _TileDescriptor,
         selected_value_ids: npt.NDArray[np.uint32],
-    ) -> tuple[tuple[tuple[int, int], ...], int] | None:
-        """Resolve exact selected point rows using only resident lookup arrays."""
+    ) -> tuple[tuple[_ResolvedSelectedValueRange, ...], int] | None:
+        """Resolve labelled selected point ranges using only resident lookup arrays."""
         self._require_selected_value_ids(selected_value_ids)
         index = self._lookup_index_or_raise()
         tile_index = self._require_lookup_tile_index(descriptor, index)
@@ -449,15 +497,32 @@ class _BucketReader:
         if len(selected_positions) == 0:
             return None
 
+        selected_values = range_values[selected_positions]
         row_starts = index.range_row_start[range_start:range_stop][selected_positions]
         row_counts = index.range_row_count[range_start:range_stop][selected_positions]
         # Each selected sparse range becomes a half-open, bucket-global row
-        # interval into the aligned point arrays. These are neither range-array
-        # indexes nor tile-local offsets.
-        intervals = tuple((int(start), int(start + count)) for start, count in zip(row_starts, row_counts, strict=True))
-        if any(start < tile_start or stop > tile_stop or start >= stop for start, stop in intervals):
+        # interval into the aligned point arrays while retaining the canonical
+        # value and count that will reconstruct its output IDs. These are neither
+        # range-array indexes nor tile-local offsets.
+        resolved_ranges = tuple(
+            _ResolvedSelectedValueRange(
+                value_id=int(value_id),
+                row_start=int(row_start),
+                row_count=int(row_count),
+            )
+            for value_id, row_start, row_count in zip(
+                selected_values,
+                row_starts,
+                row_counts,
+                strict=True,
+            )
+        )
+        if any(
+            selected_range.row_start < tile_start or selected_range.row_stop > tile_stop
+            for selected_range in resolved_ranges
+        ):
             raise ValueError("Selected sparse ranges are outside the logical tile interval.")
-        return intervals, sum(stop - start for start, stop in intervals)
+        return resolved_ranges, sum(selected_range.row_count for selected_range in resolved_ranges)
 
     def _construction_tile_interval(self, descriptor: _TileDescriptor) -> tuple[int, int]:
         """Resolve and verify one tile's bucket-global point-row interval.
@@ -567,8 +632,35 @@ class _BucketReader:
         self._open = False
 
 
+def _synthesize_selected_value_ids(
+    resolved_ranges: Sequence[_ResolvedSelectedValueRange],
+    *,
+    expected_row_count: int,
+) -> npt.NDArray[np.uint32]:
+    """Construct aligned point-level value IDs from labelled selected ranges."""
+    if not resolved_ranges:
+        raise ValueError("`resolved_ranges` must be nonempty.")
+    _require_integer_in_range(
+        expected_row_count,
+        "expected_row_count",
+        minimum=1,
+        maximum=_INT64_MAX,
+    )
+    value_id = np.empty(expected_row_count, dtype=np.uint32)
+    cursor = 0
+    for selected_range in resolved_ranges:
+        stop = cursor + selected_range.row_count
+        if stop > expected_row_count:
+            raise ValueError("Selected range counts exceed the expected output row count.")
+        value_id[cursor:stop] = selected_range.value_id
+        cursor = stop
+    if cursor != expected_row_count:
+        raise ValueError("Selected range counts do not reconcile to the expected output row count.")
+    return value_id
+
+
 def _exact_row_selection(
-    intervals: tuple[tuple[int, int], ...],
+    intervals: Iterable[tuple[int, int]],
     *,
     point_count: int,
     expected_row_count: int,
@@ -607,14 +699,18 @@ def _exact_row_selection(
     deliberately remain separate because this function validates untyped point
     row pairs, while its counterpart validates value-major catalog intervals.
     """
-    if not intervals:
-        raise ValueError("`intervals` must be nonempty.")
+    interval_iterator = iter(intervals)
+    try:
+        first_interval = next(interval_iterator)
+    except StopIteration:
+        raise ValueError("`intervals` must be nonempty.") from None
+
     _require_integer_in_range(point_count, "point_count", minimum=1, maximum=_INT64_MAX)
     _require_integer_in_range(expected_row_count, "expected_row_count", minimum=1, maximum=_INT64_MAX)
     merged: list[tuple[int, int]] = []
     observed_row_count = 0
     previous_stop: int | None = None
-    for interval in intervals:
+    for interval in chain((first_interval,), interval_iterator):
         if not isinstance(interval, tuple) or len(interval) != 2:
             raise ValueError("Every point interval must be a (start, stop) pair.")
         start, stop = interval
