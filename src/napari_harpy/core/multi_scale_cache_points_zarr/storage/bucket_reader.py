@@ -637,7 +637,29 @@ def _synthesize_selected_value_ids(
     *,
     expected_row_count: int,
 ) -> npt.NDArray[np.uint32]:
-    """Construct aligned point-level value IDs from labelled selected ranges."""
+    """Expand range-level value labels into one ID per selected point.
+
+    Each resolved range stores one ``value_id`` for an entire contiguous point-row
+    range rather than one ID per point. The ranges follow the same order as the
+    selected ``location`` rows, so repeating each label by its ``row_count``
+    produces an aligned point-level array without accessing the point-level
+    ``value_id`` Zarr array.
+
+    For example, ranges ``(value_id=7, row_count=3)`` and
+    ``(value_id=19, row_count=1)`` produce ``[7, 7, 7, 19]``.
+
+    Parameters
+    ----------
+    resolved_ranges
+        Ordered selected-value ranges used for the physical location selection.
+    expected_row_count
+        Number of selected location rows. The range counts must sum to this value.
+
+    Returns
+    -------
+    numpy.ndarray
+        C-contiguous ``uint32`` IDs aligned one-to-one with the selected locations.
+    """
     if not resolved_ranges:
         raise ValueError("`resolved_ranges` must be nonempty.")
     _require_integer_in_range(

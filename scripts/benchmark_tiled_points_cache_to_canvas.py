@@ -785,6 +785,8 @@ def main() -> None:
             cold_snapshot_ms = _elapsed_ms(started)
             cold_breakdown = timings.summary()
             rss_after_cold_snapshot_mib = _rss_mib()
+            if not bool((snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all()):
+                raise RuntimeError("Selected snapshot contains a value ID other than the requested canonical ID.")
 
             timings.clear()
             warm_request = _ViewportRequest(
@@ -823,6 +825,7 @@ def main() -> None:
             "point_count": snapshot.rendered_point_count,
             "render_batch_point_count": snapshot.render_batch.point_count,
             "render_batch_bytes": snapshot.render_batch.nbytes,
+            "all_value_ids_match_selection": True,
             "omitted_value_ids": snapshot.omitted_value_ids,
         }
         report["dense_exact_tile"] = _dense_exact_tile_report(reader)
