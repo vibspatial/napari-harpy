@@ -1057,6 +1057,36 @@ value 1 -> manifest 1 -> 2 points
 
 the sidecar stores the first two coordinates for value 0/manifest 2, the next coordinate for value 0/manifest 8, and then two coordinates for value 1/manifest 1. `value_point_indptr=[0, 3, 5]` addresses the complete per-value intervals. The existing `value_tiles` records and counts split each value interval back into its manifest tiles, so the sidecar does not need another `manifest_index` array.
 
+Two distinct pointer tables participate in that reconstruction:
+
+- the existing `value_tiles/indptr[level, value_id:value_id + 2]` selects the value's range-level catalog records in the aligned `value_tiles/manifest_index` and `value_tiles/n_points` arrays; and
+- the new `value_point_indptr[value_id:value_id + 2]` selects the value's point-level coordinate interval in `value_major/level_0/location`.
+
+For the example above, the aligned Exact catalog is conceptually:
+
+```text
+value_tiles/indptr[0]         = [0, 2, 3]
+value_tiles/manifest_index    = [2, 8, 1]
+value_tiles/n_points          = [2, 1, 2]
+value_point_indptr            = [0, 3, 5]
+```
+
+The reader already knows the requested canonical `value_id`. For value 0, `value_point_indptr[0:2]` gives the complete coordinate interval `[0, 3)`. Repeating that known ID three times constructs the point-aligned IDs without a sidecar `value_id` array. Starting at point row 0, the aligned catalog counts `[2, 1]` divide the interval into `[0, 2)` for manifest row 2 and `[2, 3)` for manifest row 8. For value 1, the point interval `[3, 5)` and count `[2]` identify manifest row 1. In pseudocode:
+
+```python
+point_cursor = value_point_indptr[value_id]
+
+for manifest_index, n_points in value_tile_records(value_id):
+    point_stop = point_cursor + n_points
+    if manifest_index is required_for_viewport:
+        location = sidecar_location[point_cursor:point_stop]
+        value_ids = np.full(n_points, value_id, dtype=np.uint32)
+        emit_logical_tile(manifest_index, location, value_ids)
+    point_cursor = point_stop
+```
+
+`manifest_index` is therefore not eliminated from the cache. It remains stored once per value/tile range in the existing catalog and addresses the existing manifest descriptor, including the tile-grid coordinates needed to interpret tile-relative locations. It is merely not duplicated once per point in the sidecar. The sidecar writer and independent validator must guarantee that coordinate blocks follow exactly this catalog record order and that every block length equals its catalog `n_points`.
+
 This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning, CPU residency, render-batch packing, composition, and VisPy continue to use the tile-major path after Slice 6. Slice 7 introduces the post-LOD route decision and consumes the sidecar.
 
 **Schema decisions**
@@ -1125,7 +1155,7 @@ This slice realizes the cold-read improvement while preserving one logical tile/
 
 3. Make the route decision once per plan in `_PointsCacheReader`; do not decide independently in the GUI, cache session, or per bucket.
 4. Add a dedicated sidecar reader that opens the compact per-value pointers and `location` array. Full-extent one-value reads become one value interval. Partial viewports derive only the selected value/manifest-record runs needed for CPU-residency misses.
-5. Use the existing selected-value index's aligned `manifest_index` and `n_points` records. Derive per-record sidecar offsets with cumulative counts; do not introduce a cache-wide resident `record_point_indptr`.
+5. Use the existing selected-value index's aligned `manifest_index` and `n_points` records. Derive per-record sidecar offsets with cumulative counts; do not introduce a cache-wide resident `record_point_indptr`. For a partial viewport, advance the cumulative cursor across every catalog record for the value, including preceding records outside the viewport, and read only the coordinate intervals whose manifest rows are required. Computing the prefix from visible records alone would produce incorrect sidecar offsets.
 6. Split returned coordinate runs back into the same ordered logical `_TileReadResult` values used by tile-major reads. Construct `value_id` arrays from the known value intervals.
 7. Keep `_read_viewport_snapshot()`, CPU tile residency, render-batch packing, composition, and VisPy unaware of which physical payload supplied a tile.
 8. Expose route, sidecar selection count, touched chunks/shards, selected rows, decoded rows, and physical bytes in benchmark diagnostics.
