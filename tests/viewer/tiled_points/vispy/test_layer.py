@@ -14,10 +14,16 @@ from napari_harpy.viewer.tiled_points import (
     TiledPointsRenderTile,
     TileResidencyKey,
 )
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 
-def _layer(*, generation: str | None = None, gpu_bytes: int = 1_000_000) -> TiledPointsLayerModel:
+def _layer(
+    *,
+    generation: str | None = None,
+    gpu_bytes: int = 1_000_000,
+    hard_render_point_budget: int = 100_000,
+) -> TiledPointsLayerModel:
     return TiledPointsLayerModel(
         TiledPointsDatasetReference(
             cache_generation_id=str(uuid4()) if generation is None else generation,
@@ -39,7 +45,8 @@ def _layer(*, generation: str | None = None, gpu_bytes: int = 1_000_000) -> Tile
             ),
             dtype=np.uint8,
         ),
-        max_gpu_tile_bytes=gpu_bytes,
+        max_vertex_payload_bytes=gpu_bytes,
+        hard_render_point_budget=hard_render_point_budget,
     )
 
 
@@ -76,6 +83,13 @@ def _snapshot(
     generation: int,
     within_budget: bool = True,
 ) -> TiledPointsRenderSnapshot:
+    point_count = sum(tile.point_count for tile in tiles)
+    render_batch = pack_render_tiles(
+        tiles,
+        point_count=point_count,
+        value_count=layer.data.value_count,
+        max_vertex_payload_bytes=1_000_000,
+    )
     return TiledPointsRenderSnapshot(
         cache_generation_id=layer.data.cache_generation_id,
         request_generation=generation,
@@ -84,27 +98,11 @@ def _snapshot(
         level=0,
         level_kind="exact",
         within_budget=within_budget,
-        estimated_point_count=sum(tile.point_count for tile in tiles) if within_budget else 100,
+        estimated_point_count=point_count if within_budget else 100,
         omitted_value_ids=(),
-        tiles=tiles,
+        rendered_tile_count=len(tiles),
+        render_batch=render_batch,
     )
-
-
-def _track_tile_resource_creation(
-    visual: VispyTiledPointsLayer,
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[TileResidencyKey]:
-    """Record test-local tile uploads without retaining history in the renderer."""
-    created_keys: list[TileResidencyKey] = []
-    create_tile_resource = visual._create_tile_resource
-
-    def _record(tile: TiledPointsRenderTile):
-        resource = create_tile_resource(tile)
-        created_keys.append(tile.key)
-        return resource
-
-    monkeypatch.setattr(visual, "_create_tile_resource", _record)
-    return created_keys
 
 
 @pytest.fixture
@@ -112,33 +110,73 @@ def maximum_texture_size(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("napari._vispy.layers.base.get_max_texture_sizes", lambda: (8192, 2048))
 
 
-def test_renderer_reuses_overlapping_tiles_and_style_changes_do_not_upload(
+def test_renderer_keeps_one_visual_and_vbo_across_full_snapshot_replacements(
     maximum_texture_size: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = _layer(gpu_bytes=48)
     visual = VispyTiledPointsLayer(layer, FontInfo())
-    created_keys = _track_tile_resource_creation(visual, monkeypatch)
+    snapshot_visual = visual._snapshot_visual
+    vertex_buffer = snapshot_visual.vertex_buffer
+    set_data = vertex_buffer.set_data
+    staged_point_counts: list[int] = []
+
+    def _record_set_data(vertices: np.ndarray, *, copy: bool) -> None:
+        staged_point_counts.append(len(vertices))
+        set_data(vertices, copy=copy)
+
+    monkeypatch.setattr(vertex_buffer, "set_data", _record_set_data)
     first, second, third = (_tile(layer, tile_x) for tile_x in range(3))
     try:
+        assert visual.visual_count == 1
+        assert visual.vbo_count == 1
+        assert visual.payload_replacement_count == 0
+
         assert visual.apply_snapshot(_snapshot(layer, (first, second), generation=1))
-        assert created_keys == [first.key, second.key]
-        assert visual.resident_gpu_tile_bytes == 24
+        assert visual.active_point_count == 2
+        assert visual.active_vertex_bytes == 24
+        assert visual.point_draw_submission_count == 1
+        assert visual.payload_replacement_count == 1
+        assert staged_point_counts == [2]
 
         assert visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
-        assert visual.active_keys == (second.key, third.key)
-        assert created_keys == [first.key, second.key, third.key]
-        assert created_keys.count(second.key) == 1
-        assert visual.resident_gpu_tile_bytes == 36
+        assert visual.active_point_count == 2
+        assert visual.active_vertex_bytes == 24
+        assert visual.payload_replacement_count == 2
+        assert staged_point_counts == [2, 2]
+        assert visual._snapshot_visual is snapshot_visual
+        assert visual._snapshot_visual.vertex_buffer is vertex_buffer
 
         layer.point_diameter = 7.0
+        layer.opacity = 0.25
         replacement = layer.value_palette.copy()
         replacement[[0, 1]] = replacement[[1, 0]]
         layer.value_palette = replacement
 
-        assert created_keys == [first.key, second.key, third.key]
+        assert visual.payload_replacement_count == 2
+        assert staged_point_counts == [2, 2]
+        assert visual._snapshot_visual.vertex_buffer is vertex_buffer
         assert visual.palette_update_count == 1
         assert visual.palette_gpu_bytes == 12
+    finally:
+        visual.close()
+
+
+def test_generic_layer_refresh_preserves_active_snapshot(
+    maximum_texture_size: None,
+) -> None:
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    tile = _tile(layer, 0)
+    try:
+        assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
+        vertex_buffer = visual._snapshot_visual.vertex_buffer
+
+        layer.refresh()
+
+        assert visual.active_point_count == tile.point_count
+        assert visual.payload_replacement_count == 1
+        assert visual._snapshot_visual.vertex_buffer is vertex_buffer
     finally:
         visual.close()
 
@@ -161,7 +199,6 @@ def test_render_snapshot_event_emits_generation_bound_application_result(
 
 def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
     maximum_texture_size: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = TiledPointsLayerModel(
         TiledPointsDatasetReference(
@@ -180,18 +217,17 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
             ((255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)),
             dtype=np.uint8,
         ),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
         scale=(1.3, 0.7),
         translate=(11.0, -17.0),
         rotate=31.0,
         shear=(0.2,),
     )
     visual = VispyTiledPointsLayer(layer, FontInfo())
-    created_keys = _track_tile_resource_creation(visual, monkeypatch)
     tile = _tile(layer, 2)
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
-        assert created_keys == [tile.key]
+        assert visual.payload_replacement_count == 1
 
         relative_x = tile.key.tile_x * tile.tile_size + float(tile.location[0, 0])
         relative_y = tile.key.tile_y * tile.tile_size + float(tile.location[0, 1])
@@ -204,7 +240,6 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
         )
 
         assert np.allclose(observed_xy, np.asarray(expected_yx)[::-1])
-        assert created_keys == [tile.key]
 
         layer.translate = (23.0, -29.0)
         remapped_xy = np.asarray(visual.node.transform.map((relative_x, relative_y, 0.0, 1.0)))[:2]
@@ -215,94 +250,131 @@ def test_renderer_precomposes_large_cache_origin_and_affine_without_reupload(
             )
         )
         assert np.allclose(remapped_xy, np.asarray(remapped_yx)[::-1])
-        assert created_keys == [tile.key]
 
         layer.opacity = 0.25
         layer.visible = False
         assert visual.node.opacity == 0.25
         assert not visual.node.visible
-        assert created_keys == [tile.key]
+        assert visual.payload_replacement_count == 1
     finally:
         visual.close()
 
 
 def test_renderer_capacity_failure_preserves_active_snapshot(
     maximum_texture_size: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    layer = _layer(gpu_bytes=24)
-    visual = VispyTiledPointsLayer(layer, FontInfo())
-    created_keys = _track_tile_resource_creation(visual, monkeypatch)
-    first, second, third = (_tile(layer, tile_x) for tile_x in range(3))
-    errors: list[Exception] = []
-    layer.events.render_error.connect(lambda event: errors.append(event.value))
-    try:
-        assert visual.apply_snapshot(_snapshot(layer, (first, second), generation=1))
-        assert not visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
-
-        assert visual.active_keys == (first.key, second.key)
-        assert created_keys == [first.key, second.key]
-        assert visual.resident_gpu_tile_bytes == 24
-        assert len(errors) == 1
-        assert "max_gpu_tile_bytes=24" in str(errors[0])
-        assert visual.pending_keys == ()
-    finally:
-        visual.close()
-
-
-def test_renderer_upload_failure_rolls_back_pending_resources(
-    maximum_texture_size: None,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    layer = _layer()
+    layer = _layer(gpu_bytes=12)
     visual = VispyTiledPointsLayer(layer, FontInfo())
     first, second, third = (_tile(layer, tile_x) for tile_x in range(3))
     errors: list[Exception] = []
     layer.events.render_error.connect(lambda event: errors.append(event.value))
     try:
         assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
-        create_resource = visual._create_tile_resource
-
-        def _fail_on_third(tile: TiledPointsRenderTile):
-            if tile.key == third.key:
-                raise RuntimeError("synthetic upload failure")
-            return create_resource(tile)
-
-        monkeypatch.setattr(visual, "_create_tile_resource", _fail_on_third)
         assert not visual.apply_snapshot(_snapshot(layer, (second, third), generation=2))
 
-        assert visual.active_keys == (first.key,)
-        assert visual.resident_tile_count == 1
-        assert visual.resident_gpu_tile_bytes == first.resident_bytes
-        assert visual.pending_keys == ()
+        assert visual.active_point_count == 1
+        assert visual.active_vertex_bytes == 12
+        assert visual.payload_replacement_count == 1
+        assert len(errors) == 1
+        assert "max_vertex_payload_bytes=12" in str(errors[0])
+    finally:
+        visual.close()
+
+
+def test_renderer_hard_point_budget_failure_does_not_stage(
+    maximum_texture_size: None,
+) -> None:
+    layer = _layer(hard_render_point_budget=1)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    first, second = (_tile(layer, tile_x) for tile_x in range(2))
+    errors: list[Exception] = []
+    layer.events.render_error.connect(lambda event: errors.append(event.value))
+    try:
+        assert not visual.apply_snapshot(_snapshot(layer, (first, second), generation=1))
+
+        assert visual.active_point_count == 0
+        assert visual.payload_replacement_count == 0
+        assert len(errors) == 1
+        assert "hard_render_point_budget=1" in str(errors[0])
+    finally:
+        visual.close()
+
+
+def test_renderer_revalidates_mutated_batch_before_replacing_active_snapshot(
+    maximum_texture_size: None,
+) -> None:
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    first, second = (_tile(layer, tile_x) for tile_x in range(2))
+    errors: list[Exception] = []
+    layer.events.render_error.connect(lambda event: errors.append(event.value))
+    try:
+        assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
+        candidate = _snapshot(layer, (second,), generation=2)
+        candidate.render_batch.vertices.flags.writeable = True
+        assert not visual.apply_snapshot(candidate)
+
+        assert visual.active_point_count == first.point_count
+        assert visual.payload_replacement_count == 1
+        assert len(errors) == 1
+        assert "canonical vertex-payload contract" in str(errors[0])
+    finally:
+        visual.close()
+
+
+def test_renderer_upload_failure_does_not_count_candidate_replacement(
+    maximum_texture_size: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    first, second = (_tile(layer, tile_x) for tile_x in range(2))
+    errors: list[Exception] = []
+    layer.events.render_error.connect(lambda event: errors.append(event.value))
+    try:
+        assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
+
+        def _fail_upload(_vertices: np.ndarray, *, copy: bool) -> None:
+            del copy
+            raise RuntimeError("synthetic upload failure")
+
+        monkeypatch.setattr(visual._snapshot_visual.vertex_buffer, "set_data", _fail_upload)
+        assert not visual.apply_snapshot(_snapshot(layer, (second,), generation=2))
+
+        assert visual.active_point_count == first.point_count
+        assert visual.payload_replacement_count == 1
         assert len(errors) == 1
         assert str(errors[0]) == "synthetic upload failure"
     finally:
         visual.close()
 
 
-def test_zero_tile_snapshot_clears_active_membership_but_over_budget_does_not(
+def test_empty_snapshot_suppresses_one_visual_without_replacing_its_vbo(
     maximum_texture_size: None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layer = _layer()
     visual = VispyTiledPointsLayer(layer, FontInfo())
-    created_keys = _track_tile_resource_creation(visual, monkeypatch)
     tile = _tile(layer, 0)
+    vertex_buffer = visual._snapshot_visual.vertex_buffer
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
         assert not visual.apply_snapshot(_snapshot(layer, (), generation=2, within_budget=False))
-        assert visual.active_keys == (tile.key,)
+        assert visual.active_point_count == tile.point_count
+        assert visual.payload_replacement_count == 1
 
         assert visual.apply_snapshot(_snapshot(layer, (), generation=3))
-        assert visual.active_keys == ()
-        assert visual.resident_tile_count == 1
-        assert created_keys == [tile.key]
+        assert visual.active_point_count == 0
+        assert visual.active_vertex_bytes == 0
+        assert visual.point_draw_submission_count == 0
+        assert visual.visual_count == 1
+        assert visual.vbo_count == 1
+        assert visual._snapshot_visual.vertex_buffer is vertex_buffer
+        assert visual.payload_replacement_count == 1
     finally:
         visual.close()
 
 
-def test_renderer_close_releases_resources_and_ignores_late_snapshot(maximum_texture_size: None) -> None:
+def test_renderer_close_releases_fixed_resources_and_ignores_late_snapshot(maximum_texture_size: None) -> None:
     layer = _layer()
     visual = VispyTiledPointsLayer(layer, FontInfo())
     snapshot = _snapshot(layer, (_tile(layer, 0),), generation=1)
@@ -311,6 +383,7 @@ def test_renderer_close_releases_resources_and_ignores_late_snapshot(maximum_tex
     visual.close()
     visual.close()
 
-    assert visual.resident_tile_count == 0
-    assert visual.active_keys == ()
+    assert visual.visual_count == 0
+    assert visual.vbo_count == 0
+    assert visual.active_point_count == 0
     assert not visual.apply_snapshot(snapshot)

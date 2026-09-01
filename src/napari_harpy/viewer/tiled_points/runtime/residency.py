@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Iterable
 
+from loguru import logger
+
 from napari_harpy.viewer.tiled_points.contracts import TiledPointsRenderTile, TileResidencyKey
 
 
@@ -27,18 +29,18 @@ class _CpuTileResidency:
 
     Entries are ordered from least to most recently used. When one decoded
     batch exceeds the available budget, later tiles may evict earlier new tiles
-    from the same batch; the complete snapshot still owns all of its tile
-    references.
+    from the same batch; the viewport assembly retains all tile references until
+    their renderer batch has been packed.
 
     Newly decoded entries have independently owned point-array allocations at
     the viewer-residency boundary. Consequently, each tile's
     ``resident_bytes`` is the allocation released when that tile is evicted;
     it does not merely describe a view into a larger retained reader batch.
 
-    The byte budget covers only entries retained by this LRU. A caller may
-    still hold transient immutable references returned for snapshot assembly.
-    Payloads larger than the complete budget are therefore usable for one
-    result but are never reported as resident.
+    The byte budget covers only entries retained by this LRU. Viewport assembly
+    may temporarily hold immutable decoded payloads outside that budget while
+    packing them. Nonresident payloads are released before the completed snapshot
+    crosses to the GUI thread.
     """
 
     def __init__(self, max_resident_bytes: int) -> None:
@@ -47,6 +49,7 @@ class _CpuTileResidency:
         self._max_resident_bytes = max_resident_bytes
         self._resident_bytes = 0
         self._entries: OrderedDict[TileResidencyKey, TiledPointsRenderTile] = OrderedDict()
+        self._oversized_tile_warning_emitted = False
 
     @property
     def max_resident_bytes(self) -> int:
@@ -101,7 +104,20 @@ class _CpuTileResidency:
 
         retained: list[TileResidencyKey] = []
         for tile in tiles:
+            # A tile larger than the complete residency budget can never be
+            # admitted, even after every other entry is evicted. Keep it
+            # caller-owned and transient so it can still be rendered now.
             if tile.resident_bytes > self._max_resident_bytes:
+                if not self._oversized_tile_warning_emitted:
+                    logger.warning(
+                        "Decoded tiled-points tile {} requires {:,} bytes, exceeding "
+                        "max_cpu_tile_bytes={:,}; it will remain transient and may be "
+                        "read again for later viewport requests.",
+                        tile.key.logical_tile_key,
+                        tile.resident_bytes,
+                        self._max_resident_bytes,
+                    )
+                    self._oversized_tile_warning_emitted = True
                 continue
             existing = self._entries.pop(tile.key, None)
             if existing is not None:
@@ -120,16 +136,33 @@ class _CpuTileResidency:
 
     def clear(self) -> None:
         """Drop all retained tile references and reset byte accounting."""
+        # Clear payload state only. The one-shot warning is session-lifetime
+        # diagnostic state, so selection changes must not make it noisy.
         self._entries.clear()
         self._resident_bytes = 0
 
     def _evict_until_fits(self, required_bytes: int, protected: frozenset[TileResidencyKey]) -> None:
         """Evict least-recently-used unprotected tiles until a payload fits."""
-        for key in tuple(self._entries):
-            if self._resident_bytes + required_bytes <= self._max_resident_bytes:
-                return
+        if self._resident_bytes + required_bytes <= self._max_resident_bytes:
+            return
+
+        # The candidate is not resident yet. This is the number of currently
+        # resident bytes that must be evicted before it can be admitted.
+        bytes_to_reclaim = self._resident_bytes + required_bytes - self._max_resident_bytes
+        victims: list[TileResidencyKey] = []
+        selected_victim_bytes = 0
+        for key, tile in self._entries.items():
             if key in protected:
                 continue
+            victims.append(key)
+            selected_victim_bytes += tile.resident_bytes
+            if selected_victim_bytes >= bytes_to_reclaim:
+                break
+
+        # OrderedDict cannot be mutated during direct iteration. Removing the
+        # collected candidates afterwards also avoids materializing every
+        # resident key when only a small number of LRU victims is needed.
+        for key in victims:
             tile = self._entries.pop(key)
             self._resident_bytes -= tile.resident_bytes
 

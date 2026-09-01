@@ -131,6 +131,8 @@ class _TiledPointsLayerRuntime(QObject):
     Notes
     -----
     Construction installs every listener before starting the cache session.
+    The layer's dataset reference is immutable: a different cache generation
+    requires a new layer and runtime rather than rebinding this ownership graph.
     :meth:`close` is terminal and idempotent. The application binding that owns
     this runtime must call it when the corresponding layer is removed.
     """
@@ -153,13 +155,11 @@ class _TiledPointsLayerRuntime(QObject):
             initial_requested_value_ids=initial_requested_value_ids,
             parent=self,
         )
-        self._dataset_reference = layer.data
         self._dataset_verified = False
         self._closed = False
         self._active_status = layer.display_status
         self._pending_render_activation: _PendingRenderActivation | None = None
 
-        layer.events.data.connect(self._on_layer_data_change)
         layer.events.viewport.connect(self._on_viewport)
         layer.events.render_error.connect(self._on_render_error)
         layer.events.render_snapshot_result.connect(self._on_render_snapshot_result)
@@ -216,13 +216,6 @@ class _TiledPointsLayerRuntime(QObject):
         self._coordinator.close()
         self._session.close()
         return True
-
-    @Slot(object)
-    def _on_layer_data_change(self, event: Event) -> None:
-        if self._closed or event.value == self._dataset_reference:
-            return
-        self._publish_error(RuntimeError("Layer data changed; construct a new cache runtime for the new generation."))
-        self.close()
 
     @Slot(object)
     def _on_viewport(self, event: Event) -> None:
@@ -384,8 +377,6 @@ class _TiledPointsLayerRuntime(QObject):
         )
 
     def _disconnect_runtime_listeners(self) -> None:
-        with suppress(TypeError, RuntimeError):
-            self._layer.events.data.disconnect(self._on_layer_data_change)
         with suppress(TypeError, RuntimeError):
             self._layer.events.viewport.disconnect(self._on_viewport)
         with suppress(TypeError, RuntimeError):

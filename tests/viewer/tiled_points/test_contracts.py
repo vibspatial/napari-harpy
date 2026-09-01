@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    TILED_POINTS_VERTEX_DTYPE,
+    TiledPointsRenderBatch,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
@@ -11,6 +13,7 @@ from napari_harpy.viewer.tiled_points.contracts import (
     TileResidencyKey,
     _ViewportRequest,
 )
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 
@@ -36,6 +39,15 @@ def _tile(
         tile_size=10,
         location=np.arange(point_count * 2, dtype=np.float32).reshape(point_count, 2).copy(),
         value_id=np.ones(point_count, dtype=np.uint32),
+    )
+
+
+def _batch(tiles: tuple[TiledPointsRenderTile, ...]) -> TiledPointsRenderBatch:
+    return pack_render_tiles(
+        tiles,
+        point_count=sum(tile.point_count for tile in tiles),
+        value_count=3,
+        max_vertex_payload_bytes=1_000_000,
     )
 
 
@@ -70,6 +82,18 @@ def test_render_tile_rejects_nonowning_payload_views() -> None:
         )
 
 
+def test_render_batch_rejects_mutable_or_nonowning_vertices() -> None:
+    mutable = np.empty(1, dtype=TILED_POINTS_VERTEX_DTYPE)
+    with pytest.raises(ValueError, match="owning, read-only"):
+        TiledPointsRenderBatch(mutable)
+
+    backing = np.empty(2, dtype=TILED_POINTS_VERTEX_DTYPE)
+    nonowning = backing[:1]
+    nonowning.flags.writeable = False
+    with pytest.raises(ValueError, match="owning, read-only"):
+        TiledPointsRenderBatch(nonowning)
+
+
 def test_render_snapshot_reconciles_complete_active_payload() -> None:
     tiles = (_tile(tile_x=0), _tile(tile_x=1, point_count=1))
     snapshot = TiledPointsRenderSnapshot(
@@ -82,7 +106,8 @@ def test_render_snapshot_reconciles_complete_active_payload() -> None:
         within_budget=True,
         estimated_point_count=3,
         omitted_value_ids=(),
-        tiles=tiles,
+        rendered_tile_count=len(tiles),
+        render_batch=_batch(tiles),
     )
 
     assert snapshot.rendered_tile_count == 2
@@ -99,7 +124,61 @@ def test_render_snapshot_reconciles_complete_active_payload() -> None:
             within_budget=True,
             estimated_point_count=4,
             omitted_value_ids=(),
-            tiles=tiles,
+            rendered_tile_count=len(tiles),
+            render_batch=_batch(tiles),
+        )
+
+
+@pytest.mark.parametrize("rendered_tile_count", [-1, True])
+def test_render_snapshot_rejects_invalid_rendered_tile_count(rendered_tile_count: object) -> None:
+    with pytest.raises(ValueError, match="rendered_tile_count"):
+        TiledPointsRenderSnapshot(
+            cache_generation_id=_GENERATION_ID,
+            request_generation=4,
+            selection_generation=2,
+            requested_value_ids=(1,),
+            level=0,
+            level_kind="exact",
+            within_budget=True,
+            estimated_point_count=0,
+            omitted_value_ids=(),
+            rendered_tile_count=rendered_tile_count,  # type: ignore[arg-type]
+            render_batch=_batch(()),
+        )
+
+
+def test_render_snapshot_rejects_payload_metadata_for_over_budget_result() -> None:
+    with pytest.raises(ValueError, match="over-budget snapshot"):
+        TiledPointsRenderSnapshot(
+            cache_generation_id=_GENERATION_ID,
+            request_generation=4,
+            selection_generation=2,
+            requested_value_ids=(1,),
+            level=0,
+            level_kind="exact",
+            within_budget=False,
+            estimated_point_count=100,
+            omitted_value_ids=(),
+            rendered_tile_count=1,
+            render_batch=_batch(()),
+        )
+
+
+def test_render_snapshot_rejects_impossible_tile_count_for_batch() -> None:
+    tile = _tile(point_count=2)
+    with pytest.raises(ValueError, match="reconcile"):
+        TiledPointsRenderSnapshot(
+            cache_generation_id=_GENERATION_ID,
+            request_generation=4,
+            selection_generation=2,
+            requested_value_ids=(1,),
+            level=0,
+            level_kind="exact",
+            within_budget=True,
+            estimated_point_count=2,
+            omitted_value_ids=(),
+            rendered_tile_count=3,
+            render_batch=_batch((tile,)),
         )
 
 
@@ -114,8 +193,10 @@ def test_render_snapshot_identifies_complete_sampled_omission() -> None:
         within_budget=True,
         estimated_point_count=0,
         omitted_value_ids=(1,),
-        tiles=(),
+        rendered_tile_count=0,
+        render_batch=_batch(()),
     )
+    partial_tile = _tile(level=1, point_count=1, requested_value_ids=(1, 2))
     partial = TiledPointsRenderSnapshot(
         cache_generation_id=_GENERATION_ID,
         request_generation=4,
@@ -126,7 +207,8 @@ def test_render_snapshot_identifies_complete_sampled_omission() -> None:
         within_budget=True,
         estimated_point_count=1,
         omitted_value_ids=(2,),
-        tiles=(_tile(level=1, point_count=1, requested_value_ids=(1, 2)),),
+        rendered_tile_count=1,
+        render_batch=_batch((partial_tile,)),
     )
 
     assert omitted.all_exact_present_values_omitted
@@ -142,7 +224,8 @@ def test_render_snapshot_rejects_omissions_outside_selected_values() -> None:
         "level_kind": "bridge",
         "within_budget": True,
         "estimated_point_count": 0,
-        "tiles": (),
+        "rendered_tile_count": 0,
+        "render_batch": _batch(()),
     }
 
     with pytest.raises(ValueError, match="all-values snapshot"):

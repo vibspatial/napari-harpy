@@ -3,6 +3,7 @@
 from napari_harpy.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
     TiledPointsLayerStatus,
+    TiledPointsRenderBatch,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
@@ -20,6 +21,7 @@ __all__ = [
     "TiledPointsLayerCompatibilityError",
     "TiledPointsLayerModel",
     "TiledPointsLayerStatus",
+    "TiledPointsRenderBatch",
     "TiledPointsRenderResult",
     "TiledPointsRenderSnapshot",
     "TiledPointsRenderTile",

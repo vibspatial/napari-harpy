@@ -1388,7 +1388,7 @@ class ViewerAdapter(QObject):
         layer = TiledPointsLayerModel(
             descriptor.dataset_reference,
             value_palette=canonical_value_palette(len(info.value_names)),
-            max_gpu_tile_bytes=settings.max_gpu_tile_bytes,
+            max_vertex_payload_bytes=settings.max_vertex_payload_bytes,
             affine=affine,
             name=points_name,
             hard_render_point_budget=hard_render_point_budget,

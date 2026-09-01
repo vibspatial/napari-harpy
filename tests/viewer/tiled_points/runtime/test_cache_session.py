@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _LevelSelection,
     _PlannedTileRead,
@@ -188,6 +189,7 @@ class _FakeLevelInfo:
 @dataclass(frozen=True)
 class _FakeDatasetInfo:
     cache_generation_id: str = _GENERATION_ID
+    value_names: tuple[str, ...] = ("A", "B", "C")
     levels: tuple[_FakeLevelInfo, ...] = (_FakeLevelInfo(),)
 
 
@@ -197,6 +199,7 @@ def _session(
     max_bucket_lookup_bytes: int | None = 1_000,
     max_selected_value_index_bytes: int | None = 1_000,
     max_cpu_tile_bytes: int = 1_000,
+    max_vertex_payload_bytes: int = 1_000_000,
 ) -> _TiledPointsCacheSession:
     return _TiledPointsCacheSession(
         Path("unused.zarr"),
@@ -204,6 +207,7 @@ def _session(
             max_bucket_lookup_bytes=max_bucket_lookup_bytes,
             max_selected_value_index_bytes=max_selected_value_index_bytes,
             max_cpu_tile_bytes=max_cpu_tile_bytes,
+            max_vertex_payload_bytes=max_vertex_payload_bytes,
         ),
         reader_factory=lambda cache_root: _ControllableReader(cache_root, probe),
     )
@@ -242,13 +246,27 @@ def _viewport_request(request_generation: int) -> _ViewportRequest:
     )
 
 
-@pytest.mark.parametrize("max_cpu_tile_bytes", [None, True, 0, -1])
-def test_session_settings_require_bounded_cpu_tile_residency(max_cpu_tile_bytes: object) -> None:
-    with pytest.raises(ValueError, match="max_cpu_tile_bytes"):
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("max_cpu_tile_bytes", None),
+        ("max_cpu_tile_bytes", True),
+        ("max_cpu_tile_bytes", 0),
+        ("max_cpu_tile_bytes", -1),
+        ("max_vertex_payload_bytes", None),
+        ("max_vertex_payload_bytes", True),
+        ("max_vertex_payload_bytes", 0),
+        ("max_vertex_payload_bytes", -1),
+    ],
+)
+def test_session_settings_require_positive_worker_allocation_limits(name: str, value: object) -> None:
+    values = {"max_cpu_tile_bytes": 1_000, "max_vertex_payload_bytes": 1_000}
+    values[name] = value
+    with pytest.raises(ValueError, match=name):
         _CacheSessionSettings(
             max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
-            max_cpu_tile_bytes=max_cpu_tile_bytes,  # type: ignore[arg-type]
+            **values,  # type: ignore[arg-type]
         )
 
 
@@ -377,6 +395,7 @@ def test_worker_treats_selection_without_reader_as_fatal() -> None:
             max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             max_cpu_tile_bytes=1_000,
+            max_vertex_payload_bytes=1_000_000,
         ),
         threading.Event(),
         lambda cache_root: _ControllableReader(cache_root, _ReaderProbe()),
@@ -481,13 +500,17 @@ def test_session_reads_only_nonresident_tiles_and_returns_complete_snapshots(qtb
             session.request_viewport(_viewport_request(2))
 
         assert probe.viewport_reads == [((0, 0, 0), (0, 1, 0)), ((0, 2, 0),)]
-        assert [tile.key.tile_x for tile in snapshots[-1].tiles] == [1, 2]
+        assert snapshots[-1].rendered_tile_count == 2
         assert snapshots[-1].rendered_point_count == 2
+        np.testing.assert_array_equal(
+            snapshots[-1].render_batch.vertices["a_position"],
+            np.asarray(((11.0, 0.0), (22.0, 0.0)), dtype=np.float32),
+        )
     finally:
         _close(session, qtbot)
 
 
-def test_session_detaches_render_tiles_from_shared_reader_batches(qtbot) -> None:
+def test_session_residency_detaches_tiles_from_shared_reader_batches(qtbot) -> None:
     probe = _ReaderProbe(planned_tile_x=(0, 1))
     session = _session(probe, max_cpu_tile_bytes=1_000)
     snapshots: list[object] = []
@@ -502,10 +525,15 @@ def test_session_detaches_render_tiles_from_shared_reader_batches(qtbot) -> None
         value_id_batch = probe.last_value_id_batch
         assert location_batch is not None
         assert value_id_batch is not None
-        snapshot = snapshots[-1]
-        assert all(not np.shares_memory(tile.location, location_batch) for tile in snapshot.tiles)
-        assert all(not np.shares_memory(tile.value_id, value_id_batch) for tile in snapshot.tiles)
-        assert sum(tile.resident_bytes for tile in snapshot.tiles) == location_batch.nbytes + value_id_batch.nbytes
+        first_vertices = snapshots[-1].render_batch.vertices.copy()
+        location_batch[:] = -100
+        value_id_batch[:] = 2
+
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(_viewport_request(2))
+
+        assert probe.viewport_reads == [((0, 0, 0), (0, 1, 0))]
+        np.testing.assert_array_equal(snapshots[-1].render_batch.vertices, first_vertices)
     finally:
         _close(session, qtbot)
 
@@ -522,7 +550,8 @@ def test_session_rejects_over_budget_viewport_before_point_io(qtbot) -> None:
             session.request_viewport(_viewport_request(1))
 
         assert not snapshots[-1].within_budget
-        assert snapshots[-1].tiles == ()
+        assert snapshots[-1].rendered_tile_count == 0
+        assert snapshots[-1].render_batch.point_count == 0
         assert probe.viewport_reads == []
     finally:
         _close(session, qtbot)
@@ -547,6 +576,123 @@ def test_oversized_tile_is_returned_transiently_but_not_retained(qtbot) -> None:
         _close(session, qtbot)
 
 
+def test_worker_rejects_vertex_payload_capacity_before_batch_allocation(qtbot) -> None:
+    probe = _ReaderProbe(planned_tile_x=(0, 1))
+    session = _session(probe, max_vertex_payload_bytes=12)
+    failures: list[_CacheSessionFailure] = []
+    snapshots: list[object] = []
+    session.viewport_failed.connect(lambda _generation, failure: failures.append(failure))
+    session.viewport_ready.connect(snapshots.append)
+
+    try:
+        _start_ready(session, qtbot)
+        with qtbot.waitSignal(session.viewport_failed, timeout=5_000):
+            session.request_viewport(_viewport_request(1))
+
+        assert snapshots == []
+        assert len(failures) == 1
+        assert failures[0].phase == "viewport"
+        assert "max_vertex_payload_bytes=12" in failures[0].message
+    finally:
+        _close(session, qtbot)
+
+
+def test_worker_rejects_nonspatial_tile_order_before_packing(qtbot, monkeypatch: pytest.MonkeyPatch) -> None:
+    probe = _ReaderProbe(planned_tile_x=(1, 0))
+    session = _session(probe)
+    failures: list[_CacheSessionFailure] = []
+    pack_called = False
+
+    def _unexpected_pack(*args, **kwargs):
+        nonlocal pack_called
+        del args, kwargs
+        pack_called = True
+        raise AssertionError("packing should not be attempted")
+
+    monkeypatch.setattr(cache_session_module, "pack_render_tiles", _unexpected_pack)
+    session.viewport_failed.connect(lambda _generation, failure: failures.append(failure))
+    try:
+        _start_ready(session, qtbot)
+        with qtbot.waitSignal(session.viewport_failed, timeout=5_000):
+            session.request_viewport(_viewport_request(1))
+
+        assert not pack_called
+        assert len(failures) == 1
+        assert failures[0].phase == "viewport"
+        assert "spatial" in failures[0].message
+    finally:
+        _close(session, qtbot)
+
+
+def test_queued_viewport_delivery_preserves_maximum_budget_vertex_allocation_identity(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe = _ReaderProbe(planned_tile_x=tuple(range(100)))
+    session = _session(probe, max_cpu_tile_bytes=10_000, max_vertex_payload_bytes=1_200)
+    worker_vertex_ids: list[int] = []
+    original_pack = cache_session_module.pack_render_tiles
+
+    def _record_pack(*args, **kwargs):
+        batch = original_pack(*args, **kwargs)
+        worker_vertex_ids.append(id(batch.vertices))
+        return batch
+
+    monkeypatch.setattr(cache_session_module, "pack_render_tiles", _record_pack)
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+    try:
+        _start_ready(session, qtbot)
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
+            session.request_viewport(_viewport_request(1))
+
+        snapshot = snapshots[-1]
+        assert snapshot.render_batch.point_count == 100
+        assert snapshot.render_batch.nbytes == 1_200
+        assert id(snapshot.render_batch.vertices) == worker_vertex_ids[-1]
+    finally:
+        _close(session, qtbot)
+
+
+@pytest.mark.parametrize("pause_check", [1, 2], ids=["before-allocation", "during-fragmented-pack"])
+def test_terminal_close_cancels_worker_render_batch_packing(
+    qtbot,
+    monkeypatch: pytest.MonkeyPatch,
+    pause_check: int,
+) -> None:
+    probe = _ReaderProbe(planned_tile_x=tuple(range(129)))
+    session = _session(probe, max_cpu_tile_bytes=10_000, max_vertex_payload_bytes=10_000)
+    pack_paused = threading.Event()
+    resume_pack = threading.Event()
+    original_pack = cache_session_module.pack_render_tiles
+
+    def _pause_pack(*args, raise_if_cancelled, **kwargs):
+        checks = 0
+
+        def _check() -> None:
+            nonlocal checks
+            checks += 1
+            if checks == pause_check:
+                pack_paused.set()
+                assert resume_pack.wait(timeout=5)
+            raise_if_cancelled()
+
+        return original_pack(*args, raise_if_cancelled=_check, **kwargs)
+
+    monkeypatch.setattr(cache_session_module, "pack_render_tiles", _pause_pack)
+    snapshots: list[object] = []
+    session.viewport_ready.connect(snapshots.append)
+    _start_ready(session, qtbot)
+    session.request_viewport(_viewport_request(1))
+    qtbot.waitUntil(pack_paused.is_set, timeout=5_000)
+    assert session.close()
+    with qtbot.waitSignal(session.closed, timeout=5_000):
+        resume_pack.set()
+
+    assert snapshots == []
+    assert session.state is _CacheSessionState.CLOSED
+
+
 def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Path, qtbot) -> None:
     session = _TiledPointsCacheSession(
         real_cache_root,
@@ -554,6 +700,7 @@ def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Pa
             max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             max_cpu_tile_bytes=1_000,
+            max_vertex_payload_bytes=1_000_000,
         ),
     )
     try:
@@ -577,6 +724,7 @@ def test_real_cache_session_builds_generation_bound_viewport_snapshot(real_cache
             max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             max_cpu_tile_bytes=1_000_000,
+            max_vertex_payload_bytes=1_000_000,
         ),
     )
     snapshots: list[object] = []

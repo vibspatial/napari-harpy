@@ -96,6 +96,47 @@ def test_reader_roundtrips_complete_and_selected_payloads(tmp_path: Path) -> Non
         assert reader.read_display_payload(second, np.array([2], dtype=np.uint32)) is None
 
 
+@pytest.mark.parametrize("selected_ids", [(0,), (0, 2), (0, 1), (4,)])
+def test_selected_display_reconstructs_canonical_payload_without_point_value_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selected_ids: tuple[int, ...],
+) -> None:
+    descriptor = _build_bucket(tmp_path).tile_descriptors[0]
+    requested = np.asarray(selected_ids, dtype=np.uint32)
+
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+        canonical = reader.read_construction_payload(descriptor)
+        matches = np.isin(canonical.value_id, requested)
+        expected_location = np.ascontiguousarray(
+            np.column_stack((canonical.x_rel[matches], canonical.y_rel[matches])),
+            dtype=np.float32,
+        )
+        expected_value_id = np.ascontiguousarray(canonical.value_id[matches], dtype=np.uint32)
+
+        _load_lookup(reader)
+        original_array = reader._array
+
+        def reject_point_value_array(name: str) -> object:
+            if name == "value_id":
+                raise AssertionError("Subset display read accessed point-level value IDs.")
+            return original_array(name)
+
+        monkeypatch.setattr(reader, "_array", reject_point_value_array)
+        selected = reader.read_display_payload(descriptor, requested)
+
+    if len(expected_value_id) == 0:
+        assert selected is None
+        return
+    assert selected is not None
+    np.testing.assert_array_equal(selected.location, expected_location)
+    np.testing.assert_array_equal(selected.value_id, expected_value_id)
+    assert selected.location.tobytes() == expected_location.tobytes()
+    assert selected.value_id.tobytes() == expected_value_id.tobytes()
+    assert not selected.location.flags.writeable
+    assert not selected.value_id.flags.writeable
+
+
 def test_visualization_reader_never_requires_point_id_payload_chunks(tmp_path: Path) -> None:
     result = _build_bucket(tmp_path)
     first = result.tile_descriptors[0]
@@ -199,13 +240,25 @@ def test_display_batch_reads_each_point_array_once_and_splits_payloads(
         assert complete[1] is not None and complete[1].value_id.tolist() == [1, 1, 3]
 
         calls.clear()
+
+        # Treat point-level `value_id` access as a hard regression. Selected-value
+        # reads must reconstruct aligned IDs from the in-memory `ranges/value_id`
+        # lookup metadata and fetch only `location` from the point arrays.
+        def tracked_subset_array(name: str) -> object:
+            if name == "value_id":
+                raise AssertionError("Subset display batch accessed point-level value IDs.")
+            if name == "location":
+                return _TrackedArray(name)
+            return original_array(name)
+
+        monkeypatch.setattr(reader, "_array", tracked_subset_array)
         selected = reader.read_display_payloads(
             (
                 (first, np.array([0, 2], dtype=np.uint32)),
                 (second, np.array([1], dtype=np.uint32)),
             )
         )
-        assert [name for name, _ in calls] == ["location", "value_id"]
+        assert [name for name, _ in calls] == ["location"]
         assert all(isinstance(selection[0], np.ndarray) for _, selection in calls)
         selected_rows = calls[0][1][0]
         assert isinstance(selected_rows, np.ndarray)
@@ -219,6 +272,57 @@ def test_display_batch_reads_each_point_array_once_and_splits_payloads(
             and not payload.value_id.flags.writeable
             for payload in selected
         )
+
+
+@pytest.mark.parametrize("complete_first", [True, False])
+def test_display_batch_rejects_mixed_selection_modes_before_resolution_or_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_first: bool,
+) -> None:
+    result = _build_bucket(tmp_path)
+    first, second = result.tile_descriptors
+    selected = np.array([1], dtype=np.uint32)
+    requests = ((first, None), (second, selected)) if complete_first else ((first, selected), (second, None))
+
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+
+        def reject_side_effect(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Mixed display batch reached interval resolution or physical access.")
+
+        monkeypatch.setattr(reader, "resolve_complete_tile_interval", reject_side_effect)
+        monkeypatch.setattr(reader, "resolve_selected_tile_intervals", reject_side_effect)
+        monkeypatch.setattr(reader, "_lookup_index_or_raise", reject_side_effect)
+        monkeypatch.setattr(reader, "_array", reject_side_effect)
+
+        with pytest.raises(ValueError) as error:
+            reader.read_display_payloads(requests)
+
+    assert str(error.value) == (
+        "Display requests must be homogeneous: every `selected_value_ids` must be None "
+        "or every request must provide selected value IDs."
+    )
+
+
+def test_display_batch_validates_every_request_pair_before_resolution_or_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _build_bucket(tmp_path)
+    first, second = result.tile_descriptors
+
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+
+        def reject_side_effect(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("Malformed display batch reached interval resolution or physical access.")
+
+        monkeypatch.setattr(reader, "resolve_complete_tile_interval", reject_side_effect)
+        monkeypatch.setattr(reader, "resolve_selected_tile_intervals", reject_side_effect)
+        monkeypatch.setattr(reader, "_lookup_index_or_raise", reject_side_effect)
+        monkeypatch.setattr(reader, "_array", reject_side_effect)
+
+        with pytest.raises(ValueError, match="Every display request must be"):
+            reader.read_display_payloads(((first, None), (second,)))  # type: ignore[arg-type]
 
 
 def test_display_batch_omits_unrequested_row_gaps_and_preserves_empty_results(tmp_path: Path) -> None:

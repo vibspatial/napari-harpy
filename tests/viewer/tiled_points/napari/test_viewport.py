@@ -28,7 +28,7 @@ def _layer(**kwargs: object) -> TiledPointsLayerModel:
             y_max=600.0,
         ),
         value_palette=np.full((3, 4), 255, dtype=np.uint8),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
         **kwargs,
     )
 

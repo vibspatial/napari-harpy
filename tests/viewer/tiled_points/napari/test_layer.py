@@ -35,7 +35,7 @@ def _layer(reference: TiledPointsDatasetReference | None = None, **kwargs: objec
     return TiledPointsLayerModel(
         reference,
         value_palette=np.full((reference.value_count, 4), 255, dtype=np.uint8),
-        max_gpu_tile_bytes=1_000_000,
+        max_vertex_payload_bytes=1_000_000,
         **kwargs,
     )
 
@@ -74,8 +74,9 @@ def test_tiled_points_layer_supports_model_lifecycle_without_point_rows() -> Non
     assert len(viewer.layers) == 0
 
 
-def test_tiled_points_layer_replacement_updates_extent_and_emits_data() -> None:
-    layer = _layer()
+def test_tiled_points_layer_data_reference_is_immutable() -> None:
+    reference = _dataset_reference()
+    layer = _layer(reference)
     observed: list[TiledPointsDatasetReference] = []
     set_data_count = 0
 
@@ -86,20 +87,22 @@ def test_tiled_points_layer_replacement_updates_extent_and_emits_data() -> None:
 
     layer.events.data.connect(lambda event: observed.append(event.value))
     layer.events.set_data.connect(_record_set_data)
-    replacement = _dataset_reference(
-        x_origin=-8.0,
-        y_origin=-4.0,
-        x_min=-4.0,
-        x_max=8.0,
-        y_min=-2.0,
-        y_max=6.0,
-    )
+    replacement = _dataset_reference()
 
-    layer.data = replacement
+    layer.data = reference
+    with pytest.raises(ValueError, match="cannot be replaced; construct a new layer and cache runtime"):
+        layer.data = replacement
 
-    assert observed == [replacement]
-    assert set_data_count == 1
-    np.testing.assert_array_equal(layer.extent.data, np.array(((-2.0, -4.0), (6.0, 8.0))))
+    assert layer.data is reference
+    assert observed == []
+    assert set_data_count == 0
+
+
+def test_tiled_points_layer_data_setter_rejects_other_types() -> None:
+    layer = _layer()
+
+    with pytest.raises(ValueError, match="TiledPointsDatasetReference"):
+        layer.data = np.empty((0, 2), dtype=np.float32)  # type: ignore[assignment]
 
 
 def test_tiled_points_layer_exposes_style_and_status_events() -> None:
@@ -132,7 +135,7 @@ def test_tiled_points_layer_exposes_style_and_status_events() -> None:
     np.testing.assert_array_equal(palettes[0], layer.value_palette)
     assert layer.value_palette.flags.owndata
     assert not layer.value_palette.flags.writeable
-    assert layer.max_gpu_tile_bytes == 1_000_000
+    assert layer.max_vertex_payload_bytes == 1_000_000
     assert statuses == [status]
 
 
@@ -142,8 +145,8 @@ def test_tiled_points_layer_exposes_style_and_status_events() -> None:
         (np.zeros((2, 4), dtype=np.uint8), 100, "value_palette"),
         (np.zeros((3, 3), dtype=np.uint8), 100, "value_palette"),
         (np.zeros((3, 4), dtype=np.float32), 100, "value_palette"),
-        (np.zeros((3, 4), dtype=np.uint8), 0, "max_gpu_tile_bytes"),
-        (np.zeros((3, 4), dtype=np.uint8), True, "max_gpu_tile_bytes"),
+        (np.zeros((3, 4), dtype=np.uint8), 0, "max_vertex_payload_bytes"),
+        (np.zeros((3, 4), dtype=np.uint8), True, "max_vertex_payload_bytes"),
     ],
 )
 def test_tiled_points_layer_rejects_invalid_renderer_contracts(
@@ -155,7 +158,7 @@ def test_tiled_points_layer_rejects_invalid_renderer_contracts(
         TiledPointsLayerModel(
             _dataset_reference(),
             value_palette=palette,
-            max_gpu_tile_bytes=gpu_bytes,  # type: ignore[arg-type]
+            max_vertex_payload_bytes=gpu_bytes,  # type: ignore[arg-type]
         )
 
 

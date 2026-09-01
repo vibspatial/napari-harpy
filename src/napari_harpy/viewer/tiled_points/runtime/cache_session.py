@@ -20,11 +20,13 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _SelectedValueIndex,
 )
 from napari_harpy.viewer.tiled_points.contracts import (
+    TiledPointsRenderBatch,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TileResidencyKey,
     _ViewportRequest,
 )
+from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 _UINT32_MAX = np.iinfo(np.uint32).max
@@ -62,11 +64,14 @@ class _CacheSessionSettings:
         ``None`` disables this configured preflight limit.
     max_cpu_tile_bytes
         Positive byte limit for the evicting decoded point-payload LRU.
+    max_vertex_payload_bytes
+        Positive byte limit for one worker-prepared renderer vertex payload.
     """
 
     max_bucket_lookup_bytes: int | None
     max_selected_value_index_bytes: int | None
     max_cpu_tile_bytes: int
+    max_vertex_payload_bytes: int
 
     def __post_init__(self) -> None:
         for name in ("max_bucket_lookup_bytes", "max_selected_value_index_bytes"):
@@ -75,12 +80,10 @@ class _CacheSessionSettings:
                 continue
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"`{name}` must be a positive integer or None.")
-        if (
-            not isinstance(self.max_cpu_tile_bytes, int)
-            or isinstance(self.max_cpu_tile_bytes, bool)
-            or self.max_cpu_tile_bytes <= 0
-        ):
-            raise ValueError("`max_cpu_tile_bytes` must be a positive integer.")
+        for name in ("max_cpu_tile_bytes", "max_vertex_payload_bytes"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"`{name}` must be a positive integer.")
 
 
 @dataclass(frozen=True)
@@ -320,7 +323,8 @@ class _TiledPointsCacheWorker(QObject):
                 self._selected_value_index,
                 self._cpu_tile_residency,
                 request,
-                check_cancelled=self._require_not_cancelled,
+                max_vertex_payload_bytes=self._settings.max_vertex_payload_bytes,
+                raise_if_cancelled=self._require_not_cancelled,
             )
             self._require_not_cancelled()
             self.viewport_ready.emit(snapshot)
@@ -603,7 +607,8 @@ def _read_viewport_snapshot(
     residency: _CpuTileResidency,
     request: _ViewportRequest,
     *,
-    check_cancelled: Callable[[], None],
+    max_vertex_payload_bytes: int,
+    raise_if_cancelled: Callable[[], None],
 ) -> TiledPointsRenderSnapshot:
     """Plan one viewport and assemble its complete immutable render snapshot.
 
@@ -623,7 +628,7 @@ def _read_viewport_snapshot(
         request.viewport.effective_point_budget,
         value_index=selected_value_index,
     )
-    check_cancelled()
+    raise_if_cancelled()
     dataset_info = reader.dataset_info
     level_kind = _level_kind(level_selection.level, dataset_info.levels[level_selection.level].kind)
     omitted_value_ids = (
@@ -642,11 +647,12 @@ def _read_viewport_snapshot(
             within_budget=False,
             estimated_point_count=level_selection.estimated_point_count,
             omitted_value_ids=omitted_value_ids,
-            tiles=(),
+            rendered_tile_count=0,
+            render_batch=TiledPointsRenderBatch.empty(),
         )
 
     plan = reader.plan_viewport(level_selection.level, viewport, value_index=selected_value_index)
-    check_cancelled()
+    raise_if_cancelled()
     if plan.requested_value_ids != request.requested_value_ids:
         raise RuntimeError("Viewport plan selection differs from its generation-bound request.")
     keys = tuple(
@@ -675,7 +681,7 @@ def _read_viewport_snapshot(
             plan,
             tuple(key.logical_tile_key for key in missing_keys),
         )
-        check_cancelled()
+        raise_if_cancelled()
         key_by_logical_tile = {key.logical_tile_key: key for key in missing_keys}
         # Bucket reads expose per-tile views into shared batch allocations.
         # Copy once at the viewer-residency boundary so every render tile owns
@@ -692,8 +698,24 @@ def _read_viewport_snapshot(
         if {tile.key for tile in new_tiles} != set(missing_keys):
             raise RuntimeError("Viewport subset read did not return every requested nonresident tile.")
         payloads_by_key.update((tile.key, tile) for tile in new_tiles)
-        residency.retain(new_tiles, protected_keys=resident_keys)
 
+    ordered_tiles = tuple(payloads_by_key[key] for key in keys)
+    _require_ordered_render_tiles(
+        ordered_tiles,
+        cache_generation_id=dataset_info.cache_generation_id,
+        requested_value_ids=request.requested_value_ids,
+        level=level_selection.level,
+    )
+    if new_tiles:
+        residency.retain(new_tiles, protected_keys=resident_keys)
+    render_batch = pack_render_tiles(
+        ordered_tiles,
+        point_count=level_selection.estimated_point_count,
+        value_count=len(dataset_info.value_names),
+        max_vertex_payload_bytes=max_vertex_payload_bytes,
+        raise_if_cancelled=raise_if_cancelled,
+    )
+    raise_if_cancelled()
     return TiledPointsRenderSnapshot(
         cache_generation_id=dataset_info.cache_generation_id,
         request_generation=request.request_generation,
@@ -704,8 +726,32 @@ def _read_viewport_snapshot(
         within_budget=True,
         estimated_point_count=level_selection.estimated_point_count,
         omitted_value_ids=omitted_value_ids,
-        tiles=tuple(payloads_by_key[key] for key in keys),
+        rendered_tile_count=len(ordered_tiles),
+        render_batch=render_batch,
     )
+
+
+def _require_ordered_render_tiles(
+    tiles: tuple[TiledPointsRenderTile, ...],
+    *,
+    cache_generation_id: str,
+    requested_value_ids: tuple[int, ...] | None,
+    level: int,
+) -> None:
+    """Validate the complete worker-local tile order before packing it."""
+    keys = tuple(tile.key for tile in tiles)
+    if len(set(keys)) != len(keys):
+        raise RuntimeError("Snapshot tile residency keys must be unique.")
+    coordinates = tuple((key.tile_y, key.tile_x) for key in keys)
+    if coordinates != tuple(sorted(coordinates)):
+        raise RuntimeError("Snapshot tiles must follow spatial (tile_y, tile_x) order.")
+    if any(
+        key.cache_generation_id != cache_generation_id
+        or key.requested_value_ids != requested_value_ids
+        or key.level != level
+        for key in keys
+    ):
+        raise RuntimeError("Every snapshot tile must match its cache, selection, and level.")
 
 
 def _level_kind(level: int, serialized_kind: str) -> Literal["exact", "bridge", "spatial"]:
