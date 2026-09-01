@@ -563,7 +563,7 @@ This deliberately changes overlap behavior: a changed accepted snapshot performs
 
 Validation, cancellation, stale-generation rejection, over-budget rejection, and byte-capacity rejection all occur before `set_data()` and therefore continue to preserve the active payload. The initial one-VBO design deliberately does not promise rollback after VBO replacement starts. VisPy defers the actual GPU operation until rendering, so even a ping-pong design would require explicit draw-error handling before it could claim verified GPU-upload rollback.
 
-`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, per-tile GPU eviction, and renderer-owned active or pending tile-key tuples cease to be part of the normal renderer. The snapshot and runtime already carry generation-bound logical identity; the renderer needs only the active point count and payload metrics. If Slice 13 is later accepted, it introduces a dedicated worker-prepared physical-payload identity rather than reconstructing tile-key identity on the GUI thread. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
+`_VispyTileResource`, `_GpuTileResidency`, per-tile visibility loops, per-tile LRU retention, per-tile GPU eviction, and renderer-owned active or pending tile-key tuples cease to be part of the normal renderer. The snapshot and runtime already carry generation-bound logical identity; the renderer needs only the active point count and payload metrics. If Slice 14 is later accepted, it introduces a dedicated worker-prepared physical-payload identity rather than reconstructing tile-key identity on the GUI thread. Existing metrics such as resident GPU tile count and GPU eviction count should be replaced with visual count, VBO count, active point count, active bytes, candidate batch bytes, pack time, and upload-staging time. A temporary compatibility alias is acceptable if another internal consumer still reads an old field.
 
 #### Budget implications
 
@@ -667,16 +667,17 @@ The following constraints apply to every slice:
 | 3 | Make CPU tile retention linear for the no-eviction case | Slice 0 | Cold CPU assembly defect removed |
 | 4 | Enforce homogeneous bucket display batches | Slice 0 | Mixed all-values/subset batches fail before planning or physical IO |
 | 5 | Stop decoding point-level `value_id` for proper subsets | Slice 4 | One of two selected-value Zarr reads removed through one explicit batch mode |
-| 6 | Make a coordinate value-major sidecar mandatory at every serialized level in the new cache format and writer | Slice 0 | Every newly built cache contains and validates every level payload, but the viewer does not use them yet |
-| 7 | Route every proper-subset read through the selected level's sidecar | Slices 5 and 6 | Selected values gain locality at every LOD |
-| 8 | Remove bucket sparse-range indexes from the viewer runtime | Slice 7 | Startup time, lookup RSS, and fallback-cache complexity are removed |
-| 9 | Run the integrated all-level acceptance and tuning matrix | Slices 1–8 | Evidence-backed validation of the mandatory dual ordering |
-| 10 | Add viewport debounce only if dispatch churn remains material | Slice 9 | Conditional reduction of obsolete cold reads |
-| 11 | Evaluate optional ping-pong storage and a larger point budget | Slice 9 | Conditional hardening/scaling work, not part of the initial solution |
-| 12 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
-| 13 | Reuse identical render payloads only if measurements justify it | Slice 2 | Conditional reduction of redundant packing and VBO replacement |
+| 6 | Make a coordinate value-major sidecar mandatory at every serialized level in the new cache format and writer | Slice 0 | Every newly built cache contains every sidecar and validates its structural and index contract, but the viewer does not use it yet |
+| 7 | Add optional exhaustive value-major coordinate-equivalence validation | Slice 6 | Developer-only proof that sidecar coordinates equal tile-major coordinates; not a publication dependency |
+| 8 | Route every proper-subset read through the selected level's sidecar | Slices 5 and 6 | Selected values gain locality at every LOD |
+| 9 | Remove bucket sparse-range indexes from the viewer runtime | Slice 8 | Startup time, lookup RSS, and fallback-cache complexity are removed |
+| 10 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6 and 8–9; Slice 7 optional | Evidence-backed validation of the mandatory dual ordering |
+| 11 | Add viewport debounce only if dispatch churn remains material | Slice 10 | Conditional reduction of obsolete cold reads |
+| 12 | Evaluate optional ping-pong storage and a larger point budget | Slice 10 | Conditional hardening/scaling work, not part of the initial solution |
+| 13 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
+| 14 | Reuse identical render payloads only if measurements justify it | Slice 2 | Conditional reduction of redundant packing and VBO replacement |
 
-Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 6 and 7 form one cache-locality milestone: publishing all-level sidecars that no read path consumes is useful only as a short-lived, testable construction boundary.
+Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 6 and 8 form one cache-locality milestone: publishing all-level sidecars that no read path consumes is useful only as a short-lived, testable construction boundary. Slice 7 is an optional developer-validation layer between those production slices and is not a prerequisite for publication or runtime routing.
 
 ### Slice 0 — Preserve the opt-in boundary and freeze the baseline
 
@@ -724,7 +725,7 @@ VispyTiledPointsLayer
         └── one shared palette-texture binding
 ```
 
-The accepted viewport may still comprise 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 13.
+The accepted viewport may still comprise 4,453 logical tiles, but those tiles are no longer GPU ownership units. Every accepted nonempty snapshot is packed into one complete vertex payload and replaces the contents of the same stable VBO. Overlapping logical tiles between successive viewports are therefore not reused as independent GPU buffers; full-payload replacement is deliberate because it gives constant visual, VBO, and draw-submission counts. The renderer does not retain or reconstruct active or pending tile-key tuples. A future exact-reuse implementation must consume the dedicated physical-payload identity specified by Slice 14.
 
 The packed `a_position` values are relative to the shared cache origin. Packing adds each tile's `(tile_x * tile_size, tile_y * tile_size)` offset to its tile-local coordinates, which allows the per-visual `u_tile_offset` uniform to disappear. These are not large absolute world coordinates: the existing float64 root transform continues to add the shared cache origin and apply the napari layer transform.
 
@@ -749,7 +750,7 @@ The single-VBO failure boundary must also be explicit. Validation, byte-capacity
    - acknowledge the candidate only after synchronous staging succeeds; and
    - request one scene update.
 5. Remove `_GpuTileResidency`, `_VispyTileResource`, per-tile visibility changes, and per-tile GPU LRU behavior from the normal renderer path. Do not spend a separate slice optimizing the quadratic GPU consistency scan because this slice removes its ownership model.
-6. Do not retain or reconstruct active or pending tile-key tuples in the renderer. Slice 13 must add its dedicated physical-payload identity only if its evidence gate is met.
+6. Do not retain or reconstruct active or pending tile-key tuples in the renderer. Slice 14 must add its dedicated physical-payload identity only if its evidence gate is met.
 7. Retain the current `max_gpu_tile_bytes` name only for the Slice 1 scaffold and enforce it against the single candidate vertex payload rather than a sum of tile resources. This temporary implementation state is not a compatibility promise; Slice 2 removes the old name completely.
 8. Replace GPU tile metrics with visual count, VBO count, active point count, active vertex bytes, payload-replacement count, and synchronous staging time. Compatibility aliases may exist for one transition only if a current internal consumer needs them.
 9. Preserve palette, opacity, point-diameter, blending, large-origin transforms, empty snapshots, close behavior, and render-error signaling.
@@ -1034,7 +1035,7 @@ The required full-extent AAMP real-canvas run passed. It rendered the same 60,51
 
 These cold measurements mean the first request in each process after lookup-index loading; they do not flush operating-system filesystem caches. The structural acceptance evidence is therefore the zero point-level calls together with the correct 60,512 returned IDs. The timing evidence is consistent with the removed read and shows no material GUI activation or rendering regression. The reports are `/private/tmp/napari-harpy-slice3-cache-to-canvas-full-aamp.json` and `/private/tmp/napari-harpy-slice5-cache-to-canvas-full-aamp.json`.
 
-This is an IO optimization, not removal of value IDs from memory. The worker still constructs the same `uint32` IDs for CPU residency and render-batch packing. The 69 `location` calls and their tile-major chunk/shard amplification also remain. Slices 6 and 7 address that separate coordinate-locality problem with the value-major sidecar and physical-payload routing.
+This is an IO optimization, not removal of value IDs from memory. The worker still constructs the same `uint32` IDs for CPU residency and render-batch packing. The 69 `location` calls and their tile-major chunk/shard amplification also remain. Slices 6 and 8 address that separate coordinate-locality problem with the value-major sidecar and physical-payload routing.
 
 **Exit condition**
 
@@ -1042,7 +1043,7 @@ Satisfied: proper-subset tile-major fallback performs coordinate-only physical r
 
 ### Slice 6 — All-level value-major sidecar schema and writer
 
-This slice makes the new physical ordering constructible, atomically published, and independently validated. It does not route viewer reads to it yet.
+This slice makes the new physical ordering constructible, atomically published, and independently validated at the same structural/index boundary used by normal tile-major publication. It does not route viewer reads to it yet or perform coordinate-payload equivalence validation.
 
 **Current-to-target interpretation**
 
@@ -1093,11 +1094,11 @@ for manifest_index, n_points in value_tile_records(value_id):
     point_cursor = point_stop
 ```
 
-`manifest_index` is therefore not eliminated from the cache. It remains stored once per value/tile range in the existing catalog and addresses the existing manifest descriptor, including the tile-grid coordinates needed to interpret tile-relative locations. It is merely not duplicated once per point in the sidecar. The sidecar writer and independent validator must guarantee that coordinate blocks follow exactly this catalog record order and that every block length equals its catalog `n_points`.
+`manifest_index` is therefore not eliminated from the cache. It remains stored once per value/tile range in the existing catalog and addresses the existing manifest descriptor, including the tile-grid coordinates needed to interpret tile-relative locations. It is merely not duplicated once per point in the sidecar. The sidecar writer must guarantee that coordinate blocks follow exactly this catalog record order and that every block length equals its catalog `n_points`. Focused writer tests prove that ordering on small fixtures; the optional exhaustive validator in Slice 7 can prove coordinate-for-coordinate equivalence on a retained cache. Normal publication validation reconciles the structural and count contract without decoding coordinates.
 
 Bridge and every Spatial level apply the same reconstruction against their own `value_tiles/indptr[level]`, manifest-record interval, `n_points` counts, and `value_major/level_L/value_point_indptr`; only the level point count and tile geometry differ.
 
-This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning, CPU residency, render-batch packing, composition, and VisPy continue to use the tile-major path after Slice 6. Slice 7 introduces the post-LOD route decision and consumes the sidecar.
+This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning, CPU residency, render-batch packing, composition, and VisPy continue to use the tile-major path after Slice 6. Slice 8 introduces the post-LOD route decision and consumes the sidecar. Optional Slice 7 adds developer-only exhaustive equivalence validation without changing publication or runtime behavior.
 
 **Schema decisions**
 
@@ -1130,11 +1131,13 @@ This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning
 4. Keep that construction-only row-address index outside the published Zarr hierarchy, under a unique path owned by the current cache generation. It must be removed on success and on failure, and it must not survive into staged validation or publication. It is an out-of-core transpose aid, not part of the cache schema or a viewer-runtime index.
 5. For each serialized level, consume the aligned catalog records and temporary source row starts in bounded point batches. Within one batch, group records by source bucket, read the corresponding canonical coordinate ranges through a bounded set of bucket handles, and scatter those reads into one bounded coordinate buffer in catalog order. Then append that buffer as one contiguous interval to the level's value-major `location` array. If one range exceeds the configured point bound, split that range without changing its point order. Because bucket point rows are already ordered by `(value_id, point_id)` within each tile, construction does not need to read or retain point IDs; `point_id` establishes the existing deterministic source order but is not persisted in the sidecar.
 6. Construct each sidecar out of core. Bound the temporary row-address writes, coordinate buffers, and retained bucket handles explicitly; do not materialize a complete level coordinate array, point IDs, or all source rows in memory. Finish, reconcile, and release one level before advancing to the next. Cache-construction time is secondary to runtime locality but unbounded RAM and one lookup or Zarr operation per value/tile range are not acceptable.
-7. At every level, reconcile each value pointer interval with that level's catalog count and reconcile the final pointer with that level's manifest total.
+7. Track sidecar input, buffered, and written coordinate cursors explicitly. At every level, reconcile each value pointer interval with that level's catalog count, reconcile the final pointer with that level's manifest total, and require the final physical `location` shape and writer cursor to equal the declared level point count before closing the sidecar.
 8. Include sidecar files in staging validation and atomic publication. Any sidecar write or validation failure must leave the preceding completed generation recoverable.
 9. Thread explicit sidecar location chunk/shard settings, the construction point-batch bound, and the retained bucket-handle bound through the public builder configuration and `scripts/build_tiled_points_cache_variant.py` so the supplied-cache build is reproducible from one recorded command. Do not expose a global or per-level switch that omits a sidecar.
 
-The staged hierarchy validator must become descriptor-aware. Every generation using the new schema must contain the descriptor and exactly one advertised `value_major/level_L` group for every serialized level, with the required arrays, layouts, and codec settings; a missing or extra level, descriptor, group, or array is cache corruption rather than an older supported form. Independent validation then checks per-level pointer origin and monotonicity, every per-value interval against that level's `value_tiles/n_points` totals, every terminal pointer against that level's manifest total, and every coordinate-array row count. This extends the existing build transaction rather than creating a second publication step:
+The mandatory staged validator must remain aligned with the current production tile-major validation policy rather than becoming a full payload verifier. It must reopen the staged generation without accepting writer results, make the hierarchy and root descriptor aware of exactly one `value_major/level_L` group for every serialized level, reject missing or extra levels, groups, arrays, attributes, or schema fields, and validate the declared dtype, shape, chunks, shards, codec, fill value, and chunk-key encoding of every sidecar array.
+
+For each level, normal publication validation reads `value_point_indptr` completely and requires origin zero, nondecreasing pointers, per-value pointer differences equal to that level's aggregated `value_tiles/n_points`, and a terminal equal to both the level point count and the metadata-declared `location` row count. It validates the `location` array's physical contract from Zarr metadata but does not index or decode coordinate rows and does not compare them with tile-major coordinates. Consequently, just like current production validation of tile-major `location`, it is not expected to detect a missing or undecodable coordinate shard or semantically incorrect coordinate values. Writer-time cursor reconciliation, focused coordinate-order tests, and optional Slice 7 exhaustive validation cover those distinct concerns. This extends the existing build transaction rather than creating a second publication step:
 
 ```text
 Exact -> Bridge/Spatial -> catalog -> mandatory sidecar for every level
@@ -1143,8 +1146,9 @@ Exact -> Bridge/Spatial -> catalog -> mandatory sidecar for every level
 
 **Focused tests**
 
-- Add small-fixture tests for ordering, value pointers, empty values, several tiles per value, deterministic point order, changing level geometry, chunk boundaries, and per-level final row-count reconciliation.
-- Add corruption tests for missing and extra levels, metadata, dtype, shape, pointer monotonicity, pointer terminal value, and coordinate count at Exact, Bridge, and Spatial levels.
+- Add small-fixture writer tests that compare every sidecar coordinate block with its expected tile-major range and cover ordering, value pointers, empty values, several tiles per value, deterministic point order, changing level geometry, chunk boundaries, and per-level final row-count reconciliation.
+- Add publication-validation corruption tests for missing and extra levels, metadata, dtype, shape, pointer monotonicity, pointer terminal value, catalog-count disagreement, and metadata-declared coordinate count at Exact, Bridge, and Spatial levels.
+- Prove that normal staged validation validates `location` layout without decoding it, matching the existing tile-major publication contract.
 - Extend builder and staging-validation tests to cover successful all-level publication, rollback on any level-sidecar failure, missing mandatory sidecar metadata or arrays, and rejection of the pre-change tile-major-only schema.
 - Verify that an unrecognized sidecar schema is rejected rather than ignored.
 
@@ -1154,9 +1158,37 @@ Build the supplied cache with every level sidecar and record per-level and total
 
 **Exit condition**
 
-Every completed cache generation using the current schema contains and independently validates a coordinate value-major sidecar for every serialized level. Pre-change tile-major-only or partially covered caches are rejected and must be rebuilt.
+Every completed cache generation using the current schema contains a value-major coordinate sidecar for every serialized level, and normal publication validation independently verifies its mandatory hierarchy, layout, pointer, and catalog-count contract without decoding coordinate payloads. Pre-change tile-major-only or partially covered caches are rejected and must be rebuilt.
 
-### Slice 7 — Post-LOD physical-payload routing and sidecar reads
+### Slice 7 — Optional exhaustive value-major coordinate-equivalence validation
+
+This is a developer-only validation layer for format changes, release qualification, or investigation of suspected corruption. It is deliberately excluded from normal cache construction and publication, just as the existing exhaustive tile-major validator is separate from `_validate_staged_cache()`.
+
+**Scope**
+
+1. Extend `scripts/validate_multi_scale_cache_points_zarr_exhaustive.py` rather than adding coordinate decoding to the production staged validator.
+2. Run the normal structural staged validation first, then retain the existing exhaustive tile-major payload, point-identity, cross-level, and optional source-equivalence checks.
+3. For every serialized level, reuse the existing levelwise range-reconciliation pattern: stream each bucket's persisted sparse ranges once, retain only compact `value_id`, `manifest_index`, `row_start`, and `row_count` metadata for the current level, and sort that metadata into the persisted catalog's `(value_id, manifest_index)` order. Do not perform one independent sparse-index lookup or Zarr operation for every catalog record.
+4. Consume those ordered source ranges in bounded point batches, read their canonical tile-major coordinate intervals through a bounded bucket-reader cache, and compare them exactly with the corresponding `value_major/level_L/location` blocks. Equality of the complete ordered coordinate sequence proves both membership and the sidecar's inherited `(value_id, manifest_index, point_id)` order even though point IDs are not duplicated in the sidecar. Process and release one level at a time; optional exhaustive validation may be IO-expensive, but it must not require a complete level's coordinates in RAM.
+5. Decode every sidecar coordinate row. Missing or corrupt coordinate chunks, swapped value/manifest blocks, incorrect coordinates, truncated output, and ordering errors must fail this optional path.
+6. Do not call this validator from `_build_points_cache_zarr()`, do not make publication depend on it, and do not add an application setting that enables it implicitly.
+
+**Focused tests**
+
+- Compare complete Exact, Bridge, and Spatial sidecars with their tile-major sources on a small multilevel fixture.
+- Corrupt one coordinate, swap equal-sized catalog blocks, remove a sidecar coordinate shard, and disturb a block boundary; prove that normal publication validation retains its metadata-only payload policy while the exhaustive validator rejects each corruption.
+- Exercise an empty value interval and batching across sidecar chunk boundaries.
+- Prove that the exhaustive path remains bounded and leaves its caller-owned temporary root intact and empty after success or failure.
+
+**Optional evidence**
+
+Run the exhaustive comparison once on a retained all-level build of the supplied cache and report duration, physical bytes read, and peak RSS. These measurements characterize the developer tool; they are not publication or runtime acceptance gates.
+
+**Exit condition**
+
+An explicitly invoked developer tool can prove coordinate-for-coordinate equivalence between every value-major sidecar and its canonical tile-major payload without changing the normal builder, staged validator, or viewer runtime.
+
+### Slice 8 — Post-LOD physical-payload routing and sidecar reads
 
 This slice realizes the cold-read improvement while preserving one logical tile/snapshot contract above the reader.
 
@@ -1206,7 +1238,7 @@ Repeat that case through the Bridge sidecar and add proper-subset requests that 
 
 The reader chooses physical locality after semantic LOD selection and returns the existing logical tile contract. Every proper-subset level uses its mandatory sidecar, all-values requests retain tile-major routing, and no viewer request loads a bucket sparse-range index.
 
-### Slice 8 — Remove bucket sparse-range indexes from the viewer runtime
+### Slice 9 — Remove bucket sparse-range indexes from the viewer runtime
 
 This slice removes the approximately 8.1-second startup and 568.4-MiB eager lookup policy without replacing it with a fallback-index cache. All-level sidecars make the large sparse ranges a build-time and validation structure rather than a viewer-runtime resource.
 
@@ -1241,7 +1273,7 @@ Report startup metadata time, time to ready, compact resident bytes, per-level s
 
 Large sparse ranges are absent from the viewer runtime; they remain persisted only for the separately scoped construction and validation contracts.
 
-### Slice 9 — Integrated all-level acceptance and tuning matrix
+### Slice 10 — Integrated all-level acceptance and tuning matrix
 
 This slice consolidates evidence for the mandatory all-level dual ordering and tunes its physical layout without making individual level sidecars optional.
 
@@ -1288,13 +1320,13 @@ process RSS at startup, snapshot, staging and first draw
 
 Publish one comparison report containing the pre-change baseline and each accepted slice. Record per-level construction size, read amplification, latency, and tuning decisions for the mandatory all-level sidecars.
 
-### Slice 10 — Conditional viewport debounce
+### Slice 11 — Conditional viewport debounce
 
 Debounce is deliberately last because it avoids work but does not make an accepted request cheaper.
 
 **Entry condition**
 
-Proceed only if Slice 9 instrumentation shows that rapid camera gestures still dispatch multiple physical reads that become obsolete despite the existing one-active/one-latest-pending mailbox.
+Proceed only if Slice 10 instrumentation shows that rapid camera gestures still dispatch multiple physical reads that become obsolete despite the existing one-active/one-latest-pending mailbox.
 
 **Production changes if justified**
 
@@ -1313,7 +1345,7 @@ Proceed only if Slice 9 instrumentation shows that rapid camera gestures still d
 
 Use recorded camera traces rather than synthetic event counts alone. The debounce must materially reduce obsolete cold reads without making an isolated pan or zoom feel delayed. If it does not, retain the current mailbox policy and reject this slice.
 
-### Slice 11 — Optional hardening and scaling gates
+### Slice 12 — Optional hardening and scaling gates
 
 These are explicit decision gates, not assumed follow-up work.
 
@@ -1329,7 +1361,7 @@ Do not raise the budget until end-to-end tests cover worker packing, Qt delivery
 
 Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the mandatory dual-ordering implementation has measured results, and keep each in its own schema/benchmark slice.
 
-### Slice 12 — Explicit coordinator selection arming
+### Slice 13 — Explicit coordinator selection arming
 
 This slice is a lifecycle and API cleanup rather than a rendering optimization. It makes the product rule explicit: selecting or inspecting a points element may load metadata and available values, but a regular or tiled napari points layer is created only after an explicit Add/Update action.
 
@@ -1395,7 +1427,7 @@ user clicks Add / Update
 
 No constructor default can implicitly mean all values, and no viewport cache read can start before the application has explicitly configured the layer's value selection. Metadata discovery remains automatic inside the opt-in panel, while creation of both regular and tiled napari points layers remains an explicit Add/Update action.
 
-### Slice 13 — Conditional identical render-payload reuse
+### Slice 14 — Conditional identical render-payload reuse
 
 This is an optional follow-up optimization, not part of the required constant-resource renderer or worker-packing milestones. The GPU still redraws the active points on every physical frame; this slice concerns only avoiding redundant CPU packing and VBO replacement when a newly accepted viewport resolves to exactly the same immutable point payload that is already active.
 
@@ -1460,7 +1492,7 @@ The initial optimization programme is complete when:
 4. CPU residency no longer has quadratic no-eviction behavior;
 5. every bucket display batch has exactly one complete or proper-subset selection mode, and mixed input fails before planning or physical IO;
 6. proper-subset reads never decode point-level `value_id`;
-7. every newly built current-schema cache contains a validated value-major coordinate sidecar for every serialized level, and every proper-subset read uses the selected level's sidecar after LOD selection;
+7. every newly built current-schema cache contains a structurally and index-validated value-major coordinate sidecar for every serialized level, and every proper-subset read uses the selected level's sidecar after LOD selection;
 8. all-values and complete-tile requests retain tile-major routing;
 9. no viewer startup or read path projects, loads, or retains bucket sparse-range indexes;
 10. persisted bucket sparse ranges remain confined to cache construction, catalog generation, and independent publication validation;
