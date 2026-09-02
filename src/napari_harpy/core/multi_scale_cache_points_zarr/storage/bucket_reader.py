@@ -293,7 +293,7 @@ class _BucketReader:
             or int(row_selection[-1]) >= point_count
             or bool((row_selection[1:] <= row_selection[:-1]).any())
         ):
-            raise ValueError("Construction location rows must be strictly increasing and in bounds.")
+            raise ValueError("Location rows must be strictly increasing and in bounds.")
         locations = np.ascontiguousarray(
             self._array(TILE_MAJOR_LOCATION).get_orthogonal_selection((row_selection, slice(None))),
             dtype=np.float32,

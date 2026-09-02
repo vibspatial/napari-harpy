@@ -475,7 +475,7 @@ def _read_fragment_locations(
         counts = np.asarray(fragments.row_count[order], dtype=np.int64)
         stops = starts + counts
         if bool((starts[1:] < stops[:-1]).any()):
-            raise ValueError("Value-major construction encountered overlapping source ranges.")
+            raise ValueError("Value-major location reconstruction encountered overlapping source ranges.")
         # Expand matching source and destination intervals in the same
         # sorted-record order: source_rows[i] is written to output_rows[i].
         source_rows = _expand_ranges(starts, counts)
