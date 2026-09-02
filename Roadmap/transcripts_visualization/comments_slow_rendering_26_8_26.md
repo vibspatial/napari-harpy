@@ -1193,6 +1193,8 @@ This is a developer-only validation layer for format changes, release qualificat
 5. Decode every sidecar location row. Missing or corrupt location chunks, swapped value/manifest blocks, incorrect locations, truncated output, and ordering errors must fail this optional path.
 6. Do not call this validator from `_build_points_cache_zarr()`, do not make publication depend on it, and do not add an application setting that enables it implicitly.
 
+The exhaustive location-equivalence implementation remains in `scripts/validate_multi_scale_cache_points_zarr_exhaustive.py`. Add `tests/multi_scale_cache_points_zarr/test_exhaustive_validation.py` only as the dedicated test module for that developer script: it may call the script's focused internal validation functions directly and exercise the CLI where useful, but it must not become a second implementation or move exhaustive payload validation into the installed production package. The only installed-package change in this slice is the small shared read-only validation refactor needed to preserve strict `staging` and `complete` wrappers.
+
 **Focused tests**
 
 - Compare complete Exact, Bridge, and Spatial sidecars with their tile-major sources on a small multilevel fixture.
