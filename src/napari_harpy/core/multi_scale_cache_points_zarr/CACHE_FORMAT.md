@@ -589,6 +589,25 @@ value 1 -> sidecar location rows [3:5]
 value 2 -> sidecar location rows [5:8]
 ```
 
+The value pointer locates the complete location interval but does not encode
+the boundaries between contributing manifest tiles. Those boundaries come
+from the aligned `value_tiles` records. For value 2 in this example:
+
+```text
+value_tiles/indptr[0, 2:4]       = [4, 6]
+value_tiles/manifest_index[4:6]  = [0, 1]
+value_tiles/n_points[4:6]        = [1, 2]
+
+sidecar location rows [5:6] -> manifest row 0 -> tile A
+sidecar location rows [6:8] -> manifest row 1 -> tile B
+```
+
+The point counts cumulatively partition the three-row sidecar interval in the
+same manifest order. The manifest then supplies each tile's coordinates, whose
+tile origin is added to its tile-relative sidecar locations. Thus
+`value_point_indptr` locates all points for a value, while `value_tiles` remains
+necessary to associate consecutive subsets of those points with their tiles.
+
 Point-level value IDs are unnecessary because each value is implicit from its
 pointer interval. Point IDs are unnecessary because they established the
 deterministic order during bucket construction. Manifest identities are not

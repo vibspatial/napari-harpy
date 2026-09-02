@@ -141,8 +141,10 @@ def _write_staged_cache_catalog(
         # The catalog sort applies the same permutation to each source bucket's
         # ``row_start`` as to ``value_tiles/manifest_index`` and
         # ``value_tiles/n_points``. The sidecar writer consumes these aligned
-        # source addresses before this temporary directory removes them. Disk
-        # backing avoids retaining one uint64 per value/tile range in RAM.
+        # source addresses before this temporary directory removes them. This
+        # companion requires one uint64 per value/tile range: at 30 million
+        # ranges it occupies about 229 MiB and scales linearly. Disk backing
+        # keeps that construction-only allocation out of the NumPy heap.
         ordered_row_start = np.memmap(
             Path(temporary_directory) / "ordered-row-start.uint64",
             mode="w+",
