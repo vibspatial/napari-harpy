@@ -1182,14 +1182,14 @@ Every completed cache generation using the current schema contains a value-major
 
 ### Slice 7 — Optional exhaustive value-major location-equivalence validation
 
-This is a developer-only validation layer for format changes, release qualification, or investigation of suspected corruption. It is deliberately excluded from normal cache construction and publication, just as the existing exhaustive tile-major validator is separate from `_validate_staged_cache()`.
+This is a developer-only validation layer for format changes, release qualification, or investigation of suspected corruption. Its command-line target is an explicitly completed, retained cache generation. It is deliberately excluded from normal cache construction and publication, just as the existing exhaustive tile-major validator is separate from `_validate_staged_cache()`.
 
 **Scope**
 
-1. Extend `scripts/validate_multi_scale_cache_points_zarr_exhaustive.py` rather than adding coordinate decoding to the production staged validator.
-2. Run the normal structural staged validation first, then retain the existing exhaustive tile-major payload, point-identity, cross-level, and optional source-equivalence checks.
+1. Extend `scripts/validate_multi_scale_cache_points_zarr_exhaustive.py` rather than adding coordinate decoding to the production staged validator. The CLI must require `publication_state="complete"`; it is a post-publication diagnostic for a retained cache, not a hook into the builder's private staging generation.
+2. Extract the common read-only hierarchy, layout, catalog, manifest, bucket-range, and artifact checks behind a private helper that requires an explicit expected publication state. Keep `_validate_staged_cache()` as the unchanged production-facing wrapper that passes `staging`, and add a strict completed-generation wrapper for the developer tool that passes `complete`. Do not infer or silently accept either state. Run that completed-generation validation first, then retain the existing exhaustive tile-major payload, point-identity, cross-level, and optional source-equivalence checks.
 3. For every serialized level, reuse the existing levelwise range-reconciliation pattern: stream each bucket's persisted sparse ranges once, retain only compact `value_id`, `manifest_index`, `row_start`, and `row_count` metadata for the current level, and sort that metadata into the persisted catalog's `(value_id, manifest_index)` order. Do not perform one independent sparse-index lookup or Zarr operation for every catalog record.
-4. Consume those ordered source ranges in bounded point batches, read their canonical tile-major location intervals through a bounded bucket-reader cache, and compare them exactly with the corresponding `value_major/level_L/location` blocks. Equality of the complete ordered location sequence proves both membership and the sidecar's inherited `(value_id, manifest_index, point_id)` order even though point IDs are not duplicated in the sidecar. Process and release one level at a time; optional exhaustive validation may be IO-expensive, but it must not require a complete level's locations in RAM.
+4. Consume those ordered source ranges in bounded point batches, read their canonical tile-major location intervals through a bounded bucket-reader cache, and compare them exactly with the corresponding `value_major/level_L/location` blocks. Use a validator-only default bound of 1,048,576 compared points per batch and expose the bound as a function argument so focused tests can force smaller cross-chunk batches; it is not cache metadata or an application setting. Equality of the complete ordered location sequence proves both membership and the sidecar's inherited `(value_id, manifest_index, point_id)` order even though point IDs are not duplicated in the sidecar. Process and release one level at a time; optional exhaustive validation may be IO-expensive, but it must not require a complete level's locations in RAM.
 5. Decode every sidecar location row. Missing or corrupt location chunks, swapped value/manifest blocks, incorrect locations, truncated output, and ordering errors must fail this optional path.
 6. Do not call this validator from `_build_points_cache_zarr()`, do not make publication depend on it, and do not add an application setting that enables it implicitly.
 
@@ -1198,15 +1198,16 @@ This is a developer-only validation layer for format changes, release qualificat
 - Compare complete Exact, Bridge, and Spatial sidecars with their tile-major sources on a small multilevel fixture.
 - Corrupt one location, swap equal-sized catalog blocks, remove a sidecar location shard, and disturb a block boundary; prove that normal publication validation retains its metadata-only payload policy while the exhaustive validator rejects each corruption.
 - Exercise an empty value interval and batching across sidecar chunk boundaries.
+- Prove that the production staged wrapper still requires `staging`, the developer wrapper requires `complete`, and neither automatically accepts the other publication state.
 - Prove that the exhaustive path remains bounded and leaves its caller-owned temporary root intact and empty after success or failure.
 
 **Optional evidence**
 
-Run the exhaustive comparison once on a retained all-level build of the supplied cache and report duration, physical bytes read, and peak RSS. These measurements characterize the developer tool; they are not publication or runtime acceptance gates.
+Run the exhaustive comparison once on a retained all-level build of the supplied cache and report duration, peak RSS, logical coordinate bytes compared, and compressed bytes covered by the compared location arrays. Do not label operating-system or Zarr-cache effects as measured physical reads without store-level instrumentation. These measurements characterize the developer tool; they are not publication or runtime acceptance gates.
 
 **Exit condition**
 
-An explicitly invoked developer tool can prove location-for-location equivalence between every value-major sidecar and its canonical tile-major payload without changing the normal builder, staged validator, or viewer runtime.
+An explicitly invoked developer tool can require a completed retained cache and prove location-for-location equivalence between every value-major sidecar and its canonical tile-major payload without changing the normal builder, the strict staging-state publication gate, or viewer runtime.
 
 ### Slice 8 — Post-LOD physical-payload routing and sidecar reads
 
