@@ -1182,6 +1182,8 @@ Every completed cache generation using the current schema contains a value-major
 
 ### Slice 7 — Optional exhaustive value-major location-equivalence validation
 
+**Status: Implemented**
+
 This is a developer-only validation layer for format changes, release qualification, or investigation of suspected corruption. Its command-line target is an explicitly completed, retained cache generation. It is deliberately excluded from normal cache construction and publication, just as the existing exhaustive tile-major validator is separate from `_validate_staged_cache()`.
 
 **Scope**
@@ -1206,6 +1208,18 @@ The exhaustive location-equivalence implementation remains in `scripts/validate_
 **Optional evidence**
 
 Run the exhaustive comparison once on a retained all-level build of the supplied cache and report duration, peak RSS, logical coordinate bytes compared, and compressed bytes covered by the compared location arrays. Do not label operating-system or Zarr-cache effects as measured physical reads without store-level instrumentation. These measurements characterize the developer tool; they are not publication or runtime acceptance gates.
+
+The implemented CLI completed successfully against generation `939bdb3e-d137-49d5-9d3e-0779c67e4156`, covering all nine levels and 186,056,149 location rows in each physical ordering. The measurement used the default 1,048,576-point comparison-batch bound and did not include source-Parquet equivalence.
+
+| Measurement | Result |
+|---|---:|
+| Complete exhaustive CLI duration | 642.44 s (10 min 42 s) |
+| Peak child-process RSS | 4,290,740,224 bytes (4.00 GiB) |
+| Logical location payload per ordering | 1,488,449,192 bytes (1.39 GiB) |
+| Combined tile-major and value-major logical location bytes compared | 2,976,898,384 bytes (2.77 GiB) |
+| Compressed value-major location-shard bytes covered | 1,202,957,621 bytes (1.12 GiB) |
+
+The compressed figure is the on-disk size of the sidecar location shard files covered by the comparison, not an instrumented physical-read count. The CLI also performs its pre-existing structural, tile-major payload, point-identity, and cross-level proofs, so 642.44 seconds must not be interpreted as an isolated value-major comparison time.
 
 **Exit condition**
 
