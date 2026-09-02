@@ -11,8 +11,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_poi
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_COMPLETE,
     _CatalogWriteSettings,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
     _write_bridge_level,
@@ -63,6 +65,8 @@ def _write_catalog(fixture: CatalogExactFixture) -> None:
             value_tile_chunk_rows=2,
             value_tile_shard_rows=4,
         ),
+        value_major_settings=_ValueMajorWriteSettings(2, 4, 4),
+        temporary_directory_root=fixture.temporary_root,
     )
 
 
@@ -101,9 +105,17 @@ def test_normal_staged_validation_accepts_complete_multilevel_generation(
         staging_root=catalog_exact_fixture.staging_root,
         cache_generation_id=_GENERATION_ID,
         settings=_CatalogWriteSettings(2, 4, 2, 4),
+        value_major_settings=_ValueMajorWriteSettings(2, 4, 4),
+        temporary_directory_root=catalog_exact_fixture.temporary_root,
     )
 
     _validate_staged_cache(catalog_exact_fixture.staging_root)
+    with _CatalogReader(catalog_exact_fixture.staging_root) as reader:
+        for level, metadata in enumerate(reader.attributes.levels):
+            assert reader.array(f"value_major/level_{level}/location").shape == (metadata.point_count, 2)
+            pointer = reader.array(f"value_major/level_{level}/value_point_indptr")[:]
+            assert int(pointer[0]) == 0
+            assert int(pointer[-1]) == metadata.point_count
 
 
 def test_normal_staged_validation_rejects_complete_publication_state(
@@ -129,6 +141,25 @@ def test_normal_staged_validation_compares_bucket_ranges_with_value_tiles(
 
     with pytest.raises(ValueError, match="ranges|coverage|boundary"):
         _validate_staged_cache(catalog_exact_fixture.staging_root)
+
+
+def test_normal_staged_validation_checks_value_major_layout_without_decoding_locations(
+    catalog_exact_fixture: CatalogExactFixture,
+) -> None:
+    _write_catalog(catalog_exact_fixture)
+    location_objects = [
+        path
+        for path in (catalog_exact_fixture.staging_root / "value_major/level_0/location/c").rglob("*")
+        if path.is_file()
+    ]
+    assert location_objects
+    location_objects[0].unlink()
+
+    # Normal publication validation deliberately verifies only the declared
+    # location layout and compact pointer/count relationships. It does not
+    # decode location shards; detecting missing or corrupt payload bytes
+    # requires a separately invoked exhaustive payload validator.
+    _validate_staged_cache(catalog_exact_fixture.staging_root)
 
 
 def test_normal_staged_validation_does_not_decode_point_payload(

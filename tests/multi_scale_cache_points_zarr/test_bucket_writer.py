@@ -75,7 +75,7 @@ def test_writer_persists_exact_sharded_layout_ranges_and_attributes(tmp_path: Pa
             "tile_count": 2,
             "point_count": 8,
             "range_count": 5,
-            "point_order": ["tile_y", "tile_x", "value_id", "point_id"],
+            "point_row_order": ["tile_y", "tile_x", "value_id", "point_id"],
             "coordinate_encoding": "tile-relative-xy-float32-v1",
             "codec_id": "zstd-v1",
         }

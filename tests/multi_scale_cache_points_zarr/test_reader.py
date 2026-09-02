@@ -15,9 +15,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _PointsCacheBuilderConfig,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
     _CatalogWriteSettings,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
@@ -32,6 +31,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
     _BucketReader,
@@ -163,6 +166,8 @@ def test_reader_rejects_unpublished_staging_catalog(catalog_exact_fixture: Catal
         staging_root=catalog_exact_fixture.staging_root,
         cache_generation_id="12345678-1234-5678-9234-567812345678",
         settings=_CatalogWriteSettings(2, 4, 2, 4),
+        value_major_settings=_ValueMajorWriteSettings(2, 4, 4),
+        temporary_directory_root=catalog_exact_fixture.temporary_root,
     )
 
     with pytest.raises(ValueError, match="publication_state"):
