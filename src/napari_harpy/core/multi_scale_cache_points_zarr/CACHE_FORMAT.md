@@ -124,6 +124,16 @@ source signature, geometry, build settings, level descriptors, canonical
 therefore not repeated in a Zarr array. `values/n_points` stores their aligned
 Exact/source counts.
 
+The value-major descriptor is deliberately compact. It declares the component
+group, deterministic row order, and physical chunk and shard profile. The
+cache-wide backend descriptor supplies the codec for tile-major buckets,
+catalog arrays, and value-major arrays alike. Level identities and point counts
+come from the cache-wide level descriptors; canonical sidecar paths, array
+names, dtypes, and dimensions come from the root schema version. They are not
+repeated per level. Construction-only controls, such as the maximum point batch
+used while transposing coordinates, are not properties of the published cache
+and are not serialized.
+
 Each bucket also has attributes declaring its payload schema version, level,
 bucket ID, tile/point/range counts, point ordering, coordinate encoding, and
 codec. Array chunks and shards are physical storage choices recorded and
