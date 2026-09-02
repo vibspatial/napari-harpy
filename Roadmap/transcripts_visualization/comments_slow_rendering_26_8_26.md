@@ -1043,13 +1043,15 @@ Satisfied: proper-subset tile-major fallback performs coordinate-only physical r
 
 ### Slice 6 — All-level value-major sidecar schema and writer
 
+**Status: Implemented**
+
 This slice makes the new physical ordering constructible, atomically published, and independently validated at the same structural/index boundary used by normal tile-major publication. It does not route viewer reads to it yet or perform coordinate-payload equivalence validation.
 
-**Current-to-target interpretation**
+**Implemented storage contract**
 
-The current cache has one strict `harpy-multiscale-points-zarr-cache-0.1` root contract. `_CacheAttributes.to_dict()` always emits that version, `_parse_cache_attributes()` requires its exact root-key set, and `_CatalogReader` accepts only the four existing root groups: `levels`, `values`, `manifest`, and `value_tiles`. At every current level, point rows are physically ordered by tile and then by `(value_id, point_id)` within each tile. The existing `value_tiles` catalog already transposes compact range records into `(level, value_id, manifest_index)` order, but it contains counts and tile references rather than coordinates.
+The implemented cache has one strict `harpy-multiscale-points-zarr-cache-0.2` root contract. `_CacheAttributes.to_dict()` always emits that version, `_parse_cache_attributes()` requires its exact root-key set, and `_CatalogReader` requires the five root groups `tile_major`, `values`, `manifest`, `value_tiles`, and `value_major`. At every level, rows in the original point payload are physically ordered by tile and then by `(value_id, point_id)` within each tile. The `value_tiles` catalog transposes compact range records into `(level, value_id, manifest_index)` order, but contains counts and tile references rather than coordinates.
 
-Slice 6 adds a second location payload for every serialized level alongside the current tile-major buckets. It does not replace `_BucketWriter`, alter the tile-major payload, or change the logical tile contract. Each level sidecar keeps the same tile-relative `(N, 2) float32` location representation and changes only physical row order:
+Slice 6 adds a second location payload for every serialized level alongside the tile-major buckets. It does not replace `_BucketWriter`, alter the tile-major payload, or change the logical tile contract. Each level sidecar keeps the same tile-relative `(N, 2) float32` location representation and changes only physical row order:
 
 ```text
 tile-major level L payload       tile_y -> tile_x -> value_id -> point_id
@@ -1069,7 +1071,7 @@ the sidecar stores the first two locations for value 0/manifest 2, the next loca
 Two distinct pointer tables participate in that reconstruction:
 
 - the existing `value_tiles/indptr[level, value_id:value_id + 2]` selects the value's range-level catalog records in the aligned `value_tiles/manifest_index` and `value_tiles/n_points` arrays; and
-- the Exact sidecar's new `value_point_indptr[value_id:value_id + 2]` selects the value's point-level location interval in `value_major/level_0/location`.
+- that level's `value_point_indptr[value_id:value_id + 2]` selects the value's point-level location interval in `value_major/level_L/location`.
 
 For the example above, the aligned Exact catalog is conceptually:
 
@@ -1098,12 +1100,12 @@ for manifest_index, n_points in value_tile_records(value_id):
 
 Bridge and every Spatial level apply the same reconstruction against their own `value_tiles/indptr[level]`, manifest-record interval, `n_points` counts, and `value_major/level_L/value_point_indptr`; only the level point count and tile geometry differ.
 
-This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning, CPU residency, render-batch packing, composition, and VisPy continue to use the tile-major path after Slice 6. Slice 8 introduces the post-LOD route decision and consumes the sidecar. Optional Slice 7 adds developer-only exhaustive equivalence validation without changing publication or runtime behavior.
+The implemented slice ends at the storage boundary. `_PointsCacheReader`, viewport planning, CPU residency, render-batch packing, composition, and VisPy continue to use the tile-major path after Slice 6. Slice 8 introduces the post-LOD route decision and consumes the sidecar. Optional Slice 7 adds developer-only exhaustive equivalence validation without changing publication or runtime behavior.
 
 **Schema decisions**
 
-1. Introduce an explicit sidecar descriptor in root cache metadata rather than inferring capability from directory presence. It records every serialized level, row ordering, location dtype, dimensionality, per-level chunk/shard settings, and sidecar schema version. Its level set must exactly equal the cache's serialized level set.
-2. Bump the cache schema outright and implement only the new contract. Do not add a compatibility parser for the current tile-major-only schema: pre-change caches are rejected and must be rebuilt. An unknown cache or sidecar schema is likewise rejected.
+1. Store an explicit compact `value_major` descriptor in root cache metadata rather than inferring capability from directory presence. It records the group name, point row order, and the chunk/shard row settings shared by value-major point arrays. The root cache schema, serialized level metadata, and canonical sidecar schema define the required level set, array names, dtypes, and dimensions; strict hierarchy and layout validation enforce that contract without duplicating it in the descriptor.
+2. Bump the cache schema outright and implement only the new contract. Do not add a compatibility parser for the preceding tile-major-only schema: pre-change caches are rejected and must be rebuilt. An unknown cache schema is likewise rejected.
 3. Store the initial sidecar under one unambiguous generation-owned path such as:
 
    ```text
@@ -1126,12 +1128,12 @@ This slice ends at the storage boundary. `_PointsCacheReader`, viewport planning
 **Writer changes**
 
 1. Add a dedicated storage writer rather than extending `_BucketWriter` with a second unrelated row order.
-2. Given the current builder, the clean insertion point is after `_write_staged_cache_catalog()` and before `_validate_staged_cache()`. Always build all level sidecars inside the same unique staging generation as the tile-major payload. The catalog therefore supplies the authoritative per-level value-to-tile ordering and counts before the sidecars are written, while neither artifact is public yet.
+2. Build all level sidecars within `_write_staged_cache_catalog()`, after the catalog has finalized its ordered records and root metadata but before that function returns. `_build_points_cache_zarr()` then calls `_validate_staged_cache()`. The catalog therefore supplies the authoritative per-level value-to-tile ordering and counts before the sidecars are written, while neither artifact is public yet.
 3. Reuse the existing catalog transpose rather than resolving every source range again after the catalog has discarded its sort permutation. The compact bucket-range iterator already reads each validated `ranges/row_start` together with `value_id`, `manifest_index`, and `row_count`. While the catalog sorts those records into `(value_id, manifest_index)` order, apply the same permutation to `row_start` and write it to a generation-owned, construction-only index. Its rows align one-for-one with the persisted `value_tiles/manifest_index` and `value_tiles/n_points` rows. Do not duplicate `manifest_index` or `n_points` in this temporary index: the manifest resolves each record's source bucket, and the catalog already supplies its point count.
 4. Keep that construction-only row-address index outside the published Zarr hierarchy, under a unique path owned by the current cache generation. It must be removed on success and on failure, and it must not survive into staged validation or publication. It is an out-of-core transpose aid, not part of the cache schema or a viewer-runtime index.
 5. For each serialized level, consume the aligned catalog records and temporary source row starts in bounded point batches. Within one batch, group records by source bucket, read the corresponding canonical location ranges through a bounded set of bucket handles, and scatter those reads into one bounded location buffer in catalog order. Then append that buffer as one contiguous interval to the level's value-major `location` array. If one range exceeds the configured point bound, split that range without changing its point order. Because bucket point rows are already ordered by `(value_id, point_id)` within each tile, construction does not need to read or retain point IDs; `point_id` establishes the existing deterministic source order but is not persisted in the sidecar.
 6. Construct each sidecar out of core. Bound the temporary row-address writes, location buffers, and retained bucket handles explicitly; do not materialize a complete level location array, point IDs, or all source rows in memory. Finish, reconcile, and release one level before advancing to the next. Cache-construction time is secondary to runtime locality but unbounded RAM and one lookup or Zarr operation per value/tile range are not acceptable.
-7. Track sidecar input, buffered, and written location cursors explicitly. At every level, reconcile each value pointer interval with that level's catalog count, reconcile the final pointer with that level's manifest total, and require the final physical `location` shape and writer cursor to equal the declared level point count before closing the sidecar.
+7. Track buffered and physically written location rows explicitly; their sum is the accepted input-row count. At every level, reconcile each value pointer interval with that level's catalog count, reconcile the final pointer with that level's manifest total, and require the final writer count to equal the declared level point count before closing the sidecar. Normal staged validation independently verifies the physical `location` shape from Zarr metadata.
 8. Include sidecar files in staging validation and atomic publication. Any sidecar write or validation failure must leave the preceding completed generation recoverable.
 9. Thread explicit sidecar location chunk/shard settings, the construction point-batch bound, and the retained bucket-handle bound through the public builder configuration and `scripts/build_tiled_points_cache_variant.py` so the supplied-cache build is reproducible from one recorded command. Do not expose a global or per-level switch that omits a sidecar.
 
@@ -1154,7 +1156,7 @@ Exact -> Bridge/Spatial -> catalog -> mandatory sidecar for every level
 
 **Construction evidence**
 
-Build the supplied cache with every level sidecar and record per-level and total construction duration, peak RSS, logical bytes, actual compressed physical bytes, total cache size, and compression ratio. Construction duration is reported but is not a rejection criterion unless operationally prohibitive.
+Build the supplied cache with every level sidecar and record total construction duration, peak RSS, logical bytes, actual compressed physical bytes, total cache size, and compression ratio. Construction duration is reported but is not a rejection criterion unless operationally prohibitive.
 
 **Exit condition**
 
