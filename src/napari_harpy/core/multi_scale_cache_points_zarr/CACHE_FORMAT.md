@@ -7,6 +7,7 @@ bucket point ranges, and value-major location rows relate to one another.
 
 The schema parser and storage validators remain the authoritative executable
 contract. In particular, see [`cache_format.py`](cache_format.py),
+[`storage/_paths.py`](storage/_paths.py),
 [`storage/_schema.py`](storage/_schema.py), and
 [`storage/catalog_reader.py`](storage/catalog_reader.py). The example values in
 this document are illustrative, but every array shape, pointer, count, and
@@ -64,6 +65,11 @@ An integer such as `2` has no meaning without its address space. Manifest row
 addresses.
 
 ## 2. Logical hierarchy
+
+The tree below starts at the cache root. The cache-backed viewer conventionally
+locates that root inside a backed SpatialData store at
+`points/<points_name>/transcripts_vis_zarr`. This surrounding location is an
+application convention, not part of the internal Zarr schema validated below.
 
 Ignoring Zarr metadata files, chunk keys, and shard objects, one cache has this
 logical hierarchy:
