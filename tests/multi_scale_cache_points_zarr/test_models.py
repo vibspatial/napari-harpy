@@ -40,10 +40,10 @@ def _tile(**overrides: object) -> _TileDescriptor:
 
 
 def test_bucket_path_is_canonical_and_derived_from_identity() -> None:
-    assert _bucket_path(level=0, bucket_id=3) == "levels/level_0/bucket-003.zarr"
-    assert _bucket_path(level=2, bucket_id=999) == "levels/level_2/bucket-999.zarr"
-    assert _bucket_path(level=2, bucket_id=1_000) == "levels/level_2/bucket-1000.zarr"
-    assert _tile(level=2, bucket_id=3).bucket_path == "levels/level_2/bucket-003.zarr"
+    assert _bucket_path(level=0, bucket_id=3) == "tile_major/level_0/bucket-003.zarr"
+    assert _bucket_path(level=2, bucket_id=999) == "tile_major/level_2/bucket-999.zarr"
+    assert _bucket_path(level=2, bucket_id=1_000) == "tile_major/level_2/bucket-1000.zarr"
+    assert _tile(level=2, bucket_id=3).bucket_path == "tile_major/level_2/bucket-003.zarr"
 
 
 @pytest.mark.parametrize(
@@ -105,7 +105,7 @@ def test_bucket_plan_exposes_exact_read_only_prefix_sums() -> None:
     )
 
     assert plan.tile_count == 3
-    assert plan.bucket_path == "levels/level_0/bucket-000.zarr"
+    assert plan.bucket_path == "tile_major/level_0/bucket-000.zarr"
     assert plan.point_count == 10
     assert plan.tile_offset.tolist() == [0, 3, 5, 10]
     assert not plan.tile_offset.flags.writeable
@@ -143,7 +143,7 @@ def test_bucket_and_level_results_reconcile_and_order_logical_tiles() -> None:
     assert (bucket_1.level, bucket_1.bucket_id, bucket_1.bucket_path) == (
         0,
         1,
-        "levels/level_0/bucket-001.zarr",
+        "tile_major/level_0/bucket-001.zarr",
     )
     assert result.level == 0
     assert [(tile.tile_x, tile.tile_y) for tile in result.tile_descriptors] == [(0, 0), (1, 0), (0, 1)]

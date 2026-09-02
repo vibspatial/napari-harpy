@@ -438,7 +438,7 @@ def test_spatial_writer_builds_nested_multilevel_zarr_pyramid(
             assert _validate_bucket(staging, level=result.level, bucket_id=bucket.bucket_id) == bucket
         finer_result = result
 
-    assert not list((staging / "levels").rglob("*.parquet"))
+    assert not list((staging / "tile_major").rglob("*.parquet"))
 
 
 def test_terminal_bridge_returns_no_spatial_results(tmp_path: Path) -> None:
@@ -454,7 +454,7 @@ def test_terminal_bridge_returns_no_spatial_results(tmp_path: Path) -> None:
         )
         == ()
     )
-    assert not (staging / "levels/level_2").exists()
+    assert not (staging / "tile_major/level_2").exists()
 
 
 def test_spatial_writer_applies_explicit_reader_bound_to_each_level(
@@ -525,10 +525,10 @@ def test_spatial_failure_removes_active_bucket_and_preserves_bridge(
             config=_SpatialWriterConfig(_settings(), max_open_finer_readers=1),
         )
 
-    assert (staging / "levels/level_1/bucket-000.zarr").is_dir()
-    assert (staging / "levels/level_1/bucket-001.zarr").is_dir()
-    assert (staging / "levels/level_2").is_dir()
-    assert not list((staging / "levels/level_2").iterdir())
+    assert (staging / "tile_major/level_1/bucket-000.zarr").is_dir()
+    assert (staging / "tile_major/level_1/bucket-001.zarr").is_dir()
+    assert (staging / "tile_major/level_2").is_dir()
+    assert not list((staging / "tile_major/level_2").iterdir())
 
 
 def test_spatial_later_level_failure_preserves_completed_prerequisites(
@@ -555,16 +555,16 @@ def test_spatial_later_level_failure_preserves_completed_prerequisites(
             config=_SpatialWriterConfig(_settings()),
         )
 
-    assert list((staging / "levels/level_2").glob("bucket-*.zarr"))
-    assert (staging / "levels/level_3").is_dir()
-    assert not list((staging / "levels/level_3").iterdir())
-    assert (staging / "levels/level_1/bucket-000.zarr").is_dir()
+    assert list((staging / "tile_major/level_2").glob("bucket-*.zarr"))
+    assert (staging / "tile_major/level_3").is_dir()
+    assert not list((staging / "tile_major/level_3").iterdir())
+    assert (staging / "tile_major/level_1/bucket-000.zarr").is_dir()
 
 
 def test_spatial_rejects_preexisting_output_and_invalid_config(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     bridge_result = _write_bridge_fixture(staging)
-    (staging / "levels/level_2").mkdir()
+    (staging / "tile_major/level_2").mkdir()
 
     with pytest.raises(FileExistsError, match="already exists"):
         _write_spatial_levels(

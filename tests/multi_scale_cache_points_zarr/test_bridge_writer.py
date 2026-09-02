@@ -164,7 +164,7 @@ def test_bridge_writer_reads_exact_zarr_and_persists_deterministic_subsets(
         (0, 1, 4),
     ]
     assert result.point_count == 11
-    assert not list((staging / "levels/level_1").rglob("*.parquet"))
+    assert not list((staging / "tile_major/level_1").rglob("*.parquet"))
 
     exact_payloads = _payloads_by_tile(exact_result, staging)
     bridge_payloads = _payloads_by_tile(result, staging)
@@ -272,7 +272,7 @@ def test_bridge_rejects_missing_plan_or_preexisting_output(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="no Bridge level"):
         _write_bridge_level(exact_result, exact_only, staging_root=staging, config=config)
 
-    (staging / "levels/level_1").mkdir()
+    (staging / "tile_major/level_1").mkdir()
     with pytest.raises(FileExistsError, match="already exists"):
         _write_bridge_level(exact_result, _plan(), staging_root=staging, config=config)
 
@@ -298,10 +298,10 @@ def test_bridge_failure_removes_current_partial_bucket_but_preserves_exact(
             config=_BridgeWriterConfig(_settings(), max_open_exact_readers=1),
         )
 
-    assert (staging / "levels/level_0/bucket-000.zarr").is_dir()
-    assert (staging / "levels/level_0/bucket-001.zarr").is_dir()
-    assert (staging / "levels/level_1").is_dir()
-    assert not list((staging / "levels/level_1").iterdir())
+    assert (staging / "tile_major/level_0/bucket-000.zarr").is_dir()
+    assert (staging / "tile_major/level_0/bucket-001.zarr").is_dir()
+    assert (staging / "tile_major/level_1").is_dir()
+    assert not list((staging / "tile_major/level_1").iterdir())
 
 
 @pytest.mark.parametrize("failure", ["read", "write"])
@@ -334,8 +334,8 @@ def test_bridge_injected_io_failure_closes_and_removes_current_bucket(
             config=_BridgeWriterConfig(_settings(), max_open_exact_readers=1),
         )
 
-    assert not list((staging / "levels/level_1").iterdir())
-    assert (staging / "levels/level_0/bucket-000.zarr").is_dir()
+    assert not list((staging / "tile_major/level_1").iterdir())
+    assert (staging / "tile_major/level_0/bucket-000.zarr").is_dir()
 
 
 def test_bridge_config_rejects_invalid_settings_and_reader_bound() -> None:

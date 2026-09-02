@@ -89,7 +89,7 @@ cache/
 │   │   ├── location                  float32[N_0, 2]
 │   │   └── value_point_indptr        uint64[V + 1]
 │   └── ... one group per level
-└── levels/
+└── tile_major/
     ├── level_0/
     │   ├── bucket-000.zarr/
     │   │   ├── location              float32[N_b, 2]

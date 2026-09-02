@@ -111,7 +111,7 @@ def _write_bridge_level(
         levels at positions zero and one.
     staging_root
         Existing isolated generation root containing Exact. This function owns
-        creation of the previously absent ``levels/level_1`` directory.
+        creation of the previously absent ``tile_major/level_1`` directory.
     config
         Bridge physical Zarr settings and Exact-reader bound.
 

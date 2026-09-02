@@ -79,7 +79,7 @@ def _bucket_path(*, level: int, bucket_id: int) -> str:
     """Return the canonical path derived from serialized bucket identity."""
     _require_integer_in_range(level, "level", maximum=_INT16_MAX)
     _require_integer_in_range(bucket_id, "bucket_id", maximum=_UINT32_MAX)
-    return f"levels/level_{level}/bucket-{bucket_id:03d}.zarr"
+    return f"tile_major/level_{level}/bucket-{bucket_id:03d}.zarr"
 
 
 def _require_integer_in_range(

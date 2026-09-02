@@ -421,7 +421,7 @@ def _read_fragment_locations(
         manifest/bucket_id + level
                     |
                     v
-        levels/level_<level>/bucket-<bucket_id>.zarr/location[source_rows, :]
+        tile_major/level_<level>/bucket-<bucket_id>.zarr/location[source_rows, :]
                     |
                     v
         scatter into the fragments' original value-major record order

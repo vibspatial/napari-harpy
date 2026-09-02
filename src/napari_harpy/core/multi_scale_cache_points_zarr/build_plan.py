@@ -124,7 +124,7 @@ class _LevelBuildPlan:
     @property
     def relative_directory(self) -> str:
         """Return this level's cache-root-relative directory."""
-        return f"levels/level_{self.level}"
+        return f"tile_major/level_{self.level}"
 
 
 @dataclass(frozen=True)

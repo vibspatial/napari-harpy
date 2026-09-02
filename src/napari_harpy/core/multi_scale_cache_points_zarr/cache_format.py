@@ -36,6 +36,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _VALUE_TILE_ROW_ORDER,
     _ZSTD_CODEC_ID,
     MANIFEST_GROUP,
+    TILE_MAJOR_GROUP,
     VALUE_MAJOR_GROUP,
     VALUE_MAJOR_ROW_ORDER,
     VALUE_TILES_GROUP,
@@ -330,7 +331,7 @@ class _LevelMetadata:
                 raise ValueError("The Exact level must omit `max_points_per_tile`.")
         if not self.tile_count <= self.range_count <= self.point_count <= self.point_count_upper_bound:
             raise ValueError("Level tile, range, point, and planned counts are inconsistent.")
-        expected_directory = f"levels/level_{self.level}"
+        expected_directory = f"{TILE_MAJOR_GROUP}/level_{self.level}"
         if self.relative_directory != expected_directory:
             raise ValueError("Level relative directory is not canonical.")
 

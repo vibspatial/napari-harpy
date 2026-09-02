@@ -37,6 +37,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _TileDescriptor,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    CACHE_ROOT_GROUPS,
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_LEVEL_INDPTR,
@@ -46,6 +47,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
+    ZARR_METADATA_FILENAME,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CatalogReader,
@@ -494,7 +496,7 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
 
         staging_root/
           zarr.json
-          levels/
+          tile_major/
           values/
           manifest/
           value_tiles/
@@ -506,7 +508,7 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
     Logical Zarr contents and array layouts are validated by their dedicated
     readers rather than by this filesystem-level check.
     """
-    allowed_root_entries = {"zarr.json", "levels", "values", "manifest", "value_tiles", "value_major"}
+    allowed_root_entries = CACHE_ROOT_GROUPS | {ZARR_METADATA_FILENAME}
     observed_root_entries = {path.name for path in staging_root.iterdir()}
     if observed_root_entries != allowed_root_entries:
         raise ValueError("Staged cache root contains missing or unexpected artifacts.")
@@ -516,14 +518,14 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
         if path.is_symlink():
             raise ValueError(f"Staged cache contains an unexpected symbolic link: {relative.as_posix()}.")
         if path.is_file():
-            if path.name == "zarr.json":
+            if path.name == ZARR_METADATA_FILENAME:
                 continue
             if "c" in relative.parts:
                 chunk_parts = relative.parts[relative.parts.index("c") + 1 :]
                 if chunk_parts and all(part.isdecimal() for part in chunk_parts):
                     continue
             raise ValueError(f"Staged cache contains an unexpected file: {relative.as_posix()}.")
-        if path.is_dir() and not (path / "zarr.json").is_file():
+        if path.is_dir() and not (path / ZARR_METADATA_FILENAME).is_file():
             if "c" in relative.parts:
                 chunk_parts = relative.parts[relative.parts.index("c") + 1 :]
                 if all(part.isdecimal() for part in chunk_parts):

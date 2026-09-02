@@ -33,6 +33,14 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import _normalized_arrow_type
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_GROUP,
+    TILE_MAJOR_GROUP,
+    VALUE_MAJOR_GROUP,
+    VALUE_TILES_GROUP,
+    VALUES_GROUP,
+    ZARR_METADATA_FILENAME,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _iter_bucket_range_batches,
     _read_bucket_storage_settings,
@@ -506,13 +514,19 @@ def _require_bucket_inventory_matches_results(
     separately.
     """
     expected = {(staging_root / bucket.bucket_path).resolve() for result in level_results for bucket in result.buckets}
-    observed = {path.resolve() for path in (staging_root / "levels").rglob("bucket-*.zarr") if path.is_dir()}
+    observed = {path.resolve() for path in (staging_root / TILE_MAJOR_GROUP).rglob("bucket-*.zarr") if path.is_dir()}
     if observed != expected:
         raise ValueError("Staged bucket paths do not match completed level results exactly.")
 
 
 def _require_catalog_targets_absent(staging_root: Path) -> None:
-    for relative_path in ("zarr.json", "values", "manifest", "value_tiles", "value_major"):
+    for relative_path in (
+        ZARR_METADATA_FILENAME,
+        VALUES_GROUP,
+        MANIFEST_GROUP,
+        VALUE_TILES_GROUP,
+        VALUE_MAJOR_GROUP,
+    ):
         if (staging_root / relative_path).exists():
             raise FileExistsError(f"Catalog target already exists: {relative_path}.")
 

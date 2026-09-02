@@ -22,8 +22,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _TileDescriptor,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    CACHE_ROOT_GROUPS,
     CATALOG_ARRAY_DTYPES,
-    LEVELS_GROUP,
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_GROUP,
@@ -31,6 +31,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_N_POINTS,
     MANIFEST_TILE_X,
     MANIFEST_TILE_Y,
+    TILE_MAJOR_GROUP,
     VALUE_MAJOR_GROUP,
     VALUE_MAJOR_LOCATION_DTYPE,
     VALUE_MAJOR_POINTER_DTYPE,
@@ -260,9 +261,9 @@ class _CatalogReader:
         if bool((manifest[MANIFEST_N_POINTS] == 0).any()):
             raise ValueError("Manifest point counts must be positive.")
         addresses: set[tuple[int, int, int]] = set()
-        levels_group = self._root_or_raise()[LEVELS_GROUP]
-        if not isinstance(levels_group, zarr.Group):
-            raise ValueError("Cache levels node is not a group.")
+        tile_major_group = self._root_or_raise()[TILE_MAJOR_GROUP]
+        if not isinstance(tile_major_group, zarr.Group):
+            raise ValueError("Cache tile-major node is not a group.")
         for level, metadata in enumerate(attributes.levels):
             start = int(level_indptr[level])
             stop = int(level_indptr[level + 1])
@@ -303,7 +304,7 @@ class _CatalogReader:
                     raise ValueError("Manifest bucket-local indexes are not contiguous from zero.")
             if int(manifest[MANIFEST_N_POINTS][start:stop].sum(dtype=np.uint64)) != metadata.point_count:
                 raise ValueError("Manifest point counts do not match root level metadata.")
-            level_group = levels_group[f"level_{level}"]
+            level_group = tile_major_group[f"level_{level}"]
             if not isinstance(level_group, zarr.Group):
                 raise ValueError("Serialized cache level is not a Zarr group.")
             expected_buckets = {f"bucket-{bucket_id:03d}.zarr" for bucket_id in set(bucket_ids.tolist())}
@@ -421,22 +422,16 @@ class _CatalogReader:
 
     def _validate_hierarchy(self) -> None:
         root = self._root_or_raise()
-        if set(root.group_keys()) != {
-            LEVELS_GROUP,
-            VALUES_GROUP,
-            MANIFEST_GROUP,
-            VALUE_TILES_GROUP,
-            VALUE_MAJOR_GROUP,
-        }:
+        if set(root.group_keys()) != CACHE_ROOT_GROUPS:
             raise ValueError("Cache root contains missing or unexpected Zarr groups.")
         if set(root.array_keys()):
             raise ValueError("Cache root must not contain arrays directly.")
-        levels = root[LEVELS_GROUP]
-        if not isinstance(levels, zarr.Group):
-            raise ValueError("Cache levels node is not a group.")
+        tile_major = root[TILE_MAJOR_GROUP]
+        if not isinstance(tile_major, zarr.Group):
+            raise ValueError("Cache tile-major node is not a group.")
         expected_levels = {f"level_{level}" for level in range(self.attributes.catalog.level_count)}
-        if set(levels.group_keys()) != expected_levels or set(levels.array_keys()) or dict(levels.attrs):
-            raise ValueError("Cache level hierarchy does not match root metadata.")
+        if set(tile_major.group_keys()) != expected_levels or set(tile_major.array_keys()) or dict(tile_major.attrs):
+            raise ValueError("Cache tile-major level hierarchy does not match root metadata.")
 
         expected_arrays = {
             VALUES_GROUP: {"n_points"},

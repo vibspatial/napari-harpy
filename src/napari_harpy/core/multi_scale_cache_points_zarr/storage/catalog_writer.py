@@ -24,12 +24,14 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_N_POINTS,
     MANIFEST_TILE_X,
     MANIFEST_TILE_Y,
+    TILE_MAJOR_GROUP,
     VALUE_TILES_GROUP,
     VALUE_TILES_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
     VALUES_GROUP,
     VALUES_N_POINTS,
+    ZARR_METADATA_FILENAME,
     _compressors,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _RangeRecordBatch
@@ -116,7 +118,7 @@ class _CatalogWriter:
             raise RuntimeError("A catalog writer can be entered only once.")
         if not isinstance(self._staging_root, Path) or not self._staging_root.is_dir():
             raise ValueError("`staging_root` must be an existing pathlib.Path directory.")
-        if (self._staging_root / "zarr.json").exists():
+        if (self._staging_root / ZARR_METADATA_FILENAME).exists():
             raise FileExistsError("The staged cache root already has Zarr group metadata.")
         for path in (VALUES_GROUP, MANIFEST_GROUP, VALUE_TILES_GROUP):
             if (self._staging_root / path).exists():
@@ -451,9 +453,9 @@ class _CatalogWriter:
 
     def _create_hierarchy(self) -> None:
         root = self._root_or_raise()
-        levels = root.create_group("levels")
+        tile_major = root.create_group(TILE_MAJOR_GROUP)
         for level in range(self._level_count):
-            levels.create_group(f"level_{level}")
+            tile_major.create_group(f"level_{level}")
         root.create_group(VALUES_GROUP)
         root.create_group(MANIFEST_GROUP)
         root.create_group(VALUE_TILES_GROUP)

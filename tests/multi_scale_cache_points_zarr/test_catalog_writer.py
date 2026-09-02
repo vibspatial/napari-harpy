@@ -93,8 +93,8 @@ def test_catalog_coordinator_writes_exact_zarr_hierarchy_and_inverted_index(
             [2.0, 2.0],
         ]
 
-    assert (fixture.staging_root / "levels/level_0/zarr.json").is_file()
-    assert (fixture.staging_root / "levels/level_0/bucket-000.zarr/zarr.json").is_file()
+    assert (fixture.staging_root / "tile_major/level_0/zarr.json").is_file()
+    assert (fixture.staging_root / "tile_major/level_0/bucket-000.zarr/zarr.json").is_file()
     assert not list(fixture.staging_root.rglob("*.parquet"))
     assert not list(fixture.temporary_root.iterdir())
     assert reader_capacities == [fixture.result.bucket_count]

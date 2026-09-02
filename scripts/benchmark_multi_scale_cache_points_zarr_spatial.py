@@ -467,7 +467,7 @@ def main() -> None:
         )
         if not prerequisites_unchanged or not source_unchanged:
             raise RuntimeError("Spatial construction or validation modified an input artifact.")
-        if list(shuffle.iterdir()) or list((staging / "levels").rglob("*.parquet")):
+        if list(shuffle.iterdir()) or list((staging / "tile_major").rglob("*.parquet")):
             raise RuntimeError("Spatial Gate found retained shuffle data or derived point Parquet.")
 
         report = {

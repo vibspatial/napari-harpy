@@ -295,7 +295,7 @@ the new package and must not create cross-writer dependencies.
           indptr/                            # (level, value_id) -> entries
           manifest_index/                    # entry -> manifest row
           n_points/                          # entry count
-        levels/
+        tile_major/
           zarr.json
           level_0/
             zarr.json
@@ -367,7 +367,7 @@ n_points: int
 
 `bucket_path` is not stored independently on the descriptor. It is the
 canonical cache-relative property
-`levels/level_<level>/bucket-<bucket_id, minimum three digits>.zarr`, derived
+`tile_major/level_<level>/bucket-<bucket_id, minimum three digits>.zarr`, derived
 only from `level` and `bucket_id`.
 
 `bucket_tile_index` is a zero-based tile ordinal inside a bucket. It is not a
@@ -1189,7 +1189,7 @@ Required invariants:
 - `point_count_upper_bound` is positive and at most `int64_max`;
 - Exact has `max_points_per_tile is None`;
 - Bridge and spatial levels have a positive `int64`-compatible capacity;
-- `relative_directory` is derived as `levels/level_<level>` and is not stored as
+- `relative_directory` is derived as `tile_major/level_<level>` and is not stored as
   independent mutable data.
 
 Define `_PointsCacheBuildPlan`:
@@ -1358,7 +1358,7 @@ Bucket filenames use a canonical minimum width of three digits and do not
 depend on the complete planned bucket count:
 
 ```text
-levels/level_<level>/bucket-<bucket_id:03d>.zarr
+tile_major/level_<level>/bucket-<bucket_id:03d>.zarr
 ```
 
 The width is a minimum: bucket IDs above 999 expand normally. Numeric ordering
@@ -1932,7 +1932,7 @@ Before creating a Dask graph it requires:
 - `plan` is a `_PointsCacheBuildPlan` whose first level is uncapped Exact level
   zero;
 - `staging_root` is an existing isolated generation root;
-- `levels/level_0` does not already exist; the Exact coordinator owns creation
+- `tile_major/level_0` does not already exist; the Exact coordinator owns creation
   of this directory;
 - `temporary_directory_root` is an existing caller-owned scratch root and is
   distinct from staged cache output;
@@ -2401,7 +2401,7 @@ Before opening an input store or creating output, require:
 - Exact is uncapped and Bridge has a positive `max_points_per_tile`;
 - every Exact descriptor lies inside the planned Exact grid;
 - the staged Exact level exists below `staging_root`;
-- `levels/level_1` does not exist; Z4 owns creation of that directory;
+- `tile_major/level_1` does not exist; Z4 owns creation of that directory;
 - `config` contains valid Zarr settings and a positive reader-cache bound.
 
 #### One Exact descriptor is one complete input tile
@@ -3338,7 +3338,7 @@ The nested value types and structure are:
       "tile_count": 7844,
       "point_count": 136578750,
       "range_count": 1000000,
-      "relative_directory": "levels/level_0"
+      "relative_directory": "tile_major/level_0"
     }
   ],
   "value_names": ["ACTB", "EPCAM", "MALAT1"],
@@ -3712,9 +3712,9 @@ canonical SpatialData store. The benchmark workspace has two distinct roles:
 sdata_xenium_full_data_core.transcripts-cache-workspace/
   pyramid-base/
     _benchmark_pyramid_inventory.json
-    levels/                         # Exact, Bridge, and every Spatial level
+    tile_major/                     # Exact, Bridge, and every Spatial level
   z6-<run-name>/
-    levels/                         # cheap local clone of pyramid-base/levels
+    tile_major/                     # cheap local clone of pyramid-base/tile_major
     values/
     manifest/
     value_tiles/

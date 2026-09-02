@@ -30,8 +30,18 @@ _CHUNK_KEY_ENCODING: Final = {
 VALUES_GROUP: Final = "values"
 MANIFEST_GROUP: Final = "manifest"
 VALUE_TILES_GROUP: Final = "value_tiles"
-LEVELS_GROUP: Final = "levels"
+TILE_MAJOR_GROUP: Final = "tile_major"
 VALUE_MAJOR_GROUP: Final = "value_major"
+ZARR_METADATA_FILENAME: Final = "zarr.json"
+CACHE_ROOT_GROUPS: Final = frozenset(
+    {
+        VALUES_GROUP,
+        MANIFEST_GROUP,
+        VALUE_TILES_GROUP,
+        TILE_MAJOR_GROUP,
+        VALUE_MAJOR_GROUP,
+    }
+)
 
 # Persisted catalog and sidecar ordering contracts.
 _MANIFEST_ROW_ORDER: Final = ("level", "tile_y", "tile_x")

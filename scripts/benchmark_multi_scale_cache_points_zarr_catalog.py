@@ -221,7 +221,7 @@ def _read_pyramid_inventory(
     expected_paths = {bucket.bucket_path for result in level_results for bucket in result.buckets}
     observed_paths = {
         str(path.relative_to(pyramid_root))
-        for path in (pyramid_root / "levels").glob("level_*/bucket-*.zarr")
+        for path in (pyramid_root / "tile_major").glob("level_*/bucket-*.zarr")
         if path.is_dir()
     }
     if observed_paths != expected_paths:
@@ -303,11 +303,11 @@ def _build_or_reuse_pyramid(
     )
 
 
-def _hardlink_pyramid_levels(pyramid_root: Path, evaluation_root: Path) -> None:
+def _hardlink_pyramid_tile_major(pyramid_root: Path, evaluation_root: Path) -> None:
     """Clone immutable bucket files cheaply while keeping catalog metadata private."""
     evaluation_root.mkdir()
     try:
-        shutil.copytree(pyramid_root / "levels", evaluation_root / "levels", copy_function=os.link)
+        shutil.copytree(pyramid_root / "tile_major", evaluation_root / "tile_major", copy_function=os.link)
     except Exception:
         shutil.rmtree(evaluation_root)
         raise
@@ -518,7 +518,7 @@ def main() -> None:
 
         print(f"Creating reusable evaluation generation: {evaluation_root}", flush=True)
         started = perf_counter()
-        _hardlink_pyramid_levels(pyramid_root, evaluation_root)
+        _hardlink_pyramid_tile_major(pyramid_root, evaluation_root)
         prerequisite_clone_seconds = perf_counter() - started
 
         bucket_snapshot = _bucket_snapshots(evaluation_root, level_results)
