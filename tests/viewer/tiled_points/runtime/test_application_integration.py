@@ -6,6 +6,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import (
+    points_cache_path,
+    points_element_path,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
 from napari_harpy.viewer.tiled_points.application import (
     DEFAULT_MAX_CPU_TILE_BYTES,
@@ -28,6 +32,13 @@ class _BackedSpatialData:
     def locate_element(self, element: object) -> list[str]:
         assert element is self.points["transcripts"]
         return ["points/transcripts"]
+
+
+def test_points_cache_location_convention(tmp_path: Path) -> None:
+    assert points_element_path("transcripts") == "points/transcripts"
+    assert points_cache_path(tmp_path, "transcripts") == (
+        tmp_path / "points" / "transcripts" / "transcripts_vis_zarr"
+    )
 
 
 def test_application_settings_freeze_product_residency_defaults() -> None:
@@ -57,7 +68,7 @@ def test_nested_descriptor_loading_reads_cache_metadata_without_touching_points(
     tmp_path: Path,
     real_cache_root: Path,
 ) -> None:
-    nested_cache = tmp_path / "points" / "transcripts" / "transcripts_vis_zarr"
+    nested_cache = points_cache_path(tmp_path, "transcripts")
     nested_cache.parent.mkdir(parents=True)
     shutil.copytree(real_cache_root, nested_cache)
     sdata = _BackedSpatialData(tmp_path)
@@ -75,7 +86,7 @@ def test_nested_descriptor_rejects_a_different_selected_value_column(
     tmp_path: Path,
     real_cache_root: Path,
 ) -> None:
-    nested_cache = tmp_path / "points" / "transcripts" / "transcripts_vis_zarr"
+    nested_cache = points_cache_path(tmp_path, "transcripts")
     nested_cache.parent.mkdir(parents=True)
     shutil.copytree(real_cache_root, nested_cache)
 

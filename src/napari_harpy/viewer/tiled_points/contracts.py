@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final
 from uuid import UUID
 
 import numpy as np
 import numpy.typing as npt
+
+from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+    _expected_level_kind,
+    _SerializedLevelKind,
+)
 
 DEFAULT_HARD_RENDER_POINT_BUDGET = 100_000
 DEFAULT_TARGET_PIXELS_PER_POINT = 9.0
@@ -89,7 +94,7 @@ class TiledPointsLayerStatus:
     """Describe the current cache-backed tiled-points display state."""
 
     level: int | None = None
-    level_kind: Literal["exact", "bridge", "spatial"] | None = None
+    level_kind: _SerializedLevelKind | None = None
     rendered_point_count: int = 0
     rendered_tile_count: int = 0
     message: str = "Idle"
@@ -113,7 +118,7 @@ class TiledPointsLayerStatus:
         if self.level is not None:
             if not isinstance(self.level, int) or isinstance(self.level, bool) or self.level < 0:
                 raise ValueError("`level` must be a nonnegative integer or None.")
-            expected_kind = "exact" if self.level == 0 else "bridge" if self.level == 1 else "spatial"
+            expected_kind = _expected_level_kind(self.level)
             if self.level_kind != expected_kind:
                 raise ValueError("`level_kind` does not match the serialized cache level.")
         if not isinstance(self.message, str) or not self.message:
@@ -441,7 +446,7 @@ class TiledPointsRenderSnapshot:
     selection_generation: int
     requested_value_ids: tuple[int, ...] | None
     level: int
-    level_kind: Literal["exact", "bridge", "spatial"]
+    level_kind: _SerializedLevelKind
     within_budget: bool
     estimated_point_count: int
     omitted_value_ids: tuple[int, ...]
@@ -454,7 +459,7 @@ class TiledPointsRenderSnapshot:
         _require_nonnegative_integer(self.selection_generation, "selection_generation")
         _require_value_ids(self.requested_value_ids, "requested_value_ids")
         _require_nonnegative_integer(self.level, "level")
-        expected_kind = "exact" if self.level == 0 else "bridge" if self.level == 1 else "spatial"
+        expected_kind = _expected_level_kind(self.level)
         if self.level_kind != expected_kind:
             raise ValueError("`level_kind` does not match `level`.")
         if not isinstance(self.within_budget, bool):

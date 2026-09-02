@@ -13,6 +13,7 @@ import numpy as np
 from loguru import logger
 from qtpy.QtCore import QObject, QThread, Signal, Slot
 
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _expected_level_kind
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
     _IntrinsicViewport,
@@ -630,7 +631,9 @@ def _read_viewport_snapshot(
     )
     raise_if_cancelled()
     dataset_info = reader.dataset_info
-    level_kind = _level_kind(level_selection.level, dataset_info.levels[level_selection.level].kind)
+    level_kind = _expected_level_kind(level_selection.level)
+    if dataset_info.levels[level_selection.level].kind != level_kind:
+        raise RuntimeError("Serialized cache level kind is inconsistent with its level index.")
     omitted_value_ids = (
         ()
         if level_selection.omitted_value_ids is None
@@ -752,13 +755,6 @@ def _require_ordered_render_tiles(
         for key in keys
     ):
         raise RuntimeError("Every snapshot tile must match its cache, selection, and level.")
-
-
-def _level_kind(level: int, serialized_kind: str) -> Literal["exact", "bridge", "spatial"]:
-    expected: Literal["exact", "bridge", "spatial"] = "exact" if level == 0 else "bridge" if level == 1 else "spatial"
-    if serialized_kind != expected:
-        raise RuntimeError("Serialized cache level kind is inconsistent with its level index.")
-    return expected
 
 
 def _require_requested_value_ids(requested_value_ids: tuple[int, ...] | None) -> tuple[int, ...] | None:

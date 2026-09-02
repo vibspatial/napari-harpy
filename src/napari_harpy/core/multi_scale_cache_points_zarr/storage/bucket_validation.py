@@ -15,9 +15,28 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _TileDescriptor,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    _BYTE_ENDIAN,
+    _CHUNK_KEY_ENCODING_NAME,
+    _CHUNK_KEY_SEPARATOR,
     _POINT_DTYPES,
     _RANGE_DTYPES,
     _TILE_DTYPES,
+    TILE_MAJOR_BUCKET_ARRAY_PATHS,
+    TILE_MAJOR_BUCKET_GROUP_PATHS,
+    TILE_MAJOR_LOCATION,
+    TILE_MAJOR_POINT_ID,
+    TILE_MAJOR_RANGE_ROW_COUNT,
+    TILE_MAJOR_RANGE_ROW_START,
+    TILE_MAJOR_RANGE_TILE_INDPTR,
+    TILE_MAJOR_RANGE_VALUE_ID,
+    TILE_MAJOR_RANGES_GROUP,
+    TILE_MAJOR_TILE_OFFSET,
+    TILE_MAJOR_TILE_X,
+    TILE_MAJOR_TILE_Y,
+    TILE_MAJOR_VALUE_ID,
+    ZARR_FORMAT_VERSION,
+    ZARR_READ_MISSING_CHUNKS,
+    ZARR_USE_CONSOLIDATED,
     _BucketAttributes,
     _compressors,
     _parse_root_attributes,
@@ -25,17 +44,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _BucketWriteResult
 
 _EXPECTED_NODES = {
-    "location": zarr.Array,
-    "point_id": zarr.Array,
-    "value_id": zarr.Array,
-    "tile_x": zarr.Array,
-    "tile_y": zarr.Array,
-    "tile_offset": zarr.Array,
-    "ranges": zarr.Group,
-    "ranges/tile_indptr": zarr.Array,
-    "ranges/value_id": zarr.Array,
-    "ranges/row_start": zarr.Array,
-    "ranges/row_count": zarr.Array,
+    **dict.fromkeys(TILE_MAJOR_BUCKET_ARRAY_PATHS, zarr.Array),
+    **dict.fromkeys(TILE_MAJOR_BUCKET_GROUP_PATHS, zarr.Group),
 }
 
 
@@ -57,10 +67,10 @@ def _validate_bucket(
         root = zarr.open_group(
             store=store,
             mode="r",
-            zarr_format=3,
-            use_consolidated=False,
+            zarr_format=ZARR_FORMAT_VERSION,
+            use_consolidated=ZARR_USE_CONSOLIDATED,
         )
-        if root.metadata.zarr_format != 3:
+        if root.metadata.zarr_format != ZARR_FORMAT_VERSION:
             raise ValueError("Bucket is not a Zarr v3 group.")
         _validate_hierarchy(root)
         attributes = _parse_root_attributes(
@@ -69,9 +79,7 @@ def _validate_bucket(
             expected_bucket_id=bucket_id,
         )
         arrays = {
-            name: _strict_array(root, name)
-            for name, node_type in _EXPECTED_NODES.items()
-            if node_type is zarr.Array
+            name: _strict_array(root, name) for name, node_type in _EXPECTED_NODES.items() if node_type is zarr.Array
         }
         _validate_array_layouts(arrays, attributes)
         return _validate_logical_contents(arrays, attributes)
@@ -86,7 +94,7 @@ def _validate_hierarchy(root: zarr.Group) -> None:
     for name, expected_type in _EXPECTED_NODES.items():
         if not isinstance(members[name], expected_type):
             raise ValueError(f"Zarr bucket node has the wrong type: {name}.")
-    if dict(root["ranges"].attrs):
+    if dict(root[TILE_MAJOR_RANGES_GROUP].attrs):
         raise ValueError("The ranges group must not contain attributes.")
     for name, node_type in _EXPECTED_NODES.items():
         if node_type is zarr.Array and dict(root[name].attrs):
@@ -97,19 +105,22 @@ def _validate_array_layouts(
     arrays: dict[str, zarr.Array],
     attributes: _BucketAttributes,
 ) -> None:
-    point_chunk_rows, point_shard_rows = _sharded_row_layout(arrays["value_id"], name="value_id")
+    point_chunk_rows, point_shard_rows = _sharded_row_layout(
+        arrays[TILE_MAJOR_VALUE_ID],
+        name=TILE_MAJOR_VALUE_ID,
+    )
     point_layouts = {
-        "location": (
+        TILE_MAJOR_LOCATION: (
             (attributes.point_count, 2),
             (point_chunk_rows, 2),
             (point_shard_rows, 2),
         ),
-        "point_id": (
+        TILE_MAJOR_POINT_ID: (
             (attributes.point_count,),
             (point_chunk_rows,),
             (point_shard_rows,),
         ),
-        "value_id": (
+        TILE_MAJOR_VALUE_ID: (
             (attributes.point_count,),
             (point_chunk_rows,),
             (point_shard_rows,),
@@ -127,9 +138,9 @@ def _validate_array_layouts(
         )
 
     tile_layouts = {
-        "tile_x": ((attributes.tile_count,), (attributes.tile_count,)),
-        "tile_y": ((attributes.tile_count,), (attributes.tile_count,)),
-        "tile_offset": ((attributes.tile_count + 1,), (attributes.tile_count + 1,)),
+        TILE_MAJOR_TILE_X: ((attributes.tile_count,), (attributes.tile_count,)),
+        TILE_MAJOR_TILE_Y: ((attributes.tile_count,), (attributes.tile_count,)),
+        TILE_MAJOR_TILE_OFFSET: ((attributes.tile_count + 1,), (attributes.tile_count + 1,)),
     }
     for name, (shape, chunks) in tile_layouts.items():
         _validate_array_layout(
@@ -143,24 +154,27 @@ def _validate_array_layouts(
         )
 
     _validate_array_layout(
-        arrays["ranges/tile_indptr"],
-        name="ranges/tile_indptr",
-        dtype=_RANGE_DTYPES["tile_indptr"],
+        arrays[TILE_MAJOR_RANGE_TILE_INDPTR],
+        name=TILE_MAJOR_RANGE_TILE_INDPTR,
+        dtype=_RANGE_DTYPES[TILE_MAJOR_RANGE_TILE_INDPTR],
         shape=(attributes.tile_count + 1,),
         chunks=(attributes.tile_count + 1,),
         shards=None,
         codec_id=attributes.codec_id,
     )
     range_chunk_rows, range_shard_rows = _sharded_row_layout(
-        arrays["ranges/value_id"],
-        name="ranges/value_id",
+        arrays[TILE_MAJOR_RANGE_VALUE_ID],
+        name=TILE_MAJOR_RANGE_VALUE_ID,
     )
-    for name in ("value_id", "row_start", "row_count"):
-        path = f"ranges/{name}"
+    for path in (
+        TILE_MAJOR_RANGE_VALUE_ID,
+        TILE_MAJOR_RANGE_ROW_START,
+        TILE_MAJOR_RANGE_ROW_COUNT,
+    ):
         _validate_array_layout(
             arrays[path],
             name=path,
-            dtype=_RANGE_DTYPES[name],
+            dtype=_RANGE_DTYPES[path],
             shape=(attributes.range_count,),
             chunks=(range_chunk_rows,),
             shards=(range_shard_rows,),
@@ -197,11 +211,14 @@ def _validate_array_layout(
     if bool(np.asarray(array.fill_value) != 0):
         raise ValueError(f"Zarr bucket array has the wrong fill value: {name}.")
     chunk_key = array.metadata.chunk_key_encoding
-    if getattr(chunk_key, "name", None) != "default" or getattr(chunk_key, "separator", None) != "/":
+    if (
+        getattr(chunk_key, "name", None) != _CHUNK_KEY_ENCODING_NAME
+        or getattr(chunk_key, "separator", None) != _CHUNK_KEY_SEPARATOR
+    ):
         raise ValueError(f"Zarr bucket array has the wrong chunk-key encoding: {name}.")
 
     compressors = _compressors(codec_id)
-    inner_codecs = (BytesCodec(endian="little"), *compressors)
+    inner_codecs = (BytesCodec(endian=_BYTE_ENDIAN), *compressors)
     if shards is None:
         # An unsharded array stores each logical chunk directly, so its
         # serializer and compressor are the complete top-level codec pipeline.
@@ -214,7 +231,7 @@ def _validate_array_layout(
             ShardingCodec(
                 chunk_shape=chunks,
                 codecs=inner_codecs,
-                index_codecs=(BytesCodec(endian="little"), Crc32cCodec()),
+                index_codecs=(BytesCodec(endian=_BYTE_ENDIAN), Crc32cCodec()),
                 index_location="end",
             ),
         )
@@ -226,10 +243,10 @@ def _validate_logical_contents(
     arrays: dict[str, zarr.Array],
     attributes: _BucketAttributes,
 ) -> _BucketWriteResult:
-    tile_x = np.asarray(arrays["tile_x"][:], dtype=np.uint32)
-    tile_y = np.asarray(arrays["tile_y"][:], dtype=np.uint32)
-    tile_offset = np.asarray(arrays["tile_offset"][:], dtype=np.uint64)
-    tile_indptr = np.asarray(arrays["ranges/tile_indptr"][:], dtype=np.uint64)
+    tile_x = np.asarray(arrays[TILE_MAJOR_TILE_X][:], dtype=np.uint32)
+    tile_y = np.asarray(arrays[TILE_MAJOR_TILE_Y][:], dtype=np.uint32)
+    tile_offset = np.asarray(arrays[TILE_MAJOR_TILE_OFFSET][:], dtype=np.uint64)
+    tile_indptr = np.asarray(arrays[TILE_MAJOR_RANGE_TILE_INDPTR][:], dtype=np.uint64)
 
     coordinates = tuple(zip(tile_x.tolist(), tile_y.tolist(), strict=True))
     if coordinates != tuple(sorted(coordinates, key=lambda pair: (pair[1], pair[0]))):
@@ -253,21 +270,21 @@ def _validate_logical_contents(
         point_stop = int(tile_offset[tile_index + 1])
         range_start = int(tile_indptr[tile_index])
         range_stop = int(tile_indptr[tile_index + 1])
-        location = np.asarray(arrays["location"][point_start:point_stop, :], dtype=np.float32)
-        value_id = np.asarray(arrays["value_id"][point_start:point_stop], dtype=np.uint32)
-        point_id = np.asarray(arrays["point_id"][point_start:point_stop], dtype=np.uint64)
+        location = np.asarray(arrays[TILE_MAJOR_LOCATION][point_start:point_stop, :], dtype=np.float32)
+        value_id = np.asarray(arrays[TILE_MAJOR_VALUE_ID][point_start:point_stop], dtype=np.uint32)
+        point_id = np.asarray(arrays[TILE_MAJOR_POINT_ID][point_start:point_stop], dtype=np.uint64)
         _validate_point_rows(location, value_id, point_id)
 
         range_values = np.asarray(
-            arrays["ranges/value_id"][range_start:range_stop],
+            arrays[TILE_MAJOR_RANGE_VALUE_ID][range_start:range_stop],
             dtype=np.uint32,
         )
         range_starts = np.asarray(
-            arrays["ranges/row_start"][range_start:range_stop],
+            arrays[TILE_MAJOR_RANGE_ROW_START][range_start:range_stop],
             dtype=np.uint64,
         )
         range_counts = np.asarray(
-            arrays["ranges/row_count"][range_start:range_stop],
+            arrays[TILE_MAJOR_RANGE_ROW_COUNT][range_start:range_stop],
             dtype=np.uint64,
         )
         _validate_tile_ranges(
@@ -355,4 +372,4 @@ def _strict_array(root: zarr.Group, name: str) -> zarr.Array:
     node = root[name]
     if not isinstance(node, zarr.Array):
         raise ValueError(f"Required bucket node is not an array: {name}.")
-    return node.with_config({"read_missing_chunks": False})
+    return node.with_config({"read_missing_chunks": ZARR_READ_MISSING_CHUNKS})

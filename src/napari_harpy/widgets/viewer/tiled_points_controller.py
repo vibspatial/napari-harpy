@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from napari.utils.events import Event
 
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import (
+    points_cache_path,
+    points_element_path,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
 from napari_harpy.viewer.adapter import TiledPointsLayerBinding, ViewerAdapter
 from napari_harpy.viewer.tiled_points.application import (
@@ -66,19 +70,17 @@ def _load_cache_descriptor(job: _CacheDescriptorJob) -> TiledPointsCacheDescript
         raise ValueError("Points visualization requires a SpatialData object backed by a local Zarr store.")
     if job.points_name not in job.sdata.points:
         raise ValueError(f"Points element {job.points_name!r} is not available in the SpatialData object.")
-    expected_element_path = f"points/{job.points_name}"
+    expected_element_path = points_element_path(job.points_name)
     observed_paths = tuple(job.sdata.locate_element(job.sdata.points[job.points_name]))
     if observed_paths != (expected_element_path,):
         raise ValueError(
             f"Points element {job.points_name!r} must resolve exactly to {expected_element_path!r}; "
             f"observed {observed_paths!r}."
         )
-    cache_root = job.sdata.path / expected_element_path / "transcripts_vis_zarr"
+    cache_root = points_cache_path(job.sdata.path, job.points_name)
     info = _read_cache_dataset_info(cache_root)
     if info.points_name != job.points_name:
-        raise ValueError(
-            f"Cache {cache_root} describes points element {info.points_name!r}, not {job.points_name!r}."
-        )
+        raise ValueError(f"Cache {cache_root} describes points element {info.points_name!r}, not {job.points_name!r}.")
     if info.value_column != job.value_column:
         raise ValueError(
             f"Selected value column {job.value_column!r} does not match cache value column "
@@ -214,7 +216,11 @@ class TiledPointsController:
         if descriptor is None or self._sdata is None or self._points_name is None or self._coordinate_system is None:
             self._set_status(TiledPointsControllerState.FAILED, "Points: cache metadata is not ready.", "error")
             return False
-        if not isinstance(render_point_budget, int) or isinstance(render_point_budget, bool) or render_point_budget <= 0:
+        if (
+            not isinstance(render_point_budget, int)
+            or isinstance(render_point_budget, bool)
+            or render_point_budget <= 0
+        ):
             self._set_status(TiledPointsControllerState.FAILED, "Points: render budget must be positive.", "error")
             return False
         try:

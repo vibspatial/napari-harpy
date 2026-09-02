@@ -7,7 +7,6 @@ from types import TracebackType
 
 import numpy as np
 import zarr
-from zarr.codecs import BytesCodec
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
@@ -15,24 +14,28 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+    MANIFEST_GROUP,
+    TILE_MAJOR_GROUP,
+    VALUE_TILES_GROUP,
+    VALUES_GROUP,
+    ZARR_METADATA_FILENAME,
+    level_name,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
-    _CHUNK_KEY_ENCODING,
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_GROUP,
     MANIFEST_LEVEL_INDPTR,
     MANIFEST_N_POINTS,
     MANIFEST_TILE_X,
     MANIFEST_TILE_Y,
-    TILE_MAJOR_GROUP,
-    VALUE_TILES_GROUP,
     VALUE_TILES_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
-    VALUES_GROUP,
     VALUES_N_POINTS,
-    ZARR_METADATA_FILENAME,
-    _compressors,
+    ZARR_FORMAT_VERSION,
+    ZARR_USE_CONSOLIDATED,
+    _array_creation_options,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _RangeRecordBatch
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
@@ -129,8 +132,8 @@ class _CatalogWriter:
             self._root = zarr.open_group(
                 store=self._store,
                 mode="a",
-                zarr_format=3,
-                use_consolidated=False,
+                zarr_format=ZARR_FORMAT_VERSION,
+                use_consolidated=ZARR_USE_CONSOLIDATED,
             )
             self._create_hierarchy()
             self._create_arrays()
@@ -455,21 +458,14 @@ class _CatalogWriter:
         root = self._root_or_raise()
         tile_major = root.create_group(TILE_MAJOR_GROUP)
         for level in range(self._level_count):
-            tile_major.create_group(f"level_{level}")
+            tile_major.create_group(level_name(level))
         root.create_group(VALUES_GROUP)
         root.create_group(MANIFEST_GROUP)
         root.create_group(VALUE_TILES_GROUP)
 
     def _create_arrays(self) -> None:
         root = self._root_or_raise()
-        compressors = _compressors(self._zarr_settings.codec_id)
-        common = {
-            "compressors": compressors,
-            "serializer": BytesCodec(endian="little"),
-            "fill_value": 0,
-            "chunk_key_encoding": _CHUNK_KEY_ENCODING,
-            "config": {"write_empty_chunks": True},
-        }
+        common = _array_creation_options(self._zarr_settings.codec_id)
         values = root[VALUES_GROUP]
         manifest = root[MANIFEST_GROUP]
         value_tiles = root[VALUE_TILES_GROUP]
@@ -477,14 +473,14 @@ class _CatalogWriter:
             raise RuntimeError("Catalog groups were not created.")
 
         self._arrays[VALUES_N_POINTS] = values.create_array(
-            "n_points",
+            VALUES_N_POINTS.rpartition("/")[2],
             shape=(self._value_count,),
             dtype=np.uint64,
             chunks=(self._value_count,),
             **common,
         )
         self._arrays[MANIFEST_LEVEL_INDPTR] = manifest.create_array(
-            "level_indptr",
+            MANIFEST_LEVEL_INDPTR.rpartition("/")[2],
             shape=(self._level_count + 1,),
             dtype=np.uint64,
             chunks=(self._level_count + 1,),
@@ -493,15 +489,15 @@ class _CatalogWriter:
         manifest_rows = self._manifest_row_count
         manifest_chunks = (self._catalog_settings.manifest_chunk_rows,)
         manifest_shards = (self._catalog_settings.manifest_shard_rows,)
-        for name, dtype in (
-            ("bucket_id", np.uint32),
-            ("bucket_tile_index", np.uint32),
-            ("tile_x", np.uint32),
-            ("tile_y", np.uint32),
-            ("n_points", np.uint64),
+        for path, dtype in (
+            (MANIFEST_BUCKET_ID, np.uint32),
+            (MANIFEST_BUCKET_TILE_INDEX, np.uint32),
+            (MANIFEST_TILE_X, np.uint32),
+            (MANIFEST_TILE_Y, np.uint32),
+            (MANIFEST_N_POINTS, np.uint64),
         ):
-            self._arrays[f"{MANIFEST_GROUP}/{name}"] = manifest.create_array(
-                name,
+            self._arrays[path] = manifest.create_array(
+                path.rpartition("/")[2],
                 shape=(manifest_rows,),
                 dtype=dtype,
                 chunks=manifest_chunks,
@@ -510,7 +506,7 @@ class _CatalogWriter:
             )
 
         self._arrays[VALUE_TILES_INDPTR] = value_tiles.create_array(
-            "indptr",
+            VALUE_TILES_INDPTR.rpartition("/")[2],
             shape=(self._level_count, self._value_count + 1),
             dtype=np.uint64,
             chunks=(self._level_count, self._value_count + 1),
@@ -519,9 +515,9 @@ class _CatalogWriter:
         value_rows = self._value_tile_row_count
         value_chunks = (self._catalog_settings.value_tile_chunk_rows,)
         value_shards = (self._catalog_settings.value_tile_shard_rows,)
-        for name in ("manifest_index", "n_points"):
-            self._arrays[f"{VALUE_TILES_GROUP}/{name}"] = value_tiles.create_array(
-                name,
+        for path in (VALUE_TILES_MANIFEST_INDEX, VALUE_TILES_N_POINTS):
+            self._arrays[path] = value_tiles.create_array(
+                path.rpartition("/")[2],
                 shape=(value_rows,),
                 dtype=np.uint64,
                 chunks=value_chunks,

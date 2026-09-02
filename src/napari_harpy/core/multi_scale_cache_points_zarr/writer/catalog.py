@@ -33,8 +33,9 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import _normalized_arrow_type
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
     MANIFEST_GROUP,
+    TILE_MAJOR_BUCKET_GLOB,
     TILE_MAJOR_GROUP,
     VALUE_MAJOR_GROUP,
     VALUE_TILES_GROUP,
@@ -514,7 +515,9 @@ def _require_bucket_inventory_matches_results(
     separately.
     """
     expected = {(staging_root / bucket.bucket_path).resolve() for result in level_results for bucket in result.buckets}
-    observed = {path.resolve() for path in (staging_root / TILE_MAJOR_GROUP).rglob("bucket-*.zarr") if path.is_dir()}
+    observed = {
+        path.resolve() for path in (staging_root / TILE_MAJOR_GROUP).rglob(TILE_MAJOR_BUCKET_GLOB) if path.is_dir()
+    }
     if observed != expected:
         raise ValueError("Staged bucket paths do not match completed level results exactly.")
 

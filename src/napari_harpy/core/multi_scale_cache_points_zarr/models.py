@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import tile_major_bucket_path
 
 _INT16_MAX = 2**15 - 1
 _INT64_MAX = 2**63 - 1
 _UINT32_MAX = 2**32 - 1
+type _SerializedLevelKind = Literal["exact", "bridge", "spatial"]
+
+
+def _expected_level_kind(level: int) -> _SerializedLevelKind:
+    """Return the one valid semantic kind for a serialized cache level."""
+    _require_integer_in_range(level, "level", maximum=_INT16_MAX)
+    if level == 0:
+        return "exact"
+    if level == 1:
+        return "bridge"
+    return "spatial"
 
 
 @dataclass(frozen=True)
@@ -79,7 +93,7 @@ def _bucket_path(*, level: int, bucket_id: int) -> str:
     """Return the canonical path derived from serialized bucket identity."""
     _require_integer_in_range(level, "level", maximum=_INT16_MAX)
     _require_integer_in_range(bucket_id, "bucket_id", maximum=_UINT32_MAX)
-    return f"tile_major/level_{level}/bucket-{bucket_id:03d}.zarr"
+    return tile_major_bucket_path(level=level, bucket_id=bucket_id)
 
 
 def _require_integer_in_range(

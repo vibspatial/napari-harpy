@@ -14,11 +14,13 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Final
 
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import points_element_path
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import BUCKET_HASH_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
     _UINT32_MAX,
+    _expected_level_kind,
     _require_integer_in_range,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
@@ -28,6 +30,13 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import VALUE_NORMALIZATION_METHOD
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+    MANIFEST_GROUP,
+    VALUE_MAJOR_GROUP,
+    VALUE_TILES_GROUP,
+    VALUES_GROUP,
+    tile_major_level_path,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _COORDINATE_ENCODING,
     _MANIFEST_ROW_ORDER,
@@ -35,12 +44,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _TILE_MAJOR_ROW_ORDER,
     _VALUE_TILE_ROW_ORDER,
     _ZSTD_CODEC_ID,
-    MANIFEST_GROUP,
-    TILE_MAJOR_GROUP,
-    VALUE_MAJOR_GROUP,
     VALUE_MAJOR_ROW_ORDER,
-    VALUE_TILES_GROUP,
-    VALUES_GROUP,
+    ZARR_FORMAT_VERSION,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
@@ -50,7 +55,7 @@ CREATED_BY_PACKAGE: Final = "napari-harpy"
 PUBLICATION_STATE_STAGING: Final = "staging"
 PUBLICATION_STATE_COMPLETE: Final = "complete"
 
-_ROOT_ATTRIBUTE_KEYS: Final = frozenset(
+_CACHE_ATTRIBUTE_KEYS: Final = frozenset(
     {
         "schema_version",
         "cache_generation_id",
@@ -178,7 +183,7 @@ class _SourceMetadata:
     def __post_init__(self) -> None:
         _require_nonempty_string(self.points_name, "source.points_name")
         _require_relative_posix_path(self.element_path, "source.element_path")
-        if self.element_path != f"points/{self.points_name}":
+        if self.element_path != points_element_path(self.points_name):
             raise ValueError("`source.element_path` does not match `source.points_name`.")
         _require_integer_in_range(self.row_count, "source.row_count", minimum=1, maximum=_INT64_MAX)
         for name, value in (
@@ -304,8 +309,8 @@ class _LevelMetadata:
 
     def __post_init__(self) -> None:
         _require_integer_in_range(self.level, "levels.level", maximum=_INT16_MAX)
-        if self.kind not in {"exact", "bridge", "spatial"}:
-            raise ValueError("`levels.kind` is unsupported.")
+        if self.kind != _expected_level_kind(self.level):
+            raise ValueError("`levels.kind` does not match the serialized cache level.")
         for name, minimum, maximum in (
             ("tile_size", 1, _INT64_MAX),
             ("grid_width", 1, _UINT32_MAX + 1),
@@ -331,7 +336,7 @@ class _LevelMetadata:
                 raise ValueError("The Exact level must omit `max_points_per_tile`.")
         if not self.tile_count <= self.range_count <= self.point_count <= self.point_count_upper_bound:
             raise ValueError("Level tile, range, point, and planned counts are inconsistent.")
-        expected_directory = f"{TILE_MAJOR_GROUP}/level_{self.level}"
+        expected_directory = tile_major_level_path(self.level)
         if self.relative_directory != expected_directory:
             raise ValueError("Level relative directory is not canonical.")
 
@@ -436,10 +441,6 @@ class _CacheAttributes:
             raise ValueError("Every cache level must be _LevelMetadata.")
         if tuple(level.level for level in self.levels) != tuple(range(len(self.levels))):
             raise ValueError("Cache levels must be consecutively numbered from zero.")
-        if self.levels[0].kind != "exact" or any(level.kind != "spatial" for level in self.levels[2:]):
-            raise ValueError("Cache level kinds do not follow Exact, optional Bridge, then Spatial.")
-        if len(self.levels) > 1 and self.levels[1].kind != "bridge":
-            raise ValueError("Cache level one must be Bridge.")
         if not isinstance(self.value_names, tuple) or not self.value_names:
             raise ValueError("`value_names` must be a nonempty tuple.")
         if any(not isinstance(value, str) or value == "" for value in self.value_names):
@@ -472,7 +473,7 @@ class _CacheAttributes:
             "created_by": {"package": CREATED_BY_PACKAGE, "version": self.created_by_version},
             "backend": {
                 "identifier": BACKEND_IDENTIFIER,
-                "zarr_format": 3,
+                "zarr_format": ZARR_FORMAT_VERSION,
                 "payload_schema_version": _PAYLOAD_SCHEMA_VERSION,
                 "point_row_order": list(_TILE_MAJOR_ROW_ORDER),
                 "coordinate_encoding": _COORDINATE_ENCODING,
@@ -494,7 +495,7 @@ class _CacheAttributes:
 
 def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
     """Parse exact cache-v0.2 root attributes into immutable typed metadata."""
-    root = _require_mapping(attributes, "root attributes", keys=_ROOT_ATTRIBUTE_KEYS)
+    root = _require_mapping(attributes, "root attributes", keys=_CACHE_ATTRIBUTE_KEYS)
     if root["schema_version"] != CACHE_SCHEMA_VERSION:
         raise ValueError("Unsupported Zarr cache schema version.")
 
@@ -521,7 +522,7 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
     if (
         backend["identifier"] != BACKEND_IDENTIFIER
         or type(backend["zarr_format"]) is not int
-        or backend["zarr_format"] != 3
+        or backend["zarr_format"] != ZARR_FORMAT_VERSION
         or type(backend["payload_schema_version"]) is not int
         or backend["payload_schema_version"] != _PAYLOAD_SCHEMA_VERSION
         or backend["point_row_order"] != list(_TILE_MAJOR_ROW_ORDER)

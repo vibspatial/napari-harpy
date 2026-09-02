@@ -25,6 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
+from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import BRIDGE_MAX_POINTS_PER_TILE
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_STAGING,
     _CacheAttributes,
@@ -36,8 +37,11 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
     CACHE_ROOT_GROUPS,
+    ZARR_METADATA_FILENAME,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_LEVEL_INDPTR,
@@ -47,14 +51,11 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
-    ZARR_METADATA_FILENAME,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CatalogReader,
     _iter_compact_bucket_range_batches,
 )
-
-_BRIDGE_MAX_POINTS_PER_TILE = 4_096
 
 
 @dataclass(frozen=True)
@@ -344,7 +345,7 @@ def _expected_level_plan(attributes: _CacheAttributes) -> tuple[tuple[object, ..
         return tuple(levels)
 
     tile_size = build.leaf_tile_size
-    scheduled_capacity = _BRIDGE_MAX_POINTS_PER_TILE
+    scheduled_capacity = BRIDGE_MAX_POINTS_PER_TILE
     kind = "bridge"
     while True:
         level = len(levels)

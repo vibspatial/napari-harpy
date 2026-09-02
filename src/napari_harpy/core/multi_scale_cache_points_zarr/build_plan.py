@@ -36,11 +36,11 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT16_MAX, _INT64_MAX, _require_integer_in_range
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import PointsBounds, ValidatedPointsSource
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import tile_major_level_path
 
-_BRIDGE_MAX_POINTS_PER_TILE = 4_096
-_INT16_MAX = 2**15 - 1
-_INT64_MAX = 2**63 - 1
+BRIDGE_MAX_POINTS_PER_TILE = 4_096
 _MAX_GRID_DIMENSION = 2**32
 
 
@@ -124,7 +124,7 @@ class _LevelBuildPlan:
     @property
     def relative_directory(self) -> str:
         """Return this level's cache-root-relative directory."""
-        return f"tile_major/level_{self.level}"
+        return tile_major_level_path(self.level)
 
 
 @dataclass(frozen=True)
@@ -261,7 +261,7 @@ def _plan_points_cache(
     levels = [exact]
     kind = _LevelKind.BRIDGE
     tile_size = leaf_tile_size
-    scheduled_capacity = _BRIDGE_MAX_POINTS_PER_TILE
+    scheduled_capacity = BRIDGE_MAX_POINTS_PER_TILE
     while True:
         level = len(levels)
         if level > _INT16_MAX:
@@ -339,16 +339,4 @@ def _grid_shape(
 def _require_finite_float(value: object, name: str) -> float:
     if not isinstance(value, float) or not math.isfinite(value):
         raise ValueError(f"`{name}` must be a finite float.")
-    return value
-
-
-def _require_integer_in_range(
-    value: object,
-    name: str,
-    *,
-    minimum: int = 0,
-    maximum: int,
-) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or not minimum <= value <= maximum:
-        raise ValueError(f"`{name}` must be an integer in the range [{minimum}, {maximum}].")
     return value

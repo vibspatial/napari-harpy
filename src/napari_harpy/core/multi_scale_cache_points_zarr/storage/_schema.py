@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import numpy as np
-from zarr.codecs import ZstdCodec
+from zarr.codecs import BytesCodec, ZstdCodec
 
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
@@ -15,33 +15,24 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _UINT32_MAX,
     _require_integer_in_range,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+    MANIFEST_GROUP,
+    VALUE_TILES_GROUP,
+    VALUES_GROUP,
+    value_major_level_path,
+)
 
 # Shared backend and encoding contract.
 _PAYLOAD_SCHEMA_VERSION: Final = 1
 _TILE_MAJOR_ROW_ORDER: Final = ("tile_y", "tile_x", "value_id", "point_id")
 _COORDINATE_ENCODING: Final = "tile-relative-xy-float32-v1"
 _ZSTD_CODEC_ID: Final = "zstd-v1"
-_CHUNK_KEY_ENCODING: Final = {
-    "name": "default",
-    "configuration": {"separator": "/"},
-}
-
-# Cache-wide group names.
-VALUES_GROUP: Final = "values"
-MANIFEST_GROUP: Final = "manifest"
-VALUE_TILES_GROUP: Final = "value_tiles"
-TILE_MAJOR_GROUP: Final = "tile_major"
-VALUE_MAJOR_GROUP: Final = "value_major"
-ZARR_METADATA_FILENAME: Final = "zarr.json"
-CACHE_ROOT_GROUPS: Final = frozenset(
-    {
-        VALUES_GROUP,
-        MANIFEST_GROUP,
-        VALUE_TILES_GROUP,
-        TILE_MAJOR_GROUP,
-        VALUE_MAJOR_GROUP,
-    }
-)
+ZARR_FORMAT_VERSION: Final = 3
+ZARR_USE_CONSOLIDATED: Final = False
+ZARR_READ_MISSING_CHUNKS: Final = False
+_BYTE_ENDIAN: Final = "little"
+_CHUNK_KEY_ENCODING_NAME: Final = "default"
+_CHUNK_KEY_SEPARATOR: Final = "/"
 
 # Persisted catalog and sidecar ordering contracts.
 _MANIFEST_ROW_ORDER: Final = ("level", "tile_y", "tile_x")
@@ -49,16 +40,39 @@ _VALUE_TILE_ROW_ORDER: Final = ("level", "value_id", "manifest_index")
 VALUE_MAJOR_ROW_ORDER: Final = ("value_id", "manifest_index", "point_id")
 
 # Canonical cache-relative catalog array paths.
-VALUES_N_POINTS: Final = "values/n_points"
-MANIFEST_LEVEL_INDPTR: Final = "manifest/level_indptr"
-MANIFEST_BUCKET_ID: Final = "manifest/bucket_id"
-MANIFEST_BUCKET_TILE_INDEX: Final = "manifest/bucket_tile_index"
-MANIFEST_TILE_X: Final = "manifest/tile_x"
-MANIFEST_TILE_Y: Final = "manifest/tile_y"
-MANIFEST_N_POINTS: Final = "manifest/n_points"
-VALUE_TILES_INDPTR: Final = "value_tiles/indptr"
-VALUE_TILES_MANIFEST_INDEX: Final = "value_tiles/manifest_index"
-VALUE_TILES_N_POINTS: Final = "value_tiles/n_points"
+VALUES_N_POINTS: Final = f"{VALUES_GROUP}/n_points"
+MANIFEST_LEVEL_INDPTR: Final = f"{MANIFEST_GROUP}/level_indptr"
+MANIFEST_BUCKET_ID: Final = f"{MANIFEST_GROUP}/bucket_id"
+MANIFEST_BUCKET_TILE_INDEX: Final = f"{MANIFEST_GROUP}/bucket_tile_index"
+MANIFEST_TILE_X: Final = f"{MANIFEST_GROUP}/tile_x"
+MANIFEST_TILE_Y: Final = f"{MANIFEST_GROUP}/tile_y"
+MANIFEST_N_POINTS: Final = f"{MANIFEST_GROUP}/n_points"
+VALUE_TILES_INDPTR: Final = f"{VALUE_TILES_GROUP}/indptr"
+VALUE_TILES_MANIFEST_INDEX: Final = f"{VALUE_TILES_GROUP}/manifest_index"
+VALUE_TILES_N_POINTS: Final = f"{VALUE_TILES_GROUP}/n_points"
+
+# Canonical paths inside each standalone tile-major bucket store.
+TILE_MAJOR_LOCATION: Final = "location"
+TILE_MAJOR_POINT_ID: Final = "point_id"
+TILE_MAJOR_VALUE_ID: Final = "value_id"
+TILE_MAJOR_TILE_X: Final = "tile_x"
+TILE_MAJOR_TILE_Y: Final = "tile_y"
+TILE_MAJOR_TILE_OFFSET: Final = "tile_offset"
+TILE_MAJOR_RANGES_GROUP: Final = "ranges"
+TILE_MAJOR_RANGE_TILE_INDPTR: Final = f"{TILE_MAJOR_RANGES_GROUP}/tile_indptr"
+TILE_MAJOR_RANGE_VALUE_ID: Final = f"{TILE_MAJOR_RANGES_GROUP}/value_id"
+TILE_MAJOR_RANGE_ROW_START: Final = f"{TILE_MAJOR_RANGES_GROUP}/row_start"
+TILE_MAJOR_RANGE_ROW_COUNT: Final = f"{TILE_MAJOR_RANGES_GROUP}/row_count"
+
+# Canonical array names inside every value-major level group.
+VALUE_MAJOR_LOCATION_ARRAY: Final = "location"
+VALUE_MAJOR_POINT_INDPTR_ARRAY: Final = "value_point_indptr"
+VALUE_MAJOR_LEVEL_ARRAYS: Final = frozenset(
+    {
+        VALUE_MAJOR_LOCATION_ARRAY,
+        VALUE_MAJOR_POINT_INDPTR_ARRAY,
+    }
+)
 
 # Cache-wide catalog and value-major array dtypes.
 CATALOG_ARRAY_DTYPES: Final = {
@@ -73,11 +87,16 @@ CATALOG_ARRAY_DTYPES: Final = {
     VALUE_TILES_MANIFEST_INDEX: np.dtype(np.uint64),
     VALUE_TILES_N_POINTS: np.dtype(np.uint64),
 }
+CATALOG_ARRAY_PATHS: Final = tuple(CATALOG_ARRAY_DTYPES)
+CATALOG_GROUP_ARRAYS: Final = {
+    group: frozenset(path.removeprefix(f"{group}/") for path in CATALOG_ARRAY_PATHS if path.startswith(f"{group}/"))
+    for group in (VALUES_GROUP, MANIFEST_GROUP, VALUE_TILES_GROUP)
+}
 VALUE_MAJOR_LOCATION_DTYPE: Final = np.dtype(np.float32)
 VALUE_MAJOR_POINTER_DTYPE: Final = np.dtype(np.uint64)
 
 # Standalone tile-major bucket root-attribute contract.
-_ROOT_ATTRIBUTE_KEYS: Final = frozenset(
+_TILE_MAJOR_BUCKET_ATTRIBUTE_KEYS: Final = frozenset(
     {
         "payload_schema_version",
         "level",
@@ -93,37 +112,39 @@ _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
 
 # Standalone tile-major bucket array dtypes.
 _POINT_DTYPES: Final = {
-    "location": np.dtype(np.float32),
-    "point_id": np.dtype(np.uint64),
-    "value_id": np.dtype(np.uint32),
+    TILE_MAJOR_LOCATION: np.dtype(np.float32),
+    TILE_MAJOR_POINT_ID: np.dtype(np.uint64),
+    TILE_MAJOR_VALUE_ID: np.dtype(np.uint32),
 }
 _TILE_DTYPES: Final = {
-    "tile_x": np.dtype(np.uint32),
-    "tile_y": np.dtype(np.uint32),
-    "tile_offset": np.dtype(np.uint64),
+    TILE_MAJOR_TILE_X: np.dtype(np.uint32),
+    TILE_MAJOR_TILE_Y: np.dtype(np.uint32),
+    TILE_MAJOR_TILE_OFFSET: np.dtype(np.uint64),
 }
 _RANGE_DTYPES: Final = {
-    "tile_indptr": np.dtype(np.uint64),
-    "value_id": np.dtype(np.uint32),
-    "row_start": np.dtype(np.uint64),
-    "row_count": np.dtype(np.uint64),
+    TILE_MAJOR_RANGE_TILE_INDPTR: np.dtype(np.uint64),
+    TILE_MAJOR_RANGE_VALUE_ID: np.dtype(np.uint32),
+    TILE_MAJOR_RANGE_ROW_START: np.dtype(np.uint64),
+    TILE_MAJOR_RANGE_ROW_COUNT: np.dtype(np.uint64),
 }
+TILE_MAJOR_BUCKET_ARRAY_PATHS: Final = (*_POINT_DTYPES, *_TILE_DTYPES, *_RANGE_DTYPES)
+TILE_MAJOR_BUCKET_GROUP_PATHS: Final = frozenset({TILE_MAJOR_RANGES_GROUP})
 
 
 def value_major_level_group(level: int) -> str:
     """Return the canonical cache-relative group for one value-major level."""
     _require_integer_in_range(level, "level", maximum=_INT16_MAX)
-    return f"{VALUE_MAJOR_GROUP}/level_{level}"
+    return value_major_level_path(level)
 
 
 def value_major_location(level: int) -> str:
     """Return the canonical cache-relative coordinate-array path for a level."""
-    return f"{value_major_level_group(level)}/location"
+    return f"{value_major_level_group(level)}/{VALUE_MAJOR_LOCATION_ARRAY}"
 
 
 def value_major_point_indptr(level: int) -> str:
     """Return the canonical cache-relative value-pointer-array path for a level."""
-    return f"{value_major_level_group(level)}/value_point_indptr"
+    return f"{value_major_level_group(level)}/{VALUE_MAJOR_POINT_INDPTR_ARRAY}"
 
 
 @dataclass(frozen=True)
@@ -135,12 +156,40 @@ class _BucketAttributes:
     range_count: int
     codec_id: str
 
+    def to_dict(self) -> dict[str, object]:
+        """Return the exact standalone bucket root-attribute payload."""
+        return {
+            "payload_schema_version": _PAYLOAD_SCHEMA_VERSION,
+            "level": self.level,
+            "bucket_id": self.bucket_id,
+            "tile_count": self.tile_count,
+            "point_count": self.point_count,
+            "range_count": self.range_count,
+            "point_row_order": list(_TILE_MAJOR_ROW_ORDER),
+            "coordinate_encoding": _COORDINATE_ENCODING,
+            "codec_id": self.codec_id,
+        }
+
 
 def _compressors(codec_id: str) -> tuple[ZstdCodec]:
     """Return the exact inner-chunk compressor for a supported codec ID."""
     if codec_id != _ZSTD_CODEC_ID:
         raise ValueError(f"Unsupported Zarr bucket codec ID: {codec_id!r}.")
     return (ZstdCodec(level=3, checksum=True),)
+
+
+def _array_creation_options(codec_id: str) -> dict[str, object]:
+    """Return a fresh Zarr-v3 array profile shared by all cache writers."""
+    return {
+        "compressors": _compressors(codec_id),
+        "serializer": BytesCodec(endian=_BYTE_ENDIAN),
+        "fill_value": 0,
+        "chunk_key_encoding": {
+            "name": _CHUNK_KEY_ENCODING_NAME,
+            "configuration": {"separator": _CHUNK_KEY_SEPARATOR},
+        },
+        "config": {"write_empty_chunks": True},
+    }
 
 
 def _parse_root_attributes(
@@ -150,7 +199,7 @@ def _parse_root_attributes(
     expected_bucket_id: int,
 ) -> _BucketAttributes:
     """Validate exact schema-v1 root attributes and return typed physical facts."""
-    if set(attributes) != _ROOT_ATTRIBUTE_KEYS:
+    if set(attributes) != _TILE_MAJOR_BUCKET_ATTRIBUTE_KEYS:
         raise ValueError("Zarr bucket root attributes do not match payload schema version 1.")
     if type(attributes["payload_schema_version"]) is not int or (
         attributes["payload_schema_version"] != _PAYLOAD_SCHEMA_VERSION

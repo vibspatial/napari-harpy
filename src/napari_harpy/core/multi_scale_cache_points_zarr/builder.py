@@ -26,6 +26,11 @@ from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINT
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _require_parquet_source_unchanged
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    _ZSTD_CODEC_ID,
+    ZARR_FORMAT_VERSION,
+    ZARR_USE_CONSOLIDATED,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
@@ -53,7 +58,7 @@ def _default_zarr_write_settings() -> _ZarrWriteSettings:
         point_shard_rows=131_072,
         range_chunk_rows=8_192,
         range_shard_rows=131_072,
-        codec_id="zstd-v1",
+        codec_id=_ZSTD_CODEC_ID,
     )
 
 
@@ -323,7 +328,12 @@ def _require_complete_cache_generation_id(cache_root: Path) -> str:
 def _mark_cache_generation_complete(staging_root: Path, *, cache_generation_id: str) -> None:
     """Make publication state the final mutation of a validated generation."""
     with LocalStore(staging_root, read_only=False) as store:
-        root = zarr.open_group(store=store, mode="r+", zarr_format=3, use_consolidated=False)
+        root = zarr.open_group(
+            store=store,
+            mode="r+",
+            zarr_format=ZARR_FORMAT_VERSION,
+            use_consolidated=ZARR_USE_CONSOLIDATED,
+        )
         attributes = _parse_cache_attributes(dict(root.attrs))
         if attributes.cache_generation_id != cache_generation_id:
             raise ValueError("Staged root cache-generation UUID changed before completion.")

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import zarr
-from zarr.codecs import BytesCodec
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
@@ -18,13 +17,17 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import VALUE_MAJOR_GROUP, level_name
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
-    _CHUNK_KEY_ENCODING,
     MANIFEST_BUCKET_ID,
-    VALUE_MAJOR_GROUP,
+    VALUE_MAJOR_LOCATION_ARRAY,
+    VALUE_MAJOR_POINT_INDPTR_ARRAY,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
-    _compressors,
+    ZARR_FORMAT_VERSION,
+    ZARR_READ_MISSING_CHUNKS,
+    ZARR_USE_CONSOLIDATED,
+    _array_creation_options,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
 
@@ -210,18 +213,25 @@ def _write_value_major_sidecars(
         raise ValueError("`level_value_n_points` does not match the cache dimensions.")
 
     with LocalStore(staging_root, read_only=False) as store:
-        root = zarr.open_group(store=store, mode="r+", zarr_format=3, use_consolidated=False)
+        root = zarr.open_group(
+            store=store,
+            mode="r+",
+            zarr_format=ZARR_FORMAT_VERSION,
+            use_consolidated=ZARR_USE_CONSOLIDATED,
+        )
         if _parse_cache_attributes(dict(root.attrs)) != attributes:
             raise ValueError("Staged root metadata changed before value-major construction.")
         if VALUE_MAJOR_GROUP in root:
             raise FileExistsError("Value-major sidecar already exists.")
         value_major = root.create_group(VALUE_MAJOR_GROUP)
         manifest_bucket_id = np.asarray(root[MANIFEST_BUCKET_ID][:], dtype=np.uint32)
-        manifest_index_array = root[VALUE_TILES_MANIFEST_INDEX].with_config({"read_missing_chunks": False})
-        n_points_array = root[VALUE_TILES_N_POINTS].with_config({"read_missing_chunks": False})
+        manifest_index_array = root[VALUE_TILES_MANIFEST_INDEX].with_config(
+            {"read_missing_chunks": ZARR_READ_MISSING_CHUNKS}
+        )
+        n_points_array = root[VALUE_TILES_N_POINTS].with_config({"read_missing_chunks": ZARR_READ_MISSING_CHUNKS})
 
         for level, level_metadata in enumerate(attributes.levels):
-            level_group = value_major.create_group(f"level_{level}")
+            level_group = value_major.create_group(level_name(level))
             location, point_indptr = _create_level_arrays(
                 level_group,
                 point_count=level_metadata.point_count,
@@ -289,16 +299,9 @@ def _create_level_arrays(
     metadata: _ValueMajorMetadata,
     codec_id: str,
 ) -> tuple[zarr.Array, zarr.Array]:
-    compressors = _compressors(codec_id)
-    common = {
-        "compressors": compressors,
-        "serializer": BytesCodec(endian="little"),
-        "fill_value": 0,
-        "chunk_key_encoding": _CHUNK_KEY_ENCODING,
-        "config": {"write_empty_chunks": True},
-    }
+    common = _array_creation_options(codec_id)
     location = group.create_array(
-        "location",
+        VALUE_MAJOR_LOCATION_ARRAY,
         shape=(point_count, 2),
         dtype=np.float32,
         chunks=(metadata.point_chunk_rows, 2),
@@ -306,7 +309,7 @@ def _create_level_arrays(
         **common,
     )
     point_indptr = group.create_array(
-        "value_point_indptr",
+        VALUE_MAJOR_POINT_INDPTR_ARRAY,
         shape=(value_count + 1,),
         dtype=np.uint64,
         chunks=(value_count + 1,),

@@ -21,6 +21,20 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    TILE_MAJOR_BUCKET_ARRAY_PATHS,
+    TILE_MAJOR_LOCATION,
+    TILE_MAJOR_POINT_ID,
+    TILE_MAJOR_RANGE_ROW_COUNT,
+    TILE_MAJOR_RANGE_ROW_START,
+    TILE_MAJOR_RANGE_TILE_INDPTR,
+    TILE_MAJOR_RANGE_VALUE_ID,
+    TILE_MAJOR_TILE_OFFSET,
+    TILE_MAJOR_TILE_X,
+    TILE_MAJOR_TILE_Y,
+    TILE_MAJOR_VALUE_ID,
+    ZARR_FORMAT_VERSION,
+    ZARR_READ_MISSING_CHUNKS,
+    ZARR_USE_CONSOLIDATED,
     _BucketAttributes,
     _parse_root_attributes,
 )
@@ -218,8 +232,8 @@ class _BucketReader:
             self._root = zarr.open_group(
                 store=self._store,
                 mode="r",
-                zarr_format=3,
-                use_consolidated=False,
+                zarr_format=ZARR_FORMAT_VERSION,
+                use_consolidated=ZARR_USE_CONSOLIDATED,
             )
             _validate_hierarchy(self._root)
             self._attributes = _parse_root_attributes(
@@ -227,21 +241,7 @@ class _BucketReader:
                 expected_level=self._level,
                 expected_bucket_id=self._bucket_id,
             )
-            self._arrays = {
-                name: self._strict_array(name)
-                for name in (
-                    "location",
-                    "point_id",
-                    "value_id",
-                    "tile_x",
-                    "tile_y",
-                    "tile_offset",
-                    "ranges/tile_indptr",
-                    "ranges/value_id",
-                    "ranges/row_start",
-                    "ranges/row_count",
-                )
-            }
+            self._arrays = {name: self._strict_array(name) for name in TILE_MAJOR_BUCKET_ARRAY_PATHS}
             _validate_array_layouts(self._arrays, self._attributes)
         except Exception:
             self._close()
@@ -262,9 +262,9 @@ class _BucketReader:
     def read_construction_payload(self, descriptor: _TileDescriptor) -> _PointPayload:
         """Read all aligned rows and mandatory point IDs for cache construction."""
         start, stop = self._construction_tile_interval(descriptor)
-        location = np.ascontiguousarray(self._array("location")[start:stop, :], dtype=np.float32)
-        value_id = np.ascontiguousarray(self._array("value_id")[start:stop], dtype=np.uint32)
-        point_id = np.ascontiguousarray(self._array("point_id")[start:stop], dtype=np.uint64)
+        location = np.ascontiguousarray(self._array(TILE_MAJOR_LOCATION)[start:stop, :], dtype=np.float32)
+        value_id = np.ascontiguousarray(self._array(TILE_MAJOR_VALUE_ID)[start:stop], dtype=np.uint32)
+        point_id = np.ascontiguousarray(self._array(TILE_MAJOR_POINT_ID)[start:stop], dtype=np.uint64)
         return _PointPayload(
             x_rel=np.ascontiguousarray(location[:, 0]),
             y_rel=np.ascontiguousarray(location[:, 1]),
@@ -295,7 +295,7 @@ class _BucketReader:
         ):
             raise ValueError("Construction location rows must be strictly increasing and in bounds.")
         locations = np.ascontiguousarray(
-            self._array("location").get_orthogonal_selection((row_selection, slice(None))),
+            self._array(TILE_MAJOR_LOCATION).get_orthogonal_selection((row_selection, slice(None))),
             dtype=np.float32,
         )
         if locations.shape != (len(row_selection), 2):
@@ -405,7 +405,7 @@ class _BucketReader:
             expected_row_count=rows_resolved,
         )
         location = np.ascontiguousarray(
-            self._array("location").get_orthogonal_selection((row_selection, slice(None))),
+            self._array(TILE_MAJOR_LOCATION).get_orthogonal_selection((row_selection, slice(None))),
             dtype=np.float32,
         )
         # Selected ranges already carry canonical value IDs in row-selection
@@ -419,7 +419,7 @@ class _BucketReader:
             )
         else:
             value_id = np.ascontiguousarray(
-                self._array("value_id").get_orthogonal_selection((row_selection,)),
+                self._array(TILE_MAJOR_VALUE_ID).get_orthogonal_selection((row_selection,)),
                 dtype=np.uint32,
             )
         if location.shape != (rows_resolved, 2) or value_id.shape != (rows_resolved,):
@@ -474,11 +474,11 @@ class _BucketReader:
         if self._lookup_index is not None:
             return
 
-        tile_offset = np.ascontiguousarray(self._array("tile_offset")[:], dtype=np.uint64)
-        tile_indptr = np.ascontiguousarray(self._array("ranges/tile_indptr")[:], dtype=np.uint64)
-        range_value_id = np.ascontiguousarray(self._array("ranges/value_id")[:], dtype=np.uint32)
-        range_row_start = np.ascontiguousarray(self._array("ranges/row_start")[:], dtype=np.uint64)
-        range_row_count = np.ascontiguousarray(self._array("ranges/row_count")[:], dtype=np.uint64)
+        tile_offset = np.ascontiguousarray(self._array(TILE_MAJOR_TILE_OFFSET)[:], dtype=np.uint64)
+        tile_indptr = np.ascontiguousarray(self._array(TILE_MAJOR_RANGE_TILE_INDPTR)[:], dtype=np.uint64)
+        range_value_id = np.ascontiguousarray(self._array(TILE_MAJOR_RANGE_VALUE_ID)[:], dtype=np.uint32)
+        range_row_start = np.ascontiguousarray(self._array(TILE_MAJOR_RANGE_ROW_START)[:], dtype=np.uint64)
+        range_row_count = np.ascontiguousarray(self._array(TILE_MAJOR_RANGE_ROW_COUNT)[:], dtype=np.uint64)
         lookup = _BucketLookupIndex(
             level=self._level,
             bucket_id=self._bucket_id,
@@ -582,12 +582,12 @@ class _BucketReader:
         if index >= attributes.tile_count:
             raise ValueError("Tile descriptor bucket-local index is out of bounds.")
         stored_coordinates = (
-            int(self._array("tile_x")[index]),
-            int(self._array("tile_y")[index]),
+            int(self._array(TILE_MAJOR_TILE_X)[index]),
+            int(self._array(TILE_MAJOR_TILE_Y)[index]),
         )
         if stored_coordinates != (descriptor.tile_x, descriptor.tile_y):
             raise ValueError("Tile descriptor coordinates disagree with the bucket index.")
-        offsets = np.asarray(self._array("tile_offset")[index : index + 2], dtype=np.uint64)
+        offsets = np.asarray(self._array(TILE_MAJOR_TILE_OFFSET)[index : index + 2], dtype=np.uint64)
         start, stop = (int(value) for value in offsets)
         if not 0 <= start < stop <= attributes.point_count:
             raise ValueError("Tile point offsets are invalid.")
@@ -628,7 +628,7 @@ class _BucketReader:
         node = root[name]
         if not isinstance(node, zarr.Array):
             raise ValueError(f"Required bucket node is not an array: {name}.")
-        return node.with_config({"read_missing_chunks": False})
+        return node.with_config({"read_missing_chunks": ZARR_READ_MISSING_CHUNKS})
 
     def _array(self, name: str) -> zarr.Array:
         self._require_open()

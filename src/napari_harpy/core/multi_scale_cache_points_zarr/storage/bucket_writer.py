@@ -7,7 +7,6 @@ from types import TracebackType
 
 import numpy as np
 import zarr
-from zarr.codecs import BytesCodec
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
@@ -17,11 +16,21 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
-    _CHUNK_KEY_ENCODING,
-    _COORDINATE_ENCODING,
-    _PAYLOAD_SCHEMA_VERSION,
-    _TILE_MAJOR_ROW_ORDER,
-    _compressors,
+    TILE_MAJOR_LOCATION,
+    TILE_MAJOR_POINT_ID,
+    TILE_MAJOR_RANGE_ROW_COUNT,
+    TILE_MAJOR_RANGE_ROW_START,
+    TILE_MAJOR_RANGE_TILE_INDPTR,
+    TILE_MAJOR_RANGE_VALUE_ID,
+    TILE_MAJOR_RANGES_GROUP,
+    TILE_MAJOR_TILE_OFFSET,
+    TILE_MAJOR_TILE_X,
+    TILE_MAJOR_TILE_Y,
+    TILE_MAJOR_VALUE_ID,
+    ZARR_FORMAT_VERSION,
+    ZARR_USE_CONSOLIDATED,
+    _array_creation_options,
+    _BucketAttributes,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
@@ -116,8 +125,8 @@ class _BucketWriter:
             self._root = zarr.open_group(
                 store=self._store,
                 mode="w-",
-                zarr_format=3,
-                use_consolidated=False,
+                zarr_format=ZARR_FORMAT_VERSION,
+                use_consolidated=ZARR_USE_CONSOLIDATED,
             )
             self._create_arrays()
         except Exception:
@@ -220,19 +229,12 @@ class _BucketWriter:
     def _create_arrays(self) -> None:
         root = self._require_root()
         settings = self._plan.settings
-        compressors = _compressors(settings.codec_id)
-        common = {
-            "compressors": compressors,
-            "serializer": BytesCodec(endian="little"),
-            "fill_value": 0,
-            "chunk_key_encoding": _CHUNK_KEY_ENCODING,
-            "config": {"write_empty_chunks": True},
-        }
+        common = _array_creation_options(settings.codec_id)
 
         # In Zarr v3, ``chunks`` are the inner compressed units while
         # ``shards`` group those chunks into the physical storage objects.
         self._point_location = root.create_array(
-            "location",
+            TILE_MAJOR_LOCATION,
             shape=(self._plan.point_count, 2),
             dtype=np.float32,
             chunks=(settings.point_chunk_rows, 2),
@@ -240,7 +242,7 @@ class _BucketWriter:
             **common,
         )
         self._point_id = root.create_array(
-            "point_id",
+            TILE_MAJOR_POINT_ID,
             shape=(self._plan.point_count,),
             dtype=np.uint64,
             chunks=(settings.point_chunk_rows,),
@@ -248,7 +250,7 @@ class _BucketWriter:
             **common,
         )
         self._value_id = root.create_array(
-            "value_id",
+            TILE_MAJOR_VALUE_ID,
             shape=(self._plan.point_count,),
             dtype=np.uint32,
             chunks=(settings.point_chunk_rows,),
@@ -258,21 +260,21 @@ class _BucketWriter:
 
         tile_count = self._plan.tile_count
         tile_x = root.create_array(
-            "tile_x",
+            TILE_MAJOR_TILE_X,
             shape=(tile_count,),
             dtype=np.uint32,
             chunks=(tile_count,),
             **common,
         )
         tile_y = root.create_array(
-            "tile_y",
+            TILE_MAJOR_TILE_Y,
             shape=(tile_count,),
             dtype=np.uint32,
             chunks=(tile_count,),
             **common,
         )
         tile_offset = root.create_array(
-            "tile_offset",
+            TILE_MAJOR_TILE_OFFSET,
             shape=(tile_count + 1,),
             dtype=np.uint64,
             chunks=(tile_count + 1,),
@@ -282,9 +284,9 @@ class _BucketWriter:
         tile_y[:] = np.fromiter((tile.tile_y for tile in self._plan.tiles), dtype=np.uint32, count=tile_count)
         tile_offset[:] = self._plan.tile_offset
 
-        ranges = root.create_group("ranges")
+        ranges = root.create_group(TILE_MAJOR_RANGES_GROUP)
         tile_indptr = ranges.create_array(
-            "tile_indptr",
+            TILE_MAJOR_RANGE_TILE_INDPTR.removeprefix(f"{TILE_MAJOR_RANGES_GROUP}/"),
             shape=(tile_count + 1,),
             dtype=np.uint64,
             chunks=(tile_count + 1,),
@@ -292,7 +294,7 @@ class _BucketWriter:
         )
         del tile_indptr
         self._range_value_id = ranges.create_array(
-            "value_id",
+            TILE_MAJOR_RANGE_VALUE_ID.removeprefix(f"{TILE_MAJOR_RANGES_GROUP}/"),
             shape=(self._range_capacity,),
             dtype=np.uint32,
             chunks=(settings.range_chunk_rows,),
@@ -300,7 +302,7 @@ class _BucketWriter:
             **common,
         )
         self._range_row_start = ranges.create_array(
-            "row_start",
+            TILE_MAJOR_RANGE_ROW_START.removeprefix(f"{TILE_MAJOR_RANGES_GROUP}/"),
             shape=(self._range_capacity,),
             dtype=np.uint64,
             chunks=(settings.range_chunk_rows,),
@@ -308,7 +310,7 @@ class _BucketWriter:
             **common,
         )
         self._range_row_count = ranges.create_array(
-            "row_count",
+            TILE_MAJOR_RANGE_ROW_COUNT.removeprefix(f"{TILE_MAJOR_RANGES_GROUP}/"),
             shape=(self._range_capacity,),
             dtype=np.uint64,
             chunks=(settings.range_chunk_rows,),
@@ -339,13 +341,15 @@ class _BucketWriter:
             return
         start = self._point_write_cursor
         stop = start + self._point_buffer_count
-        self._require_array(self._point_location, "location")[start:stop, :] = self._point_location_buffer[
+        self._require_array(self._point_location, TILE_MAJOR_LOCATION)[start:stop, :] = self._point_location_buffer[
             : self._point_buffer_count
         ]
-        self._require_array(self._value_id, "value_id")[start:stop] = self._point_value_buffer[
+        self._require_array(self._value_id, TILE_MAJOR_VALUE_ID)[start:stop] = self._point_value_buffer[
             : self._point_buffer_count
         ]
-        self._require_array(self._point_id, "point_id")[start:stop] = self._point_id_buffer[: self._point_buffer_count]
+        self._require_array(self._point_id, TILE_MAJOR_POINT_ID)[start:stop] = self._point_id_buffer[
+            : self._point_buffer_count
+        ]
         self._point_write_cursor = stop
         self._point_buffer_count = 0
 
@@ -396,13 +400,13 @@ class _BucketWriter:
         start = self._range_write_cursor
         stop = start + self._range_buffer_count
         self._ensure_range_capacity(stop)
-        self._require_array(self._range_value_id, "ranges/value_id")[start:stop] = self._range_value_buffer[
+        self._require_array(self._range_value_id, TILE_MAJOR_RANGE_VALUE_ID)[start:stop] = self._range_value_buffer[
             : self._range_buffer_count
         ]
-        self._require_array(self._range_row_start, "ranges/row_start")[start:stop] = self._range_start_buffer[
+        self._require_array(self._range_row_start, TILE_MAJOR_RANGE_ROW_START)[start:stop] = self._range_start_buffer[
             : self._range_buffer_count
         ]
-        self._require_array(self._range_row_count, "ranges/row_count")[start:stop] = self._range_count_buffer[
+        self._require_array(self._range_row_count, TILE_MAJOR_RANGE_ROW_COUNT)[start:stop] = self._range_count_buffer[
             : self._range_buffer_count
         ]
         self._range_write_cursor = stop
@@ -430,33 +434,33 @@ class _BucketWriter:
             capacity *= 2
         capacity = ((capacity + shard_rows - 1) // shard_rows) * shard_rows
         for name, array in (
-            ("ranges/value_id", self._range_value_id),
-            ("ranges/row_start", self._range_row_start),
-            ("ranges/row_count", self._range_row_count),
+            (TILE_MAJOR_RANGE_VALUE_ID, self._range_value_id),
+            (TILE_MAJOR_RANGE_ROW_START, self._range_row_start),
+            (TILE_MAJOR_RANGE_ROW_COUNT, self._range_row_count),
         ):
             self._require_array(array, name).resize((capacity,))
         self._range_capacity = capacity
 
     def _trim_range_arrays(self) -> None:
         for name, array in (
-            ("ranges/value_id", self._range_value_id),
-            ("ranges/row_start", self._range_row_start),
-            ("ranges/row_count", self._range_row_count),
+            (TILE_MAJOR_RANGE_VALUE_ID, self._range_value_id),
+            (TILE_MAJOR_RANGE_ROW_START, self._range_row_start),
+            (TILE_MAJOR_RANGE_ROW_COUNT, self._range_row_count),
         ):
             self._require_array(array, name).resize((self._range_write_cursor,))
         self._range_capacity = self._range_write_cursor
 
     def _write_tile_indptr(self) -> None:
         root = self._require_root()
-        array = root["ranges/tile_indptr"]
+        array = root[TILE_MAJOR_RANGE_TILE_INDPTR]
         if not isinstance(array, zarr.Array):
             raise RuntimeError("`ranges/tile_indptr` is not a Zarr array.")
         array[:] = self._tile_indptr
 
     def _reconcile_result(self) -> _BucketWriteResult:
-        location = self._require_array(self._point_location, "location")
-        point_id = self._require_array(self._point_id, "point_id")
-        value_id = self._require_array(self._value_id, "value_id")
+        location = self._require_array(self._point_location, TILE_MAJOR_LOCATION)
+        point_id = self._require_array(self._point_id, TILE_MAJOR_POINT_ID)
+        value_id = self._require_array(self._value_id, TILE_MAJOR_VALUE_ID)
         physical_point_count = int(location.shape[0])
         if location.shape != (physical_point_count, 2):
             raise RuntimeError("Final location shape is inconsistent.")
@@ -484,9 +488,9 @@ class _BucketWriter:
         if any(count != physical_point_count for count in expected_point_counts):
             raise RuntimeError("Final physical and logical point counts do not reconcile.")
 
-        range_value = self._require_array(self._range_value_id, "ranges/value_id")
-        range_start = self._require_array(self._range_row_start, "ranges/row_start")
-        range_count = self._require_array(self._range_row_count, "ranges/row_count")
+        range_value = self._require_array(self._range_value_id, TILE_MAJOR_RANGE_VALUE_ID)
+        range_start = self._require_array(self._range_row_start, TILE_MAJOR_RANGE_ROW_START)
+        range_count = self._require_array(self._range_row_count, TILE_MAJOR_RANGE_ROW_COUNT)
         physical_range_count = int(range_value.shape[0])
         if range_start.shape != (physical_range_count,) or range_count.shape != (physical_range_count,):
             raise RuntimeError("Final range-array shapes are inconsistent.")
@@ -506,17 +510,14 @@ class _BucketWriter:
 
     def _write_root_attributes(self, result: _BucketWriteResult) -> None:
         self._require_root().attrs.update(
-            {
-                "payload_schema_version": _PAYLOAD_SCHEMA_VERSION,
-                "level": self._plan.level,
-                "bucket_id": self._plan.bucket_id,
-                "tile_count": self._plan.tile_count,
-                "point_count": result.point_count,
-                "range_count": result.range_count,
-                "point_row_order": list(_TILE_MAJOR_ROW_ORDER),
-                "coordinate_encoding": _COORDINATE_ENCODING,
-                "codec_id": self._plan.settings.codec_id,
-            }
+            _BucketAttributes(
+                level=self._plan.level,
+                bucket_id=self._plan.bucket_id,
+                tile_count=self._plan.tile_count,
+                point_count=result.point_count,
+                range_count=result.range_count,
+                codec_id=self._plan.settings.codec_id,
+            ).to_dict()
         )
 
     def _require_open(self) -> None:
