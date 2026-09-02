@@ -79,8 +79,8 @@ class _RangeRecordBatch:
 
     Level identity belongs to the containing level stream rather than being
     repeated for every record in the batch. ``row_start`` is the bucket-global
-    coordinate source address carried through the catalog permutation solely
-    for construction of the unpublished value-major sidecar.
+    coordinate source address carried through the catalog permutation for
+    value-major sidecar construction and exhaustive equivalence validation.
     """
 
     value_id: np.ndarray
