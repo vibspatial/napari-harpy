@@ -418,7 +418,7 @@ bucket_id              = <JSON integer>
 tile_count             = <JSON integer>
 point_count            = <JSON integer>
 range_count            = <JSON integer>
-point_order            = ["tile_y", "tile_x", "value_id", "point_id"]
+point_row_order        = ["tile_y", "tile_x", "value_id", "point_id"]
 coordinate_encoding    = "tile-relative-xy-float32-v1"
 codec_id               = "zstd-v1"
 ```
@@ -3268,7 +3268,7 @@ The nested value types and structure are:
     "identifier": "harpy-zarr-v3-bucket-sparse-value-ranges-v1",
     "zarr_format": 3,
     "payload_schema_version": 1,
-    "point_order": ["tile_y", "tile_x", "value_id", "point_id"],
+    "point_row_order": ["tile_y", "tile_x", "value_id", "point_id"],
     "coordinate_encoding": "tile-relative-xy-float32-v1",
     "codec_id": "zstd-v1",
     "point_chunk_rows": 4096,

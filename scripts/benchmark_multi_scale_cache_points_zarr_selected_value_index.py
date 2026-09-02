@@ -11,15 +11,15 @@ from time import perf_counter
 import numpy as np
 import psutil
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-)
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
     _SelectedValueIndex,
     _ViewportReadResult,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
 )
 
 _TARGET_ARRAYS = (VALUE_TILES_MANIFEST_INDEX, VALUE_TILES_N_POINTS)
@@ -48,7 +48,7 @@ class _RssSampler:
             self._sample()
 
     def _sample(self) -> None:
-            self.peak_bytes = max(self.peak_bytes, self._process.memory_info().rss)
+        self.peak_bytes = max(self.peak_bytes, self._process.memory_info().rss)
 
 
 @dataclass(frozen=True)

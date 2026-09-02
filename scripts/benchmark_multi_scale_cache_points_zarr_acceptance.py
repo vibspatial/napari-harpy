@@ -16,16 +16,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_N_POINTS,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-    VALUES_N_POINTS,
-)
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
@@ -39,6 +29,16 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_LEVEL_INDPTR,
+    MANIFEST_N_POINTS,
+    MANIFEST_TILE_X,
+    MANIFEST_TILE_Y,
+    VALUE_TILES_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
+    VALUES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
 
@@ -540,6 +540,8 @@ def main() -> None:
             "dask_worker_count": args.dask_worker_count,
             **asdict(config.zarr_settings),
             **asdict(config.catalog_settings),
+            "max_open_value_major_readers": config.max_open_value_major_readers,
+            "value_major": asdict(config.value_major_settings),
         },
         "publication": {
             "output_path": str(args.output_path),

@@ -17,6 +17,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    _ValueMajorMetadata,
+    _ValueMajorWriteSettings,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
@@ -70,6 +74,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--range-chunk-rows", type=int, default=8_192)
     parser.add_argument("--range-shard-rows", type=int, default=131_072)
     parser.add_argument("--codec-id", default="zstd-v1")
+    parser.add_argument("--value-major-point-chunk-rows", type=int, default=4_096)
+    parser.add_argument("--value-major-point-shard-rows", type=int, default=131_072)
+    parser.add_argument("--value-major-construction-batch-points", type=int, default=1_048_576)
+    parser.add_argument("--max-open-value-major-readers", type=int)
     parser.add_argument("--output-path", type=Path, required=True)
     parser.add_argument("--temporary-directory-root", type=Path, required=True)
     parser.add_argument("--json-output", type=Path, required=True)
@@ -87,6 +95,23 @@ def _directory_summary(root: Path) -> tuple[int, int]:
             except FileNotFoundError:
                 continue
     return byte_count, file_count
+
+
+def _value_major_level_summary(
+    cache_root: Path,
+    *,
+    level: int,
+    point_count: int,
+    value_count: int,
+) -> dict[str, int | float]:
+    stored_bytes, file_count = _directory_summary(cache_root / f"value_major/level_{level}")
+    logical_bytes = point_count * 2 * 4 + (value_count + 1) * 8
+    return {
+        "logical_bytes": logical_bytes,
+        "stored_bytes": stored_bytes,
+        "filesystem_file_count": file_count,
+        "logical_to_stored_ratio": logical_bytes / stored_bytes,
+    }
 
 
 def main() -> None:
@@ -128,6 +153,12 @@ def main() -> None:
         dask_worker_count=args.dask_worker_count,
         target_points_per_bucket=args.target_points_per_bucket,
         zarr_settings=zarr_settings,
+        value_major_settings=_ValueMajorWriteSettings(
+            point_chunk_rows=args.value_major_point_chunk_rows,
+            point_shard_rows=args.value_major_point_shard_rows,
+            construction_batch_points=args.value_major_construction_batch_points,
+        ),
+        max_open_value_major_readers=args.max_open_value_major_readers,
     )
     print(
         f"Building variant: point_chunk_rows={args.point_chunk_rows}, "
@@ -146,6 +177,7 @@ def main() -> None:
     stored_bytes, file_count = _directory_summary(output)
     with _CatalogReader(output) as reader:
         attributes = reader.attributes
+        value_count = attributes.catalog.value_count
         levels = tuple(
             {
                 "level": level.level,
@@ -154,6 +186,12 @@ def main() -> None:
                 "tile_count": level.tile_count,
                 "point_count": level.point_count,
                 "range_count": level.range_count,
+                "value_major": _value_major_level_summary(
+                    output,
+                    level=level.level,
+                    point_count=level.point_count,
+                    value_count=value_count,
+                ),
             }
             for level in attributes.levels
         )
@@ -162,6 +200,10 @@ def main() -> None:
             raise RuntimeError("Published bucket target differs from the requested experiment configuration.")
         if attributes.zarr_settings != zarr_settings:
             raise RuntimeError("Published Zarr settings differ from the requested experiment configuration.")
+        if attributes.value_major != _ValueMajorMetadata.from_write_settings(config.value_major_settings):
+            raise RuntimeError("Published value-major settings differ from the requested experiment configuration.")
+    value_major_logical_bytes = sum(level["value_major"]["logical_bytes"] for level in levels)  # type: ignore[index]
+    value_major_stored_bytes = sum(level["value_major"]["stored_bytes"] for level in levels)  # type: ignore[index]
 
     report = {
         "schema_version": "harpy-tiled-points-cache-variant-v1",
@@ -185,6 +227,8 @@ def main() -> None:
             "target_points_per_bucket": args.target_points_per_bucket,
             **asdict(zarr_settings),
             **asdict(config.catalog_settings),
+            "max_open_value_major_readers": config.max_open_value_major_readers,
+            "value_major": asdict(config.value_major_settings),
         },
         "publication": {
             "output_path": str(output.resolve()),
@@ -192,6 +236,11 @@ def main() -> None:
             "stored_bytes": stored_bytes,
             "filesystem_file_count": file_count,
             "levels": levels,
+            "value_major": {
+                "logical_bytes": value_major_logical_bytes,
+                "stored_bytes": value_major_stored_bytes,
+                "logical_to_stored_ratio": value_major_logical_bytes / value_major_stored_bytes,
+            },
         },
         "timing_seconds": {
             "source_validation": validation_seconds,

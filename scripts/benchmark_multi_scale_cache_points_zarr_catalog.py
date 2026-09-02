@@ -24,12 +24,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _PointsCacheBuildPlan,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_LEVEL_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
     _CatalogWriteSettings,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.source import (
@@ -37,6 +33,13 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     PointColumnSelection,
     ValidatedPointsSource,
     validate_parquet_points_source,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_BUCKET_ID,
+    MANIFEST_BUCKET_TILE_INDEX,
+    MANIFEST_LEVEL_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CatalogReader,
@@ -322,7 +325,7 @@ def _bucket_snapshots(staging: Path, results: tuple[_LevelWriteResult, ...]) -> 
 
 
 def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]:
-    groups = ("values", "manifest", "value_tiles")
+    groups = ("values", "manifest", "value_tiles", "value_major")
     per_group_bytes = {group: _directory_size(staging / group) for group in groups}
     per_group_objects = {group: _directory_file_count(staging / group) for group in groups}
     array_paths = (
@@ -336,6 +339,14 @@ def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]
         "value_tiles/indptr",
         "value_tiles/manifest_index",
         "value_tiles/n_points",
+        *(
+            path
+            for level in range(len(reader.attributes.levels))
+            for path in (
+                f"value_major/level_{level}/location",
+                f"value_major/level_{level}/value_point_indptr",
+            )
+        ),
     )
     array_layouts: dict[str, object] = {}
     for name in array_paths:
@@ -479,6 +490,8 @@ def main() -> None:
         codec_id=args.codec_id,
     )
     catalog_settings = _CatalogWriteSettings()
+    value_major_settings = _ValueMajorWriteSettings()
+    max_open_value_major_readers = None
 
     if args.evaluation_name in {"", ".", ".."} or Path(args.evaluation_name).name != args.evaluation_name:
         raise ValueError("`evaluation-name` must be one nonempty directory name.")
@@ -524,6 +537,9 @@ def main() -> None:
                 staging_root=evaluation_root,
                 cache_generation_id=generation_id,
                 settings=catalog_settings,
+                value_major_settings=value_major_settings,
+                max_open_value_major_readers=max_open_value_major_readers,
+                temporary_directory_root=temporary,
             )
             catalog_seconds = perf_counter() - started
 
@@ -555,11 +571,7 @@ def main() -> None:
         if list(temporary.iterdir()):
             raise RuntimeError("Catalog construction retained unexpected scratch data.")
         standalone_json = [path for path in evaluation_root.rglob("*.json") if path.name != "zarr.json"]
-        if (
-            list(evaluation_root.rglob("*.parquet"))
-            or standalone_json
-            or (evaluation_root / "COMPLETED").exists()
-        ):
+        if list(evaluation_root.rglob("*.parquet")) or standalone_json or (evaluation_root / "COMPLETED").exists():
             raise RuntimeError("Z6 wrote forbidden Parquet, JSON-sidecar, or completion artifacts.")
 
         report = {
@@ -579,6 +591,8 @@ def main() -> None:
             },
             "configuration": {
                 **catalog_settings.__dict__,
+                "max_open_value_major_readers": max_open_value_major_readers,
+                "value_major": value_major_settings.__dict__,
                 "point_chunk_rows": zarr_settings.point_chunk_rows,
                 "point_shard_rows": zarr_settings.point_shard_rows,
                 "range_chunk_rows": zarr_settings.range_chunk_rows,
@@ -616,7 +630,7 @@ def main() -> None:
                 "value_tile_manifest_index_shape": manifest_index_shape,
                 "value_tile_n_points_shape": value_tile_count_shape,
                 "largest_level_sort_rows": largest_level_sort_rows,
-                "estimated_largest_level_input_bytes": largest_level_sort_rows * (4 + 8 + 8),
+                "estimated_largest_level_input_bytes": largest_level_sort_rows * (4 + 8 + 8 + 8),
                 "estimated_largest_level_order_bytes": largest_level_sort_rows * 8,
                 **representative_verification,
                 **catalog_storage,
