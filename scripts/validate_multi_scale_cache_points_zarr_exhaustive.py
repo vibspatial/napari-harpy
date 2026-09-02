@@ -1,4 +1,4 @@
-"""Developer-only exhaustive validation for a staged Zarr points cache.
+"""Developer-only exhaustive validation for a completed Zarr points cache.
 
 This script is intentionally outside the installed ``napari_harpy`` package.
 Normal cache publication uses the compact path-only validator in
@@ -19,16 +19,28 @@ import numpy as np
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CacheAttributes
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+    _INT64_MAX,
+    _require_integer_in_range,
+    _TileDescriptor,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
 from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_BUCKET_ID,
+    value_major_location,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
+    _CatalogReader,
+    _iter_compact_bucket_range_batches,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
     _read_and_annotate_row_group,
     _source_row_group_read_specs,
@@ -36,13 +48,19 @@ from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import (
     _ManifestInventory,
     _read_manifest_inventory,
-    _validate_staged_cache,
+    _validate_complete_cache,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major import (
+    _read_fragment_locations,
+    _split_range_records_by_points,
+)
+
+_VALUE_MAJOR_COMPARISON_BATCH_POINTS = 1_048_576
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Exhaustively validate staged Zarr point payloads and optional source equivalence."
+        description="Exhaustively validate completed Zarr point payloads and optional source equivalence."
     )
     parser.add_argument("cache_root", type=Path)
     parser.add_argument("--temporary-directory-root", type=Path, required=True)
@@ -51,6 +69,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--x", default="x")
     parser.add_argument("--y", default="y")
     parser.add_argument("--value", default="gene")
+    parser.add_argument(
+        "--value-major-comparison-batch-points",
+        type=int,
+        default=_VALUE_MAJOR_COMPARISON_BATCH_POINTS,
+    )
     args = parser.parse_args()
     if (args.source_spatialdata_path is None) != (args.points_name is None):
         parser.error("--source-spatialdata-path and --points-name must be supplied together.")
@@ -62,9 +85,9 @@ def _validate_cache_exhaustive(
     *,
     source: ParquetPointsSource | None,
     temporary_directory_root: Path,
+    value_major_comparison_batch_points: int = _VALUE_MAJOR_COMPARISON_BATCH_POINTS,
 ) -> None:
     """Run complete payload, identity, nesting, and optional source checks."""
-    _validate_staged_cache(cache_root)
     if not isinstance(temporary_directory_root, Path) or not temporary_directory_root.is_dir():
         raise ValueError("`temporary_directory_root` must be an existing pathlib.Path directory.")
     cache_resolved = cache_root.resolve()
@@ -75,22 +98,139 @@ def _validate_cache_exhaustive(
         or temporary_resolved in cache_resolved.parents
     ):
         raise ValueError("Cache and exhaustive-validation temporary roots must be separate directory trees.")
+    _require_integer_in_range(
+        value_major_comparison_batch_points,
+        "value_major_comparison_batch_points",
+        minimum=1,
+        maximum=_INT64_MAX,
+    )
+    _validate_complete_cache(cache_root)
 
     with _CatalogReader(cache_root) as reader:
         attributes = reader.attributes
         inventory = _read_manifest_inventory(reader)
-    for buckets in inventory.buckets_by_level:
-        for bucket in buckets:
+    for manifest_level in inventory.levels:
+        for bucket in manifest_level.buckets:
             result = _validate_bucket(cache_root, level=bucket.level, bucket_id=bucket.bucket_id)
             if result.tile_descriptors != bucket.descriptors:
                 raise ValueError("Exhaustive bucket descriptors disagree with the persisted manifest.")
 
     with tempfile.TemporaryDirectory(prefix="harpy-zarr-validation-", dir=temporary_directory_root) as scratch:
         scratch_root = Path(scratch)
+        _validate_value_major_location_equivalence(
+            cache_root,
+            inventory,
+            comparison_batch_points=value_major_comparison_batch_points,
+        )
         _validate_exact_point_ids_and_coordinates(cache_root, attributes, inventory, scratch_root)
         _validate_cross_level_payloads(cache_root, attributes, inventory, scratch_root)
         if source is not None:
             _validate_exact_against_source(cache_root, attributes, inventory, source, scratch_root)
+
+
+def _validate_value_major_location_equivalence(
+    cache_root: Path,
+    inventory: _ManifestInventory,
+    *,
+    comparison_batch_points: int = _VALUE_MAJOR_COMPARISON_BATCH_POINTS,
+) -> None:
+    """Compare every value-major location row with its tile-major source.
+
+    Physical bucket ranges are reconstructed one level at a time and sorted by
+    ``(value_id, manifest_index)``, which is the record order inherited by the
+    value-major sidecar. Only compact range metadata is retained for a complete
+    level. Coordinate reads and comparisons remain bounded by
+    ``comparison_batch_points``.
+    """
+    _require_integer_in_range(
+        comparison_batch_points,
+        "comparison_batch_points",
+        minimum=1,
+        maximum=_INT64_MAX,
+    )
+    if not isinstance(inventory, _ManifestInventory):
+        raise ValueError("`inventory` must be a _ManifestInventory.")
+
+    with _CatalogReader(cache_root) as reader:
+        attributes = reader.attributes
+        if len(inventory.levels) != len(attributes.levels):
+            raise ValueError("Manifest inventory level count does not match the cache metadata.")
+        manifest_bucket_id = np.asarray(reader.array(MANIFEST_BUCKET_ID)[:], dtype=np.uint32)
+
+        for metadata, manifest_level in zip(attributes.levels, inventory.levels, strict=True):
+            level = manifest_level.level
+            value_id = np.empty(metadata.range_count, dtype=np.uint32)
+            manifest_index = np.empty(metadata.range_count, dtype=np.uint64)
+            row_start = np.empty(metadata.range_count, dtype=np.uint64)
+            row_count = np.empty(metadata.range_count, dtype=np.uint64)
+            cursor = 0
+            for bucket in manifest_level.buckets:
+                for batch in _iter_compact_bucket_range_batches(
+                    cache_root,
+                    level=level,
+                    bucket_id=bucket.bucket_id,
+                    expected_descriptors=bucket.descriptors,
+                    manifest_indexes=bucket.manifest_indexes,
+                    batch_rows=attributes.catalog.settings.value_tile_chunk_rows,
+                    expected_settings=attributes.zarr_settings,
+                ):
+                    stop = cursor + batch.row_count
+                    if stop > metadata.range_count:
+                        raise ValueError(f"Level {level} ranges exceed the declared range count.")
+                    value_id[cursor:stop] = batch.value_id
+                    manifest_index[cursor:stop] = batch.manifest_index
+                    row_start[cursor:stop] = batch.row_start
+                    row_count[cursor:stop] = batch.n_points
+                    cursor = stop
+            if cursor != metadata.range_count:
+                raise ValueError(f"Level {level} ranges do not match the declared range count.")
+            if bool((value_id >= attributes.catalog.value_count).any()):
+                raise ValueError(f"Level {level} contains a range with an unknown value ID.")
+
+            order = np.lexsort((manifest_index, value_id))
+            # Discard each traversal-order source as soon as its value-major copy
+            # exists so the level-wide transpose does not retain two complete
+            # copies of every compact field simultaneously.
+            del value_id
+            ordered_manifest_index = np.ascontiguousarray(manifest_index[order])
+            del manifest_index
+            ordered_row_start = np.ascontiguousarray(row_start[order])
+            del row_start
+            ordered_row_count = np.ascontiguousarray(row_count[order])
+            del row_count, order
+
+            sidecar = reader.array(value_major_location(level))
+            sidecar_cursor = 0
+            with _BucketReaderCache(
+                cache_root,
+                max_open_readers=len(manifest_level.buckets),
+            ) as bucket_readers:
+                for fragments in _split_range_records_by_points(
+                    ordered_manifest_index,
+                    ordered_row_start,
+                    ordered_row_count,
+                    max_points=comparison_batch_points,
+                ):
+                    expected = _read_fragment_locations(
+                        fragments,
+                        level=level,
+                        manifest_bucket_id=manifest_bucket_id,
+                        readers=bucket_readers,
+                    )
+                    sidecar_stop = sidecar_cursor + fragments.point_count
+                    observed = np.ascontiguousarray(
+                        sidecar[sidecar_cursor:sidecar_stop, :],
+                        dtype=np.float32,
+                    )
+                    if not np.array_equal(observed, expected):
+                        raise ValueError(
+                            "Value-major locations disagree with their tile-major sources "
+                            f"at level {level}, rows [{sidecar_cursor}, {sidecar_stop})."
+                        )
+                    sidecar_cursor = sidecar_stop
+            if sidecar_cursor != metadata.point_count:
+                raise ValueError(f"Value-major comparison did not cover every level {level} location row.")
+            del ordered_manifest_index, ordered_row_start, ordered_row_count
 
 
 def _validate_exact_point_ids_and_coordinates(
@@ -148,8 +288,18 @@ def _validate_cross_level_payloads(
                 raise ValueError("A finer cache level contains invalid or duplicate point IDs.")
             present[ids] = 1
             values[ids] = payload.value_id
-            x_source[ids] = attributes.geometry.x_origin + descriptor.tile_x * finer_metadata.tile_size + payload.x_rel
-            y_source[ids] = attributes.geometry.y_origin + descriptor.tile_y * finer_metadata.tile_size + payload.y_rel
+            x_source[ids] = _reconstruct_global_coordinates(
+                payload.x_rel,
+                origin=attributes.geometry.x_origin,
+                tile_index=descriptor.tile_x,
+                tile_size=finer_metadata.tile_size,
+            )
+            y_source[ids] = _reconstruct_global_coordinates(
+                payload.y_rel,
+                origin=attributes.geometry.y_origin,
+                tile_index=descriptor.tile_y,
+                tile_size=finer_metadata.tile_size,
+            )
 
         coarser_metadata = attributes.levels[coarser_level]
         tolerance = _coordinate_tolerance(coarser_metadata.tile_size)
@@ -164,14 +314,29 @@ def _validate_cross_level_payloads(
             ):
                 raise ValueError("A coarser cache level contains an invalid, duplicate, or absent point ID.")
             coarser_seen[ids] = 1
-            observed_x = attributes.geometry.x_origin + descriptor.tile_x * coarser_metadata.tile_size + payload.x_rel
-            observed_y = attributes.geometry.y_origin + descriptor.tile_y * coarser_metadata.tile_size + payload.y_rel
-            if not (
-                np.array_equal(payload.value_id, values[ids])
-                and np.allclose(observed_x, x_source[ids], rtol=0.0, atol=tolerance)
-                and np.allclose(observed_y, y_source[ids], rtol=0.0, atol=tolerance)
-            ):
-                raise ValueError("A coarser cache level changed retained point values or coordinates.")
+            observed_x = _reconstruct_global_coordinates(
+                payload.x_rel,
+                origin=attributes.geometry.x_origin,
+                tile_index=descriptor.tile_x,
+                tile_size=coarser_metadata.tile_size,
+            )
+            observed_y = _reconstruct_global_coordinates(
+                payload.y_rel,
+                origin=attributes.geometry.y_origin,
+                tile_index=descriptor.tile_y,
+                tile_size=coarser_metadata.tile_size,
+            )
+            values_match = np.array_equal(payload.value_id, values[ids])
+            x_matches = np.allclose(observed_x, x_source[ids], rtol=0.0, atol=tolerance)
+            y_matches = np.allclose(observed_y, y_source[ids], rtol=0.0, atol=tolerance)
+            if not (values_match and x_matches and y_matches):
+                max_x_error = float(np.max(np.abs(observed_x - x_source[ids])))
+                max_y_error = float(np.max(np.abs(observed_y - y_source[ids])))
+                raise ValueError(
+                    f"Level {coarser_level} tile ({descriptor.tile_x}, {descriptor.tile_y}) changed retained "
+                    f"point payloads (values_match={values_match}, max_x_error={max_x_error}, "
+                    f"max_y_error={max_y_error}, coordinate_tolerance={tolerance})."
+                )
         del present, values, x_source, y_source, coarser_seen
         for path in (present_path, values_path, x_path, y_path, coarser_seen_path):
             path.unlink()
@@ -191,7 +356,7 @@ def _validate_exact_against_source(
         or validated.row_count != attributes.source.row_count
         or tuple(validated.value_table["value"].to_pylist()) != attributes.value_names
     ):
-        raise ValueError("Canonical source identity no longer matches the staged cache.")
+        raise ValueError("Canonical source identity no longer matches the completed cache.")
 
     row_count = attributes.source.row_count
     value_path = scratch_root / "exact-value.u4"
@@ -204,8 +369,18 @@ def _validate_exact_against_source(
     for descriptor, payload in _iter_level_payloads(cache_root, inventory, level=0):
         ids = payload.point_id
         cache_value[ids] = payload.value_id
-        cache_x[ids] = attributes.geometry.x_origin + descriptor.tile_x * exact.tile_size + payload.x_rel
-        cache_y[ids] = attributes.geometry.y_origin + descriptor.tile_y * exact.tile_size + payload.y_rel
+        cache_x[ids] = _reconstruct_global_coordinates(
+            payload.x_rel,
+            origin=attributes.geometry.x_origin,
+            tile_index=descriptor.tile_x,
+            tile_size=exact.tile_size,
+        )
+        cache_y[ids] = _reconstruct_global_coordinates(
+            payload.y_rel,
+            origin=attributes.geometry.y_origin,
+            tile_index=descriptor.tile_y,
+            tile_size=exact.tile_size,
+        )
 
     value_labels = tuple(validated.value_table["value"].to_pylist())
     bucket_count = max(
@@ -232,12 +407,12 @@ def _validate_exact_against_source(
         source_x = (
             attributes.geometry.x_origin
             + frame["tile_x"].to_numpy(dtype=np.uint64, copy=False) * exact.tile_size
-            + frame["x_rel"].to_numpy(dtype=np.float32, copy=False)
+            + frame["x_rel"].to_numpy(dtype=np.float64, copy=False)
         )
         source_y = (
             attributes.geometry.y_origin
             + frame["tile_y"].to_numpy(dtype=np.uint64, copy=False) * exact.tile_size
-            + frame["y_rel"].to_numpy(dtype=np.float32, copy=False)
+            + frame["y_rel"].to_numpy(dtype=np.float64, copy=False)
         )
         if not (
             np.array_equal(cache_value[ids], frame["value_id"].to_numpy(dtype=np.uint32, copy=False))
@@ -257,7 +432,7 @@ def _iter_level_payloads(
     level: int,
 ) -> Iterator[tuple[_TileDescriptor, _PointPayload]]:
     """Yield complete tile payloads while keeping only one bucket handle open."""
-    for bucket in inventory.buckets_by_level[level]:
+    for bucket in inventory.levels[level].buckets:
         with _BucketReader(cache_root, level=level, bucket_id=bucket.bucket_id) as reader:
             for descriptor in bucket.descriptors:
                 yield descriptor, reader.read_construction_payload(descriptor)
@@ -274,6 +449,23 @@ def _validate_tile_relative_coordinates(x_rel: np.ndarray, y_rel: np.ndarray, ti
         and not bool((y_rel > tile_size + tolerance).any())
     ):
         raise ValueError("Tile-relative point coordinate lies outside its logical tile.")
+
+
+def _reconstruct_global_coordinates(
+    relative: np.ndarray,
+    *,
+    origin: float,
+    tile_index: int,
+    tile_size: int,
+) -> np.ndarray:
+    """Reconstruct coordinates without adding tile offsets in float32.
+
+    NumPy treats Python scalar offsets as weak scalars and may otherwise keep
+    ``float32`` relative coordinates in ``float32``. Promote first so equivalent
+    finer- and coarser-tile representations are not compared after different
+    global-coordinate rounding sequences.
+    """
+    return origin + tile_index * tile_size + relative.astype(np.float64, copy=False)
 
 
 def _coordinate_tolerance(tile_size: int) -> float:
@@ -295,6 +487,7 @@ def main() -> None:
         args.cache_root,
         source=source,
         temporary_directory_root=args.temporary_directory_root,
+        value_major_comparison_batch_points=args.value_major_comparison_batch_points,
     )
     print(f"Exhaustive validation succeeded in {perf_counter() - started:.2f} seconds.")
 

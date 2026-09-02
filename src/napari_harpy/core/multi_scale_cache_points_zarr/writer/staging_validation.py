@@ -1,4 +1,4 @@
-"""Independently validate a complete, unpublished Zarr cache generation.
+"""Independently validate a complete Zarr cache generation.
 
 Construction and independent validation intentionally use different container
 hierarchies::
@@ -22,11 +22,13 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import BRIDGE_MAX_POINTS_PER_TILE
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    PUBLICATION_STATE_COMPLETE,
     PUBLICATION_STATE_STAGING,
     _CacheAttributes,
 )
@@ -166,17 +168,49 @@ def _validate_staged_cache(staging_root: Path) -> None:
         _validate_bucket_ranges_against_catalog()
             Physical bucket metadata and sparse ranges agree with the catalog.
     """
-    _require_staging_root(staging_root)
-    _validate_staging_artifacts(staging_root)
-    with _CatalogReader(staging_root) as reader:
-        if reader.attributes.publication_state != PUBLICATION_STATE_STAGING:
-            raise ValueError("Staged validation requires publication_state='staging'.")
+    _validate_cache_generation(
+        staging_root,
+        expected_publication_state=PUBLICATION_STATE_STAGING,
+    )
+
+
+def _validate_complete_cache(cache_root: Path) -> None:
+    """Validate one completed cache without reading point payload or source rows.
+
+    This strict read-only entry point exists for explicitly invoked developer
+    diagnostics. Production publication continues to call
+    ``_validate_staged_cache()`` before changing the generation state.
+    """
+    _validate_cache_generation(
+        cache_root,
+        expected_publication_state=PUBLICATION_STATE_COMPLETE,
+    )
+
+
+def _validate_cache_generation(
+    cache_root: Path,
+    *,
+    expected_publication_state: Literal["staging", "complete"],
+) -> None:
+    """Run shared structural checks for one explicitly stated generation state."""
+    if expected_publication_state not in {
+        PUBLICATION_STATE_STAGING,
+        PUBLICATION_STATE_COMPLETE,
+    }:
+        raise ValueError("`expected_publication_state` must be 'staging' or 'complete'.")
+    _require_cache_root(cache_root)
+    _validate_cache_artifacts(cache_root)
+    with _CatalogReader(cache_root) as reader:
+        if reader.attributes.publication_state != expected_publication_state:
+            raise ValueError(
+                f"Cache validation requires publication_state={expected_publication_state!r}."
+            )
         reader.validate_contents()
         inventory = _read_manifest_inventory(reader)
         _validate_persisted_build(reader.attributes, inventory)
-        _validate_bucket_ranges_against_catalog(reader, inventory, staging_root=staging_root)
-    # Catch an unexpected sidecar created while validation had stores open.
-    _validate_staging_artifacts(staging_root)
+        _validate_bucket_ranges_against_catalog(reader, inventory, cache_root=cache_root)
+    # Catch an unexpected artifact created while validation had stores open.
+    _validate_cache_artifacts(cache_root)
 
 
 def _read_manifest_inventory(reader: _CatalogReader) -> _ManifestInventory:
@@ -367,7 +401,7 @@ def _validate_bucket_ranges_against_catalog(
     reader: _CatalogReader,
     inventory: _ManifestInventory,
     *,
-    staging_root: Path,
+    cache_root: Path,
 ) -> None:
     """Require physical bucket metadata and sparse ranges to agree with the catalog.
 
@@ -412,7 +446,7 @@ def _validate_bucket_ranges_against_catalog(
         #                              compare with value_tiles
         for bucket in buckets:
             for batch in _iter_compact_bucket_range_batches(
-                staging_root,
+                cache_root,
                 level=level,
                 bucket_id=bucket.bucket_id,
                 expected_descriptors=bucket.descriptors,
@@ -490,12 +524,12 @@ def _validate_bucket_ranges_against_catalog(
         raise ValueError("Exact bucket sparse ranges do not reconcile to canonical value totals.")
 
 
-def _validate_staging_artifacts(staging_root: Path) -> None:
-    """Require a clean, unpublished, Zarr-only generation tree.
+def _validate_cache_artifacts(cache_root: Path) -> None:
+    """Require a clean Zarr-only generation tree.
 
-    The staging root must contain exactly::
+    The cache root must contain exactly::
 
-        staging_root/
+        cache_root/
           zarr.json
           tile_major/
           values/
@@ -510,14 +544,14 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
     readers rather than by this filesystem-level check.
     """
     allowed_root_entries = CACHE_ROOT_GROUPS | {ZARR_METADATA_FILENAME}
-    observed_root_entries = {path.name for path in staging_root.iterdir()}
+    observed_root_entries = {path.name for path in cache_root.iterdir()}
     if observed_root_entries != allowed_root_entries:
-        raise ValueError("Staged cache root contains missing or unexpected artifacts.")
+        raise ValueError("Cache root contains missing or unexpected artifacts.")
 
-    for path in staging_root.rglob("*"):
-        relative = path.relative_to(staging_root)
+    for path in cache_root.rglob("*"):
+        relative = path.relative_to(cache_root)
         if path.is_symlink():
-            raise ValueError(f"Staged cache contains an unexpected symbolic link: {relative.as_posix()}.")
+            raise ValueError(f"Cache contains an unexpected symbolic link: {relative.as_posix()}.")
         if path.is_file():
             if path.name == ZARR_METADATA_FILENAME:
                 continue
@@ -525,15 +559,15 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
                 chunk_parts = relative.parts[relative.parts.index("c") + 1 :]
                 if chunk_parts and all(part.isdecimal() for part in chunk_parts):
                     continue
-            raise ValueError(f"Staged cache contains an unexpected file: {relative.as_posix()}.")
+            raise ValueError(f"Cache contains an unexpected file: {relative.as_posix()}.")
         if path.is_dir() and not (path / ZARR_METADATA_FILENAME).is_file():
             if "c" in relative.parts:
                 chunk_parts = relative.parts[relative.parts.index("c") + 1 :]
                 if all(part.isdecimal() for part in chunk_parts):
                     continue
-            raise ValueError(f"Staged cache contains an unexpected directory: {relative.as_posix()}.")
+            raise ValueError(f"Cache contains an unexpected directory: {relative.as_posix()}.")
 
 
-def _require_staging_root(staging_root: Path) -> None:
-    if not isinstance(staging_root, Path) or not staging_root.is_dir():
-        raise ValueError("`staging_root` must be an existing pathlib.Path directory.")
+def _require_cache_root(cache_root: Path) -> None:
+    if not isinstance(cache_root, Path) or not cache_root.is_dir():
+        raise ValueError("`cache_root` must be an existing pathlib.Path directory.")
