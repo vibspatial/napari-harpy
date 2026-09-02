@@ -1158,6 +1158,24 @@ Exact -> Bridge/Spatial -> catalog -> mandatory sidecar for every level
 
 Build the supplied cache with every level sidecar and record total construction duration, peak RSS, logical bytes, actual compressed physical bytes, total cache size, and compression ratio. Construction duration is reported but is not a rejection criterion unless operationally prohibitive.
 
+**Measured full-cache build — 2026-09-02**
+
+The current implementation rebuilt the canonical cache from `points/transcripts_global_ROI1/points.parquet`: 136,578,750 source points, 5,122 canonical values, and nine serialized levels. The build used the current defaults: 512-unit leaf tiles, a 100,000-point overview budget, two Dask workers, 2,000,000 target points per tile-major bucket, Zstd, 4,096-row point chunks, 131,072-row point shards, a 1,048,576-point value-major construction-batch bound, and `max_open_value_major_readers=None`. The latter retains all source-bucket readers for the active level and releases them before advancing to the next level.
+
+| Measurement | Result |
+|---|---:|
+| Source validation | 2.48 s |
+| Complete builder, excluding source validation | 750.39 s (12 min 30 s) |
+| Peak process RSS, sampled every 0.25 s | 4,050,288,640 bytes (3.77 GiB) |
+| Incremental peak RSS above the pre-build baseline | 3,678,502,912 bytes (3.43 GiB) |
+| Complete cache physical size | 2,893,702,906 bytes (2.70 GiB) |
+| Complete cache file count | 8,520 |
+| Value-major logical payload | 1,488,818,048 bytes (1.39 GiB) |
+| Value-major compressed physical size | 1,203,063,040 bytes (1.12 GiB) |
+| Value-major logical-to-physical ratio | 1.238:1 |
+
+The resulting `harpy-multiscale-points-zarr-cache-0.2` generation `939bdb3e-d137-49d5-9d3e-0779c67e4156` was independently reopened as `complete`. Its root contains exactly `manifest`, `tile_major`, `value_major`, `value_tiles`, and `values`; publication left no staging generation or build lock behind.
+
 **Exit condition**
 
 Every completed cache generation using the current schema contains a value-major location sidecar for every serialized level, and normal publication validation independently verifies its mandatory hierarchy, layout, pointer, and catalog-count contract without decoding location payloads. Pre-change tile-major-only or partially covered caches are rejected and must be rebuilt.
