@@ -3,7 +3,7 @@
 This document explains the logical format implemented by
 `multi_scale_cache_points_zarr`. It uses one small, fully reconciled cache to
 show how logical tiles, physical buckets, manifest rows, value-to-tile records,
-bucket point ranges, and value-major coordinate rows relate to one another.
+bucket point ranges, and value-major location rows relate to one another.
 
 The schema parser and storage validators remain the authoritative executable
 contract. In particular, see [`cache_format.py`](cache_format.py),
@@ -131,13 +131,13 @@ catalog arrays, and value-major arrays alike. Level identities and point counts
 come from the cache-wide level descriptors; canonical sidecar paths, array
 names, dtypes, and dimensions come from the root schema version. They are not
 repeated per level. Construction-only controls, such as the maximum point batch
-used while transposing coordinates, are not properties of the published cache
+used while transposing location rows, are not properties of the published cache
 and are not serialized.
 
 Each bucket also has attributes declaring its payload schema version, level,
-bucket ID, tile/point/range counts, point ordering, coordinate encoding, and
-codec. Array chunks and shards are physical storage choices recorded and
-validated separately from the logical relationships below.
+bucket ID, tile/point/range counts, tile-major row ordering, coordinate
+encoding, and codec. Array chunks and shards are physical storage choices
+recorded and validated separately from the logical relationships below.
 
 ## 3. One complete example
 
@@ -198,8 +198,9 @@ tile A,C  -> bucket 1
 ```
 
 This assignment is intentionally not global spatial order. Within each bucket,
-however, tiles follow `(tile_y, tile_x)` order, and points within each tile
-follow `(value_id, point_id)` order.
+however, complete point rows follow the tile-major key
+`(tile_y, tile_x, value_id, point_id)`: tiles follow `(tile_y, tile_x)`, and
+points within each tile follow `(value_id, point_id)`.
 
 ## 4. Tile-major bucket payloads
 
@@ -400,6 +401,10 @@ value_tiles/manifest_index = [0, 2, 1, 2, 0, 1]
 value_tiles/n_points       = [2, 1, 1, 1, 1, 2]
 ```
 
+Across the cache, these flat value-tile rows follow the complete ordering key
+`(level, value_id, manifest_index)`. The level and value ID are implicit in
+`value_tiles/indptr`; manifest indexes increase within each resulting interval.
+
 The pointer row is interpreted as:
 
 ```text
@@ -543,12 +548,12 @@ row count. The same `row_start` can occur in different buckets, which is why it
 cannot be interpreted without the manifest record.
 
 `ordered_row_start` is not part of the published cache. It is a construction
-aid used to copy coordinates into the sidecar and is deleted with its temporary
+aid used to copy locations into the sidecar and is deleted with its temporary
 directory afterward.
 
 ## 10. Value-major sidecar
 
-Every serialized level contains a coordinate-only sidecar ordered by
+Every serialized level contains a location-only sidecar ordered by
 `(value_id, manifest_index, point_id)`. Following the sorted records above
 produces:
 
@@ -579,9 +584,9 @@ value_major/level_0/value_point_indptr = [0, 3, 5, 8]
 The pointer intervals are:
 
 ```text
-value 0 -> sidecar coordinate rows [0:3]
-value 1 -> sidecar coordinate rows [3:5]
-value 2 -> sidecar coordinate rows [5:8]
+value 0 -> sidecar location rows [0:3]
+value 1 -> sidecar location rows [3:5]
+value 2 -> sidecar location rows [5:8]
 ```
 
 Point-level value IDs are unnecessary because each value is implicit from its
@@ -589,7 +594,17 @@ pointer interval. Point IDs are unnecessary because they established the
 deterministic order during bucket construction. Manifest identities are not
 duplicated because the existing ordered `value_tiles` records supply them.
 
-For gamma, the sidecar returns three coordinates from `[5:8]`. The aligned
+The tile-major backend and value-major metadata both publish their physical
+point ordering as `point_row_order`. The value-major metadata fields
+`point_chunk_rows` and `point_shard_rows` describe the first-axis layout shared
+by point-aligned sidecar arrays. For the current `location` array, the complete
+chunk and shard shapes are therefore `(point_chunk_rows, 2)` and
+`(point_shard_rows, 2)`. These names deliberately allow future point-aligned
+arrays, such as per-point quality values, to use the same row boundaries. They
+do not govern pointer or index arrays such as `value_point_indptr`, which have
+their own layouts.
+
+For gamma, the sidecar returns three locations from `[5:8]`. The aligned
 gamma value-tile records are:
 
 ```text
@@ -597,15 +612,15 @@ manifest_index = [0, 1]
 n_points       = [1, 2]
 ```
 
-Those counts partition the coordinate interval:
+Those counts partition the location interval:
 
 ```text
-first 1 coordinate  -> manifest tile A
-next  2 coordinates -> manifest tile B
+first 1 location  -> manifest tile A
+next  2 locations -> manifest tile B
 ```
 
 The manifest supplies each tile's logical coordinates, allowing the consumer
-to add the correct tile origin to the tile-relative sidecar coordinates.
+to add the correct tile origin to the tile-relative sidecar locations.
 
 The current schema, writer, and validation require this sidecar at every level.
 The current visualization reader still uses the tile-major bucket path; routing
@@ -639,7 +654,7 @@ ranges/row_start
 ranges/row_count
 ```
 
-It does not retain coordinates, point-level value IDs, or point IDs.
+It does not retain locations, point-level value IDs, or point IDs.
 
 ## 12. Pointer glossary
 
@@ -679,7 +694,7 @@ value_tiles
              of that value does each tile contribute?
 
 value_point_indptr
-    answers: which contiguous sidecar coordinate rows belong to one value?
+    answers: which contiguous sidecar location rows belong to one value?
 ```
 
 Together, these structures provide two physical coordinate orderings under one

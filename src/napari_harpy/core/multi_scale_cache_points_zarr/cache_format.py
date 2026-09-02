@@ -1,3 +1,9 @@
+"""Define the multiscale points Zarr cache contract.
+
+See ``CACHE_FORMAT.md`` beside this module for a self-contained worked example
+of the complete hierarchy and the relationships between its indexes.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -7,8 +13,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Final
-
-import numpy as np
 
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import BUCKET_HASH_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
@@ -26,46 +30,24 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POI
 from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import VALUE_NORMALIZATION_METHOD
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _COORDINATE_ENCODING,
+    _MANIFEST_ROW_ORDER,
     _PAYLOAD_SCHEMA_VERSION,
-    _POINT_ORDER,
+    _TILE_MAJOR_ROW_ORDER,
+    _VALUE_TILE_ROW_ORDER,
     _ZSTD_CODEC_ID,
+    MANIFEST_GROUP,
+    VALUE_MAJOR_GROUP,
+    VALUE_MAJOR_ROW_ORDER,
+    VALUE_TILES_GROUP,
+    VALUES_GROUP,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
-CACHE_SCHEMA_VERSION: Final = "harpy-multiscale-points-zarr-cache-0.1"
-BACKEND_IDENTIFIER: Final = "harpy-zarr-v3-bucket-sparse-value-ranges-v1"
+CACHE_SCHEMA_VERSION: Final = "harpy-multiscale-points-zarr-cache-0.2"
+BACKEND_IDENTIFIER: Final = "harpy-zarr-v3-bucket-sparse-ranges-value-major-v2"
 CREATED_BY_PACKAGE: Final = "napari-harpy"
 PUBLICATION_STATE_STAGING: Final = "staging"
 PUBLICATION_STATE_COMPLETE: Final = "complete"
-
-VALUES_GROUP: Final = "values"
-MANIFEST_GROUP: Final = "manifest"
-VALUE_TILES_GROUP: Final = "value_tiles"
-LEVELS_GROUP: Final = "levels"
-
-VALUES_N_POINTS: Final = "values/n_points"
-MANIFEST_LEVEL_INDPTR: Final = "manifest/level_indptr"
-MANIFEST_BUCKET_ID: Final = "manifest/bucket_id"
-MANIFEST_BUCKET_TILE_INDEX: Final = "manifest/bucket_tile_index"
-MANIFEST_TILE_X: Final = "manifest/tile_x"
-MANIFEST_TILE_Y: Final = "manifest/tile_y"
-MANIFEST_N_POINTS: Final = "manifest/n_points"
-VALUE_TILES_INDPTR: Final = "value_tiles/indptr"
-VALUE_TILES_MANIFEST_INDEX: Final = "value_tiles/manifest_index"
-VALUE_TILES_N_POINTS: Final = "value_tiles/n_points"
-
-CATALOG_ARRAY_DTYPES: Final = {
-    VALUES_N_POINTS: np.dtype(np.uint64),
-    MANIFEST_LEVEL_INDPTR: np.dtype(np.uint64),
-    MANIFEST_BUCKET_ID: np.dtype(np.uint32),
-    MANIFEST_BUCKET_TILE_INDEX: np.dtype(np.uint32),
-    MANIFEST_TILE_X: np.dtype(np.uint32),
-    MANIFEST_TILE_Y: np.dtype(np.uint32),
-    MANIFEST_N_POINTS: np.dtype(np.uint64),
-    VALUE_TILES_INDPTR: np.dtype(np.uint64),
-    VALUE_TILES_MANIFEST_INDEX: np.dtype(np.uint64),
-    VALUE_TILES_N_POINTS: np.dtype(np.uint64),
-}
 
 _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
     {
@@ -80,6 +62,7 @@ _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
         "levels",
         "value_names",
         "catalog",
+        "value_major",
     }
 )
 
@@ -105,6 +88,76 @@ class _CatalogWriteSettings:
             raise ValueError("`manifest_shard_rows` must be a multiple of `manifest_chunk_rows`.")
         if self.value_tile_shard_rows % self.value_tile_chunk_rows:
             raise ValueError("`value_tile_shard_rows` must be a multiple of `value_tile_chunk_rows`.")
+
+
+@dataclass(frozen=True)
+class _ValueMajorWriteSettings:
+    """Configure mandatory value-major storage and bounded construction.
+
+    Parameters
+    ----------
+    point_chunk_rows
+        Number of value-major point rows in one inner Zarr chunk. This layout
+        applies to point-aligned arrays, currently ``location``, rather than
+        pointer or index arrays.
+    point_shard_rows
+        Number of value-major point rows in one physical Zarr shard.
+    construction_batch_points
+        Maximum number of point rows copied into the sidecar in one bounded
+        construction batch.
+    """
+
+    point_chunk_rows: int = 4_096
+    point_shard_rows: int = 131_072
+    construction_batch_points: int = 1_048_576
+
+    def __post_init__(self) -> None:
+        for name in (
+            "point_chunk_rows",
+            "point_shard_rows",
+            "construction_batch_points",
+        ):
+            _require_integer_in_range(getattr(self, name), name, minimum=1, maximum=_INT64_MAX)
+        if self.point_shard_rows % self.point_chunk_rows:
+            raise ValueError("`point_shard_rows` must be a multiple of `point_chunk_rows`.")
+
+
+@dataclass(frozen=True)
+class _ValueMajorMetadata:
+    """Describe the published physical profile of value-major point arrays.
+
+    ``point_chunk_rows`` and ``point_shard_rows`` apply to every point-aligned
+    sidecar array, currently ``location`` and potentially future arrays such as
+    per-point quality values. Pointer and index arrays have independent
+    layouts.
+    """
+
+    point_chunk_rows: int
+    point_shard_rows: int
+
+    def __post_init__(self) -> None:
+        for name in ("point_chunk_rows", "point_shard_rows"):
+            _require_integer_in_range(getattr(self, name), name, minimum=1, maximum=_INT64_MAX)
+        if self.point_shard_rows % self.point_chunk_rows:
+            raise ValueError("`point_shard_rows` must be a multiple of `point_chunk_rows`.")
+
+    @classmethod
+    def from_write_settings(cls, settings: _ValueMajorWriteSettings) -> _ValueMajorMetadata:
+        """Project builder settings onto properties of the published cache."""
+        if not isinstance(settings, _ValueMajorWriteSettings):
+            raise ValueError("`settings` must be _ValueMajorWriteSettings.")
+        return cls(
+            point_chunk_rows=settings.point_chunk_rows,
+            point_shard_rows=settings.point_shard_rows,
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "group": VALUE_MAJOR_GROUP,
+            "point_row_order": list(VALUE_MAJOR_ROW_ORDER),
+            "point_chunk_rows": self.point_chunk_rows,
+            "point_shard_rows": self.point_shard_rows,
+        }
 
 
 @dataclass(frozen=True)
@@ -333,8 +386,8 @@ class _CatalogMetadata:
             "values_group": VALUES_GROUP,
             "manifest_group": MANIFEST_GROUP,
             "value_tiles_group": VALUE_TILES_GROUP,
-            "manifest_row_order": ["level", "tile_y", "tile_x"],
-            "value_tile_key_order": ["level", "value_id"],
+            "manifest_row_order": list(_MANIFEST_ROW_ORDER),
+            "value_tile_row_order": list(_VALUE_TILE_ROW_ORDER),
             "manifest_chunk_rows": self.settings.manifest_chunk_rows,
             "manifest_shard_rows": self.settings.manifest_shard_rows,
             "value_tile_chunk_rows": self.settings.value_tile_chunk_rows,
@@ -354,6 +407,7 @@ class _CacheAttributes:
     levels: tuple[_LevelMetadata, ...]
     value_names: tuple[str, ...]
     catalog: _CatalogMetadata
+    value_major: _ValueMajorMetadata
 
     def __post_init__(self) -> None:
         if not isinstance(self.cache_generation_id, str):
@@ -405,6 +459,8 @@ class _CacheAttributes:
             raise ValueError("Catalog value-tile rows do not match level range totals.")
         if self.source.row_count != self.levels[0].point_count:
             raise ValueError("Source rows do not match Exact points.")
+        if not isinstance(self.value_major, _ValueMajorMetadata):
+            raise ValueError("`value_major` must be _ValueMajorMetadata.")
 
     def to_dict(self) -> dict[str, object]:
         settings = self.zarr_settings
@@ -417,7 +473,7 @@ class _CacheAttributes:
                 "identifier": BACKEND_IDENTIFIER,
                 "zarr_format": 3,
                 "payload_schema_version": _PAYLOAD_SCHEMA_VERSION,
-                "point_order": list(_POINT_ORDER),
+                "point_row_order": list(_TILE_MAJOR_ROW_ORDER),
                 "coordinate_encoding": _COORDINATE_ENCODING,
                 "codec_id": settings.codec_id,
                 "point_chunk_rows": settings.point_chunk_rows,
@@ -431,11 +487,12 @@ class _CacheAttributes:
             "levels": [level.to_dict() for level in self.levels],
             "value_names": list(self.value_names),
             "catalog": self.catalog.to_dict(),
+            "value_major": self.value_major.to_dict(),
         }
 
 
 def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
-    """Parse exact cache-v0.1 root attributes into immutable typed metadata."""
+    """Parse exact cache-v0.2 root attributes into immutable typed metadata."""
     root = _require_mapping(attributes, "root attributes", keys=_ROOT_ATTRIBUTE_KEYS)
     if root["schema_version"] != CACHE_SCHEMA_VERSION:
         raise ValueError("Unsupported Zarr cache schema version.")
@@ -451,7 +508,7 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
             "identifier",
             "zarr_format",
             "payload_schema_version",
-            "point_order",
+            "point_row_order",
             "coordinate_encoding",
             "codec_id",
             "point_chunk_rows",
@@ -466,7 +523,7 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
         or backend["zarr_format"] != 3
         or type(backend["payload_schema_version"]) is not int
         or backend["payload_schema_version"] != _PAYLOAD_SCHEMA_VERSION
-        or backend["point_order"] != list(_POINT_ORDER)
+        or backend["point_row_order"] != list(_TILE_MAJOR_ROW_ORDER)
         or backend["coordinate_encoding"] != _COORDINATE_ENCODING
         or backend["codec_id"] != _ZSTD_CODEC_ID
     ):
@@ -594,7 +651,7 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
             "manifest_group",
             "value_tiles_group",
             "manifest_row_order",
-            "value_tile_key_order",
+            "value_tile_row_order",
             "manifest_chunk_rows",
             "manifest_shard_rows",
             "value_tile_chunk_rows",
@@ -605,8 +662,8 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
         catalog_payload["values_group"] != VALUES_GROUP
         or catalog_payload["manifest_group"] != MANIFEST_GROUP
         or catalog_payload["value_tiles_group"] != VALUE_TILES_GROUP
-        or catalog_payload["manifest_row_order"] != ["level", "tile_y", "tile_x"]
-        or catalog_payload["value_tile_key_order"] != ["level", "value_id"]
+        or catalog_payload["manifest_row_order"] != list(_MANIFEST_ROW_ORDER)
+        or catalog_payload["value_tile_row_order"] != list(_VALUE_TILE_ROW_ORDER)
     ):
         raise ValueError("Unsupported cache catalog identity or ordering.")
     catalog_settings = _CatalogWriteSettings(
@@ -641,6 +698,31 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
         settings=catalog_settings,
     )
 
+    value_major_payload = _require_mapping(
+        root["value_major"],
+        "value_major",
+        keys={
+            "group",
+            "point_row_order",
+            "point_chunk_rows",
+            "point_shard_rows",
+        },
+    )
+    if value_major_payload["group"] != VALUE_MAJOR_GROUP or value_major_payload["point_row_order"] != list(
+        VALUE_MAJOR_ROW_ORDER
+    ):
+        raise ValueError("Unsupported value-major identity or ordering.")
+    value_major = _ValueMajorMetadata(
+        point_chunk_rows=_require_exact_int(
+            value_major_payload["point_chunk_rows"],
+            "value_major.point_chunk_rows",
+        ),
+        point_shard_rows=_require_exact_int(
+            value_major_payload["point_shard_rows"],
+            "value_major.point_shard_rows",
+        ),
+    )
+
     return _CacheAttributes(
         cache_generation_id=_require_string(root["cache_generation_id"], "cache_generation_id"),
         publication_state=_require_string(root["publication_state"], "publication_state"),
@@ -652,6 +734,7 @@ def _parse_cache_attributes(attributes: Mapping[str, Any]) -> _CacheAttributes:
         levels=levels,
         value_names=value_names,
         catalog=catalog,
+        value_major=value_major,
     )
 
 

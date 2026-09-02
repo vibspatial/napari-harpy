@@ -185,10 +185,11 @@ class _BucketReader:
     Notes
     -----
     The context opens one bucket once and configures every array to fail on a
-    missing chunk or shard. Construction payloads read every tile row including
-    mandatory point IDs. Display payloads require explicit lookup-index loading, omit
-    point IDs, and resolve complete or selected intervals exclusively from the
-    resident tile pointers and sparse ranges.
+    missing chunk or shard. Full-tile construction payloads read every tile row
+    including mandatory point IDs; value-major construction can instead read
+    exact coordinate-only row selections. Display payloads require explicit
+    lookup-index loading, omit point IDs, and resolve complete or selected
+    intervals exclusively from the resident tile pointers and sparse ranges.
     """
 
     def __init__(self, cache_root: str | Path, *, level: int, bucket_id: int) -> None:
@@ -270,6 +271,36 @@ class _BucketReader:
             value_id=value_id,
             point_id=point_id,
         )
+
+    def read_location_rows(self, row_selection: npt.NDArray[np.int64]) -> npt.NDArray[np.float32]:
+        """Read an exact increasing location-row selection for cache construction.
+
+        This deliberately bypasses the display lookup index. The mandatory
+        value-major writer already owns validated bucket-global row addresses
+        carried forward from ``ranges/row_start`` and needs only locations.
+        """
+        if (
+            not isinstance(row_selection, np.ndarray)
+            or row_selection.dtype != np.dtype(np.int64)
+            or row_selection.ndim != 1
+            or len(row_selection) == 0
+            or not row_selection.flags.c_contiguous
+        ):
+            raise ValueError("`row_selection` must be a nonempty C-contiguous int64 array.")
+        point_count = self._attributes_or_raise().point_count
+        if (
+            int(row_selection[0]) < 0
+            or int(row_selection[-1]) >= point_count
+            or bool((row_selection[1:] <= row_selection[:-1]).any())
+        ):
+            raise ValueError("Construction location rows must be strictly increasing and in bounds.")
+        locations = np.ascontiguousarray(
+            self._array("location").get_orthogonal_selection((row_selection, slice(None))),
+            dtype=np.float32,
+        )
+        if locations.shape != (len(row_selection), 2):
+            raise RuntimeError("Bucket location selection returned an unexpected shape.")
+        return locations
 
     def read_display_payload(
         self,

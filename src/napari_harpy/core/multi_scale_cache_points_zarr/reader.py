@@ -22,18 +22,7 @@ import numpy.typing as npt
 import zarr
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    CATALOG_ARRAY_DTYPES,
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_N_POINTS,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
     PUBLICATION_STATE_COMPLETE,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-    VALUES_N_POINTS,
     _CacheAttributes,
     _LevelMetadata,
 )
@@ -43,6 +32,19 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _UINT32_MAX,
     _require_integer_in_range,
     _TileDescriptor,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    CATALOG_ARRAY_DTYPES,
+    MANIFEST_BUCKET_ID,
+    MANIFEST_BUCKET_TILE_INDEX,
+    MANIFEST_LEVEL_INDPTR,
+    MANIFEST_N_POINTS,
+    MANIFEST_TILE_X,
+    MANIFEST_TILE_Y,
+    VALUE_TILES_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
+    VALUES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _PointDisplayPayload
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
@@ -578,6 +580,7 @@ class _PointsCacheReader:
     def loaded_bucket_lookup_index_count(self) -> int:
         """Return the number of buckets with resident lookup metadata."""
         return self._bucket_cache_or_raise().loaded_lookup_index_count
+
     @property
     def resident_bucket_lookup_bytes(self) -> int:
         """Return bytes retained by all loaded bucket lookup indexes."""
@@ -725,7 +728,7 @@ class _PointsCacheReader:
 
         The resident representation is compact relative to point payloads: it
         retains only selected value-to-tile manifest rows, aligned point counts,
-        and per-value pointers—not point coordinates or point-level value IDs.
+        and per-value pointers—not point locations or point-level value IDs.
         Its exact NumPy-buffer footprint is projected before either large
         catalog array is read. A configured ``max_resident_bytes`` is checked
         against that projection.

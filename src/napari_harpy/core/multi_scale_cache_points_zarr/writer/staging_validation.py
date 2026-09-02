@@ -26,16 +26,7 @@ from pathlib import Path
 import numpy as np
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_N_POINTS,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
     PUBLICATION_STATE_STAGING,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
     _CacheAttributes,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import _tile_bucket_ids
@@ -44,6 +35,17 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _UINT32_MAX,
     _require_integer_in_range,
     _TileDescriptor,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_BUCKET_ID,
+    MANIFEST_BUCKET_TILE_INDEX,
+    MANIFEST_LEVEL_INDPTR,
+    MANIFEST_N_POINTS,
+    MANIFEST_TILE_X,
+    MANIFEST_TILE_Y,
+    VALUE_TILES_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CatalogReader,
@@ -496,14 +498,15 @@ def _validate_staging_artifacts(staging_root: Path) -> None:
           values/
           manifest/
           value_tiles/
+          value_major/
 
     Descendants must be Zarr groups or arrays identified by ``zarr.json``, or
-    numeric chunk/shard keys below a ``c/`` directory. Reject sidecars,
-    construction scratch, symbolic links, and unexplained nodes.
+    numeric chunk/shard keys below a ``c/`` directory. Reject construction
+    scratch, symbolic links, and unexplained nodes.
     Logical Zarr contents and array layouts are validated by their dedicated
     readers rather than by this filesystem-level check.
     """
-    allowed_root_entries = {"zarr.json", "levels", "values", "manifest", "value_tiles"}
+    allowed_root_entries = {"zarr.json", "levels", "values", "manifest", "value_tiles", "value_major"}
     observed_root_entries = {path.name for path in staging_root.iterdir()}
     if observed_root_entries != allowed_root_entries:
         raise ValueError("Staged cache root contains missing or unexpected artifacts.")

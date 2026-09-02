@@ -20,7 +20,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _CHUNK_KEY_ENCODING,
     _COORDINATE_ENCODING,
     _PAYLOAD_SCHEMA_VERSION,
-    _POINT_ORDER,
+    _TILE_MAJOR_ROW_ORDER,
     _compressors,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
@@ -513,7 +513,7 @@ class _BucketWriter:
                 "tile_count": self._plan.tile_count,
                 "point_count": result.point_count,
                 "range_count": result.range_count,
-                "point_order": list(_POINT_ORDER),
+                "point_row_order": list(_TILE_MAJOR_ROW_ORDER),
                 "coordinate_encoding": _COORDINATE_ENCODING,
                 "codec_id": self._plan.settings.codec_id,
             }

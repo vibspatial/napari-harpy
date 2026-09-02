@@ -1,3 +1,5 @@
+"""Define canonical hierarchy, array, and bucket-payload storage contracts."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -14,8 +16,9 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
 )
 
+# Shared backend and encoding contract.
 _PAYLOAD_SCHEMA_VERSION: Final = 1
-_POINT_ORDER: Final = ("tile_y", "tile_x", "value_id", "point_id")
+_TILE_MAJOR_ROW_ORDER: Final = ("tile_y", "tile_x", "value_id", "point_id")
 _COORDINATE_ENCODING: Final = "tile-relative-xy-float32-v1"
 _ZSTD_CODEC_ID: Final = "zstd-v1"
 _CHUNK_KEY_ENCODING: Final = {
@@ -23,6 +26,47 @@ _CHUNK_KEY_ENCODING: Final = {
     "configuration": {"separator": "/"},
 }
 
+# Cache-wide group names.
+VALUES_GROUP: Final = "values"
+MANIFEST_GROUP: Final = "manifest"
+VALUE_TILES_GROUP: Final = "value_tiles"
+LEVELS_GROUP: Final = "levels"
+VALUE_MAJOR_GROUP: Final = "value_major"
+
+# Persisted catalog and sidecar ordering contracts.
+_MANIFEST_ROW_ORDER: Final = ("level", "tile_y", "tile_x")
+_VALUE_TILE_ROW_ORDER: Final = ("level", "value_id", "manifest_index")
+VALUE_MAJOR_ROW_ORDER: Final = ("value_id", "manifest_index", "point_id")
+
+# Canonical cache-relative catalog array paths.
+VALUES_N_POINTS: Final = "values/n_points"
+MANIFEST_LEVEL_INDPTR: Final = "manifest/level_indptr"
+MANIFEST_BUCKET_ID: Final = "manifest/bucket_id"
+MANIFEST_BUCKET_TILE_INDEX: Final = "manifest/bucket_tile_index"
+MANIFEST_TILE_X: Final = "manifest/tile_x"
+MANIFEST_TILE_Y: Final = "manifest/tile_y"
+MANIFEST_N_POINTS: Final = "manifest/n_points"
+VALUE_TILES_INDPTR: Final = "value_tiles/indptr"
+VALUE_TILES_MANIFEST_INDEX: Final = "value_tiles/manifest_index"
+VALUE_TILES_N_POINTS: Final = "value_tiles/n_points"
+
+# Cache-wide catalog and value-major array dtypes.
+CATALOG_ARRAY_DTYPES: Final = {
+    VALUES_N_POINTS: np.dtype(np.uint64),
+    MANIFEST_LEVEL_INDPTR: np.dtype(np.uint64),
+    MANIFEST_BUCKET_ID: np.dtype(np.uint32),
+    MANIFEST_BUCKET_TILE_INDEX: np.dtype(np.uint32),
+    MANIFEST_TILE_X: np.dtype(np.uint32),
+    MANIFEST_TILE_Y: np.dtype(np.uint32),
+    MANIFEST_N_POINTS: np.dtype(np.uint64),
+    VALUE_TILES_INDPTR: np.dtype(np.uint64),
+    VALUE_TILES_MANIFEST_INDEX: np.dtype(np.uint64),
+    VALUE_TILES_N_POINTS: np.dtype(np.uint64),
+}
+VALUE_MAJOR_LOCATION_DTYPE: Final = np.dtype(np.float32)
+VALUE_MAJOR_POINTER_DTYPE: Final = np.dtype(np.uint64)
+
+# Standalone tile-major bucket root-attribute contract.
 _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
     {
         "payload_schema_version",
@@ -31,12 +75,13 @@ _ROOT_ATTRIBUTE_KEYS: Final = frozenset(
         "tile_count",
         "point_count",
         "range_count",
-        "point_order",
+        "point_row_order",
         "coordinate_encoding",
         "codec_id",
     }
 )
 
+# Standalone tile-major bucket array dtypes.
 _POINT_DTYPES: Final = {
     "location": np.dtype(np.float32),
     "point_id": np.dtype(np.uint64),
@@ -53,6 +98,22 @@ _RANGE_DTYPES: Final = {
     "row_start": np.dtype(np.uint64),
     "row_count": np.dtype(np.uint64),
 }
+
+
+def value_major_level_group(level: int) -> str:
+    """Return the canonical cache-relative group for one value-major level."""
+    _require_integer_in_range(level, "level", maximum=_INT16_MAX)
+    return f"{VALUE_MAJOR_GROUP}/level_{level}"
+
+
+def value_major_location(level: int) -> str:
+    """Return the canonical cache-relative coordinate-array path for a level."""
+    return f"{value_major_level_group(level)}/location"
+
+
+def value_major_point_indptr(level: int) -> str:
+    """Return the canonical cache-relative value-pointer-array path for a level."""
+    return f"{value_major_level_group(level)}/value_point_indptr"
 
 
 @dataclass(frozen=True)
@@ -85,8 +146,8 @@ def _parse_root_attributes(
         attributes["payload_schema_version"] != _PAYLOAD_SCHEMA_VERSION
     ):
         raise ValueError("Unsupported Zarr bucket payload schema version.")
-    if attributes["point_order"] != list(_POINT_ORDER):
-        raise ValueError("Unsupported Zarr bucket point ordering.")
+    if attributes["point_row_order"] != list(_TILE_MAJOR_ROW_ORDER):
+        raise ValueError("Unsupported Zarr bucket tile-major row ordering.")
     if attributes["coordinate_encoding"] != _COORDINATE_ENCODING:
         raise ValueError("Unsupported Zarr bucket coordinate encoding.")
 

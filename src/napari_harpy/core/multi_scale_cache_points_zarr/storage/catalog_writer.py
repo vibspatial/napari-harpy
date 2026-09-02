@@ -11,6 +11,12 @@ from zarr.codecs import BytesCodec
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+    _CacheAttributes,
+    _CatalogWriteSettings,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    _CHUNK_KEY_ENCODING,
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_GROUP,
@@ -24,12 +30,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     VALUE_TILES_N_POINTS,
     VALUES_GROUP,
     VALUES_N_POINTS,
-    _CacheAttributes,
-    _CatalogWriteSettings,
-)
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
-    _CHUNK_KEY_ENCODING,
     _compressors,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _RangeRecordBatch
@@ -43,7 +43,7 @@ class _ValueTilesWriteSummary:
     indptr: np.ndarray
     manifest_n_points: np.ndarray
     level_n_points: np.ndarray
-    exact_value_n_points: np.ndarray
+    level_value_n_points: np.ndarray
     row_count: int
 
     def __post_init__(self) -> None:
@@ -51,7 +51,7 @@ class _ValueTilesWriteSummary:
             ("indptr", self.indptr),
             ("manifest_n_points", self.manifest_n_points),
             ("level_n_points", self.level_n_points),
-            ("exact_value_n_points", self.exact_value_n_points),
+            ("level_value_n_points", self.level_value_n_points),
         ):
             if not isinstance(array, np.ndarray) or array.dtype != np.dtype(np.uint64) or not array.flags.c_contiguous:
                 raise ValueError(f"`{name}` must be a C-contiguous uint64 array.")
@@ -199,19 +199,56 @@ class _CatalogWriter:
         expected_level_row_counts: tuple[int, ...],
         value_count: int,
         output_batch_rows: int,
+        ordered_row_start: np.ndarray,
     ) -> _ValueTilesWriteSummary:
         """Sort compact range records one level at a time and write the index.
 
         The persisted key order is ``(level, value_id, manifest_index)``. Levels
         occupy disjoint, ascending output regions, so sorting each complete level
         by ``(value_id, manifest_index)`` is equivalent to one cache-wide sort.
-        Keeping only one level's three compact arrays and NumPy permutation in
+        Keeping only one level's four compact arrays and NumPy permutation in
         memory bounds peak allocation by the largest level rather than the
         complete cache.
 
         Sorted output is emitted in small contiguous batches. The full ordered
         ``manifest_index`` and ``n_points`` arrays are therefore never
         materialized as additional level-sized copies.
+
+        Each incoming range record carries four aligned fields. ``value_id``
+        identifies the value run, ``manifest_index`` identifies its logical tile
+        and physical bucket, ``row_start`` identifies the first row in that
+        bucket's point arrays, and ``n_points`` gives the number of consecutive
+        rows. The records arrive in physical bucket/tile-major traversal order,
+        with value runs grouped inside each tile.
+
+        Sorting transposes those records into value-major order. The published
+        ``value_tiles`` index stores ``manifest_index`` and ``n_points`` while
+        ``value_tiles/indptr`` makes ``value_id`` implicit. ``row_start`` is not a
+        runtime catalog field, but sidecar construction still needs the same
+        source address after sorting. It is therefore written to the
+        construction-only ``ordered_row_start`` output using the identical
+        permutation.
+
+        For example, two tiles represented by manifest rows 0 and 1 could yield
+        these tile-major range records::
+
+            value_id  manifest_index  row_start  n_points
+            0         0               0          2
+            2         0               2          1
+            1         1               3          1
+            2         1               4          2
+
+        After sorting by ``(value_id, manifest_index)``, the published arrays and
+        construction-only companion are::
+
+            value_tiles/manifest_index = [0, 1, 0, 1]
+            value_tiles/n_points       = [2, 1, 1, 2]
+            value_tiles/indptr         = [0, 1, 2, 4]
+            ordered_row_start          = [0, 3, 2, 4]
+
+        Thus every output position still resolves both the source tile/bucket and
+        the exact point-row interval needed to copy its locations into the
+        value-major sidecar.
         """
         if not isinstance(expected_level_row_counts, tuple):
             raise ValueError("`expected_level_row_counts` must be a tuple.")
@@ -230,6 +267,14 @@ class _CatalogWriter:
         _require_integer_in_range(value_count, "value_count", minimum=1, maximum=_INT64_MAX)
         _require_integer_in_range(output_batch_rows, "output_batch_rows", minimum=1, maximum=_INT64_MAX)
         if (
+            not isinstance(ordered_row_start, np.ndarray)
+            or ordered_row_start.dtype != np.dtype(np.uint64)
+            or ordered_row_start.shape != (self._value_tile_row_count,)
+            or not ordered_row_start.flags.c_contiguous
+            or not ordered_row_start.flags.writeable
+        ):
+            raise ValueError("`ordered_row_start` must be a writable C-contiguous uint64 output array.")
+        if (
             not isinstance(level_indptr, np.ndarray)
             or level_indptr.dtype != np.dtype(np.uint64)
             or level_indptr.shape != (level_count + 1,)
@@ -242,14 +287,14 @@ class _CatalogWriter:
         manifest_row_count = int(level_indptr[-1])
         manifest_counts = np.zeros(manifest_row_count, dtype=np.uint64)
         level_counts = np.zeros(level_count, dtype=np.uint64)
-        exact_value_counts = np.zeros(value_count, dtype=np.uint64)
+        level_value_counts = np.zeros((level_count, value_count), dtype=np.uint64)
         indptr = np.empty((level_count, value_count + 1), dtype=np.uint64)
         rows_written = 0
 
         for level, (batches, expected_row_count) in enumerate(
             zip(batches_by_level, expected_level_row_counts, strict=True)
         ):
-            value_id, manifest_index, n_points = _collect_level_range_records(
+            value_id, manifest_index, row_start, n_points = _collect_level_range_records(
                 batches,
                 expected_row_count=expected_row_count,
                 value_count=value_count,
@@ -258,8 +303,7 @@ class _CatalogWriter:
             )
             np.add.at(manifest_counts, manifest_index, n_points)
             level_counts[level] = n_points.sum(dtype=np.uint64)
-            if level == 0:
-                np.add.at(exact_value_counts, value_id, n_points)
+            np.add.at(level_value_counts[level], value_id, n_points)
 
             # Transpose bucket traversal order into value-major catalog order.
             # For example:
@@ -272,15 +316,18 @@ class _CatalogWriter:
             #   value 2 → manifest 0 →  3 points
             # ``np.lexsort`` uses its last key as primary, so value groups come
             # first and manifest rows increase inside each group. Only the
-            # manifest indexes and counts are persisted; ``indptr`` below
-            # encodes the omitted value ID for every resulting output interval.
+            # manifest indexes and counts are published; the identically
+            # permuted row starts go to construction-only storage. ``indptr``
+            # below encodes the omitted value ID for every output interval.
             order = np.lexsort((manifest_index, value_id))
             self._write_ordered_level(
                 value_id=value_id,
                 manifest_index=manifest_index,
+                row_start=row_start,
                 n_points=n_points,
                 order=order,
                 output_batch_rows=output_batch_rows,
+                ordered_row_start=ordered_row_start,
             )
 
             entry_counts = np.bincount(value_id, minlength=value_count).astype(np.uint64, copy=False)
@@ -292,13 +339,13 @@ class _CatalogWriter:
             rows_written += expected_row_count
             # Release this complete level before the next collector allocates
             # its arrays; otherwise loop locals would overlap adjacent levels.
-            del value_id, manifest_index, n_points, order, entry_counts
+            del value_id, manifest_index, row_start, n_points, order, entry_counts
 
         summary = _ValueTilesWriteSummary(
             indptr=np.ascontiguousarray(indptr),
             manifest_n_points=np.ascontiguousarray(manifest_counts),
             level_n_points=np.ascontiguousarray(level_counts),
-            exact_value_n_points=np.ascontiguousarray(exact_value_counts),
+            level_value_n_points=np.ascontiguousarray(level_value_counts),
             row_count=rows_written,
         )
         self._write_value_tile_indptr(summary.indptr)
@@ -345,9 +392,11 @@ class _CatalogWriter:
         *,
         value_id: np.ndarray,
         manifest_index: np.ndarray,
+        row_start: np.ndarray,
         n_points: np.ndarray,
         order: np.ndarray,
         output_batch_rows: int,
+        ordered_row_start: np.ndarray,
     ) -> None:
         """Write one sorted level without constructing full ordered array copies."""
         previous_value: int | None = None
@@ -356,6 +405,7 @@ class _CatalogWriter:
             indexes = order[start : start + output_batch_rows]
             ordered_values = np.ascontiguousarray(value_id[indexes])
             ordered_manifest = np.ascontiguousarray(manifest_index[indexes])
+            ordered_starts = np.ascontiguousarray(row_start[indexes])
             ordered_counts = np.ascontiguousarray(n_points[indexes])
             same_value = ordered_values[1:] == ordered_values[:-1]
             if bool((ordered_manifest[1:][same_value] <= ordered_manifest[:-1][same_value]).any()):
@@ -364,6 +414,9 @@ class _CatalogWriter:
             first_manifest = int(ordered_manifest[0])
             if previous_value == first_value and previous_manifest is not None and first_manifest <= previous_manifest:
                 raise ValueError("Duplicate (level, value_id, manifest_index) record.")
+            output_start = self._value_tile_cursor
+            output_stop = output_start + len(ordered_starts)
+            ordered_row_start[output_start:output_stop] = ordered_starts
             self._append_value_tiles(ordered_manifest, ordered_counts)
             previous_value = int(ordered_values[-1])
             previous_manifest = int(ordered_manifest[-1])
@@ -516,10 +569,11 @@ def _collect_level_range_records(
     value_count: int,
     manifest_start: int,
     manifest_stop: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Materialize exactly one level's compact records in traversal order."""
     value_id = np.empty(expected_row_count, dtype=np.uint32)
     manifest_index = np.empty(expected_row_count, dtype=np.uint64)
+    row_start = np.empty(expected_row_count, dtype=np.uint64)
     n_points = np.empty(expected_row_count, dtype=np.uint64)
     cursor = 0
     for batch in batches:
@@ -534,8 +588,9 @@ def _collect_level_range_records(
             raise ValueError("Range-record level exceeds its declared total.")
         value_id[cursor:stop] = batch.value_id
         manifest_index[cursor:stop] = batch.manifest_index
+        row_start[cursor:stop] = batch.row_start
         n_points[cursor:stop] = batch.n_points
         cursor = stop
     if cursor != expected_row_count:
         raise ValueError("Range-record level does not match its declared total.")
-    return value_id, manifest_index, n_points
+    return value_id, manifest_index, row_start, n_points
