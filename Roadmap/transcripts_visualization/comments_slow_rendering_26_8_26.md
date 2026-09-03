@@ -1229,23 +1229,82 @@ An explicitly invoked developer tool can require a completed retained cache and 
 
 This slice realizes the cold-read improvement while preserving one logical tile/snapshot contract above the reader.
 
+**Current-to-target interpretation**
+
+This is a physical reader change, not an LOD, CPU-residency, snapshot, or renderer change. Today `_read_viewport_snapshot()` first calls `_PointsCacheReader.select_level()`, returns a metadata-only empty snapshot immediately when the selected level is over budget, constructs `_ViewportReadPlan` only for an accepted level, reuses CPU-resident logical tiles, and passes only the missing logical tile keys to `read_planned_tiles()`. That order remains unchanged.
+
+The current `read_planned_tiles()` has one physical implementation for every accepted selection. It restores the plan's manifest rows, groups them by `(level, bucket_id)`, and calls `_BucketReader.read_display_payloads()` once per bucket. For a proper subset, each bucket reader resolves the requested tile/value pairs through its resident `ranges/{tile_indptr,value_id,row_start,row_count}` metadata and applies the resulting sparse row selector to that bucket's tile-major `location` array. Slice 5 already synthesizes the aligned output IDs instead of reading point-level `value_id`, but the coordinate read still touches tile-major chunks distributed across the many positive tiles.
+
+Slice 8 changes that accepted-read portion to:
+
+```text
+selected values and viewport
+            |
+            v
+       select_level()                       unchanged semantic LOD choice
+            |
+      over budget? ---- yes ----> metadata-only snapshot; no read plan or payload
+            |
+            no
+            v
+       plan_viewport()                      positive logical tiles plus one route
+            |
+            v
+       CPU-residency lookup                 unchanged; read only missing tiles
+            |
+       +----+-------------------------+
+       |                              |
+       v                              v
+all values                      proper subset
+tile-major buckets              selected level's value-major sidecar
+       |                              |
+       +---------------+--------------+
+                       v
+              ordered _TileReadResult values
+                       |
+                       v
+          existing residency, render batch, and VisPy path
+```
+
+There are conceptually three outcomes—no payload, tile-major, and value-major—but the current worker rejects the over-budget case before constructing `_ViewportReadPlan`. Preserve that useful early return. The plan itself therefore needs only two explicit physical routes, for example `tile_major_all_values` and `value_major_subset`; it must not invent a nominal `no_payload` plan that can never be read. The complete vocabulary already normalizes to the all-values `None` selection, so a non-`None` `_SelectedValueIndex` unambiguously denotes the proper-subset route.
+
 **Production changes**
 
 1. Keep `select_level()` unchanged and execute it before physical-payload selection.
-2. Extend the generation-bound viewport plan with an explicit physical route:
+2. Preserve the existing over-budget early return before `plan_viewport()`. Extend the generation-bound `_ViewportReadPlan` for accepted reads with exactly one explicit physical route:
 
    ```text
-   over budget                         -> no payload
-   all values                          -> tile-major complete-tile reads
-   proper subset at any selected level -> mandatory value-major location reads
+   requested_value_ids is None         -> tile_major_all_values
+   proper selected-value index         -> value_major_subset
    ```
 
-3. Make the route decision once per plan in `_PointsCacheReader`; do not decide independently in the GUI, cache session, or per bucket.
-4. Add a dedicated sidecar reader that opens the selected level's compact per-value pointers and `location` array. Full-extent one-value reads become one value interval. Partial viewports derive only the selected value/manifest-record runs needed for CPU-residency misses.
-5. Use the existing selected-value index's aligned `manifest_index` and `n_points` records. Derive per-record sidecar offsets with cumulative counts; do not introduce a cache-wide resident `record_point_indptr`. For a partial viewport, advance the cumulative cursor across every catalog record for the value, including preceding records outside the viewport, and read only the location intervals whose manifest rows are required. Computing the prefix from visible records alone would produce incorrect sidecar offsets.
-6. Split returned coordinate runs back into the same ordered logical `_TileReadResult` values used by tile-major reads. Construct `value_id` arrays from the known value intervals.
-7. Keep `_read_viewport_snapshot()`, CPU tile residency, render-batch packing, composition, and VisPy unaware of which physical payload supplied a tile.
-8. Expose route, sidecar selection count, touched chunks/shards, selected rows, decoded rows, and physical bytes in benchmark diagnostics.
+3. Make the route decision once per plan in `_PointsCacheReader`; do not decide independently in the GUI, cache session, individual bucket readers, or VisPy. The route is chosen only after LOD selection, so Exact, Bridge, and every Spatial level use the sidecar belonging to the level that was actually selected.
+4. Keep `read_planned_tiles(plan, tile_keys_to_read)` as the single physical-read dispatch boundary. CPU residency is evaluated before this call, so the value-major path must read only requested nonresident tiles rather than rereading every positive tile in the viewport. For a proper subset, the plan must retain a reference to the immutable `_SelectedValueLevelIndex` used to construct it; do not copy its arrays, add mutable selected-value state to `_PointsCacheReader`, or force `read_planned_tiles()` to reload catalog records. An all-values plan retains no selected-level index. Validate this private plan field against the plan's generation, level, requested IDs, and route.
+5. Add a dedicated value-major sidecar reader under the storage layer. Reuse the strict sidecar arrays already opened by `_CatalogReader`; do not reopen a store per tile. During `_PointsCacheReader` entry, materialize every level's compact `value_point_indptr` vector once and retain it for that reader's lifetime, including its bytes in `resident_index_bytes`. For the supplied nine-level, 5,122-value cache this is only 368,856 bytes. Keep `location` as an on-disk Zarr array. A full-extent one-value read should reduce to one basic sidecar interval whenever all of that value's records are requested.
+6. Use the existing `_SelectedValueLevelIndex` arrays. Its `value_indptr` partitions the selected values, while aligned `manifest_index` and `n_points` identify every tile record and its point count. These arrays already retain all records for each selected value at the chosen level, including records outside the current viewport, so no bucket sparse-range lookup is needed to derive sidecar addresses.
+7. Derive per-record sidecar offsets from the value's base pointer and an exclusive cumulative sum of its complete ordered `n_points` records. Do not introduce a persisted or cache-wide resident `record_point_indptr`. For example:
+
+   ```text
+   value A sidecar base = 1,000
+
+   ordered value_tiles records:
+       manifest tile 10: 3 points  -> sidecar [1000:1003]
+       manifest tile 20: 5 points  -> sidecar [1003:1008]
+       manifest tile 30: 2 points  -> sidecar [1008:1010]
+
+   viewport requests only tile 20  -> read [1003:1008], not [1000:1005]
+   ```
+
+   A partial viewport or CPU-residency subset may discard tile 10 from physical output, but its three rows must still advance the cursor. Computing the prefix from visible or missing records alone would address the wrong sidecar rows.
+8. Combine adjacent selected sidecar intervals into basic slices where possible and otherwise use bounded exact row selections against the one level-wide `location` array. Associate each returned run with its known `(value_id, manifest_index)`, then scatter those runs into per-tile output buffers. A tile containing several selected values receives its value blocks in increasing value-ID order; point order inside each value/tile block is already preserved by the sidecar. This reconstructs the same selected tile order as the tile-major `(value_id, point_id)` payload.
+9. Construct aligned `uint32 value_id` rows from the known value blocks; never read a point-level value-ID array from either physical ordering. Restore the original plan's manifest/spatial tile order and return exactly the existing `_TileReadResult(level, tile_x, tile_y, tile_size, location, value_id)` contract, including correct empty intersections and cache-origin semantics.
+10. Preserve cooperative cancellation and generation checks across multi-run sidecar reads. Thread the worker's raising cancellation callback into `read_planned_tiles()` and check it between bounded selections; diagnostic callers may omit it. A Zarr operation already in progress remains non-interruptible, and no result from an obsolete generation or selection may be published.
+11. Keep `_read_viewport_snapshot()`, `TileResidencyKey`, `_CpuTileResidency`, `TiledPointsRenderTile`, worker-side render-batch packing, snapshot delivery, composition, and VisPy unaware of which physical payload supplied a tile.
+12. Expose route, sidecar selection count, touched chunks/shards, selected rows, decoded rows, and physical bytes in benchmark diagnostics.
+
+**Slice boundary with Slice 9**
+
+Slice 8 makes proper-subset viewport payload reads independent of bucket sparse ranges, but it does not yet remove the current startup sequence that projects and eagerly loads every bucket lookup index. The approximately 8.1-second startup cost and 568.4-MiB resident lookup allocation therefore remain temporarily even though the selected-value payload path no longer consumes them. Slice 9 removes that startup policy, separates compact complete-tile addressing from sparse range metadata, and then removes `max_bucket_lookup_bytes` from the viewer settings. Do not silently broaden Slice 8 into that larger lifetime and settings cleanup.
 
 **Focused tests**
 
@@ -1253,7 +1312,7 @@ This slice realizes the cold-read improvement while preserving one logical tile/
 - Cover proper-subset sidecar routing and all-values tile-major routing at Exact, Bridge, and representative Spatial levels.
 - Compare sidecar and the pre-change tile-major results for one value, several values, full extent, partial viewport, CPU-residency misses, and empty intersections at multiple levels.
 - Assert identical tile keys, tile order, coordinates, value IDs, estimated counts, omitted values, and cache-origin behavior.
-- Patch sparse bucket-range loading to fail and prove it is not touched by a sidecar request.
+- After normal Slice 8 startup, patch bucket selected-range resolution and tile-major point-array access to fail and prove that a proper-subset viewport read does not touch them. Do not claim that sparse indexes are absent from memory until Slice 9 removes the eager startup load.
 - Exercise cancellation and stale generations during a multi-run sidecar read.
 
 **Benchmark evidence**
@@ -1264,16 +1323,16 @@ For full-extent AAMP at Exact:
 - selected coordinate rows remain 60,512;
 - touched `location` chunks fall from 4,291 toward the projected 16 rather than remaining proportional to positive tiles;
 - no point-level `value_id` array is decoded;
-- no bucket sparse-range array is needed for the request; and
+- no bucket sparse-range array is consulted by the request, although the current eager startup policy still leaves those indexes resident until Slice 9; and
 - cold selected-value payload time improves materially from the 4.14-second aligned-array baseline. A practical prototype target is below one second on the same benchmark machine and filesystem state, but the report must retain raw chunk, byte, and call evidence rather than accepting wall time alone.
 
 The pre-change full-extent ADAMTS1 benchmark establishes that coarser-level amplification is real rather than hypothetical. It selects Bridge with 92,499 points across 5,853 tiles, touches 5,133 coordinate chunks, decodes approximately 21.0 million coordinate rows for 92,499 returned rows (227-times amplification), spends 944 ms in `location`, and takes 1.14 seconds for the cold worker snapshot even after bucket sparse-range indexes are resident. The report is `/private/tmp/napari-harpy-bridge-adamts1-assessment.json`.
 
-Repeat that case through the Bridge sidecar and add proper-subset requests that deliberately select representative Spatial levels. At every selected level, report selected and decoded rows, chunks, shards, physical bytes, and wall time, and prove that no bucket sparse-range array is loaded. Also benchmark multiple genes, a partial viewport, and all values to ensure the all-level sidecars do not regress the tile-major all-values path.
+Repeat that case through the Bridge sidecar and add proper-subset requests that deliberately select representative Spatial levels. At every selected level, report selected and decoded rows, chunks, shards, physical bytes, and wall time, and prove that the sidecar request does not consult bucket sparse ranges. Report the still-existing eager startup load separately rather than attributing it to the payload request. Also benchmark multiple genes, a partial viewport, and all values to ensure the all-level sidecars do not regress the tile-major all-values path.
 
 **Exit condition**
 
-The reader chooses physical locality after semantic LOD selection and returns the existing logical tile contract. Every proper-subset level uses its mandatory sidecar, all-values requests retain tile-major routing, and no viewer request loads a bucket sparse-range index.
+The reader chooses physical locality after semantic LOD selection and returns the existing logical tile contract. Every proper-subset level uses its mandatory sidecar, all-values requests retain tile-major routing, and no proper-subset viewport payload read resolves or reads bucket sparse ranges. Removing their eager viewer-startup loading and resident footprint is explicitly deferred to Slice 9.
 
 ### Slice 9 — Remove bucket sparse-range indexes from the viewer runtime
 
