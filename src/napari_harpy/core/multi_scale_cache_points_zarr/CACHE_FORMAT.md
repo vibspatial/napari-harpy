@@ -647,9 +647,11 @@ next  2 locations -> manifest tile B
 The manifest supplies each tile's logical coordinates, allowing the consumer
 to add the correct tile origin to the tile-relative sidecar locations.
 
-The current schema, writer, and validation require this sidecar at every level.
-The current visualization reader still uses the tile-major bucket path; routing
-proper-subset display reads through the sidecar is a separate runtime change.
+The schema, writer, and validation require this sidecar at every level. The
+visualization reader chooses LOD first, then routes proper-subset planned
+viewport reads through that level's sidecar. All-values reads retain the
+tile-major bucket path. Both routes return the same manifest-ordered logical
+tile payload above the storage reader.
 
 ## 11. Persisted, resident, selected, and temporary state
 
@@ -663,9 +665,9 @@ The current implementation treats these structures differently:
 | `value_tiles/indptr` | Yes | Yes | Compact level/value pointer table |
 | Complete `value_tiles/manifest_index` and `n_points` | Yes | No | Selected intervals are loaded when the active proper subset changes |
 | Selected-value index | No | Yes, for the active proper subset | Compact copies of selected manifest/count records, reused across viewports |
-| Bucket lookup arrays | Yes | Yes in the current cache session | `tile_offset` and four `ranges/*` arrays; point payloads remain on disk |
+| Bucket lookup arrays | Yes | Yes in the current cache session | `tile_offset` and four `ranges/*` arrays; currently loaded at startup, although proper-subset viewport payload reads no longer consume them |
 | Bucket `location`, point-level `value_id`, and `point_id` | Yes | No as lookup metadata | Decoded only for requested payloads; decoded tiles may enter CPU residency |
-| Value-major `location` and `value_point_indptr` | Yes | Not yet used by the display reader | Mandatory format payload at every level |
+| Value-major `location` and `value_point_indptr` | Yes | Pointers only | Every level pointer is retained; proper-subset locations remain on disk until selected viewport rows are read |
 | `bucket_manifest_indexes` | No | Construction only | In-memory translation from bucket-local tile index to manifest index |
 | `ordered_row_start` | No | Construction only, disk-backed | Cache-wide temporary companion aligned with sorted value-tile rows |
 
