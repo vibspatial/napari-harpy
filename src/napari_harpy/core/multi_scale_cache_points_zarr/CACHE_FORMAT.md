@@ -704,6 +704,26 @@ value_major/level_L/value_point_indptr[value_id : value_id + 2]
     -> rows in that level's value-major location array for one value
 ```
 
+The cache does not persist a pointer for each value/manifest-tile block inside
+that final value interval. At runtime, the reader derives one for the selected
+value from its ordered, aligned `value_tiles` records:
+
+```text
+record_sidecar_indptr[i]
+    = value_point_indptr[value_id] + sum(record_n_points[:i])
+
+record_manifest[i] owns value_major/location[
+    record_sidecar_indptr[i] : record_sidecar_indptr[i + 1]
+]
+```
+
+Here `record_manifest` and `record_n_points` are the selected value's
+`value_tiles/manifest_index` and `value_tiles/n_points` interval at the chosen
+level. `record_sidecar_indptr` is a temporary runtime-derived pointer, not a
+published cache array. The prefix must include records outside the viewport or
+already present in CPU residency because they still precede the requested tile
+inside the value-major location interval.
+
 The resulting lookup responsibilities are:
 
 ```text
