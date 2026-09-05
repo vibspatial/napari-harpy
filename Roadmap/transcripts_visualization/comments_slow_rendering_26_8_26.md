@@ -1369,9 +1369,10 @@ The selected level index is not copied: `_ViewportReadPlan` retains the same imm
 4. Preserve CPU-residency lookup before physical addressing. Pass only missing logical tile keys to `read_planned_tiles()` as today; do not precompute complete sidecar block lists for visible tiles that may already be resident.
 5. In `_read_value_major_requests()`, construct a sorted array of the requested missing manifest rows and intersect it directly with each selected value's `manifest_index` interval. Use the aligned complete `n_points` interval and `value_point_indptr` base to derive exact sidecar blocks in value-major order. Values with no missing match produce no block; every requested positive tile must receive at least one block.
 6. Preserve the existing scatter into manifest tile order and canonical increasing value-ID order within each tile. The resulting `_TileReadResult` must be byte-equivalent to the Slice 8 implementation.
-7. Keep the all-values physical behavior unchanged, but narrow the viewport-facing manifest reader to complete-tile inputs such as `(level, manifest_rows)` rather than `(manifest_row, selected_value_ids)` pairs. If the lower-level bucket API still represents a complete-tile request with `selected_value_ids=None`, construct that sentinel only at the bucket call boundary; do not retain it in `_PlannedTileRead`. This complete-tile reader is also the primitive that Slice 11's `tile_major_filter` route will use before filtering, so its interface must not imply that a future proper-subset route needs per-tile applicable-value arrays.
-8. Remove or narrow helpers and benchmark code whose only purpose was to materialize the discarded manifest-row-to-values mapping. Keep the summary-only LOD path resident and free of catalog IO.
-9. Do not add `tile_major_filter`, a route estimator, coverage expansion, debounce, or a new cache-format field in this slice. Those remain separately reviewable downstream work.
+7. Keep the all-values physical behavior unchanged, but rename `_read_manifest_requests()` directly to `_read_complete_tile_major_requests()` with no compatibility alias. Give it complete-tile inputs such as `(level, manifest_rows)` rather than `(manifest_row, selected_value_ids)` pairs. The word `complete` distinguishes this physical reader from both the historical sparse selected-range path and Slice 11's later in-memory filtering step. If the lower-level bucket API still represents a complete-tile request with `selected_value_ids=None`, construct that sentinel only at the bucket call boundary; do not retain it in `_PlannedTileRead`. Slice 11's `tile_major_filter` route will use this same complete-tile reader before filtering, so its interface must not imply that a future proper-subset route needs per-tile applicable-value arrays.
+8. Remove the current cancellation asymmetry while changing the complete-tile manifest-reader signature. Forward `raise_if_cancelled` into that path and check it before and after every sequential bucket batch, matching the value-major reader's cooperative boundary. An individual Zarr operation remains non-interruptible, but cancellation must prevent later buckets from being read and must be observed before a tile-major result can return.
+9. Remove or narrow helpers and benchmark code whose only purpose was to materialize the discarded manifest-row-to-values mapping. Keep the summary-only LOD path resident and free of catalog IO.
+10. Do not add `tile_major_filter`, a route estimator, coverage expansion, debounce, or a new cache-format field in this slice. Those remain separately reviewable downstream work.
 
 **Focused tests**
 
@@ -1382,6 +1383,7 @@ The selected level index is not copied: `_ViewportReadPlan` retains the same imm
 - Off-screen and resident records preceding a requested record still contribute to its sidecar prefix, proving that direct missing-row intersection does not shorten the complete per-value count sequence.
 - Empty intersections, values absent from a selected level, stale generations, invalid tile keys, cancellation, and physical read failures preserve existing behavior.
 - All-values reads remain on the tile-major path through the narrowed complete-tile manifest reader. Where the existing lower-level bucket API is retained, it receives `None` for every complete-tile request without that sentinel being stored in the viewport plan.
+- Tile-major cancellation is checked before and after each bucket batch. A callback that raises after one bucket prevents every later bucket read, returns no partial result, and preserves the existing worker publication boundary.
 - Patch catalog-array reads and bucket sparse-range resolution to fail during planning and proper-subset payload reads, proving the refactor remains entirely resident-index and sidecar based.
 
 **Benchmark evidence**
@@ -1392,7 +1394,7 @@ Acceptance requires eliminating tile-count-proportional value-ID arrays from the
 
 **Exit condition**
 
-The immutable selected level index is the single authoritative selected-value-to-manifest relation. `_ViewportReadPlan` retains only the logical selection, that shared level-index reference, and ordered tile identities; value-major sidecar blocks are derived directly for CPU-residency misses without a per-tile value-membership projection or reverse transposition.
+The immutable selected level index is the single authoritative selected-value-to-manifest relation. `_ViewportReadPlan` retains only the logical selection, that shared level-index reference, and ordered tile identities; value-major sidecar blocks are derived directly for CPU-residency misses without a per-tile value-membership projection or reverse transposition. Both physical branches observe cooperative cancellation between their bounded sequential Zarr operations.
 
 ### Slice 10 — Remove bucket sparse-range indexes from the viewer runtime
 
