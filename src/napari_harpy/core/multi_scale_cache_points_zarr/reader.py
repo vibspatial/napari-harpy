@@ -34,6 +34,9 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
     _TileDescriptor,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._row_selection import (
+    _build_exact_row_selection,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     CATALOG_ARRAY_DTYPES,
     MANIFEST_BUCKET_ID,
@@ -2288,9 +2291,9 @@ def _exact_value_tile_row_selection(
     total length with ``expected_row_count`` before returning a selector.
 
     This is the selected-catalog counterpart of ``_exact_row_selection`` in
-    ``storage.bucket_reader``. The helpers deliberately remain separate because
-    this function validates value-major catalog intervals, while its counterpart
-    validates untyped bucket point-row pairs.
+    ``storage.bucket_reader``. Their domain-specific validation remains
+    separate; both delegate the validated interval transformation to the shared
+    storage utility.
     """
     _require_integer_in_range(catalog_row_count, "catalog_row_count", minimum=1, maximum=_INT64_MAX)
     _require_integer_in_range(expected_row_count, "expected_row_count", minimum=1, maximum=_INT64_MAX)
@@ -2314,30 +2317,12 @@ def _exact_value_tile_row_selection(
     ):
         raise ValueError("Catalog intervals must follow selected-value and nonoverlapping row order.")
 
-    merged: list[tuple[int, int]] = []
     observed_row_count = 0
     for interval in intervals:
         observed_row_count += interval.stop - interval.start
-        if merged and interval.start == merged[-1][1]:
-            merged[-1] = (merged[-1][0], interval.stop)
-        else:
-            merged.append((interval.start, interval.stop))
     if observed_row_count != expected_row_count:
         raise ValueError("Catalog intervals do not reconcile to the expected selected record count.")
-
-    if len(merged) == 1:
-        start, stop = merged[0]
-        return slice(start, stop)
-
-    # Fill one exact selector without constructing one Python integer per
-    # catalog row. Each destination segment is shifted to its source interval.
-    selected_rows = np.arange(observed_row_count, dtype=np.int64)
-    cursor = 0
-    for start, stop in merged:
-        count = stop - start
-        selected_rows[cursor : cursor + count] += start - cursor
-        cursor += count
-    return selected_rows
+    return _build_exact_row_selection(tuple((interval.start, interval.stop) for interval in intervals))
 
 
 def _require_display_arrays(location: object, value_id: object) -> None:

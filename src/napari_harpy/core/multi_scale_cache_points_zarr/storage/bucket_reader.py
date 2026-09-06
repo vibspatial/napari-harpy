@@ -20,6 +20,9 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _TileDescriptor,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._row_selection import (
+    _build_exact_row_selection,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     TILE_MAJOR_BUCKET_ARRAY_PATHS,
     TILE_MAJOR_LOCATION,
@@ -748,9 +751,9 @@ def _exact_row_selection(
     with ``expected_row_count`` before returning a selector.
 
     This is the bucket point-row counterpart of
-    ``_exact_value_tile_row_selection`` in the cache-level reader. The helpers
-    deliberately remain separate because this function validates untyped point
-    row pairs, while its counterpart validates value-major catalog intervals.
+    ``_exact_value_tile_row_selection`` in the cache-level reader. Their
+    domain-specific validation remains separate; both delegate the validated
+    interval transformation to the shared storage utility.
     """
     interval_iterator = iter(intervals)
     try:
@@ -760,7 +763,7 @@ def _exact_row_selection(
 
     _require_integer_in_range(point_count, "point_count", minimum=1, maximum=_INT64_MAX)
     _require_integer_in_range(expected_row_count, "expected_row_count", minimum=1, maximum=_INT64_MAX)
-    merged: list[tuple[int, int]] = []
+    validated_intervals: list[tuple[int, int]] = []
     observed_row_count = 0
     previous_stop: int | None = None
     for interval in chain((first_interval,), interval_iterator):
@@ -772,25 +775,8 @@ def _exact_row_selection(
         if previous_stop is not None and start < previous_stop:
             raise ValueError("Point intervals must be ordered and nonoverlapping.")
         observed_row_count += stop - start
-        if previous_stop is not None and start == previous_stop:
-            merged[-1] = (merged[-1][0], stop)
-        else:
-            merged.append((start, stop))
+        validated_intervals.append((start, stop))
         previous_stop = stop
     if observed_row_count != expected_row_count:
         raise ValueError("Point intervals do not reconcile to the expected batch row count.")
-
-    if len(merged) == 1:
-        start, stop = merged[0]
-        return slice(start, stop)
-
-    # Begin with output positions and shift each destination segment in place to
-    # its bucket-global interval. This fills one selector allocation without
-    # constructing one Python integer per returned point.
-    selected_rows = np.arange(observed_row_count, dtype=np.int64)
-    cursor = 0
-    for start, stop in merged:
-        count = stop - start
-        selected_rows[cursor : cursor + count] += start - cursor
-        cursor += count
-    return selected_rows
+    return _build_exact_row_selection(validated_intervals)

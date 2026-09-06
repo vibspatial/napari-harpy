@@ -13,6 +13,9 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT64_MAX,
     _require_integer_in_range,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._row_selection import (
+    _build_exact_row_selection,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import VALUE_MAJOR_LOCATION_DTYPE
 
 
@@ -92,12 +95,13 @@ class _ValueMajorLocationReader:
     ) -> npt.NDArray[np.float32]:
         if raise_if_cancelled is not None:
             raise_if_cancelled()
-        row_selection = _exact_row_selection(intervals)
+        expected_row_count = sum(stop - start for start, stop in intervals)
+        row_selection = _build_exact_row_selection(intervals)
         locations = np.ascontiguousarray(
             self._location.get_orthogonal_selection((row_selection, slice(None))),
             dtype=np.float32,
         )
-        expected_shape = (sum(stop - start for start, stop in intervals), 2)
+        expected_shape = (expected_row_count, 2)
         if locations.shape != expected_shape:
             raise RuntimeError("Value-major location selection returned an unexpected shape.")
         if raise_if_cancelled is not None:
@@ -147,20 +151,3 @@ def _split_intervals_by_rows(
                 batch_rows = 0
     if batch:
         yield tuple(batch)
-
-
-def _exact_row_selection(
-    intervals: tuple[tuple[int, int], ...],
-) -> slice | npt.NDArray[np.int64]:
-    """Return one exact increasing selector for a bounded interval batch."""
-    merged: list[tuple[int, int]] = []
-    for start, stop in intervals:
-        if merged and start == merged[-1][1]:
-            merged[-1] = (merged[-1][0], stop)
-        else:
-            merged.append((start, stop))
-    if len(merged) == 1:
-        return slice(*merged[0])
-    return np.concatenate(
-        tuple(np.arange(start, stop, dtype=np.int64) for start, stop in merged),
-    )
