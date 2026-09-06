@@ -314,7 +314,7 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
         "sparse_interval_resolution",
     )
     timed_method(bucket_reader_module, "_exact_row_selection", "exact_row_selector_construction")
-    timed_method(value_major_reader_module, "_exact_row_selection", "value_major_row_selector_construction")
+    timed_method(value_major_reader_module, "_build_exact_row_selection", "value_major_row_selector_construction")
     timed_method(_CpuTileResidency, "get", "cpu_residency_get")
     timed_method(_CpuTileResidency, "retain", "cpu_residency_retain")
     timed_method(cache_session_module, "_require_ordered_render_tiles", "render_tile_validation")
