@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 from types import TracebackType
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -45,10 +46,15 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
     VALUES_N_POINTS,
+    value_major_location,
+    value_major_point_indptr,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _PointDisplayPayload
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLocationReader
+
+_ViewportReadRoute = Literal["tile_major_all_values", "value_major_subset"]
 
 
 @dataclass(frozen=True)
@@ -159,10 +165,11 @@ class _PlannedTileRead:
     ``applicable_value_ids`` is the subset of the plan's requested values that
     actually occurs in this tile. ``None`` represents an all-values read.
 
-    A later ``read_planned_tiles()`` call forwards these IDs through
-    ``_read_manifest_requests()`` to the bucket reader. Retaining them in the
+    A later ``read_planned_tiles()`` call uses these IDs to assemble the
+    value-major blocks belonging to each requested tile. Retaining them in the
     plan avoids repeating selected-value-to-manifest discovery after the caller
-    has chosen which planned tiles to read.
+    has chosen which planned tiles to read. All-values plans store ``None`` and
+    continue through the tile-major bucket reader.
     """
 
     level: int
@@ -200,19 +207,34 @@ class _ViewportReadPlan:
     """Describe an immutable, generation-bound viewport read without payload IO.
 
     ``requested_value_ids`` records the complete value selection once for the
-    plan. Each private request separately retains only its tile-applicable
-    subset needed for sparse bucket lookup.
+    plan. ``route`` fixes its physical payload before any read begins. A
+    selected-value plan retains the exact immutable level index from which its
+    positive tiles were derived, so sidecar addressing never consults mutable
+    reader selection state or reloads catalog records.
     """
 
     cache_generation_id: str
     requested_value_ids: tuple[int, ...] | None
     level: int
     requests: tuple[_PlannedTileRead, ...]
+    route: _ViewportReadRoute
+    selected_value_level_index: _SelectedValueLevelIndex | None
 
     def __post_init__(self) -> None:
         _require_cache_generation_id(self.cache_generation_id)
         _require_requested_value_ids(self.requested_value_ids)
         _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
+        if self.route not in ("tile_major_all_values", "value_major_subset"):
+            raise ValueError("Viewport plan has an unsupported physical route.")
+        if self.route == "tile_major_all_values":
+            if self.requested_value_ids is not None or self.selected_value_level_index is not None:
+                raise ValueError("An all-values route cannot retain a selected-value index.")
+        elif (
+            self.requested_value_ids is None
+            or not isinstance(self.selected_value_level_index, _SelectedValueLevelIndex)
+            or len(self.selected_value_level_index.value_indptr) != len(self.requested_value_ids) + 1
+        ):
+            raise ValueError("A value-major route requires its aligned selected-value level index.")
         if not isinstance(self.requests, tuple) or not all(
             isinstance(request, _PlannedTileRead) for request in self.requests
         ):
@@ -408,7 +430,42 @@ class _SelectedValueLevelIndex:
 
 @dataclass(frozen=True)
 class _SelectedValueIndex:
-    """Retain an immutable generation-bound selected-value index in memory."""
+    """Retain one proper subset's immutable value-to-tile index in memory.
+
+    This object is an auxiliary catalog index, not the logical selection
+    itself. It exists only for a nonempty proper subset of the cache
+    vocabulary. Reader APIs represent an all-values selection by the absence
+    of this auxiliary index (``None``), allowing that path to use the resident
+    manifest and tile-major payload without loading every ``value_tiles``
+    record.
+
+    Parameters
+    ----------
+    cache_generation_id
+        Cache generation that owns the selected catalog records. This prevents
+        an index loaded from one immutable generation from being reused with
+        another.
+    value_ids
+        Nonempty, strictly increasing canonical ``uint32`` IDs for the proper
+        subset. Position ``i`` identifies the corresponding interval in every
+        level's ``value_indptr``.
+    levels
+        One level index for every consecutive serialized cache level. Each
+        level retains all ``value_tiles/manifest_index`` and aligned
+        ``value_tiles/n_points`` records for the selected values, including
+        records outside the current viewport. Viewport planning intersects
+        these resident records with visible manifest rows; value-major reads
+        also use the complete ordered counts to derive per-tile sidecar
+        offsets.
+
+    Notes
+    -----
+    Point locations, point-level value IDs, and unselected value-to-tile
+    records are not retained here. The contained NumPy arrays are made
+    read-only so the same generation-bound index can be reused across LOD
+    selection, viewport planning, and payload reads until the selection
+    changes.
+    """
 
     cache_generation_id: str
     value_ids: npt.NDArray[np.uint32]
@@ -441,6 +498,34 @@ class _SelectedValueIndex:
 
 
 @dataclass(frozen=True)
+class _ValueMajorReadBlock:
+    """Address one selected value/tile block in ``value_major/location``.
+
+    ``row_start`` and ``row_count`` identify the physical source rows.
+    ``manifest_row`` identifies the logical destination tile, and ``value_id``
+    labels the rows when the tile-oriented output is assembled.
+    """
+
+    value_id: int
+    manifest_row: int
+    row_start: int
+    row_count: int
+
+    def __post_init__(self) -> None:
+        _require_integer_in_range(self.value_id, "value_id", maximum=_UINT32_MAX)
+        _require_integer_in_range(self.manifest_row, "manifest_row", maximum=_INT64_MAX)
+        _require_integer_in_range(self.row_start, "row_start", maximum=_INT64_MAX)
+        _require_integer_in_range(self.row_count, "row_count", minimum=1, maximum=_INT64_MAX)
+        if self.row_start > _INT64_MAX - self.row_count:
+            raise ValueError("Value-major read block exceeds the supported row domain.")
+
+    @property
+    def interval(self) -> tuple[int, int]:
+        """Return the block's half-open ``value_major/location`` interval."""
+        return self.row_start, self.row_start + self.row_count
+
+
+@dataclass(frozen=True)
 class _ValueTileInterval:
     """Identify one requested value's exact half-open catalog rows."""
 
@@ -469,8 +554,10 @@ class _PointsCacheReader:
     the compact manifest, value pointer table, and value totals. It deliberately
     does not replay complete staged validation. Bucket stores are opened lazily
     or by explicit lookup-index loading and retained for this reader's lifetime.
-    Display payload reads require their bucket lookup indexes to be resident;
-    they never load lookup metadata implicitly on the viewport path.
+    All-values and diagnostic singleton tile-major reads require their bucket
+    lookup indexes to be resident. Proper-subset viewport reads instead use the
+    value-major sidecar and never resolve bucket lookup metadata on their
+    payload path.
     """
 
     def __init__(self, cache_root: str | Path) -> None:
@@ -488,6 +575,8 @@ class _PointsCacheReader:
         self._manifest_n_points: npt.NDArray[np.uint64] | None = None
         self._value_tiles_indptr: npt.NDArray[np.uint64] | None = None
         self._value_n_points: npt.NDArray[np.uint64] | None = None
+        self._value_major_point_indptr: tuple[npt.NDArray[np.uint64], ...] = ()
+        self._value_major_readers: tuple[_ValueMajorLocationReader, ...] = ()
         self._descriptors: tuple[_TileDescriptor, ...] = ()
         self._descriptors_by_bucket: dict[tuple[int, int], tuple[_TileDescriptor, ...]] = {}
         self._manifest_row_by_tile: dict[tuple[int, int, int], int] = {}
@@ -716,7 +805,7 @@ class _PointsCacheReader:
         value_ids: npt.NDArray[np.uint32],
         *,
         max_resident_bytes: int | None,
-    ) -> _SelectedValueIndex | None:
+    ) -> _SelectedValueIndex:
         """Read and retain selected value-to-tile records for every level.
 
         This is the explicit selected-value catalog-I/O boundary. The returned
@@ -736,7 +825,8 @@ class _PointsCacheReader:
         Parameters
         ----------
         value_ids
-            Nonempty sorted unique canonical value IDs.
+            Nonempty sorted unique canonical value IDs forming a proper subset
+            of the complete cache vocabulary.
         max_resident_bytes
             Maximum retained NumPy-buffer bytes allowed for the loaded index.
             ``None`` disables the configured limit; projection and exact
@@ -744,9 +834,16 @@ class _PointsCacheReader:
 
         Returns
         -------
-        _SelectedValueIndex or None
-            Generation-bound in-memory index, or ``None`` when all canonical
-            values were selected and the resident all-values path should be used.
+        _SelectedValueIndex
+            Generation-bound in-memory proper-subset index.
+
+        Notes
+        -----
+        The production cache-session caller normalizes a complete-vocabulary
+        tuple to its explicit all-values state before calling this method. A
+        direct caller that supplies the complete vocabulary has violated that
+        boundary and is rejected rather than receiving a second representation
+        of the all-values state.
         """
         value_ids = self._require_value_ids(value_ids)
         if value_ids is None:
@@ -759,7 +856,10 @@ class _PointsCacheReader:
                 maximum=_INT64_MAX,
             )
         if len(value_ids) == len(self.value_names):
-            return None
+            raise ValueError(
+                "`value_ids` must be a proper subset; normalize the complete vocabulary "
+                "to the all-values path before loading an index."
+            )
 
         pointers = self._value_tiles_indptr_or_raise()
         indexes = value_ids.astype(np.int64, copy=False)
@@ -822,8 +922,9 @@ class _PointsCacheReader:
         Notes
         -----
         Planning reads no point payload and opens no bucket. It retains private
-        manifest and bucket addresses so a later subset read does not repeat
-        catalog discovery, while callers operate only on logical tile keys.
+        manifest identity, the chosen physical route, and the selected level
+        index needed for later sidecar addressing, while callers operate only
+        on logical tile keys.
         """
         self._require_level(level)
         value_index = self._require_selected_value_index(value_index)
@@ -870,20 +971,28 @@ class _PointsCacheReader:
             requested_value_ids=requested_value_ids,
             level=level,
             requests=planned,
+            route="tile_major_all_values" if value_index is None else "value_major_subset",
+            selected_value_level_index=None if value_index is None else value_index.levels[level],
         )
 
     def read_planned_tiles(
         self,
         plan: _ViewportReadPlan,
         tile_keys_to_read: tuple[tuple[int, int, int], ...],
+        *,
+        raise_if_cancelled: Callable[[], None] | None = None,
     ) -> _ViewportReadResult:
         """Read a unique subset of one viewport plan in original plan order.
 
         ``tile_keys_to_read`` identifies the plan subset to read physically.
-        An empty subset performs no bucket IO. Nonempty requests reuse the
-        canonical one-batch-per-bucket display path.
+        An empty subset performs no payload IO. ``plan.route`` selects complete
+        tile-major reads for ``tile_major_all_values`` or the selected level's
+        value-major sidecar for ``value_major_subset``. Tile-major reads batch
+        one orthogonal Zarr selection per array and bucket.
         """
         self._require_viewport_plan_compatible(plan)
+        if raise_if_cancelled is not None and not callable(raise_if_cancelled):
+            raise ValueError("`raise_if_cancelled` must be callable or None.")
         if not isinstance(tile_keys_to_read, tuple) or any(
             not isinstance(key, tuple)
             or len(key) != 3
@@ -897,14 +1006,22 @@ class _PointsCacheReader:
         unknown = tile_keys_to_read_set - set(plan.tile_keys)
         if unknown:
             raise ValueError("`tile_keys_to_read` contains a tile absent from the viewport plan.")
-        requests = tuple(
-            (request.manifest_row, request.applicable_value_ids)
-            for request in plan.requests
-            if request.tile_key in tile_keys_to_read_set
-        )
+        requests = tuple(request for request in plan.requests if request.tile_key in tile_keys_to_read_set)
         if not requests:
             return _ViewportReadResult(level=plan.level, tiles=())
-        return self._read_manifest_requests(plan.level, requests)
+        if plan.route == "value_major_subset":
+            return self._read_value_major_requests(
+                plan,
+                requests,
+                raise_if_cancelled=raise_if_cancelled,
+            )
+        # Cancellation follow-up: forward `raise_if_cancelled` into this helper
+        # and check it between bucket batches. Unlike the value-major route, the
+        # current path can only observe cancellation after all buckets return.
+        return self._read_manifest_requests(
+            plan.level,
+            tuple((request.manifest_row, request.applicable_value_ids) for request in requests),
+        )
 
     def read_viewport(
         self,
@@ -1064,10 +1181,10 @@ class _PointsCacheReader:
     def _load_runtime_indexes(self) -> None:
         """Materialize the compact catalog state needed for runtime planning.
 
-        Load the small manifest, level-pointer, value-pointer, and value-total
-        arrays as read-only NumPy arrays. Construct manifest-row-aligned tile
-        descriptors and an O(1) mapping from logical tile coordinates to
-        manifest rows.
+        Load the small manifest, catalog pointers, value totals, and per-level
+        value-major point pointers as read-only NumPy arrays. Construct
+        manifest-row-aligned tile descriptors and an O(1) mapping from logical
+        tile coordinates to manifest rows.
 
         Point payloads and the potentially large value-tile record arrays
         remain on disk and are read only for requested tiles and values.
@@ -1094,7 +1211,25 @@ class _PointsCacheReader:
         self._manifest_n_points = arrays[MANIFEST_N_POINTS]
         self._value_tiles_indptr = arrays[VALUE_TILES_INDPTR]
         self._value_n_points = arrays[VALUES_N_POINTS]
-        self._resident_index_bytes = sum(array.nbytes for array in arrays.values())
+        self._value_major_point_indptr = tuple(
+            _read_only_array(catalog, value_major_point_indptr(level), dtype=np.uint64)
+            for level in range(self.level_count)
+        )
+        self._value_major_readers = tuple(
+            _ValueMajorLocationReader(catalog.array(value_major_location(level))) for level in range(self.level_count)
+        )
+        for level, (metadata, pointer) in enumerate(
+            zip(self._attributes_or_raise().levels, self._value_major_point_indptr, strict=True)
+        ):
+            if (
+                int(pointer[0]) != 0
+                or int(pointer[-1]) != metadata.point_count
+                or bool((pointer[1:] < pointer[:-1]).any())
+            ):
+                raise ValueError(f"Value-major point pointers are invalid at level {level}.")
+        self._resident_index_bytes = sum(array.nbytes for array in arrays.values()) + sum(
+            pointer.nbytes for pointer in self._value_major_point_indptr
+        )
 
         level_indptr = self._manifest_level_indptr
         descriptors: list[_TileDescriptor] = []
@@ -1318,19 +1453,15 @@ class _PointsCacheReader:
     ) -> dict[int, npt.NDArray[np.uint32]]:
         """Map positive visible manifest rows to their selected value IDs.
 
-        This method performs the in-memory value-to-tile discovery needed before
-        bucket-local sparse-range lookup. The complete selected read flow is::
+        This method performs the in-memory value-to-tile discovery needed for
+        both LOD planning and value-major payload addressing. The complete
+        selected read flow is::
 
             resident selected-value level records
                 -> visible manifest rows containing each selected value
-                -> manifest bucket address
-                -> ranges/tile_indptr
-                -> value-specific row_start and row_count
-                -> exact point rows
-
-        This method owns only the in-memory cache-wide first half. `_BucketReader`
-        owns the bucket-local second half after a positive manifest tile and its
-        applicable selected values are known.
+                -> one value-major route in the immutable viewport plan
+                -> sidecar intervals for requested CPU-residency misses
+                -> manifest-ordered logical tile payloads
 
         Parameters
         ----------
@@ -1351,8 +1482,8 @@ class _PointsCacheReader:
         Notes
         -----
         This operation reads no catalog Zarr array, bucket, or point payload.
-        The returned mapping is consumed later to prune empty tiles and request
-        only applicable bucket-local sparse value ranges.
+        The returned mapping prunes empty tiles and records the values that the
+        sidecar reader must scatter into each positive logical tile.
 
         Examples
         --------
@@ -1583,6 +1714,218 @@ class _PointsCacheReader:
             if start < stop
         )
 
+    def _read_value_major_requests(
+        self,
+        plan: _ViewportReadPlan,
+        requests: tuple[_PlannedTileRead, ...],
+        *,
+        raise_if_cancelled: Callable[[], None] | None,
+    ) -> _ViewportReadResult:
+        """Read selected logical tiles from one level's value-major storage.
+
+        The read combines three sources:
+
+        A. The viewport plan supplies the requested, manifest-identified tiles
+           that still require physical payload I/O.
+        B. ``plan.selected_value_level_index``, the in-memory projection of
+           ``value_tiles``, maps each selected value to all manifest tiles
+           containing it and their point counts. It contains every value/tile
+           record for those values at this level, including records outside the
+           viewport.
+        C. The value-major storage supplies the physical ``location`` rows,
+           grouped by value without repeating the tile identity alongside
+           every point.
+
+        For example::
+
+            viewport requests (supplies requested tiles, Source A):
+                manifest tiles {10, 30}
+
+            in-memory value_tiles index (answers which tiles contain V and their point counts, Source B):
+                value V -> [(manifest 10, 3 points),
+                            (manifest 20, 5 points),
+                            (manifest 30, 2 points)]
+
+            value-major storage (supplies V's physical location rows, Source C):
+                value V -> location[100:110]
+
+        The reader intersects the requested manifest rows ``{10, 30}`` with
+        the value's indexed manifest rows ``{10, 20, 30}``. The complete
+        ``n_points`` records, provided by the in-memory ``value_tiles`` index,
+        establish the physical blocks in ``value_major/location``::
+
+            manifest 10 -> location[100:103]
+            manifest 20 -> location[103:108]
+            manifest 30 -> location[108:110]
+
+        It then reads only ``[100:103]`` and ``[108:110]``. Manifest 20 is not
+        read, but its point count is still required to calculate manifest 30's
+        offset. The same applies to records outside the viewport or already in
+        CPU residency.
+
+        This method does not access the physical tile-major buckets. It reads
+        locations in value-major order, synthesizes their value IDs, and
+        scatters them into the requested manifest-tile order. Within each
+        returned tile, value blocks remain in increasing canonical value-ID
+        order and retain their existing point order.
+        """
+        if plan.route != "value_major_subset" or plan.requested_value_ids is None:
+            raise ValueError("Value-major reads require a proper-subset viewport plan.")
+        level_index = plan.selected_value_level_index
+        if level_index is None:
+            raise ValueError("Value-major viewport plan is missing its selected level index.")
+
+        # 1. Index the requested logical tiles (Source A)
+        # ------------------------------------------------
+        request_position_by_manifest = {request.manifest_row: position for position, request in enumerate(requests)}
+        if len(request_position_by_manifest) != len(requests):
+            raise ValueError("Value-major requests must contain unique manifest rows.")
+        requested_manifests_by_value: dict[int, list[int]] = {}
+        for request in requests:
+            if request.applicable_value_ids is None:
+                raise ValueError("Value-major requests must identify tile-applicable values.")
+            for value_id in request.applicable_value_ids.tolist():
+                requested_manifests_by_value.setdefault(int(value_id), []).append(request.manifest_row)
+
+        # 2. Resolve physical value-major location blocks (Sources A, B, and C)
+        # ----------------------------------------------------------------------
+        # Source C above: these pointers delimit each value's complete interval
+        # in ``value_major/location``.
+        point_indptr = self._value_major_point_indptr_or_raise(plan.level)
+        blocks: list[_ValueMajorReadBlock] = []
+        for selected_position, value_id in enumerate(plan.requested_value_ids):
+            requested_manifests = requested_manifests_by_value.get(value_id)
+            if not requested_manifests:
+                # CPU residency can leave a selected value with no physical
+                # misses. Its value-major offsets are irrelevant to this read.
+                continue
+            record_start = int(level_index.value_indptr[selected_position])
+            record_stop = int(level_index.value_indptr[selected_position + 1])
+            # Source B above: the aligned records associate this value's
+            # manifest tiles with their point counts, including unrequested
+            # tiles needed to advance later value-major offsets.
+            record_manifest = level_index.manifest_index[record_start:record_stop]
+            record_n_points = level_index.n_points[record_start:record_stop]
+
+            value_row_start = int(point_indptr[value_id])
+            value_row_stop = int(point_indptr[value_id + 1])
+
+            # Combine Sources B and C: convert the per-manifest point counts
+            # into absolute ``value_major/location`` boundaries. Point blocks
+            # follow the same increasing manifest order as ``record_manifest``
+            # and its aligned ``record_n_points``. Thus, for value/tile record i:
+            #
+            #   record_sidecar_indptr[i]
+            #       = point_indptr[value_id] + sum(record_n_points[:i])
+            #
+            # and ``record_manifest[i]`` owns the corresponding interval:
+            #
+            #   value_major/location[
+            #       record_sidecar_indptr[i]:record_sidecar_indptr[i + 1]
+            #   ]
+            #
+            record_sidecar_indptr = np.empty(len(record_n_points) + 1, dtype=np.uint64)
+            record_sidecar_indptr[0] = np.uint64(value_row_start)
+            np.cumsum(record_n_points, out=record_sidecar_indptr[1:])
+            record_sidecar_indptr[1:] += np.uint64(value_row_start)
+            if int(record_sidecar_indptr[-1]) != value_row_stop:
+                raise ValueError("Selected value-to-tile counts do not reconcile to value-major pointers.")
+
+            requested_manifest_array = np.asarray(requested_manifests, dtype=np.uint64)
+            positions = np.searchsorted(record_manifest, requested_manifest_array)
+            if bool((positions >= len(record_manifest)).any()) or not np.array_equal(
+                record_manifest[positions],
+                requested_manifest_array,
+            ):
+                raise ValueError("Viewport plan references a value absent from its selected level index.")
+            for manifest_row, position in zip(requested_manifests, positions.tolist(), strict=True):
+                blocks.append(
+                    _ValueMajorReadBlock(
+                        value_id=value_id,
+                        manifest_row=manifest_row,
+                        row_start=int(record_sidecar_indptr[position]),
+                        row_count=int(record_n_points[position]),
+                    )
+                )
+
+        if set(requested_manifests_by_value) - set(plan.requested_value_ids):
+            raise ValueError("Viewport plan contains a tile value outside its requested selection.")
+        if not blocks:
+            raise ValueError("A nonempty value-major request resolved no sidecar rows.")
+        if any(current.row_start < previous.interval[1] for previous, current in pairwise(blocks)):
+            raise ValueError("Value-major read blocks must follow nonoverlapping sidecar order.")
+
+        # 3. Read the resolved locations in value-major order (Source C)
+        # ----------------------------------------------------------------
+        selected_row_count = sum(block.row_count for block in blocks)
+        locations = self._value_major_reader_or_raise(plan.level).read_intervals(
+            tuple(block.interval for block in blocks),
+            expected_row_count=selected_row_count,
+            raise_if_cancelled=raise_if_cancelled,
+        )
+
+        # 4. Scatter value-major rows into tile-oriented output
+        # -------------------------------------------------------
+        tile_counts = np.zeros(len(requests), dtype=np.uint64)
+        for block in blocks:
+            tile_counts[request_position_by_manifest[block.manifest_row]] += np.uint64(block.row_count)
+        tile_indptr = np.empty(len(requests) + 1, dtype=np.uint64)
+        tile_indptr[0] = 0
+        np.cumsum(tile_counts, out=tile_indptr[1:])
+        if int(tile_indptr[-1]) != selected_row_count or bool((tile_counts == 0).any()):
+            raise RuntimeError("Value-major blocks do not reconcile to the requested logical tiles.")
+
+        # Locations read in value-major order are grouped by value:
+        #
+        #   locations:
+        #       value 1, tile 10
+        #       value 1, tile 30
+        #       value 700, tile 10
+        #       value 700, tile 30
+        #
+        # Scatter them into the tile-oriented layout expected by CPU residency:
+        #
+        #   ordered_locations:
+        #       tile 10:
+        #           value 1
+        #           value 700
+        #       tile 30:
+        #           value 1
+        #           value 700
+        #
+        # ``tile_cursor`` tracks the next unwritten row in each tile interval.
+        # Value IDs are synthesized because ``value_major/location`` stores
+        # only locations.
+        ordered_locations = np.empty_like(locations)
+        ordered_value_ids = np.empty(selected_row_count, dtype=np.uint32)
+        tile_cursor = tile_indptr[:-1].copy()
+        source_start = 0
+        for block in blocks:
+            source_stop = source_start + block.row_count
+            request_position = request_position_by_manifest[block.manifest_row]
+            output_start = int(tile_cursor[request_position])
+            output_stop = output_start + block.row_count
+            ordered_locations[output_start:output_stop] = locations[source_start:source_stop]
+            ordered_value_ids[output_start:output_stop] = np.uint32(block.value_id)
+            tile_cursor[request_position] = np.uint64(output_stop)
+            source_start = source_stop
+        if source_start != selected_row_count or not np.array_equal(tile_cursor, tile_indptr[1:]):
+            raise RuntimeError("Value-major scatter did not fill every logical tile interval.")
+
+        # 5. Build logical tile results in request order
+        # ------------------------------------------------
+        tiles = tuple(
+            self._tile_result(
+                self._descriptors[request.manifest_row],
+                _PointDisplayPayload(
+                    location=ordered_locations[int(start) : int(stop)],
+                    value_id=ordered_value_ids[int(start) : int(stop)],
+                ),
+            )
+            for request, start, stop in zip(requests, tile_indptr[:-1], tile_indptr[1:], strict=True)
+        )
+        return _ViewportReadResult(level=plan.level, tiles=tiles)
+
     def _read_manifest_requests(
         self,
         level: int,
@@ -1705,6 +2048,16 @@ class _PointsCacheReader:
         self._require_level(plan.level)
         if plan.requested_value_ids is not None and plan.requested_value_ids[-1] >= len(self.value_names):
             raise ValueError("Viewport plan selection contains an ID outside the serialized vocabulary.")
+        if plan.route == "value_major_subset":
+            level_index = plan.selected_value_level_index
+            if level_index is None or plan.requested_value_ids is None:
+                raise ValueError("Value-major viewport plan is missing its selected-value identity.")
+            level_start = int(self._manifest_level_indptr_or_raise()[plan.level])
+            level_stop = int(self._manifest_level_indptr_or_raise()[plan.level + 1])
+            if bool((level_index.manifest_index < level_start).any()) or bool(
+                (level_index.manifest_index >= level_stop).any()
+            ):
+                raise ValueError("Selected-value level index does not belong to the viewport plan level.")
 
     def _require_level(self, level: int) -> _LevelMetadata:
         attributes = self._attributes_or_raise()
@@ -1754,6 +2107,18 @@ class _PointsCacheReader:
             raise RuntimeError("Value-tile pointers are not loaded.")
         return self._value_tiles_indptr
 
+    def _value_major_point_indptr_or_raise(self, level: int) -> npt.NDArray[np.uint64]:
+        self._require_level(level)
+        if len(self._value_major_point_indptr) != self.level_count:
+            raise RuntimeError("Value-major point pointers are not loaded.")
+        return self._value_major_point_indptr[level]
+
+    def _value_major_reader_or_raise(self, level: int) -> _ValueMajorLocationReader:
+        self._require_level(level)
+        if len(self._value_major_readers) != self.level_count:
+            raise RuntimeError("Value-major location readers are not ready.")
+        return self._value_major_readers[level]
+
     def _require_open_or_initializing(self) -> None:
         if not self._open and self._catalog is None:
             raise RuntimeError("Points cache reader is not open.")
@@ -1775,6 +2140,8 @@ class _PointsCacheReader:
         self._manifest_n_points = None
         self._value_tiles_indptr = None
         self._value_n_points = None
+        self._value_major_point_indptr = ()
+        self._value_major_readers = ()
         self._descriptors = ()
         self._descriptors_by_bucket = {}
         self._manifest_row_by_tile = {}
@@ -1855,8 +2222,15 @@ def _require_requested_value_ids(value: object) -> None:
         raise ValueError("`requested_value_ids` must be None or a nonempty sorted unique value-ID tuple.")
 
 
-def _read_only_array(catalog: _CatalogReader, name: str) -> np.ndarray:
-    array = np.ascontiguousarray(np.asarray(catalog.array(name)[:], dtype=CATALOG_ARRAY_DTYPES[name]))
+def _read_only_array(
+    catalog: _CatalogReader,
+    name: str,
+    *,
+    dtype: npt.DTypeLike | None = None,
+) -> np.ndarray:
+    array = np.ascontiguousarray(
+        np.asarray(catalog.array(name)[:], dtype=CATALOG_ARRAY_DTYPES[name] if dtype is None else dtype)
+    )
     array.flags.writeable = False
     return array
 
