@@ -12,6 +12,7 @@ import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_m
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _LevelSelection,
     _PlannedTileRead,
+    _SelectedValueLevelIndex,
     _TileReadResult,
     _ViewportReadPlan,
     _ViewportReadResult,
@@ -59,6 +60,7 @@ class _ReaderProbe:
 class _FakeSelectedValueIndex:
     resident_bytes: int
     value_ids: np.ndarray
+    levels: tuple[_SelectedValueLevelIndex, ...]
 
 
 class _ControllableReader:
@@ -117,9 +119,14 @@ class _ControllableReader:
             assert self._probe.resume_selection.wait(timeout=5)
         if self._probe.fail_selection:
             raise ValueError("selection does not fit")
+        tile_count = len(self._probe.planned_tile_x)
+        value_indptr = np.arange(0, (len(value_ids) + 1) * tile_count, tile_count, dtype=np.uint64)
+        manifest_index = np.tile(np.asarray(self._probe.planned_tile_x, dtype=np.uint64), len(value_ids))
+        n_points = np.ones(len(manifest_index), dtype=np.uint64)
         return _FakeSelectedValueIndex(
             24 if max_resident_bytes is None else min(max_resident_bytes, 24),
             value_ids.copy(),
+            (_SelectedValueLevelIndex(value_indptr, manifest_index, n_points),),
         )
 
     def select_level(self, viewport: object, point_budget: int, *, value_index: object) -> _LevelSelection:
@@ -146,13 +153,19 @@ class _ControllableReader:
                 _PlannedTileRead(level, tile_x, 0, tile_x, 0, None if value_index is None else value_index.value_ids)
                 for tile_x in self._probe.planned_tile_x
             ),
+            route="tile_major_all_values" if value_index is None else "value_major_subset",
+            selected_value_level_index=None if value_index is None else value_index.levels[level],
         )
 
     def read_planned_tiles(
         self,
         plan: _ViewportReadPlan,
         tile_keys_to_read: tuple[tuple[int, int, int], ...],
+        *,
+        raise_if_cancelled: Callable[[], None] | None = None,
     ) -> _ViewportReadResult:
+        if raise_if_cancelled is not None:
+            raise_if_cancelled()
         self._probe.record("read_viewport")
         self._probe.viewport_reads.append(tile_keys_to_read)
         location_batch = np.asarray(
@@ -295,10 +308,10 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
         assert not session.set_selected_value_ids((0,))
         assert probe.selection_calls == [(0,)]
 
-        # Returning to all values drops the selected index without another
-        # catalog-index load.
+        # Production normalizes the complete vocabulary to the all-values
+        # state and drops the selected index without another catalog load.
         with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
-            assert session.set_selected_value_ids(None)
+            assert session.set_selected_value_ids((0, 1, 2))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
         assert session.selected_value_ids is None
         assert probe.selection_calls == [(0,)]

@@ -41,6 +41,9 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader impor
     _PointDisplayPayload,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
+    _ValueMajorLocationReader,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
 
 CatalogExactFixture = Any
@@ -71,9 +74,7 @@ def _load_selected_value_index(
     reader: _PointsCacheReader,
     value_ids: npt.NDArray[np.uint32],
 ) -> _SelectedValueIndex:
-    value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=10_000_000)
-    assert value_index is not None
-    return value_index
+    return reader.load_selected_value_index(value_ids, max_resident_bytes=10_000_000)
 
 
 def _load_bucket_lookup_indexes(
@@ -217,6 +218,23 @@ def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: _Rea
         assert intrinsic_x.tolist() == expected_x.tolist()
 
 
+def test_reader_materializes_and_accounts_for_compact_runtime_indexes(reader_fixture: _ReaderFixture) -> None:
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        compact_indexes = (
+            reader._manifest_level_indptr,
+            reader._manifest_bucket_id,
+            reader._manifest_bucket_tile_index,
+            reader._manifest_tile_x,
+            reader._manifest_tile_y,
+            reader._manifest_n_points,
+            reader._value_tiles_indptr,
+            reader._value_n_points,
+            *reader._value_major_point_indptr,
+        )
+        assert all(index is not None and not index.flags.writeable for index in compact_indexes)
+        assert reader.resident_index_bytes == sum(index.nbytes for index in compact_indexes if index is not None)
+
+
 def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -244,6 +262,8 @@ def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
         assert reader.open_bucket_reader_count == 0
         assert plan.cache_generation_id == reader.cache_generation_id
         assert plan.requested_value_ids is None
+        assert plan.route == "tile_major_all_values"
+        assert plan.selected_value_level_index is None
         assert plan.tile_keys == ((0, 0, 0), (0, 1, 0))
         assert plan.required_bucket_keys == ((0, 0),)
         assert all(request.applicable_value_ids is None for request in plan.requests)
@@ -300,6 +320,8 @@ def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_su
         value_index = _load_selected_value_index(reader, selected_a_and_c)
         plan = reader.plan_viewport(0, full, value_index=value_index)
         assert plan.requested_value_ids == (0, 2)
+        assert plan.route == "value_major_subset"
+        assert plan.selected_value_level_index is value_index.levels[0]
         assert [
             request.applicable_value_ids.tolist() if request.applicable_value_ids is not None else None
             for request in plan.requests
@@ -308,6 +330,10 @@ def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_su
             request.applicable_value_ids is not None and not request.applicable_value_ids.flags.writeable
             for request in plan.requests
         )
+        with pytest.raises(ValueError, match="all-values route"):
+            replace(plan, route="tile_major_all_values")
+        with pytest.raises(ValueError, match="selected-value level index"):
+            replace(plan, selected_value_level_index=None)
 
         unknown_tile = (0, 99, 0)
         with pytest.raises(ValueError, match="absent from the viewport plan"):
@@ -324,6 +350,117 @@ def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_su
         )
         with pytest.raises(ValueError, match="another cache generation"):
             reader.read_planned_tiles(foreign_plan, foreign_plan.tile_keys)
+
+
+def test_selected_viewport_reads_value_major_sidecar_without_bucket_payload_access(
+    reader_fixture: _ReaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_a_and_c = np.array([0, 2], dtype=np.uint32)
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    def reject_bucket_payload(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Proper-subset viewport read accessed a tile-major bucket payload.")
+
+    monkeypatch.setattr(_BucketReader, "read_display_payloads", reject_bucket_payload)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = _load_selected_value_index(reader, selected_a_and_c)
+        plan = reader.plan_viewport(0, full, value_index=value_index)
+
+        def reject_catalog_array(*args: object, **kwargs: object) -> object:
+            raise AssertionError("Viewport read reopened a catalog or sidecar array.")
+
+        monkeypatch.setattr(reader._catalog_or_raise(), "array", reject_catalog_array)
+
+        # Read only the second logical tile. Its value-major address follows
+        # rows belonging to earlier values and tiles, so this also proves that
+        # sidecar offsets use the complete selected-value level records rather
+        # than a prefix computed from the requested tile subset.
+        result = reader.read_planned_tiles(plan, (plan.tile_keys[1],))
+
+        assert reader.loaded_bucket_lookup_index_count == 0
+        assert [(tile.tile_x, tile.tile_y) for tile in result.tiles] == [(1, 0)]
+        assert result.tiles[0].value_id.tolist() == [2]
+        assert result.tiles[0].location.tolist() == [[1.5, 1.5]]
+
+
+def test_selected_viewport_sidecar_preserves_manifest_and_value_order_at_every_level(
+    reader_fixture: _ReaderFixture,
+) -> None:
+    selected_b = np.array([1], dtype=np.uint32)
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = _load_selected_value_index(reader, selected_b)
+        for level in range(reader.level_count):
+            plan = reader.plan_viewport(level, full, value_index=value_index)
+            result = reader.read_planned_tiles(plan, tuple(reversed(plan.tile_keys)))
+
+            assert plan.route == "value_major_subset"
+            assert plan.selected_value_level_index is value_index.levels[level]
+            assert [(tile.tile_y, tile.tile_x) for tile in result.tiles] == sorted(
+                (tile.tile_y, tile.tile_x) for tile in result.tiles
+            )
+            assert all(bool((tile.value_id == np.uint32(1)).all()) for tile in result.tiles)
+        assert reader.loaded_bucket_lookup_index_count == 0
+
+
+def test_all_values_viewport_retains_tile_major_route_at_every_level(
+    reader_fixture: _ReaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    def reject_sidecar_read(*args: object, **kwargs: object) -> object:
+        raise AssertionError("An all-values viewport read accessed a value-major sidecar.")
+
+    monkeypatch.setattr(_ValueMajorLocationReader, "read_intervals", reject_sidecar_read)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        _load_bucket_lookup_indexes(reader)
+        for level in range(reader.level_count):
+            plan = reader.plan_viewport(level, full)
+            result = reader.read_planned_tiles(plan, plan.tile_keys)
+
+            assert plan.route == "tile_major_all_values"
+            assert plan.selected_value_level_index is None
+            assert tuple((tile.level, tile.tile_x, tile.tile_y) for tile in result.tiles) == plan.tile_keys
+            assert sum(len(tile.location) for tile in result.tiles) == sum(
+                reader._descriptors[request.manifest_row].n_points for request in plan.requests
+            )
+
+
+def test_value_major_and_tile_major_subset_paths_return_identical_logical_tiles(
+    reader_fixture: _ReaderFixture,
+) -> None:
+    selected_a_and_b = np.array([0, 1], dtype=np.uint32)
+    full = _IntrinsicViewport(0, 0, 12, 10)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = _load_selected_value_index(reader, selected_a_and_b)
+        plan = reader.plan_viewport(0, full, value_index=value_index)
+        _load_bucket_lookup_indexes(reader, levels=(0,))
+        expected = tuple(
+            reader.read_tile(
+                request.level,
+                request.tile_x,
+                request.tile_y,
+                value_ids=request.applicable_value_ids,
+            )
+            for request in plan.requests
+        )
+        actual = reader.read_planned_tiles(plan, plan.tile_keys).tiles
+
+    assert len(actual) == len(expected)
+    for actual_tile, expected_tile in zip(actual, expected, strict=True):
+        assert expected_tile is not None
+        assert (actual_tile.level, actual_tile.tile_x, actual_tile.tile_y, actual_tile.tile_size) == (
+            expected_tile.level,
+            expected_tile.tile_x,
+            expected_tile.tile_y,
+            expected_tile.tile_size,
+        )
+        assert np.array_equal(actual_tile.location, expected_tile.location)
+        assert np.array_equal(actual_tile.value_id, expected_tile.value_id)
 
 
 def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
@@ -435,7 +572,6 @@ def test_reader_loads_lookup_indexes_without_configured_memory_limits(
         )
 
         assert resident_bytes == reader.project_bucket_lookup_index_bytes(levels=(0,))
-        assert value_index is not None
         assert value_index.resident_bytes > 0
 
 
@@ -697,7 +833,7 @@ def test_exact_value_tile_row_selection_rejects_invalid_intervals(
         )
 
 
-def test_complete_value_index_load_normalizes_without_catalog_payload_reads(
+def test_complete_value_index_load_is_rejected_without_catalog_payload_reads(
     reader_fixture: _ReaderFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -723,14 +859,14 @@ def test_complete_value_index_load_normalizes_without_catalog_payload_reads(
             return original_array(name)
 
         monkeypatch.setattr(catalog, "array", counted_array)
-        value_index = reader.load_selected_value_index(
-            selected_all,
-            max_resident_bytes=1,
-        )
-        assert value_index is None
+        with pytest.raises(ValueError, match="proper subset"):
+            reader.load_selected_value_index(
+                selected_all,
+                max_resident_bytes=1,
+            )
 
-    # Selecting the complete vocabulary normalizes to the all-values path and
-    # deliberately reads no value-tile payload arrays.
+    # Production normalizes the complete vocabulary before calling the loader;
+    # a direct invalid call still fails before reading value-tile payload arrays.
     assert calls == {VALUE_TILES_MANIFEST_INDEX: 0, VALUE_TILES_N_POINTS: 0}
 
 
