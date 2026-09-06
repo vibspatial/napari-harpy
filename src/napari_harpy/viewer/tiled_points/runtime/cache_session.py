@@ -254,6 +254,19 @@ class _TiledPointsCacheWorker(QObject):
         selected-value index from the catalog. The replacement is committed
         only after loading succeeds, so a recoverable failure leaves the
         previous selection active.
+
+        The committed worker state has exactly two canonical forms::
+
+            all values:
+                _selected_value_ids = None
+                _selected_value_index = None
+
+            proper subset:
+                _selected_value_ids = tuple[int, ...]
+                _selected_value_index = _SelectedValueIndex
+
+        A complete-vocabulary tuple is normalized to the all-values form before
+        either field is updated.
         """
         if self._finished:
             return
@@ -284,10 +297,11 @@ class _TiledPointsCacheWorker(QObject):
                     np.asarray(requested_value_ids, dtype=np.uint32),
                     max_resident_bytes=self._settings.max_selected_value_index_bytes,
                 )
-                if value_index is None:
-                    requested_value_ids = None
 
             self._require_not_cancelled()
+            # Commit the normalized selection and its index as one canonical
+            # pair: None/None for all values, or tuple/_SelectedValueIndex for
+            # a proper subset.
             self._selected_value_ids = requested_value_ids
             self._selected_value_index = value_index
             resident_bytes = 0 if value_index is None else value_index.resident_bytes
@@ -683,6 +697,7 @@ def _read_viewport_snapshot(
         result = reader.read_planned_tiles(
             plan,
             tuple(key.logical_tile_key for key in missing_keys),
+            raise_if_cancelled=raise_if_cancelled,
         )
         raise_if_cancelled()
         key_by_logical_tile = {key.logical_tile_key: key for key in missing_keys}
@@ -774,6 +789,7 @@ def _require_requested_value_ids(requested_value_ids: tuple[int, ...] | None) ->
 
 
 def _normalize_all_values(value_ids: tuple[int, ...] | None, *, value_count: int) -> tuple[int, ...] | None:
+    """Normalize a complete vocabulary tuple to the all-values ``None`` state."""
     if value_ids == tuple(range(value_count)):
         return None
     return value_ids
