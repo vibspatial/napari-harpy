@@ -339,8 +339,6 @@ def _measure_selected_viewport(
         started = perf_counter()
         value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=max_resident_bytes)
         index_load_seconds = perf_counter() - started
-        if value_index is None:
-            raise RuntimeError("A proper subset unexpectedly normalized to the all-values path.")
 
         started = perf_counter()
         if fixed_level is None:
@@ -474,8 +472,6 @@ def _evaluate_selection(
         started = perf_counter()
         value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=max_resident_bytes)
         index_load_seconds = perf_counter() - started
-    if value_index is None:
-        raise RuntimeError("A proper subset unexpectedly normalized to the all-values path.")
     if tracker.selections[VALUE_TILES_MANIFEST_INDEX] != tracker.selections[VALUE_TILES_N_POINTS]:
         raise RuntimeError("Parallel value-tile arrays were not read through identical exact selectors.")
     settings = reader._attributes_or_raise().catalog.settings

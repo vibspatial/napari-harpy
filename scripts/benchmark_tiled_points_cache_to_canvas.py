@@ -1,4 +1,4 @@
-"""Benchmark one selected-value request from a completed cache to the canvas.
+"""Benchmark one value-selection request from a completed cache to the canvas.
 
 The default run measures cache/catalog startup, resident bucket-index loading,
 selected-value-index loading, cold and warm worker snapshots, Zarr selection
@@ -44,6 +44,7 @@ from vispy.scene import SceneCanvas
 from zarr.core.array import Array
 
 import napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader as bucket_reader_module
+import napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader as value_major_reader_module
 import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
 from napari_harpy.viewer.tiled_points.application import canonical_value_palette
@@ -76,7 +77,13 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("cache_root", type=Path, help="Completed transcripts_vis_zarr cache root.")
-    parser.add_argument("--value", default="AAMP", help="Canonical value name to display (default: AAMP).")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--value", default="AAMP", help="Canonical value name to display (default: AAMP).")
+    selection.add_argument(
+        "--all-values",
+        action="store_true",
+        help="Benchmark the normalized all-values tile-major route.",
+    )
     parser.add_argument("--point-budget", type=int, default=_DEFAULT_POINT_BUDGET)
     parser.add_argument(
         "--viewport-fraction",
@@ -169,10 +176,12 @@ class _TimingLog:
     def __init__(self) -> None:
         self.calls: dict[str, list[float]] = defaultdict(list)
         self.zarr_calls: list[dict[str, object]] = []
+        self.physical_routes: list[str] = []
 
     def clear(self) -> None:
         self.calls.clear()
         self.zarr_calls.clear()
+        self.physical_routes.clear()
 
     def summary(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -207,6 +216,9 @@ class _TimingLog:
                 "shard_rows": sorted({int(item["shard_rows"]) for item in items}),
             }
             for name, items in by_array.items()
+        }
+        result["physical_routes"] = {
+            route: self.physical_routes.count(route) for route in sorted(set(self.physical_routes))
         }
         return result
 
@@ -284,7 +296,17 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
 
     timed_method(_PointsCacheReader, "select_level", "level_selection")
     timed_method(_PointsCacheReader, "plan_viewport", "viewport_plan")
+    timed_plan_viewport = _PointsCacheReader.plan_viewport
+
+    def plan_viewport(*args: object, **kwargs: object) -> object:
+        plan = timed_plan_viewport(*args, **kwargs)
+        timings.physical_routes.append(str(plan.route))
+        return plan
+
+    patches.patch(_PointsCacheReader, "plan_viewport", plan_viewport)
     timed_method(_PointsCacheReader, "read_planned_tiles", "read_planned_tiles")
+    timed_method(_PointsCacheReader, "_read_value_major_requests", "value_major_tile_assembly")
+    timed_method(value_major_reader_module._ValueMajorLocationReader, "read_intervals", "value_major_location_read")
     timed_method(bucket_reader_module._BucketReader, "read_display_payloads", "bucket_batch")
     timed_method(
         bucket_reader_module._BucketReader,
@@ -292,6 +314,7 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
         "sparse_interval_resolution",
     )
     timed_method(bucket_reader_module, "_exact_row_selection", "exact_row_selector_construction")
+    timed_method(value_major_reader_module, "_exact_row_selection", "value_major_row_selector_construction")
     timed_method(_CpuTileResidency, "get", "cpu_residency_get")
     timed_method(_CpuTileResidency, "retain", "cpu_residency_retain")
     timed_method(cache_session_module, "_require_ordered_render_tiles", "render_tile_validation")
@@ -308,8 +331,10 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
         selection = args[0] if args else kwargs.get("selection")
         started = time.perf_counter()
         result = original_zarr_selection(self, *args, **kwargs)
-        name = self.name.rsplit("/", 1)[-1]
-        if name in {"location", "value_id"} and selection is not None:
+        array_path = self.name.removeprefix("/")
+        point_array_name = array_path.rsplit("/", 1)[-1]
+        if point_array_name in {"location", "value_id"} and selection is not None:
+            name = array_path if array_path.startswith("value_major/") else f"tile_major/{point_array_name}"
             row_statistics = _row_selection_statistics(self, selection)
             row_width = int(np.prod(self.shape[1:], dtype=np.int64)) if self.ndim > 1 else 1
             timings.zarr_calls.append(
@@ -646,7 +671,7 @@ def _print_summary(report: dict[str, object]) -> None:
     startup = report["startup"]
     worker = report["worker"]
     snapshot = report["snapshot"]
-    print(f"Value: {report['value']} (value_id={report['value_id']})")
+    print(f"Selection: {report['value']} (value_id={report['value_id']})")
     print(
         f"Snapshot: level={snapshot['level']} ({snapshot['level_kind']}), "
         f"tiles={snapshot['tile_count']:,}, points={snapshot['point_count']:,}"
@@ -689,7 +714,7 @@ def main() -> None:
         "schema_version": 1,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "cache_root": str(args.cache_root.resolve()),
-        "value": args.value,
+        "value": "all values" if args.all_values else args.value,
         "point_budget": args.point_budget,
         "viewport_fraction": args.viewport_fraction,
         "json_output": str(args.json_output.resolve()),
@@ -714,7 +739,11 @@ def main() -> None:
     started = time.perf_counter()
     reader_context = _PointsCacheReader(args.cache_root)
     reader = reader_context.__enter__()
-    startup: dict[str, object] = {"reader_enter_ms": _elapsed_ms(started), "rss_after_reader_enter_mib": _rss_mib()}
+    startup: dict[str, object] = {
+        "reader_enter_ms": _elapsed_ms(started),
+        "resident_catalog_index_mib": reader.resident_index_bytes / _MIB,
+        "rss_after_reader_enter_mib": _rss_mib(),
+    }
     try:
         started = time.perf_counter()
         projected_lookup_bytes = reader.project_bucket_lookup_index_bytes()
@@ -729,14 +758,20 @@ def main() -> None:
         startup["bucket_index_count"] = reader.loaded_bucket_lookup_index_count
         startup["rss_after_bucket_index_loading_mib"] = _rss_mib()
 
-        try:
-            value_id = reader.value_names.index(args.value)
-        except ValueError as exc:
-            raise ValueError(f"Value {args.value!r} is not present in the cache vocabulary.") from exc
-        value_ids = np.asarray((value_id,), dtype=np.uint32)
-        started = time.perf_counter()
-        selected_value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=None)
-        startup["selected_value_index_ms"] = _elapsed_ms(started)
+        value_id: int | None
+        if args.all_values:
+            value_id = None
+            selected_value_index = None
+            startup["selected_value_index_ms"] = 0.0
+        else:
+            try:
+                value_id = reader.value_names.index(args.value)
+            except ValueError as exc:
+                raise ValueError(f"Value {args.value!r} is not present in the cache vocabulary.") from exc
+            value_ids = np.asarray((value_id,), dtype=np.uint32)
+            started = time.perf_counter()
+            selected_value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=None)
+            startup["selected_value_index_ms"] = _elapsed_ms(started)
         startup["selected_value_index_kib"] = (
             0.0 if selected_value_index is None else selected_value_index.resident_bytes / 1024
         )
@@ -762,7 +797,7 @@ def main() -> None:
             "canvas_height": viewport.canvas_height,
             "effective_point_budget": viewport.effective_point_budget,
         }
-        requested_value_ids = None if selected_value_index is None else (value_id,)
+        requested_value_ids = None if value_id is None else (value_id,)
         request = _ViewportRequest(
             request_generation=1,
             selection_generation=1,
@@ -785,7 +820,9 @@ def main() -> None:
             cold_snapshot_ms = _elapsed_ms(started)
             cold_breakdown = timings.summary()
             rss_after_cold_snapshot_mib = _rss_mib()
-            if not bool((snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all()):
+            if value_id is not None and not bool(
+                (snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all()
+            ):
                 raise RuntimeError("Selected snapshot contains a value ID other than the requested canonical ID.")
 
             timings.clear()
@@ -825,7 +862,11 @@ def main() -> None:
             "point_count": snapshot.rendered_point_count,
             "render_batch_point_count": snapshot.render_batch.point_count,
             "render_batch_bytes": snapshot.render_batch.nbytes,
-            "all_value_ids_match_selection": True,
+            "all_value_ids_match_selection": (
+                None
+                if value_id is None
+                else bool((snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all())
+            ),
             "omitted_value_ids": snapshot.omitted_value_ids,
         }
         report["dense_exact_tile"] = _dense_exact_tile_report(reader)
