@@ -1,3 +1,5 @@
+"""Test bounded location-interval reads from value-major storage."""
+
 from __future__ import annotations
 
 from pathlib import Path
