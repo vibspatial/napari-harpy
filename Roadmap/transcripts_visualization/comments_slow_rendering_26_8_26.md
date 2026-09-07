@@ -319,7 +319,7 @@ They should no longer be one indivisible, eagerly resident startup index. The ru
 
 A value-major request must not load the bucket sparse-range arrays. An all-values tile-major request needs only the complete tile interval and point-level `value_id`; it also does not need the sparse-range arrays. Consequently, no normal viewer request needs a sparse-range lookup index and the runtime does not need an LRU or fallback-index byte budget.
 
-Keep `ranges/row_start` on disk for the first sidecar slice to avoid combining the all-level physical-order rewrite with construction and validation changes. It is a candidate for a later schema simplification because validated ranges partition each tile contiguously: their starts can be reconstructed from `tile_offset` plus a cumulative sum of `range_count`. Removing it requires explicit size, construction-memory, and validation evidence and should be a separate change.
+Keep `ranges/row_start` on disk for the first sidecar slice to avoid combining the all-level physical-order rewrite with construction and validation changes. It is a candidate for a later schema simplification because validated ranges partition each tile contiguously: their starts can be reconstructed from `tile_offset` plus a cumulative sum of `ranges/row_count` within each tile. Removing it requires explicit size, construction-memory, and validation evidence. Optional Slice 17 evaluates removal of the complete persisted bucket sparse-range group, with `row_start`-only removal as a smaller alternative.
 
 Point-level `bucket/value_id` is distinct from `ranges/value_id`. Keep the point-level array in the tile-major payload initially because all-values rendering needs a colour ID aligned with every coordinate. Proper-subset reads on either physical ordering should construct the output IDs from the known value intervals instead of decoding that point-level array.
 
@@ -680,8 +680,11 @@ The following constraints apply to every slice:
 | 14 | Add viewport debounce only if dispatch churn remains material | Slice 13 | Conditional reduction of obsolete work after coverage reuse |
 | 15 | Evaluate optional ping-pong storage and a larger point budget | Slice 13 | Conditional hardening/scaling work, not part of the initial solution |
 | 16 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
+| 17 | Evaluate optional removal of persisted bucket sparse ranges | Slice 13 | Conditional schema cleanup with construction-only range records and adapted validation/reference consumers |
 
 Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 6 and 8 form one cache-locality milestone: publishing all-level sidecars that no read path consumes is useful only as a short-lived, testable construction boundary. Slice 7 is an optional developer-validation layer between those production slices and is not a prerequisite for publication or runtime routing. Slice 9 removes the duplicate per-tile projection introduced by the first sidecar reader before another physical route is added. Slices 8 through 10 establish the simple sidecar-first runtime without sparse indexes; Slice 11 is the deliberately later optimization that adds adaptive proper-subset routing only after both physical routes can be compared without reviving the removed index architecture. Slice 12 then changes the unit of interaction from the exact camera viewport to a reusable, budget-bounded render coverage. It deliberately follows Slice 11 so any new coverage miss set can use the final physical-route estimator, and deliberately precedes the integrated matrix and conditional debounce so those later decisions measure the completed interaction architecture.
+
+Optional Slice 17 follows the integrated acceptance checkpoint. It evaluates the persisted schema only after normal viewer reads no longer need sparse ranges, and must account for the construction, validation, and diagnostic/reference consumers that remain. It does not block completion of the initial visualization improvements.
 
 ### Slice 0 — Preserve the opt-in boundary and freeze the baseline
 
@@ -1491,7 +1494,7 @@ Removing sparse indexes from the viewer does not mean deleting their stored arra
 
 - **Normal viewer startup and reads:** neither physical route loads or retains `_BucketLookupIndex`. All-values reads use compact offsets; selected-value reads use the value-major cache and the active selection's `value_tiles` records.
 - **Construction and validation:** persisted bucket sparse ranges remain consumed, for example by `_iter_compact_bucket_range_batches()` during catalog generation and validation. These consumers read the stored arrays in batches; their need for those arrays does not imply a dependency on the resident `_BucketLookupIndex` object.
-- **Explicit diagnostic/reference reads:** the current `read_tile(..., value_ids=...)` and bucket-level selected-value display APIs still support sparse tile-major subset reads. The tile-major/value-major equivalence tests use that path as their reference. If retained, this path still needs an explicitly loaded sparse lookup, outside the normal viewer session. It must never become an implicit viewer fallback. Removing or refactoring those APIs and their reference consumers requires a separate decision; deletion of `_BucketLookupIndex` everywhere is not a Slice 10 exit requirement.
+- **Explicit diagnostic/reference reads:** the current `read_tile(..., value_ids=...)` and bucket-level selected-value display APIs still support sparse tile-major subset reads. The tile-major/value-major equivalence tests use that path as their reference. If retained, this path still needs an explicitly loaded sparse lookup, outside the normal viewer session. It must never become an implicit viewer fallback. Removing or refactoring those APIs and their reference consumers requires the separate evaluation in optional Slice 17; deletion of `_BucketLookupIndex` everywhere is not a Slice 10 exit requirement.
 
 **Production changes**
 
@@ -1842,7 +1845,7 @@ Do not raise the budget until end-to-end tests cover worker packing, Qt delivery
 
 #### Deferred cache simplifications
 
-Removing persisted `ranges/row_start`, quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes a separate contract. Evaluate them only after the mandatory dual-ordering implementation has measured results, and keep each in its own schema/benchmark slice.
+Persisted bucket sparse-range removal, including the smaller `ranges/row_start`-only alternative, is evaluated separately in optional Slice 17. Quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes another contract. Evaluate them only after the mandatory dual-ordering implementation has measured results, and keep each in its own schema/benchmark slice.
 
 ### Slice 16 — Explicit coordinator selection arming
 
@@ -1910,6 +1913,49 @@ user clicks Add / Update
 
 No constructor default can implicitly mean all values, and no viewport cache read can start before the application has explicitly configured the layer's value selection. Metadata discovery remains automatic inside the opt-in panel, while creation of both regular and tiled napari points layers remains an explicit Add/Update action.
 
+### Slice 17 — Optional removal of persisted bucket sparse ranges
+
+This is a conditional cache-schema cleanup, not another viewer-residency or rendering fix. Slice 10 already removes sparse lookup allocation from normal viewer startup and reads, and Slice 11's `tile_major_filter` uses complete-tile addressing plus point-level filtering. The potential benefits here are a smaller published cache and simpler reader code; do not claim the earlier 568.4-MiB resident allocation as an additional saving or as the compressed disk space recoverable by this slice.
+
+**Entry condition and scope decision**
+
+Evaluate after Slice 13 has established the integrated viewer baseline. First measure the compressed size of each bucket `ranges` array and audit its remaining consumers. Proceed only if the storage and maintenance benefits justify the construction and validation changes. Retaining the current published schema is an acceptable outcome if removal merely shifts cost or adds complexity.
+
+The full-removal target is bucket `ranges/{tile_indptr,value_id,row_start,row_count}`. Keep compact complete-tile addressing, the manifest, `value_tiles`, per-level value-major pointers, and both physical point payloads. In particular, neither point-level tile-major `value_id` nor the active selected-value `value_tiles` index is part of this removal.
+
+If full removal is not justified, evaluate `ranges/row_start` alone as a smaller, separately scoped alternative: reconstruct each start from the tile offset and preceding `ranges/row_count` values within that tile. That alternative retains the other sparse-range arrays and must not be reported as complete sparse-range removal.
+
+**Construction and reader changes if full removal is justified**
+
+1. Retain the information needed to build the cache without retaining it permanently in every published bucket. `_iter_bucket_range_batches()` currently supplies catalog generation with `(value_id, manifest_index, row_start, n_points)` records; `write_value_tiles_by_level()` sorts them and preserves aligned source addresses in `ordered_row_start` for value-major construction. Replace that persisted-range dependency with bounded construction-only records or streams. Do not eliminate the source addresses before the value-major writer has consumed them.
+2. Keep construction records disk-backed or streamed as needed, under build-owned temporary storage. Do not replace the persisted arrays with an unbounded all-level in-memory allocation. Retain temporary records until their construction and validation consumers finish, then clean them up on success and failure; they must not leak into the completed cache.
+3. Adapt explicit `read_tile(..., value_ids=...)`, bucket subset APIs, diagnostics, benchmarks, and reference tests before removing their sparse lookup dependency. Complete tile-major reads followed by an independent in-memory point-level membership filter can supply a reference without sparse ranges. Do not redirect an equivalence test's reference to the same value-major implementation it is supposed to verify.
+4. Once all remaining lookup-object consumers have been removed or adapted, remove obsolete `_BucketLookupIndex` loading, selected-range resolution, accounting, and tests of retired contracts. Preserve compact complete-tile reads, coordinated bucket batching, canonical output order, cancellation, and both viewer routes.
+5. Update bucket writers, schema constants, attributes and count/layout checks, strict hierarchy validation, and `CACHE_FORMAT.md` together. This is a new published schema requiring rebuilt caches, not an operation that deletes arrays from an existing user cache in place. Do not add deprecated aliases or silently accept a partially converted layout.
+
+**Validation contract must be decided explicitly**
+
+The current `_validate_bucket_ranges_against_catalog()` independently reads bucket ranges and compares their value/tile records with `value_tiles`. `_iter_compact_bucket_range_batches()` also supplies source addresses to the optional exhaustive location-equivalence validator. Neither consumer can simply be removed without reviewing what its checks prove.
+
+- Construction-time reconciliation may consume the temporary range records before they are discarded. Document which checks then apply only during a build.
+- Define bounded routine validation for a completed cache without relying on temporary files. Preserve the retained schema, count, pointer, and layout checks, and explicitly document any range-to-catalog comparison that is replaced or no longer available. Do not silently weaken validation or introduce an expensive mandatory point-array scan merely to compensate for removed metadata.
+- Adapt optional exhaustive validation to recover actual value runs and bucket row addresses from tile-major point-level `value_id` and complete-tile boundaries in bounded batches, including runs crossing batch/chunk boundaries. It must independently verify the catalog and value-major locations; deriving both expected and actual records solely from `value_tiles` would not replace the lost cross-check. Exhaustive payload scans remain opt-in, not viewer-startup or routine-publication requirements.
+
+**Focused tests**
+
+- Full-removal builds publish no bucket `ranges` group and leave no construction-only records in the cache; temporary cleanup also succeeds after injected construction/validation failures.
+- Catalog totals, value-to-tile records, and value-major locations remain correct at Exact, Bridge, and Spatial levels, including multiple buckets, repeated values, and runs spanning bounded batches.
+- Complete tile-major reads, forced `tile_major_filter`, and value-major reads preserve equivalent logical payloads for complete, partial, and missing-tile requests without sparse-index loading.
+- Diagnostic/reference results remain independently derived from tile-major point arrays rather than the route under test.
+- Routine validation rejects malformed retained metadata without requiring full point-payload reads. Optional exhaustive validation detects incorrect value counts, ordering, and locations after reopening a completed cache with no temporary records available.
+- If only `row_start` is removed, test its reconstruction and validation separately, with correct offsets across tile, bucket, and level boundaries.
+
+**Benchmark evidence and exit condition**
+
+Compare compressed cache bytes by array/group, construction wall time, peak RSS, temporary-disk peak, routine validation time, and optional exhaustive-validation time. Verify unchanged viewer payloads, startup behavior, and representative cold/warm reads against the accepted runtime baseline. Measure the retained diagnostic/reference path separately, since complete-tile filtering can read more point rows than its former sparse-range path.
+
+Accept full removal only when all published-range consumers have replacements, the new validation guarantees are explicit, no normal viewer path regains sparse lookup residency, and the measured storage/maintenance benefit justifies the cost. Otherwise retain the ranges or pursue the explicitly narrower `row_start` alternative. This optional decision is not a prerequisite for completing the visualization plan.
+
 ### Definition of done for the complete plan
 
 The initial optimization programme is complete when:
@@ -1923,11 +1969,11 @@ The initial optimization programme is complete when:
 7. every newly built current-schema cache contains a structurally and index-validated value-major location sidecar for every serialized level, and that sidecar remains an eligible proper-subset route after LOD selection;
 8. all-values requests retain tile-major routing, while proper subsets choose once per complete coverage-miss request between value-major and complete tile-major reads plus in-memory filtering using the deterministic measured cost model;
 9. no viewer startup or read path projects, loads, or retains bucket sparse-range indexes;
-10. persisted bucket sparse ranges remain available for cache construction, catalog generation, independent validation, and explicit diagnostic/reference reads outside the viewer runtime; retaining these consumers does not permit a viewer sparse-index fallback;
+10. at the initial checkpoint, persisted bucket sparse ranges remain available for cache construction, catalog generation, independent validation, and explicit diagnostic/reference reads outside the viewer runtime; optional Slice 17 may change that persisted contract only after adapting its consumers and validation, and neither choice permits a viewer sparse-index fallback;
 11. every accepted camera view is contained by a deterministic, budget-bounded render coverage; coverage hits avoid physical reads, tile-proportional planning, packing, and VBO replacement, while LOD hysteresis prevents repeated boundary oscillation without ever exceeding the hard limits;
 12. benchmark reports demonstrate improved cold reads, warm activation, coverage-hit interaction, first draw, warm draw, startup RSS, steady memory, and no latency cliff immediately below versus above the 100,000-point boundary;
 13. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
-14. debounce, ping-pong storage, alternative sidecar encodings, and a larger point budget are accepted only when their own evidence gates are met.
+14. debounce, ping-pong storage, alternative sidecar encodings, a larger point budget, and optional persisted sparse-range removal are accepted only when their own evidence gates are met.
 
 ## Conclusion
 
