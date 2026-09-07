@@ -31,7 +31,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader impor
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
 
 CatalogExactFixture = Any
-_ReaderFixture = Any
 
 
 class _TrackingPointsCacheReader(_PointsCacheReader):
@@ -84,7 +83,7 @@ def test_reader_rejects_unpublished_staging_catalog(catalog_exact_fixture: Catal
             pass
 
 
-def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: _ReaderFixture) -> None:
+def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: Any) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
     first_tile = _IntrinsicViewport(0, 0, 10, 10)
     selected_a = np.array([0], dtype=np.uint32)
@@ -126,7 +125,7 @@ def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: _Rea
         assert intrinsic_x.tolist() == expected_x.tolist()
 
 
-def test_reader_materializes_and_accounts_for_compact_runtime_indexes(reader_fixture: _ReaderFixture) -> None:
+def test_reader_materializes_and_accounts_for_compact_runtime_indexes(reader_fixture: Any) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         compact_indexes = (
             reader._manifest_level_indptr,
@@ -144,7 +143,7 @@ def test_reader_materializes_and_accounts_for_compact_runtime_indexes(reader_fix
 
 
 def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
@@ -178,7 +177,7 @@ def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
 
 
 def test_planned_subset_reads_only_missing_tiles_and_preserves_plan_order(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first_tile = _IntrinsicViewport(0, 0, 10, 10)
@@ -219,7 +218,7 @@ def test_planned_subset_reads_only_missing_tiles_and_preserves_plan_order(
 
 
 def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
@@ -245,7 +244,7 @@ def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
         assert calls == [(0, 1)]
 
 
-def test_value_tile_index_prunes_gene_lost_during_sampling(reader_fixture: _ReaderFixture) -> None:
+def test_value_tile_index_prunes_gene_lost_during_sampling(reader_fixture: Any) -> None:
     selected_a = np.array([0], dtype=np.uint32)
     viewport = _IntrinsicViewport(0, 0, 12, 10)
 
@@ -257,7 +256,7 @@ def test_value_tile_index_prunes_gene_lost_during_sampling(reader_fixture: _Read
         assert reader.open_bucket_reader_count == 0
 
 
-def test_reader_cache_retains_bucket_metadata_across_levels(reader_fixture: _ReaderFixture) -> None:
+def test_reader_cache_retains_bucket_metadata_across_levels(reader_fixture: Any) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         assert reader.resident_index_bytes > 0
         assert reader.resident_bucket_lookup_bytes == 0
@@ -277,7 +276,7 @@ def test_reader_cache_retains_bucket_metadata_across_levels(reader_fixture: _Rea
 
 
 def test_bucket_lookup_index_loading_is_explicit_immutable_and_byte_accounted(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     progress: list[tuple[int, int]] = []
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
@@ -313,7 +312,7 @@ def test_bucket_lookup_index_loading_is_explicit_immutable_and_byte_accounted(
 
 
 def test_reader_loads_lookup_indexes_without_configured_memory_limits(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     selected_a = np.array([0], dtype=np.uint32)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
@@ -331,7 +330,7 @@ def test_reader_loads_lookup_indexes_without_configured_memory_limits(
 
 
 def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     load_calls = 0
@@ -356,7 +355,7 @@ def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
 
 
 def test_bucket_lookup_index_loading_rolls_back_new_indexes_after_failure(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         projected = reader.project_bucket_lookup_index_bytes(levels=(0,))
@@ -376,7 +375,7 @@ def test_bucket_lookup_index_loading_rolls_back_new_indexes_after_failure(
 
 
 def test_primed_display_reads_do_not_reread_bucket_lookup_arrays(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lookup_names = {
@@ -407,7 +406,7 @@ def test_primed_display_reads_do_not_reread_bucket_lookup_arrays(
 
 
 def test_bucket_lookup_index_loading_reads_only_resident_lookup_arrays(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_names = (
@@ -440,7 +439,7 @@ def test_bucket_lookup_index_loading_reads_only_resident_lookup_arrays(
         assert tuple(observed_names) == expected_names
 
 
-def test_level_selection_uses_budget_even_when_values_disappear(reader_fixture: _ReaderFixture) -> None:
+def test_level_selection_uses_budget_even_when_values_disappear(reader_fixture: Any) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
     second_exact_tile = _IntrinsicViewport(10, 0, 12, 10)
     selected_a = np.array([0], dtype=np.uint32)
@@ -491,7 +490,7 @@ def test_level_selection_uses_budget_even_when_values_disappear(reader_fixture: 
         assert absent_at_exact.omitted_value_ids.tolist() == []
 
 
-def test_selected_level_selection_stops_after_first_valid_fit(reader_fixture: _ReaderFixture) -> None:
+def test_selected_level_selection_stops_after_first_valid_fit(reader_fixture: Any) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
     selected_a = np.array([0], dtype=np.uint32)
     selected_b = np.array([1], dtype=np.uint32)
@@ -589,7 +588,7 @@ def test_exact_value_tile_row_selection_rejects_invalid_intervals(
 
 
 def test_complete_value_index_load_is_rejected_without_catalog_payload_reads(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_all = np.array([0, 1, 2], dtype=np.uint32)
@@ -626,7 +625,7 @@ def test_complete_value_index_load_is_rejected_without_catalog_payload_reads(
 
 
 def test_selected_value_index_is_immutable_bounded_and_catalog_io_free(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_a = np.array([0], dtype=np.uint32)
@@ -666,7 +665,7 @@ def test_selected_value_index_is_immutable_bounded_and_catalog_io_free(
 
 
 def test_selected_value_index_preserves_separated_values_and_empty_level_intervals(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     selected_a_and_c = np.array([0, 2], dtype=np.uint32)
     full = _IntrinsicViewport(0, 0, 12, 10)
@@ -684,7 +683,7 @@ def test_selected_value_index_preserves_separated_values_and_empty_level_interva
 
 
 def test_selected_value_index_uses_one_exact_selection_per_nonempty_level(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_a_and_c = np.array([0, 2], dtype=np.uint32)
@@ -739,7 +738,7 @@ def test_selected_value_index_uses_one_exact_selection_per_nonempty_level(
 
 
 def test_value_index_load_rejects_budget_before_catalog_payload_reads(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_a = np.array([0], dtype=np.uint32)
@@ -761,7 +760,7 @@ def test_value_index_load_rejects_budget_before_catalog_payload_reads(
     assert calls == {VALUE_TILES_MANIFEST_INDEX: 0, VALUE_TILES_N_POINTS: 0}
 
 
-def test_reader_rejects_selected_value_index_from_another_generation(reader_fixture: _ReaderFixture) -> None:
+def test_reader_rejects_selected_value_index_from_another_generation(reader_fixture: Any) -> None:
     selected_a = np.array([0], dtype=np.uint32)
     full = _IntrinsicViewport(0, 0, 12, 10)
 
@@ -772,7 +771,7 @@ def test_reader_rejects_selected_value_index_from_another_generation(reader_fixt
             reader.select_level(full, 100, value_index=foreign)
 
 
-def test_reader_rejects_invalid_inputs_and_closed_use(reader_fixture: _ReaderFixture) -> None:
+def test_reader_rejects_invalid_inputs_and_closed_use(reader_fixture: Any) -> None:
     with pytest.raises(ValueError, match="positive width"):
         _IntrinsicViewport(0, 0, 0, 1)
 

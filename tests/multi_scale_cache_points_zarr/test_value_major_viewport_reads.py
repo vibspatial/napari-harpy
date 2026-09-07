@@ -36,8 +36,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader 
     _ValueMajorLocationReader,
 )
 
-_ReaderFixture = Any
-
 
 def _assert_value_major_read_matches_tile_major(
     reader: _PointsCacheReader,
@@ -149,7 +147,7 @@ def multi_tile_reader_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_subsets(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     selected_a_and_c = np.array([0, 2], dtype=np.uint32)
     full = _IntrinsicViewport(0, 0, 12, 10)
@@ -191,7 +189,7 @@ def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_su
 
 
 def test_selected_viewport_reads_value_major_sidecar_without_bucket_payload_access(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     selected_a_and_c = np.array([0, 2], dtype=np.uint32)
@@ -223,7 +221,7 @@ def test_selected_viewport_reads_value_major_sidecar_without_bucket_payload_acce
 
 
 def test_selected_viewport_sidecar_preserves_manifest_and_value_order_at_every_level(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     selected_b = np.array([1], dtype=np.uint32)
     full = _IntrinsicViewport(0, 0, 12, 10)
@@ -244,7 +242,7 @@ def test_selected_viewport_sidecar_preserves_manifest_and_value_order_at_every_l
 
 
 def test_all_values_viewport_retains_tile_major_route_at_every_level(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
@@ -268,7 +266,7 @@ def test_all_values_viewport_retains_tile_major_route_at_every_level(
 
 
 def test_value_major_and_tile_major_subset_paths_return_identical_logical_tiles(
-    reader_fixture: _ReaderFixture,
+    reader_fixture: Any,
 ) -> None:
     selected_a_and_b = np.array([0, 1], dtype=np.uint32)
     full = _IntrinsicViewport(0, 0, 12, 10)
