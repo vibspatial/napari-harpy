@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import PropertyMock
 
 import numpy as np
 import numpy.typing as npt
@@ -18,6 +19,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
     _SelectedValueIndex,
+    _SelectedValueLevelIndex,
     _ValueTileInterval,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
@@ -173,7 +175,6 @@ def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
         assert plan.selected_value_level_index is None
         assert plan.tile_keys == ((0, 0, 0), (0, 1, 0))
         assert plan.required_bucket_keys == ((0, 0),)
-        assert all(request.applicable_value_ids is None for request in plan.requests)
 
 
 def test_planned_subset_reads_only_missing_tiles_and_preserves_plan_order(
@@ -437,6 +438,75 @@ def test_bucket_lookup_index_loading_reads_only_resident_lookup_arrays(
             == projected
         )
         assert tuple(observed_names) == expected_names
+
+
+def test_positive_tile_planning_does_not_access_selected_point_counts(
+    reader_fixture: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full = _IntrinsicViewport(0, 0, 12, 10)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = _load_selected_value_index(reader, np.array([1], dtype=np.uint32))
+        visible = reader._visible_manifest_rows(0, full).astype(np.uint64)
+        # Guard the field after loading the real index: even accessing the
+        # resident count array must fail in positions-only mode. Also exercise
+        # the production planning caller to ensure it requests that mode.
+        forbidden_counts = PropertyMock(side_effect=AssertionError("Planning accessed selected point counts."))
+        with monkeypatch.context() as patches:
+            patches.setattr(_SelectedValueLevelIndex, "n_points", forbidden_counts, raising=False)
+            matches = list(reader._iter_selected_value_matches(0, visible, value_index, include_point_counts=False))
+            plan = reader.plan_viewport(0, full, value_index=value_index)
+
+        assert len(matches) == 1
+        selected_position, visible_positions, n_points = matches[0]
+        assert selected_position == 0
+        np.testing.assert_array_equal(visible_positions, [0, 1])
+        assert n_points is None
+        assert plan.tile_keys == ((0, 0, 0), (0, 1, 0))
+        forbidden_counts.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("level", "viewport", "expected_matches", "expected_counts", "expected_positive_tiles"),
+    [
+        (0, _IntrinsicViewport(0, 0, 12, 10), ((0, (0,), (2,)), (1, (1,), (1,))), (2, 1), 2),
+        (0, _IntrinsicViewport(10, 0, 12, 10), ((1, (0,), (1,)),), (0, 1), 1),
+        (1, _IntrinsicViewport(0, 0, 12, 10), ((1, (1,), (1,)),), (0, 1), 1),
+        (0, _IntrinsicViewport(100, 100, 110, 110), (), (0, 0), 0),
+    ],
+    ids=["full-viewport", "partial-viewport", "sampled-away-value", "empty-viewport"],
+)
+def test_selected_value_match_modes_preserve_matches_and_lod_counts(
+    reader_fixture: Any,
+    level: int,
+    viewport: _IntrinsicViewport,
+    expected_matches: tuple[tuple[int, tuple[int, ...], tuple[int, ...]], ...],
+    expected_counts: tuple[int, ...],
+    expected_positive_tiles: int,
+) -> None:
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = _load_selected_value_index(reader, np.array([0, 2], dtype=np.uint32))
+        visible_rows = reader._visible_manifest_rows(level, viewport)
+        visible = visible_rows.astype(np.uint64)
+        with_counts = list(reader._iter_selected_value_matches(level, visible, value_index, include_point_counts=True))
+        positions_only = list(
+            reader._iter_selected_value_matches(level, visible, value_index, include_point_counts=False)
+        )
+        assert len(with_counts) == len(positions_only) == len(expected_matches)
+        for counted, uncounted, expected in zip(with_counts, positions_only, expected_matches, strict=True):
+            selected_position, positions, counts = counted
+            assert selected_position == uncounted[0] == expected[0]
+            np.testing.assert_array_equal(positions, expected[1])
+            np.testing.assert_array_equal(uncounted[1], positions)
+            assert counts is not None
+            np.testing.assert_array_equal(counts, expected[2])
+            assert uncounted[2] is None
+            assert positions.dtype == np.dtype(np.int64) and positions.flags.c_contiguous
+            assert counts.dtype == np.dtype(np.uint64) and counts.flags.c_contiguous
+
+        counts_by_value, positive_tiles = reader._selected_value_manifest_summary(level, visible_rows, value_index)
+        np.testing.assert_array_equal(counts_by_value, expected_counts)
+        assert positive_tiles == expected_positive_tiles
 
 
 def test_level_selection_uses_budget_even_when_values_disappear(reader_fixture: Any) -> None:
