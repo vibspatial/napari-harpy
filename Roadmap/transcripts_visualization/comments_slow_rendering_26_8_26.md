@@ -1459,20 +1459,59 @@ The immutable selected level index is the single authoritative selected-value-to
 
 ### Slice 10 — Remove bucket sparse-range indexes from the viewer runtime
 
-This slice removes the approximately 8.1-second startup and 568.4-MiB eager lookup policy without replacing it with a fallback-index cache. All-level sidecars make the large sparse ranges a build-time and validation structure rather than a viewer-runtime resource.
+This is primarily a startup-time and resident-memory improvement, not a renderer change. It removes the eager bucket lookup policy associated with the earlier approximately 8.1-second startup and 568.4-MiB lookup allocation, without replacing it with a fallback-index cache. Those are baseline measurements, not a promise that the entire previous startup duration disappears. All-level sidecars make the large sparse ranges a build-time and validation structure rather than a viewer-runtime resource.
+
+**Current code and the remaining dependency**
+
+`_TiledPointsCacheWorker.start()` still calls `project_bucket_lookup_index_bytes()` and then `load_bucket_lookup_indexes()` across every level before announcing readiness. Projection itself opens the bucket readers to inspect their metadata; loading then retains all five arrays bundled in `_BucketLookupIndex`: `tile_offset` and `ranges/{tile_indptr,value_id,row_start,row_count}`.
+
+Proper-subset viewport reads already use `_read_value_major_requests()` and no longer consume these bucket ranges. However, all-values reads still go through `_read_complete_tile_major_requests()` → `_BucketReader.read_display_payloads()` → `resolve_complete_tile_interval()`. That final method requires `_BucketLookupIndex` merely to access its `tile_offset` array. Deleting startup loading alone would therefore break all-values reads.
+
+The central refactor is to separate **where a complete tile begins and ends** from **where particular values occur inside that tile**. The viewer still needs the first form of addressing, but no longer needs the second.
+
+For an all-values tile occupying bucket point rows `[100:110)`, the reader needs only the equivalent of `location[100:110]` and point-level `value_id[100:110]`. It does not need to discover the individual value ranges inside that interval. `tile_offset` therefore remains necessary as compact addressing information, while none of `ranges/{tile_indptr,value_id,row_start,row_count}` is needed by this route. The complete-tile batch reader continues to combine multiple such intervals into its coordinated Zarr selections.
+
+**Compact complete-tile addressing**
+
+`_PointsCacheReader._load_runtime_indexes()` already loads the manifest's bucket identity, bucket-local tile index, and `n_points`. Derive offsets once from those counts, independently for each `(level, bucket_id)` and in bucket-local tile order. For example:
+
+```text
+Bucket-local tile index:  0       1       2
+Manifest n_points:        3       5       2
+Derived tile_offset:  [0, 3,      8,     10]
+
+Tile 1 occupies this bucket's point rows [3:8).
+```
+
+These offsets use every tile in the bucket, not just the current viewport or CPU-residency misses. They are compact: one boundary per tile, rather than one record per tile/value range. Validate them against the persisted bucket offsets when that bucket is first opened, rather than opening every bucket during startup merely to obtain `tile_offset`. This is an in-memory addressing change; it does not require a new persisted cache array.
+
+**Persisted arrays versus the resident lookup object**
+
+Removing sparse indexes from the viewer does not mean deleting their stored arrays or necessarily deleting `_BucketLookupIndex` everywhere:
+
+- **Normal viewer startup and reads:** neither physical route loads or retains `_BucketLookupIndex`. All-values reads use compact offsets; selected-value reads use the value-major cache and the active selection's `value_tiles` records.
+- **Construction and validation:** persisted bucket sparse ranges remain consumed, for example by `_iter_compact_bucket_range_batches()` during catalog generation and validation. These consumers read the stored arrays in batches; their need for those arrays does not imply a dependency on the resident `_BucketLookupIndex` object.
+- **Explicit diagnostic/reference reads:** the current `read_tile(..., value_ids=...)` and bucket-level selected-value display APIs still support sparse tile-major subset reads. The tile-major/value-major equivalence tests use that path as their reference. If retained, this path still needs an explicitly loaded sparse lookup, outside the normal viewer session. It must never become an implicit viewer fallback. Removing or refactoring those APIs and their reference consumers requires a separate decision; deletion of `_BucketLookupIndex` everywhere is not a Slice 10 exit requirement.
 
 **Production changes**
 
 1. Split bucket addressing into:
    - compact complete-tile offsets; and
-   - large sparse selected-value ranges used only during construction and validation.
-2. Keep compact manifest, catalog value pointers, per-level sidecar pointers, totals, and complete-tile addressing resident. Prefer deriving bucket-local complete-tile offsets once from manifest order and `n_points` so startup does not have to open every bucket merely to read `tile_offset`; validate them against a bucket when that bucket is opened. Do not treat all five current bucket lookup arrays as one indivisible load unit.
+   - large sparse selected-value ranges excluded from normal viewer reads, while remaining available to construction, validation, and explicit diagnostic/reference reads as described above.
+2. Keep compact manifest, catalog value pointers, per-level sidecar pointers, totals, and the derived complete-tile addressing resident. Refactor `resolve_complete_tile_interval()` and its display-reader callers to use the compact offsets independently of `_BucketLookupIndex`. Preserve `_read_complete_tile_major_requests()`'s one-batch-per-bucket payload selections, logical output order, and cancellation checkpoints; do not replace them with per-tile Zarr reads. Do not treat all five current bucket lookup arrays as one indivisible load unit.
 3. Remove the unconditional all-level `project_bucket_lookup_index_bytes()` and `load_bucket_lookup_indexes()` sequence from `_TiledPointsCacheWorker.start()`.
-4. At the Slice 10 checkpoint, route every proper subset through its selected level's sidecar and every all-values request through compact complete-tile addressing. Neither branch may call `load_bucket_lookup_indexes()` or `storage.bucket_reader._BucketLookupIndex.load_lookup_index()`. Slice 11 may later add complete tile-major reads plus in-memory filtering as a second proper-subset route, but it must use the same compact addressing and remain independent of sparse ranges.
+4. At the Slice 10 checkpoint, route every proper subset through its selected level's sidecar and every all-values request through compact complete-tile addressing. Neither branch may call `load_bucket_lookup_indexes()` or `_BucketReader.load_lookup_index()`. Slice 11 may later add complete tile-major reads plus in-memory filtering as a second proper-subset route, but it must use the same compact addressing and remain independent of sparse ranges.
 5. Remove `max_bucket_lookup_bytes` from `TiledPointsApplicationSettings`, `_CacheSessionSettings`, adapter wiring, startup progress, diagnostics, benchmarks, and tests. This is a direct removal rather than a compatibility migration because the viewer no longer has a bucket sparse-index allocation to bound.
 6. Keep open bucket-reader metadata and point-payload access independent from sparse-index residency. Opening a tile-major bucket for an all-values payload must not load its `ranges` arrays.
 7. Preserve persisted `ranges/row_start` and the other sparse-range arrays in this slice for cache construction, catalog generation, and publication validation. Any schema simplification is later, separate work.
 8. Replace startup progress/status that assumes a complete index load with compact-metadata and sidecar-ready diagnostics.
+
+**What stays unchanged**
+
+- The active selection's in-memory `value_tiles` records and counts remain necessary for planning and value-major addressing. They are distinct from the bucket `ranges` arrays being removed from viewer residency; `max_selected_value_index_bytes` remains meaningful.
+- Keep point-level tile-major `value_id` on disk and read it alongside `location` for all-values payloads. Removing resident `ranges/value_id` does not remove point-level colour IDs.
+- Keep the cache schema and persisted sparse ranges for construction, catalog generation, and validation. This slice changes viewer residency, not the stored format.
+- LOD selection, the logical tile payload contract, decoded CPU tile retention, worker packing, and the visual/VBO path are unchanged. Adaptive physical routing remains Slice 11 work.
 
 **Focused tests**
 
@@ -1481,16 +1520,21 @@ This slice removes the approximately 8.1-second startup and 568.4-MiB eager look
 - Patch `project_bucket_lookup_index_bytes()`, `load_bucket_lookup_indexes()`, and bucket `load_lookup_index()` to fail and prove normal viewer startup and reads do not touch them.
 - Repeated Exact, Bridge, and Spatial level/view changes never create a sparse lookup index.
 - All-values tile-major reads remain correct using compact complete-tile addressing alone.
+- Derived offsets reset at each level/bucket boundary and use complete bucket counts even when only later or disjoint tiles are requested. Opening a bucket rejects a mismatch with its persisted offsets rather than silently reading the wrong point rows.
+- Preserve complete-tile batching, output order, and cancellation behavior without requiring sparse-index priming in those tests.
 - Removing `max_bucket_lookup_bytes` leaves no constructor, settings, adapter, diagnostic, or test compatibility alias.
 - Construction and independent staged validation still consume the persisted ranges correctly outside the viewer runtime.
+- Keep explicit tile-major subset reference reads separate from the viewer no-sparse-index checks. Any lookup priming retained for a diagnostic/reference reader must not prime the reader/session being tested for zero sparse-index residency.
 
 **Benchmark evidence**
 
-Report startup metadata time, time to ready, compact resident bytes, per-level sidecar-pointer bytes, open bucket readers, sparse resident bytes, sparse-index load count, and peak RSS. Sparse resident bytes and load count must remain zero across Exact, Bridge, Spatial, all-values, and repeated viewport traces, and the previous 568.4-MiB eager allocation must disappear.
+Report startup metadata time, time to ready, compact resident bytes, per-level sidecar-pointer bytes, open bucket readers, sparse resident bytes, sparse-index load count, and peak RSS. Account for compact complete-tile offsets separately from sparse ranges so retaining the necessary offsets is not reported as a sparse-index allocation. Sparse resident bytes and load count must remain zero across Exact, Bridge, Spatial, all-values, and repeated viewport traces, and the previous 568.4-MiB eager allocation must disappear.
+
+Also measure first all-values payload latency and warm repeated reads: lazy bucket opening and offset validation still have a cost when a bucket is first needed. Report that work separately from time to ready rather than treating deferred work as eliminated. Verify unchanged logical payloads and physical batching; do not claim a direct draw-time or zoom-stutter fix from this startup/memory slice.
 
 **Exit condition**
 
-Large sparse ranges are absent from the viewer runtime; they remain persisted only for the separately scoped construction and validation contracts.
+Large sparse ranges are absent from normal viewer startup and reads; persisted ranges remain available for construction, validation, and explicit diagnostic/reference consumers outside that runtime. Startup does not eagerly open every bucket to prime lookup indexes, and both viewer physical read routes work without sparse-index loading. Complete-tile reads retain compact addressing and their existing batched payload behavior. This does not require deleting `_BucketLookupIndex` or the explicitly primed reference path from the entire codebase.
 
 ### Slice 11 — Measured adaptive proper-subset physical routing
 
@@ -1879,7 +1923,7 @@ The initial optimization programme is complete when:
 7. every newly built current-schema cache contains a structurally and index-validated value-major location sidecar for every serialized level, and that sidecar remains an eligible proper-subset route after LOD selection;
 8. all-values requests retain tile-major routing, while proper subsets choose once per complete coverage-miss request between value-major and complete tile-major reads plus in-memory filtering using the deterministic measured cost model;
 9. no viewer startup or read path projects, loads, or retains bucket sparse-range indexes;
-10. persisted bucket sparse ranges remain confined to cache construction, catalog generation, and independent publication validation;
+10. persisted bucket sparse ranges remain available for cache construction, catalog generation, independent validation, and explicit diagnostic/reference reads outside the viewer runtime; retaining these consumers does not permit a viewer sparse-index fallback;
 11. every accepted camera view is contained by a deterministic, budget-bounded render coverage; coverage hits avoid physical reads, tile-proportional planning, packing, and VBO replacement, while LOD hysteresis prevents repeated boundary oscillation without ever exceeding the hard limits;
 12. benchmark reports demonstrate improved cold reads, warm activation, coverage-hit interaction, first draw, warm draw, startup RSS, steady memory, and no latency cliff immediately below versus above the 100,000-point boundary;
 13. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
