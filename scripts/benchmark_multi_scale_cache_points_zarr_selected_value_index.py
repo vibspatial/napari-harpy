@@ -293,7 +293,7 @@ def _time_runtime_planning(
         lod_seconds = perf_counter() - started
         visible_rows = reader._visible_manifest_rows(selection.level, viewport)
         started = perf_counter()
-        positive = reader._selected_value_manifest(selection.level, visible_rows, value_index)
+        positive = reader._positive_visible_manifest_rows(selection.level, visible_rows, value_index)
         discovery_seconds = perf_counter() - started
         reports.append(
             {
@@ -360,7 +360,7 @@ def _measure_selected_viewport(
         planning_seconds = perf_counter() - started
         visible_rows = reader._visible_manifest_rows(level, viewport)
         visible_tile_count = len(visible_rows)
-        positive_rows = reader._selected_value_manifest(level, visible_rows, value_index)
+        positive_rows = reader._positive_visible_manifest_rows(level, visible_rows, value_index)
         bucket_keys = tuple(
             sorted(
                 {

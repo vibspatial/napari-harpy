@@ -1340,9 +1340,11 @@ The reader chooses physical locality after semantic LOD selection and returns th
 
 ### Slice 9 — Remove duplicated per-tile selected-value membership
 
+**Status: Implemented**
+
 This is a bounded internal reader refactor following the first value-major runtime implementation. It does not change cache contents, semantic LOD selection, physical routing, CPU residency, logical tile output, render-batch packing, or VisPy.
 
-The current proper-subset plan retains two orientations of the same visible membership relation:
+Before this slice, the proper-subset plan retained two orientations of the same visible membership relation:
 
 ```text
 _SelectedValueLevelIndex
@@ -1359,7 +1361,7 @@ _read_value_major_requests(): transpose again
     selected value -> missing manifest rows
 ```
 
-The selected level index is not copied: `_ViewportReadPlan` retains the same immutable object by reference. Its complete level-wide `n_points` sequences must remain available because sidecar offsets include records preceding the visible or nonresident records. The unnecessary duplication is the per-tile `applicable_value_ids` projection. It creates a dictionary and potentially thousands of small NumPy arrays for every proper-subset viewport plan, including warm requests for which CPU residency later eliminates every physical read.
+The selected level index is not copied: `_ViewportReadPlan` retains the same immutable object by reference. Its complete level-wide `n_points` sequences must remain available because sidecar offsets include records preceding the visible or nonresident records. The removed duplication was the per-tile `applicable_value_ids` projection. It created a dictionary and potentially thousands of small NumPy arrays for every proper-subset viewport plan, including warm requests for which CPU residency later eliminates every physical read.
 
 **Production changes**
 
@@ -1407,6 +1409,49 @@ The selected level index is not copied: `_ViewportReadPlan` retains the same imm
 Compare before and after on cold, partially resident, and fully resident requests with the same selections, viewports, and selected LODs. Report viewport-plan wall time, physical block-resolution time, total worker time, positive and missing tile counts, selected value/tile record count, plan-owned NumPy allocation count and bytes, sidecar reads, and returned bytes. Include a highly fragmented request with thousands of positive tiles and a multi-value request.
 
 Acceptance requires eliminating tile-count-proportional value-ID arrays from the plan, preserving byte-equivalent payloads, and avoiding a material regression in cold sidecar reads. A fully resident request should show reduced or unchanged planning time; do not claim a latency improvement without the allocation and timing measurements.
+
+**Implementation evidence — 2026-09-07**
+
+The implementation removes the per-tile projection, dispatches explicit selected-level facts and missing manifest rows, and narrows/renames the complete tile-major helper without an alias. Cancellation is checked before and after each tile-major bucket batch. The 104 focused reader, value-major viewport/location, and cache-session tests pass; changed Python files pass Ruff.
+
+`scripts/benchmark_tiled_points_viewport_planning.py` captures the real worker path before and after the refactor, including block resolution before location IO and plan-owned NumPy arrays separately from the borrowed level index. Measurements below are medians of five requests per case/state, with a 100,000-point budget. “Cold” means empty CPU residency, not a flushed filesystem cache; partial residency retains alternating planned tiles. Startup/index loading is measured separately. The after run was repeated without concurrent tests. No physical draw was benchmarked.
+
+| Case | LOD | Snapshot points | Positive tiles | Selected level value/tile records | Plan-owned arrays before → after | Array data bytes before → after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| AAMP, full extent | Exact | 60,512 | 4,453 | 4,453 | 4,453 → 0 | 17,812 → 0 |
+| AAMP, centered 0.2 viewport fraction | Exact | 4,846 | 247 | 4,453 | 247 → 0 | 988 → 0 |
+| AAMP + ADAMTS1, full extent | Bridge | 99,893 | 6,002 | 9,692 | 6,002 → 0 | 38,768 → 0 |
+| AAMP + ADAMTS1, centered 0.2 viewport fraction | Exact | 45,472 | 337 | 10,393 | 337 → 0 | 2,328 → 0 |
+
+Array data bytes exclude NumPy/Python object overhead and transient allocations. Planned tile identity objects and the borrowed selected-level index remain; this does not make the entire plan allocation-free.
+
+| Case | CPU residency | Missing tiles | Plan ms, before → after | Block resolution ms, before → after | Total worker ms, before → after |
+| --- | --- | ---: | ---: | ---: | ---: |
+| AAMP, full | Cold | 4,453 | 16.69 → 5.99 | 5.50 → 5.35 | 105.90 → 97.88 |
+| AAMP, full | Partial | 2,226 | 17.33 → 6.00 | 2.77 → 2.61 | 83.37 → 77.78 |
+| AAMP, full | Full | 0 | 16.95 → 6.17 | 0 → 0 | 51.05 → 43.58 |
+| AAMP, 0.2 | Cold | 247 | 0.97 → 0.36 | 0.33 → 0.31 | 7.81 → 8.12 |
+| AAMP, 0.2 | Partial | 123 | 0.96 → 0.39 | 0.18 → 0.19 | 6.63 → 6.69 |
+| AAMP, 0.2 | Full | 0 | 0.97 → 0.36 | 0 → 0 | 2.97 → 2.52 |
+| AAMP + ADAMTS1, full | Cold | 6,002 | 25.70 → 8.49 | 13.00 → 12.22 | 173.54 → 149.63 |
+| AAMP + ADAMTS1, full | Partial | 3,001 | 25.90 → 8.14 | 6.36 → 5.95 | 131.08 → 114.39 |
+| AAMP + ADAMTS1, full | Full | 0 | 25.51 → 8.61 | 0 → 0 | 75.24 → 58.45 |
+| AAMP + ADAMTS1, 0.2 | Cold | 337 | 1.59 → 0.54 | 0.77 → 0.78 | 19.79 → 18.25 |
+| AAMP + ADAMTS1, 0.2 | Partial | 168 | 1.49 → 0.49 | 0.44 → 0.38 | 16.57 → 15.52 |
+| AAMP + ADAMTS1, 0.2 | Full | 0 | 1.48 → 0.50 | 0 → 0 | 4.65 → 3.80 |
+
+All 60 paired requests preserve the exact packed-vertex SHA-256, LOD/omission metadata, positive/missing tile counts, physical selection counts, returned bytes, and touched chunks/shards. Each cold or partial request performs one location selection; every fully resident request performs zero block-resolution calls and zero payload reads. Returned location payloads are unchanged:
+
+| Case | Cold rows / bytes | Partial rows / bytes | Chunks / shards, both states |
+| --- | ---: | ---: | ---: |
+| AAMP, full | 60,512 / 484,096 | 30,325 / 242,600 | 16 / 1 |
+| AAMP, 0.2 | 4,846 / 38,768 | 2,393 / 19,144 | 7 / 1 |
+| AAMP + ADAMTS1, full | 99,893 / 799,144 | 50,373 / 402,984 | 25 / 3 |
+| AAMP + ADAMTS1, 0.2 | 45,472 / 363,776 | 22,462 / 179,696 | 32 / 4 |
+
+Planning improves in every measured case. Cold sidecar IO is structurally unchanged; location-reader medians vary by approximately -0.5 to +0.8 ms across these cases. The small AAMP viewport's cold worker median increases by 0.31 ms, so do not claim every measured latency improved. The main result is elimination of per-tile value arrays and a substantial planning reduction for fragmented requests, without an observed material cold-read regression.
+
+Raw reports: `/private/tmp/napari-harpy-viewport-planning-before.json` and `/private/tmp/napari-harpy-viewport-planning-after-isolated.json`. These include individual measurements, startup costs, returned bytes, selection/chunk statistics, and payload hashes.
 
 **Exit condition**
 
