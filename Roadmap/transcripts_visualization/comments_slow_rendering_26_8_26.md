@@ -674,9 +674,10 @@ The following constraints apply to every slice:
 | 8 | Initially route every proper-subset read through the selected level's sidecar | Slices 5 and 6 | Selected values gain locality at every LOD |
 | 9 | Remove duplicated per-tile selected-value membership from viewport plans | Slice 8 | One authoritative value-to-tile relation and a leaner semantic plan |
 | 10 | Remove bucket sparse-range indexes from the viewer runtime | Slices 8 and 9 | Startup time, lookup RSS, and fallback-cache complexity are removed |
-| 11 | Add measured adaptive routing for proper subsets | Slices 9 and 10 | Dense subsets may use complete tile-major reads and in-memory filtering without restoring sparse indexes |
+| 10b | Make complete-tile addressing self-contained in `_TileDescriptor` | Slice 10 | Required tile ordinal and point-row start replace the separate `_BucketTileIndex`, preserving first-use validation |
+| 11 | Add measured adaptive routing for proper subsets | Slices 9 and 10b | Dense subsets may use complete tile-major reads and in-memory filtering without restoring sparse indexes |
 | 12 | Add stable render coverage, LOD hysteresis, and bounded packed-batch reuse | Slices 2, 10, and 11 | Smooth interaction on both sides of the 100,000-point boundary without a special-case performance cliff |
-| 13 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6 and 8–12; Slice 7 optional | Evidence-backed validation of storage routing, render coverage, and interaction latency |
+| 13 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6 and 8–12, including 10b; Slice 7 optional | Evidence-backed validation of storage routing, render coverage, and interaction latency |
 | 14 | Add viewport debounce only if dispatch churn remains material | Slice 13 | Conditional reduction of obsolete work after coverage reuse |
 | 15 | Evaluate optional ping-pong storage and a larger point budget | Slice 13 | Conditional hardening/scaling work, not part of the initial solution |
 | 16 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
@@ -1462,13 +1463,15 @@ The immutable selected level index is the single authoritative selected-value-to
 
 ### Slice 10 — Remove bucket sparse-range indexes from the viewer runtime
 
+**Status: Implemented**
+
 This is primarily a startup-time and resident-memory improvement, not a renderer change. It removes the eager bucket lookup policy associated with the earlier approximately 8.1-second startup and 568.4-MiB lookup allocation, without replacing it with a fallback-index cache. Those are baseline measurements, not a promise that the entire previous startup duration disappears. All-level sidecars make the large sparse ranges a build-time and validation structure rather than a viewer-runtime resource.
 
-**Current code and the remaining dependency**
+**Starting point before implementation**
 
-`_TiledPointsCacheWorker.start()` still calls `project_bucket_lookup_index_bytes()` and then `load_bucket_lookup_indexes()` across every level before announcing readiness. Projection itself opens the bucket readers to inspect their metadata; loading then retains all five arrays bundled in `_BucketLookupIndex`: `tile_offset` and `ranges/{tile_indptr,value_id,row_start,row_count}`.
+`_TiledPointsCacheWorker.start()` called `project_bucket_lookup_index_bytes()` and then `load_bucket_lookup_indexes()` across every level before announcing readiness. Projection itself opened the bucket readers to inspect their metadata; loading then retained all five arrays bundled in `_BucketLookupIndex`: `tile_offset` and `ranges/{tile_indptr,value_id,row_start,row_count}`.
 
-Proper-subset viewport reads already use `_read_value_major_requests()` and no longer consume these bucket ranges. However, all-values reads still go through `_read_complete_tile_major_requests()` → `_BucketReader.read_display_payloads()` → `resolve_complete_tile_interval()`. That final method requires `_BucketLookupIndex` merely to access its `tile_offset` array. Deleting startup loading alone would therefore break all-values reads.
+Proper-subset viewport reads already used `_read_value_major_requests()` without consuming these bucket ranges. However, all-values reads went through `_read_complete_tile_major_requests()` → `_BucketReader.read_display_payloads()` → `resolve_complete_tile_interval()`. That final method required `_BucketLookupIndex` merely to access its `tile_offset` array. Deleting startup loading alone would therefore have broken all-values reads.
 
 The central refactor is to separate **where a complete tile begins and ends** from **where particular values occur inside that tile**. The viewer still needs the first form of addressing, but no longer needs the second.
 
@@ -1535,13 +1538,117 @@ Report startup metadata time, time to ready, compact resident bytes, per-level s
 
 Also measure first all-values payload latency and warm repeated reads: lazy bucket opening and offset validation still have a cost when a bucket is first needed. Report that work separately from time to ready rather than treating deferred work as eliminated. Verify unchanged logical payloads and physical batching; do not claim a direct draw-time or zoom-stutter fix from this startup/memory slice.
 
+**Implementation and measured results — 7 September 2026**
+
+The viewer now uses immutable `_BucketTileIndex` offsets derived from the complete manifest, separately for each level and bucket. First complete-tile use checks the offsets, tile coordinates, and counts against storage before accepting them; subsequent reads reuse the accepted addressing without pointer IO. Serialized bucket IDs may have gaps because empty hash buckets are omitted, so validation counts distinct buckets rather than treating `bucket_count` as an upper bound on their IDs.
+
+Session startup no longer projects or loads sparse indexes. `max_bucket_lookup_bytes`, the bucket-index loading state, progress signals, and their application/widget wiring are removed without aliases. Readiness reports compact resident-index bytes. Persisted ranges and explicitly primed diagnostic subset reads remain supported; equivalence tests use separate reference readers. Neither normal physical route loads these diagnostic indexes.
+
+Measurements used the existing completed cache, generation `939bdb3e-d137-49d5-9d3e-0779c67e4156`; no cache rebuild was needed. Python imports are excluded from startup latency. Filesystem caches were not flushed.
+
+| Startup/residency measurement | Result |
+|---|---:|
+| Controlled reference restoring the previous eager project/load sequence | 8,212.5 ms; 108 open buckets; 568.4 MiB lookup arrays |
+| Normal compact-reader startup in the viewport trace | 156.3 ms; 0 open buckets |
+| Actual worker-session start → GUI `ready` signal | 145.9 ms, including 145.6 ms metadata loading |
+| Total compact resident NumPy indexes | 1,328,400 bytes / 1.267 MiB |
+| Complete-tile offsets, included above | 138,056 bytes / 0.132 MiB |
+| All per-level value-major point pointers, included above | 368,856 bytes / 0.352 MiB |
+| Sparse-index residency and loaded-index count in normal reads | 0 bytes; 0 indexes |
+| Session-probe peak RSS, including imports and repeated reads | 321.2 MiB |
+
+Separate instrumented cache-to-canvas runs, without physical canvas drawing:
+
+| Request | Level; tiles; points | First worker snapshot | CPU-resident repeat | Worker-phase peak RSS |
+|---|---|---:|---:|---:|
+| AAMP | Exact; 4,453; 60,512 | 96.3 ms | 42.1 ms | 325.9 MiB |
+| ADAMTS1 | Bridge; 5,853; 92,499 | 133.6 ms | 53.8 ms | 324.5 MiB |
+| All values | Spatial 8; 1; 100,000 | 156.2 ms | 1.2 ms | 322.4 MiB |
+
+Both selected-value runs kept zero tile-major bucket readers open. The all-values run opened one bucket and spent **74.2 ms** of its first snapshot on lazy bucket setup/address validation, followed by **80.3 ms** in the batched payload reader. This cost is deferred, not eliminated. A later filesystem-warm session probe delivered its first all-values snapshot in 27.2 ms and subsequent CPU-resident snapshots in approximately 1.1 ms. Explicitly rereading the same physical payload, bypassing CPU residency, took a 10.3-ms median after the first read. These are different cache states, not contradictory estimates of one fixed first-read cost.
+
+The planning benchmark covered two selections, full and partial viewports, and empty, partial, and complete CPU residency, with five repeats per case. All 60 packed-batch hashes matched the earlier reference and the controlled eager-loading reference. Sparse-index bytes/count and open bucket readers remained zero throughout the normal selected-value traces. On the repeated comparison, cold-worker medians for full-extent one-/two-value requests were 96.8/147.4 ms versus 97.8/142.8 ms with eager priming restored: comparable payload-processing costs, not a claim of a rendering speedup.
+
+The final focused run passed **215 tests** covering startup without sparse projection/loading, repeated Exact/Bridge/Spatial reads, disjoint tiles across multiple buckets, nonzero offsets, corrupt addressing rejected before payload IO, one-time validation, batching, cancellation, and separate reference readers. This includes construction, staged validation, exhaustive validation, and affected application/widget tests. Ruff checks and formatting checks pass on the changed Python files. The full suite and physical OpenGL drawing were not rerun for this residency-only change.
+
+Evidence files: `/private/tmp/napari-harpy-slice10-session-startup.json`, `/private/tmp/napari-harpy-slice10-aamp-isolated.json`, `/private/tmp/napari-harpy-slice10-bridge.json`, `/private/tmp/napari-harpy-slice10-all-values.json`, `/private/tmp/napari-harpy-slice10-viewport-planning.json`, `/private/tmp/napari-harpy-slice10-viewport-planning-repeat.json`, and `/private/tmp/napari-harpy-slice10-eager-reference-planning.json`. The eager reference deliberately primes diagnostic lookups outside the normal viewer runtime to isolate the removed startup policy.
+
 **Exit condition**
 
 Large sparse ranges are absent from normal viewer startup and reads; persisted ranges remain available for construction, validation, and explicit diagnostic/reference consumers outside that runtime. Startup does not eagerly open every bucket to prime lookup indexes, and both viewer physical read routes work without sparse-index loading. Complete-tile reads retain compact addressing and their existing batched payload behavior. This does not require deleting `_BucketLookupIndex` or the explicitly primed reference path from the entire codebase.
 
+### Slice 10b — Self-contained complete-tile addressing in `_TileDescriptor`
+
+**Status: Planned**
+
+This is a contract-simplification follow-up to implemented Slice 10, scheduled before adaptive physical routing in Slice 11. It keeps the zero-sparse-index viewer architecture but moves each complete tile's point-row start into its immutable descriptor. The new field replaces the separate `_BucketTileIndex` representation; it must not create a second retained copy of the same derived addressing. Later slice numbers remain unchanged.
+
+**Motivation and descriptor contract**
+
+`_TileDescriptor` already identifies a finalized tile's physical bucket and its ordinal within that bucket. Currently, finding the tile's point-row interval additionally requires `_BucketTileIndex.tile_offset`. Make the descriptor self-contained instead:
+
+```python
+@dataclass(frozen=True)
+class _TileDescriptor:
+    level: int
+    bucket_id: int
+    bucket_tile_ordinal: int
+    bucket_row_start: int
+    tile_x: int
+    tile_y: int
+    n_points: int
+```
+
+- Rename the Python field `bucket_tile_index` to `bucket_tile_ordinal`: the zero-based position among all nonempty tiles in this bucket, ordered by `(tile_y, tile_x)`. It still indexes persisted tile-coordinate arrays and sparse-range pointers where those remain in use.
+- Introduce required `bucket_row_start`: the zero-based point-row address in the tile-major bucket's aligned `location`, point-level `value_id`, and `point_id` arrays. Prefer this name over `bucket_tile_offset` to make the unit explicit. It is not a byte offset, spatial origin, or value-major row address.
+- Keep `n_points` as the complete tile's stored point count. The half-open interval is `[bucket_row_start, bucket_row_start + n_points)`; do not store a redundant stop field.
+- Require a valid nonnegative integer start and a positive count whose sum remains within the supported signed-64-bit row domain. The new field is never optional and has no placeholder default. Rename callers directly without a deprecated Python-field alias.
+
+For a bucket whose tiles contain `[3, 5, 2]` points, descriptors have ordinals `[0, 1, 2]` and row starts `[0, 3, 8]`. The second descriptor therefore directly describes rows `[3:8)`. These are complete-bucket addresses, independent of viewport, active values, LOD selection, and CPU-residency misses within that level.
+
+**Production changes**
+
+1. Update every descriptor producer, not only the viewer reader. `_BucketWriter._reconcile_result()` takes starts from its already available planned offsets; independent bucket validation obtains them from reopened stored offsets. `_PointsCacheReader._load_runtime_indexes()` and `_read_manifest_inventory()` derive starts from complete manifest counts, resetting running totals for each `(level, bucket_id)`. Compute the start before constructing each frozen descriptor, rather than creating incomplete descriptors and mutating or replacing them afterward. Preserve support for gaps in serialized bucket IDs and reject inconsistent bucket-local ordinal order.
+2. Retain `_descriptors` in manifest order and `_descriptors_by_bucket` as grouped references to those same objects. Remove `_BucketTileIndex`, `_bucket_tile_indexes`, and their installed offset-array state. Temporary arrays used for storage comparison are acceptable, but do not retain a parallel bucket offset array after validation. `_BucketReaderCache` remains a cache of opened reader objects and is not removed by this refactor.
+3. Replace `set_tile_index()` with validation and installation of the complete immutable descriptor tuple for that bucket. Before accepting it, check matching bucket identity, contiguous ordinals, tile coordinates, starts beginning at zero, adjacent intervals without gaps or overlaps, matching tile/point totals, and agreement with persisted `tile_offset`. Publish the accepted tuple only after all checks succeed. Subsequent reuse performs no pointer IO; failed validation leaves no accepted addressing, and reader closure releases the accepted state.
+4. Make `resolve_complete_tile_interval()` use `descriptor.bucket_row_start` and `descriptor.n_points` after checking that the requested descriptor belongs to the bucket's accepted descriptor set. Keep that check constant-time through its ordinal; do not scan the bucket or recompute prefixes per request. A boolean saying that some descriptors were validated must not authorize arbitrary replacement descriptors. Preserve `_read_complete_tile_major_requests()` batching, order, cancellation, and lazy bucket opening.
+5. Keep construction, staged validation, exhaustive validation, and explicitly primed diagnostic/reference reads independent where they currently compare persisted structures. In particular, do not replace a stored-offset read with the same manifest-derived start on both sides of an equivalence check. Update these consumers and their test fixtures to the complete descriptor contract. `_BucketLookupIndex` and explicitly requested sparse subset reads remain available outside normal viewer sessions; their eventual removal belongs to Slice 17, not this cleanup.
+6. Update descriptor-related docstrings, examples, benchmarks, and `CACHE_FORMAT.md`. Distinguish retained NumPy-index bytes from Python descriptor storage: removing the NumPy offset array does not make row-address storage free. Remove obsolete array-specific accounting and report the remaining array bytes, descriptor count, and process RSS with their scopes stated clearly.
+
+**Persisted schema boundary**
+
+This slice changes Python objects, not the stored cache format. Keep the existing `manifest/bucket_tile_index` array and bucket `tile_offset` arrays unchanged. Map the persisted ordinal explicitly to the renamed Python field. Derive `bucket_row_start` when reopening the manifest; do not introduce a new manifest offset column or require a cache rebuild. A rename of the persisted ordinal array would be a separate schema decision, not an implicit consequence of the Python rename.
+
+**Focused tests**
+
+- Descriptors produced by construction, manifest reopening, and independent bucket validation agree on ordinal, row start, and complete point count.
+- Starts reset independently across levels and buckets, including non-dense bucket IDs, and remain correct when reading only later or disjoint tiles. Valid manifest grouping needs no additional sort.
+- Invalid starts, overflow, duplicate or reversed ordinals, gaps/overlaps, incorrect coordinates/totals, and mismatches with stored offsets fail before payload IO. A mismatched request descriptor cannot borrow another descriptor's validation.
+- First-use validation is atomic and runs once for the accepted tuple; warm reads do not reload tile pointers, and failure/closure retain no accepted stale addressing.
+- All-values reads and value-major subset reads preserve ordered logical payloads across Exact, Bridge, and Spatial levels. Patch sparse-index projection/loading to fail in normal viewer tests; keep independently primed reference readers separate.
+- Construction and both validation modes still exercise the persisted arrays. Complete-tile batching, cancellation, startup readiness, and deterministic cleanup remain unchanged.
+
+**Performance checks and limits**
+
+The additional Python integer is **per stored tile, not per point**. Runtime descriptors are constructed during reader initialization, not recreated for every viewport or frame. The point arrays, packed vertex layout, and VBO contents remain unchanged; storing the row start on the descriptor introduces no additional per-point processing. Python integer objects have more storage overhead than entries in a compact `uint64` array, but that does not imply slower scalar access.
+
+A local prototype on 7 September 2026 compared the current representation with the proposed required row-start field, using **17,149 tile descriptors across 108 buckets**:
+
+- **Net additional retained allocation:** 506,687 bytes, approximately **0.48 MiB**, accounting for removal of the separate bucket-offset representation. The comparison includes newly allocated descriptors, grouping containers, and addressing; existing shared scalar fields are excluded equally from both sides. This is not a measurement of total process RSS.
+- **Metadata-object construction:** median **19.7 → 21.1 ms**, approximately **1.5 ms additional initialization work**. This measures object construction and descriptor validation, not complete reader startup or Zarr access.
+- **Isolated scalar row-address lookups across all 17,149 tiles:** median **3.38 → 1.18 ms**. Direct access avoids the current extraction and conversion of two NumPy scalars, but this microbenchmark excludes the full reader call and validation path.
+
+These are **prototype measurements, not end-to-end acceptance results**. They support treating the memory increase as a small metadata trade-off at this tile count, not as evidence of an expected rendering regression or a promised overall speedup. The prototype did not perform bucket first-use validation, point payload IO, or physical drawing. Evidence: `/private/tmp/napari_harpy_descriptor_offset_probe.py` and `/private/tmp/napari-harpy-descriptor-offset-probe.json`.
+
+After implementation, compare complete metadata startup, first-use bucket validation, first complete-tile read, warm reads, and repeated viewport request latency with Slice 10. Verify unchanged output and zero sparse-index residency. Check RSS and startup cost, including how the descriptor overhead scales with stored tile count, without adding a new memory-budget mechanism or changing LOD, CPU residency, packing, or GPU resources. This remains a clarity improvement, not an assumed memory or rendering optimization. No cache reconstruction benchmark is required because the persisted schema is unchanged.
+
+**Exit condition**
+
+Every finalized `_TileDescriptor` carries an explicit tile ordinal and complete point-row start. Normal complete-tile reads use that descriptor after one-time bucket validation, with no separate `_BucketTileIndex` or retained derived offset array. Existing caches, independent validation, diagnostic reference reads, physical batching, and the viewer's zero-sparse-index contract remain intact.
+
 ### Slice 11 — Measured adaptive proper-subset physical routing
 
-This is a follow-up optimization to the deliberately simple Slice 8 routing rule. It addresses the case where a proper subset contains enough values, and the viewport covers few enough tiles, that reading complete tile-major tiles plus point-level `value_id` and filtering in memory is physically cheaper than gathering many value-major intervals. It builds on Slice 9's lean semantic plan and must not restore the sparse range indexes removed in Slice 10.
+This is a follow-up optimization to the deliberately simple Slice 8 routing rule. It addresses the case where a proper subset contains enough values, and the viewport covers few enough tiles, that reading complete tile-major tiles plus point-level `value_id` and filtering in memory is physically cheaper than gathering many value-major intervals. It builds on Slice 9's lean semantic plan and Slice 10b's self-contained tile descriptors, and must not restore the sparse range indexes removed in Slice 10.
 
 The semantic selection and the physical payload route are separate decisions:
 
