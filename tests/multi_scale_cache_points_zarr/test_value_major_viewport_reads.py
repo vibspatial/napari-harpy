@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,7 @@ import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import zarr
 
 from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
@@ -20,6 +21,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
@@ -30,7 +32,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
+    _BucketReader,
+    _PointDisplayPayload,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
     _ValueMajorLocationReader,
@@ -138,6 +143,9 @@ def multi_tile_reader_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
         config=_PointsCacheBuilderConfig(
             leaf_tile_size=10,
             overview_point_budget=100,
+            # Spread logical tiles over several buckets to exercise physical
+            # grouping and cooperative cancellation between bucket batches.
+            target_points_per_bucket=1_000,
             dask_worker_count=2,
             zarr_settings=_ZarrWriteSettings(256, 1_024, 64, 256, "zstd-v1"),
             catalog_settings=_CatalogWriteSettings(4, 8, 4, 8),
@@ -146,7 +154,7 @@ def multi_tile_reader_cache(tmp_path_factory: pytest.TempPathFactory) -> Path:
     )
 
 
-def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_subsets(
+def test_selected_viewport_plan_retains_only_tile_identities_and_shared_level_index(
     reader_fixture: Any,
 ) -> None:
     selected_a_and_c = np.array([0, 2], dtype=np.uint32)
@@ -158,14 +166,18 @@ def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_su
         assert plan.requested_value_ids == (0, 2)
         assert plan.route == "value_major_subset"
         assert plan.selected_value_level_index is value_index.levels[0]
-        assert [
-            request.applicable_value_ids.tolist() if request.applicable_value_ids is not None else None
-            for request in plan.requests
-        ] == [[0], [2]]
-        assert all(
-            request.applicable_value_ids is not None and not request.applicable_value_ids.flags.writeable
-            for request in plan.requests
-        )
+        # These tiles contain different selected values (A and C respectively),
+        # but the plan stores only their identities, not that per-tile mapping.
+        assert plan.tile_keys == ((0, 0, 0), (0, 1, 0))
+        for request in plan.requests:
+            assert {field.name for field in fields(request)} == {
+                "level",
+                "tile_x",
+                "tile_y",
+                "manifest_row",
+                "bucket_id",
+            }
+            assert all(isinstance(getattr(request, field.name), int) for field in fields(request))
         with pytest.raises(ValueError, match="all-values route"):
             replace(plan, route="tile_major_all_values")
         with pytest.raises(ValueError, match="selected-value level index"):
@@ -188,6 +200,73 @@ def test_selected_viewport_plan_retains_applicable_values_and_rejects_invalid_su
             reader.read_planned_tiles(foreign_plan, foreign_plan.tile_keys)
 
 
+def test_nonempty_value_major_plan_without_missing_tiles_skips_physical_addressing(
+    reader_fixture: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_addressing(*args: object, **kwargs: object) -> object:
+        raise AssertionError("A fully resident viewport entered physical addressing.")
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = reader.load_selected_value_index(np.array([0, 1], dtype=np.uint32), max_resident_bytes=10_000_000)
+        plan = reader.plan_viewport(0, _IntrinsicViewport(0, 0, 12, 10), value_index=value_index)
+        assert plan.requests
+        assert plan.route == "value_major_subset"
+
+        # The plan contains visible tiles, but the caller has retained all of
+        # them: no missing keys means no block resolution or payload reads.
+        monkeypatch.setattr(reader, "_read_value_major_requests", reject_addressing)
+        result = reader.read_planned_tiles(plan, ())
+        assert result.level == plan.level
+        assert result.tiles == ()
+
+
+def test_value_major_viewport_cancellation_prevents_payload_io(
+    reader_fixture: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_if_cancelled() -> None:
+        raise RuntimeError("cancelled viewport read")
+
+    def reject_payload_read(*args: object, **kwargs: object) -> object:
+        raise AssertionError("A cancelled viewport read accessed Zarr payload rows.")
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = reader.load_selected_value_index(np.array([0, 1], dtype=np.uint32), max_resident_bytes=10_000_000)
+        plan = reader.plan_viewport(0, _IntrinsicViewport(0, 0, 12, 10), value_index=value_index)
+        assert plan.requests
+        assert plan.route == "value_major_subset"
+
+        # Keep the real dispatch and physical reader; guard the Zarr selection
+        # so dropping or delaying cancellation until after IO fails this test.
+        monkeypatch.setattr(zarr.Array, "get_orthogonal_selection", reject_payload_read)
+        with pytest.raises(RuntimeError, match="cancelled viewport read"):
+            reader.read_planned_tiles(plan, plan.tile_keys, raise_if_cancelled=raise_if_cancelled)
+
+
+@pytest.mark.parametrize(
+    ("level", "viewport"),
+    [(0, _IntrinsicViewport(10, 0, 12, 10)), (1, _IntrinsicViewport(0, 0, 12, 10))],
+    ids=["no-visible-match", "value-absent-from-level"],
+)
+def test_selected_viewport_without_positive_tiles_skips_physical_addressing(
+    reader_fixture: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    level: int,
+    viewport: _IntrinsicViewport,
+) -> None:
+    def reject_addressing(*args: object, **kwargs: object) -> object:
+        raise AssertionError("An empty positive-tile union entered physical addressing.")
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = reader.load_selected_value_index(np.array([0], dtype=np.uint32), max_resident_bytes=10_000_000)
+        monkeypatch.setattr(reader, "_read_value_major_requests", reject_addressing)
+        plan = reader.plan_viewport(level, viewport, value_index=value_index)
+        assert plan.requests == ()
+        assert plan.selected_value_level_index is value_index.levels[level]
+        assert reader.read_planned_tiles(plan, plan.tile_keys).tiles == ()
+
+
 def test_selected_viewport_reads_value_major_sidecar_without_bucket_payload_access(
     reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
@@ -199,14 +278,15 @@ def test_selected_viewport_reads_value_major_sidecar_without_bucket_payload_acce
         raise AssertionError("Proper-subset viewport read accessed a tile-major bucket payload.")
 
     monkeypatch.setattr(_BucketReader, "read_display_payloads", reject_bucket_payload)
+    monkeypatch.setattr(_BucketReader, "resolve_selected_tile_intervals", reject_bucket_payload)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         value_index = reader.load_selected_value_index(selected_a_and_c, max_resident_bytes=10_000_000)
-        plan = reader.plan_viewport(0, full, value_index=value_index)
 
         def reject_catalog_array(*args: object, **kwargs: object) -> object:
             raise AssertionError("Viewport read reopened a catalog or sidecar array.")
 
         monkeypatch.setattr(reader._catalog_or_raise(), "array", reject_catalog_array)
+        plan = reader.plan_viewport(0, full, value_index=value_index)
 
         # Read only the second logical tile. Its value-major address follows
         # rows belonging to earlier values and tiles, so this also proves that
@@ -265,6 +345,109 @@ def test_all_values_viewport_retains_tile_major_route_at_every_level(
             )
 
 
+def test_complete_tile_major_reads_batch_by_bucket_and_check_cancellation_on_both_sides(
+    multi_tile_reader_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    original_read = _BucketReader.read_display_payloads
+
+    def tracked_read(
+        self: _BucketReader,
+        requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
+    ) -> tuple[_PointDisplayPayload | None, ...]:
+        # Only this lower-level boundary represents complete tiles with None.
+        assert all(selected is None for _, selected in requests)
+        assert len({descriptor.bucket_id for descriptor, _ in requests}) == 1
+        events.append("read")
+        return original_read(self, requests)
+
+    def check_cancelled() -> None:
+        events.append("check")
+
+    with _PointsCacheReader(multi_tile_reader_cache) as reader:
+        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
+        plan = reader.plan_viewport(0, _IntrinsicViewport(100, -60, 160, -10))
+        bucket_count = len(plan.required_bucket_keys)
+        assert bucket_count > 1
+        monkeypatch.setattr(_BucketReader, "read_display_payloads", tracked_read)
+        result = reader.read_planned_tiles(plan, plan.tile_keys, raise_if_cancelled=check_cancelled)
+        assert events == ["check", "read", "check"] * bucket_count
+        assert tuple((tile.level, tile.tile_x, tile.tile_y) for tile in result.tiles) == plan.tile_keys
+
+
+@pytest.mark.parametrize("after_batches", [0, 1], ids=["before-first-batch", "after-first-batch"])
+def test_complete_tile_major_cancellation_prevents_later_bucket_reads(
+    multi_tile_reader_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_batches: int,
+) -> None:
+    calls = []
+    original_read = _BucketReader.read_display_payloads
+
+    def tracked_read(self: _BucketReader, requests: Any) -> Any:
+        result = original_read(self, requests)
+        calls.append(requests)
+        return result
+
+    def raise_if_cancelled() -> None:
+        if len(calls) == after_batches:
+            raise RuntimeError("cancelled bucket read")
+
+    with _PointsCacheReader(multi_tile_reader_cache) as reader:
+        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
+        plan = reader.plan_viewport(0, _IntrinsicViewport(100, -60, 160, -10))
+        assert len(plan.required_bucket_keys) > 1
+        monkeypatch.setattr(_BucketReader, "read_display_payloads", tracked_read)
+        with pytest.raises(RuntimeError, match="cancelled bucket read"):
+            reader.read_planned_tiles(plan, plan.tile_keys, raise_if_cancelled=raise_if_cancelled)
+        assert len(calls) == after_batches
+
+
+def test_complete_tile_major_missing_payload_error_identifies_tile_and_level(
+    reader_fixture: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_payload(
+        self: _BucketReader,
+        requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
+    ) -> tuple[_PointDisplayPayload | None, ...]:
+        # Simulate the unexpected absence of a complete tile's point data.
+        return (None,) * len(requests)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        reader.load_bucket_lookup_indexes(levels=(1,), max_resident_bytes=10_000_000)
+        plan = reader.plan_viewport(1, _IntrinsicViewport(0, 0, 12, 10))
+        monkeypatch.setattr(_BucketReader, "read_display_payloads", missing_payload)
+        with pytest.raises(ValueError) as error:
+            reader.read_planned_tiles(plan, ((1, 1, 0),))
+
+    assert str(error.value) == "Could not load cached points for tile (1, 0) at level 1: no point data was returned."
+
+
+@pytest.mark.parametrize("use_subset", [False, True], ids=["tile-major", "value-major"])
+def test_viewport_payload_failure_propagates_without_returning_partial_tiles(
+    reader_fixture: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    use_subset: bool,
+) -> None:
+    def fail_read(*args: object, **kwargs: object) -> object:
+        raise OSError("injected payload failure")
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = (
+            reader.load_selected_value_index(np.array([0, 1], dtype=np.uint32), max_resident_bytes=10_000_000)
+            if use_subset
+            else None
+        )
+        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
+        plan = reader.plan_viewport(0, _IntrinsicViewport(0, 0, 12, 10), value_index=value_index)
+        monkeypatch.setattr(_BucketReader, "read_display_payloads", fail_read)
+        monkeypatch.setattr(_ValueMajorLocationReader, "read_intervals", fail_read)
+        with pytest.raises(OSError, match="injected payload failure"):
+            reader.read_planned_tiles(plan, plan.tile_keys)
+
+
 def test_value_major_and_tile_major_subset_paths_return_identical_logical_tiles(
     reader_fixture: Any,
 ) -> None:
@@ -280,7 +463,7 @@ def test_value_major_and_tile_major_subset_paths_return_identical_logical_tiles(
                 request.level,
                 request.tile_x,
                 request.tile_y,
-                value_ids=request.applicable_value_ids,
+                value_ids=selected_a_and_b,
             )
             for request in plan.requests
         )

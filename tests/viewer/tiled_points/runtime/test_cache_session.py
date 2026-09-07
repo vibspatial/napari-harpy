@@ -149,10 +149,7 @@ class _ControllableReader:
             cache_generation_id=_GENERATION_ID,
             requested_value_ids=requested_value_ids,
             level=level,
-            requests=tuple(
-                _PlannedTileRead(level, tile_x, 0, tile_x, 0, None if value_index is None else value_index.value_ids)
-                for tile_x in self._probe.planned_tile_x
-            ),
+            requests=tuple(_PlannedTileRead(level, tile_x, 0, tile_x, 0) for tile_x in self._probe.planned_tile_x),
             route="tile_major_all_values" if value_index is None else "value_major_subset",
             selected_value_level_index=None if value_index is None else value_index.levels[level],
         )
