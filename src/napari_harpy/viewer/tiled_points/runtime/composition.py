@@ -166,7 +166,6 @@ class _TiledPointsLayerRuntime(QObject):
         self._coordinator.snapshot_ready.connect(self._on_snapshot_ready)
         self._coordinator.viewport_failed.connect(self._on_viewport_failed)
         self._session.dataset_available.connect(self._on_dataset_available)
-        self._session.bucket_index_progress.connect(self._on_bucket_index_progress)
         self._session.ready.connect(self._on_ready)
         self._session.value_selection_ready.connect(self._on_value_selection_ready)
         self._session.failed.connect(self._on_session_failed)
@@ -238,12 +237,6 @@ class _TiledPointsLayerRuntime(QObject):
             self.close()
             return
         self._dataset_verified = True
-
-    @Slot(int, int)
-    def _on_bucket_index_progress(self, completed_buckets: int, total_buckets: int) -> None:
-        if self._closed:
-            return
-        self._set_transient_status(f"Loading bucket indexes ({completed_buckets:,}/{total_buckets:,})")
 
     @Slot()
     def _on_ready(self) -> None:
@@ -387,7 +380,6 @@ class _TiledPointsLayerRuntime(QObject):
             (self._coordinator.snapshot_ready, self._on_snapshot_ready),
             (self._coordinator.viewport_failed, self._on_viewport_failed),
             (self._session.dataset_available, self._on_dataset_available),
-            (self._session.bucket_index_progress, self._on_bucket_index_progress),
             (self._session.ready, self._on_ready),
             (self._session.value_selection_ready, self._on_value_selection_ready),
             (self._session.failed, self._on_session_failed),
