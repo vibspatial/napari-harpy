@@ -27,7 +27,6 @@ class TiledPointsApplicationSettings:
     CPU tile residency and total driver/GPU memory.
     """
 
-    max_bucket_lookup_bytes: int | None = None
     max_selected_value_index_bytes: int | None = None
     max_cpu_tile_bytes: int = DEFAULT_MAX_CPU_TILE_BYTES
     max_vertex_payload_bytes: int = DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
@@ -35,7 +34,6 @@ class TiledPointsApplicationSettings:
     def __post_init__(self) -> None:
         # Reuse the worker-session contract for all allocation-side limits.
         _CacheSessionSettings(
-            max_bucket_lookup_bytes=self.max_bucket_lookup_bytes,
             max_selected_value_index_bytes=self.max_selected_value_index_bytes,
             max_cpu_tile_bytes=self.max_cpu_tile_bytes,
             max_vertex_payload_bytes=self.max_vertex_payload_bytes,
@@ -45,7 +43,6 @@ class TiledPointsApplicationSettings:
     def cache_session_settings(self) -> _CacheSessionSettings:
         """Return the worker-owned cache-session settings."""
         return _CacheSessionSettings(
-            max_bucket_lookup_bytes=self.max_bucket_lookup_bytes,
             max_selected_value_index_bytes=self.max_selected_value_index_bytes,
             max_cpu_tile_bytes=self.max_cpu_tile_bytes,
             max_vertex_payload_bytes=self.max_vertex_payload_bytes,

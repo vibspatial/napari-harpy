@@ -31,9 +31,7 @@ from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 _UINT32_MAX = np.iinfo(np.uint32).max
-_FailurePhase = Literal[
-    "startup", "bucket_index_projection", "bucket_index_loading", "selection", "viewport", "shutdown"
-]
+_FailurePhase = Literal["startup", "selection", "viewport", "shutdown"]
 _ReaderFactory = Callable[[Path], _PointsCacheReader]
 
 
@@ -42,7 +40,6 @@ class _CacheSessionState(StrEnum):
 
     NEW = "new"
     STARTING = "starting"
-    LOADING_BUCKET_INDEXES = "loading_bucket_indexes"
     READY = "ready"
     UPDATING_SELECTED_VALUE_INDEX = "updating_selected_value_index"
     FAILED = "failed"
@@ -56,10 +53,6 @@ class _CacheSessionSettings:
 
     Parameters
     ----------
-    max_bucket_lookup_bytes
-        Maximum total resident bytes for the five tile/range arrays represented
-        by all loaded bucket lookup indexes. ``None`` disables this configured
-        preflight limit without disabling byte projection or accounting.
     max_selected_value_index_bytes
         Maximum resident bytes for the current selected-value catalog index.
         ``None`` disables this configured preflight limit.
@@ -69,18 +62,14 @@ class _CacheSessionSettings:
         Positive byte limit for one worker-prepared renderer vertex payload.
     """
 
-    max_bucket_lookup_bytes: int | None
     max_selected_value_index_bytes: int | None
     max_cpu_tile_bytes: int
     max_vertex_payload_bytes: int
 
     def __post_init__(self) -> None:
-        for name in ("max_bucket_lookup_bytes", "max_selected_value_index_bytes"):
-            value = getattr(self, name)
-            if value is None:
-                continue
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"`{name}` must be a positive integer or None.")
+        value = self.max_selected_value_index_bytes
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+            raise ValueError("`max_selected_value_index_bytes` must be a positive integer or None.")
         for name in ("max_cpu_tile_bytes", "max_vertex_payload_bytes"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -98,8 +87,6 @@ class _CacheSessionFailure:
     def __post_init__(self) -> None:
         if self.phase not in (
             "startup",
-            "bucket_index_projection",
-            "bucket_index_loading",
             "selection",
             "viewport",
             "shutdown",
@@ -171,8 +158,7 @@ class _TiledPointsCacheWorker(QObject):
 
     state_changed = Signal(object)
     dataset_available = Signal(object)
-    bucket_index_progress = Signal(int, int)
-    ready = Signal(int, int)
+    ready = Signal(int)
     value_selection_ready = Signal(object, int)
     viewport_ready = Signal(object)
     viewport_failed = Signal(int, object)
@@ -199,8 +185,11 @@ class _TiledPointsCacheWorker(QObject):
 
     @Slot()
     def start(self) -> None:
-        """Enter and prime the reader before announcing readiness."""
-        phase: _FailurePhase = "startup"
+        """Load compact planning metadata before announcing readiness.
+
+        Bucket stores open lazily on complete-tile reads. Neither startup nor
+        selected-value viewport reads project or load bucket sparse ranges.
+        """
         try:
             self._require_not_cancelled()
             # Construct the reader here so it and all opened Zarr resources are
@@ -212,36 +201,14 @@ class _TiledPointsCacheWorker(QObject):
             self.dataset_available.emit(reader.dataset_info)
 
             self._require_not_cancelled()
-            phase = "bucket_index_projection"
-            projected_bytes = reader.project_bucket_lookup_index_bytes()
-            max_lookup_bytes = self._settings.max_bucket_lookup_bytes
-            if max_lookup_bytes is not None and projected_bytes > max_lookup_bytes:
-                raise ValueError(
-                    f"Bucket lookup indexes require {projected_bytes} resident bytes, exceeding "
-                    f"max_bucket_lookup_bytes={max_lookup_bytes}."
-                )
-
-            self._require_not_cancelled()
-            phase = "bucket_index_loading"
-            self.state_changed.emit(_CacheSessionState.LOADING_BUCKET_INDEXES)
-            # Omitting `levels` and `bucket_keys` loads every serialized bucket
-            # across all levels. Each retains five point-row lookup arrays:
-            # `tile_offset` and `ranges/{tile_indptr,value_id,row_start,row_count}`. See
-            # `storage.bucket_reader._BucketLookupIndex` for the complete contract.
-            # Point coordinates and point-level values remain on disk.
-            resident_bucket_index_bytes = reader.load_bucket_lookup_indexes(
-                max_resident_bytes=max_lookup_bytes,
-                progress=self._on_bucket_index_progress,
-            )
-            self._require_not_cancelled()
             self.state_changed.emit(_CacheSessionState.READY)
-            self.ready.emit(projected_bytes, resident_bucket_index_bytes)
+            self.ready.emit(reader.resident_index_bytes)
         except _SessionCancelled:
             self._shutdown(emit_closing=True)
         except Exception as error:  # noqa: BLE001
-            logger.exception("Tiled-points cache session failed during {}.", phase)
+            logger.exception("Tiled-points cache session failed during startup.")
             self.state_changed.emit(_CacheSessionState.FAILED)
-            self.failed.emit(_failure_from_exception(phase, error))
+            self.failed.emit(_failure_from_exception("startup", error))
             self._shutdown(emit_closing=False)
 
     @Slot(object)
@@ -349,10 +316,6 @@ class _TiledPointsCacheWorker(QObject):
             logger.exception("Tiled-points cache session failed while reading a viewport snapshot.")
             self._report_viewport_failure(request, error)
 
-    def _on_bucket_index_progress(self, completed_buckets: int, total_buckets: int) -> None:
-        self._require_not_cancelled()
-        self.bucket_index_progress.emit(completed_buckets, total_buckets)
-
     def _require_not_cancelled(self) -> None:
         """Stop active work when the GUI has requested session closure.
 
@@ -405,7 +368,6 @@ class _TiledPointsCacheSession(QObject):
 
     state_changed = Signal(object)
     dataset_available = Signal(object)
-    bucket_index_progress = Signal(int, int)
     ready = Signal()
     value_selection_ready = Signal(object, int)
     viewport_ready = Signal(object)
@@ -438,8 +400,7 @@ class _TiledPointsCacheSession(QObject):
         self._state = _CacheSessionState.NEW
         self._dataset_info: _CacheDatasetInfo | None = None
         self._selected_value_ids: tuple[int, ...] | None = None
-        self._projected_lookup_bytes: int | None = None
-        self._resident_lookup_bytes: int | None = None
+        self._resident_index_bytes: int | None = None
         self._cancellation = threading.Event()
         self._thread: QThread | None = None
         self._worker: _TiledPointsCacheWorker | None = None
@@ -460,14 +421,9 @@ class _TiledPointsCacheSession(QObject):
         return self._selected_value_ids
 
     @property
-    def projected_lookup_bytes(self) -> int | None:
-        """Return the complete projected lookup footprint after startup."""
-        return self._projected_lookup_bytes
-
-    @property
-    def resident_lookup_bytes(self) -> int | None:
-        """Return the complete resident lookup footprint after startup."""
-        return self._resident_lookup_bytes
+    def resident_index_bytes(self) -> int | None:
+        """Return compact NumPy-index bytes after startup, excluding Python objects and payloads."""
+        return self._resident_index_bytes
 
     def start(self) -> None:
         """Create the worker thread and begin guarded cache startup."""
@@ -488,7 +444,6 @@ class _TiledPointsCacheSession(QObject):
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
-        worker.bucket_index_progress.connect(self._on_bucket_index_progress)
         worker.ready.connect(self._on_ready)
         worker.value_selection_ready.connect(self._on_value_selection_ready)
         worker.viewport_ready.connect(self._on_viewport_ready)
@@ -559,18 +514,11 @@ class _TiledPointsCacheSession(QObject):
         self._dataset_info = dataset_info
         self.dataset_available.emit(dataset_info)
 
-    @Slot(int, int)
-    def _on_bucket_index_progress(self, completed_buckets: int, total_buckets: int) -> None:
-        if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
-            return
-        self.bucket_index_progress.emit(completed_buckets, total_buckets)
-
-    @Slot(int, int)
-    def _on_ready(self, projected_lookup_bytes: int, resident_lookup_bytes: int) -> None:
+    @Slot(int)
+    def _on_ready(self, resident_index_bytes: int) -> None:
         if self._state is not _CacheSessionState.READY:
             return
-        self._projected_lookup_bytes = projected_lookup_bytes
-        self._resident_lookup_bytes = resident_lookup_bytes
+        self._resident_index_bytes = resident_index_bytes
         self.ready.emit()
 
     @Slot(object, int)
