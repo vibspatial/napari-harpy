@@ -401,8 +401,6 @@ def _measure_selected_viewport(
             "resident_compact_index_bytes": reader.resident_index_bytes,
             "tile_descriptor_count": reader.tile_descriptor_count,
             "index_memory_scope": "NumPy arrays only; Python descriptors and containers are excluded.",
-            "resident_bucket_lookup_bytes": reader.resident_bucket_lookup_bytes,
-            "loaded_bucket_lookup_index_count": reader.loaded_bucket_lookup_index_count,
             "first": first_summary,
             "repeated": repeated_summary,
         }

@@ -37,7 +37,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
-    _CatalogReader,
+    _CacheRootReader,
     _iter_compact_bucket_range_batches,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
@@ -106,7 +106,7 @@ def _validate_cache_exhaustive(
     )
     _validate_complete_cache(cache_root)
 
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         attributes = reader.attributes
         inventory = _read_manifest_inventory(reader)
     for manifest_level in inventory.levels:
@@ -151,7 +151,7 @@ def _validate_value_major_location_equivalence(
     if not isinstance(inventory, _ManifestInventory):
         raise ValueError("`inventory` must be a _ManifestInventory.")
 
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         attributes = reader.attributes
         if len(inventory.levels) != len(attributes.levels):
             raise ValueError("Manifest inventory level count does not match the cache metadata.")

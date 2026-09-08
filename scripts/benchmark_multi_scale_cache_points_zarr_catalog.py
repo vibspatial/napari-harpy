@@ -42,7 +42,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
-    _CatalogReader,
+    _CacheRootReader,
     _iter_bucket_range_batches,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
@@ -326,7 +326,7 @@ def _bucket_snapshots(staging: Path, results: tuple[_LevelWriteResult, ...]) -> 
     }
 
 
-def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]:
+def _catalog_storage(staging: Path, reader: _CacheRootReader) -> dict[str, object]:
     groups = ("values", "manifest", "value_tiles", "value_major")
     per_group_bytes = {group: _directory_size(staging / group) for group in groups}
     per_group_objects = {group: _directory_file_count(staging / group) for group in groups}
@@ -381,7 +381,7 @@ def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]
 def _verify_representative_bucket_indexes(
     staging: Path,
     results: tuple[_LevelWriteResult, ...],
-    reader: _CatalogReader,
+    reader: _CacheRootReader,
     *,
     zarr_settings: _ZarrWriteSettings,
     batch_rows: int,
@@ -547,7 +547,7 @@ def main() -> None:
 
         print("Reopening and streaming strict catalog validation...", flush=True)
         started = perf_counter()
-        with _CatalogReader(evaluation_root) as reader:
+        with _CacheRootReader(evaluation_root) as reader:
             reader.validate_contents()
             representative_verification = _verify_representative_bucket_indexes(
                 evaluation_root,

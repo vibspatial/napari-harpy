@@ -73,13 +73,9 @@ def _build_partial_bucket(root: Path) -> _BucketWriteResult:
         return writer.finalize()
 
 
-def _load_lookup(reader: _BucketReader) -> None:
-    reader.load_lookup_index()
-
-
-def test_reader_roundtrips_complete_and_selected_payloads(tmp_path: Path) -> None:
+def test_reader_roundtrips_construction_and_complete_display_payloads(tmp_path: Path) -> None:
     result = _build_bucket(tmp_path)
-    first, second = result.tile_descriptors
+    first = result.tile_descriptors[0]
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
         complete = reader.read_construction_payload(first)
         assert complete.value_id.tolist() == [0, 0, 1, 2, 2]
@@ -87,55 +83,12 @@ def test_reader_roundtrips_complete_and_selected_payloads(tmp_path: Path) -> Non
         assert complete.x_rel.tolist() == [0, 3, 2, 1, 4]
         assert complete.y_rel.tolist() == [4, 1, 2, 3, 0]
 
-        _load_lookup(reader)
-        selected = reader.read_display_payload(first, np.array([0, 2], dtype=np.uint32))
-        assert selected is not None
-        assert selected.value_id.tolist() == [0, 0, 2, 2]
-        assert selected.location.tolist() == [[0, 4], [3, 1], [1, 3], [4, 0]]
-        assert not selected.location.flags.writeable
-        assert not selected.value_id.flags.writeable
-        assert reader.read_display_payload(second, np.array([2], dtype=np.uint32)) is None
-
-
-@pytest.mark.parametrize("selected_ids", [(0,), (0, 2), (0, 1), (4,)])
-def test_selected_display_reconstructs_canonical_payload_without_point_value_reads(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    selected_ids: tuple[int, ...],
-) -> None:
-    descriptor = _build_bucket(tmp_path).tile_descriptors[0]
-    requested = np.asarray(selected_ids, dtype=np.uint32)
-
-    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-        canonical = reader.read_construction_payload(descriptor)
-        matches = np.isin(canonical.value_id, requested)
-        expected_location = np.ascontiguousarray(
-            np.column_stack((canonical.x_rel[matches], canonical.y_rel[matches])),
-            dtype=np.float32,
-        )
-        expected_value_id = np.ascontiguousarray(canonical.value_id[matches], dtype=np.uint32)
-
-        _load_lookup(reader)
-        original_array = reader._array
-
-        def reject_point_value_array(name: str) -> object:
-            if name == "value_id":
-                raise AssertionError("Subset display read accessed point-level value IDs.")
-            return original_array(name)
-
-        monkeypatch.setattr(reader, "_array", reject_point_value_array)
-        selected = reader.read_display_payload(descriptor, requested)
-
-    if len(expected_value_id) == 0:
-        assert selected is None
-        return
-    assert selected is not None
-    np.testing.assert_array_equal(selected.location, expected_location)
-    np.testing.assert_array_equal(selected.value_id, expected_value_id)
-    assert selected.location.tobytes() == expected_location.tobytes()
-    assert selected.value_id.tobytes() == expected_value_id.tobytes()
-    assert not selected.location.flags.writeable
-    assert not selected.value_id.flags.writeable
+        reader.set_tile_descriptors(result.tile_descriptors)
+        displayed = reader.read_complete_display_payload(first)
+        np.testing.assert_array_equal(displayed.value_id, complete.value_id)
+        np.testing.assert_array_equal(displayed.location, np.column_stack((complete.x_rel, complete.y_rel)))
+        assert not displayed.location.flags.writeable
+        assert not displayed.value_id.flags.writeable
 
 
 def test_visualization_reader_never_requires_point_id_payload_chunks(tmp_path: Path) -> None:
@@ -146,16 +99,11 @@ def test_visualization_reader_never_requires_point_id_payload_chunks(tmp_path: P
     point_id_objects[0].unlink()
 
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-        _load_lookup(reader)
-        complete = reader.read_display_payload(first)
+        reader.set_tile_descriptors(result.tile_descriptors)
+        complete = reader.read_complete_display_payload(first)
         assert complete is not None
         assert complete.value_id.tolist() == [0, 0, 1, 2, 2]
         assert complete.location.tolist() == [[0, 4], [3, 1], [2, 2], [1, 3], [4, 0]]
-
-        selected = reader.read_display_payload(first, np.array([0, 2], dtype=np.uint32))
-        assert selected is not None
-        assert selected.value_id.tolist() == [0, 0, 2, 2]
-        assert len(selected.location) == len(selected.value_id) == 4
 
         with pytest.raises(Exception, match="chunk|Chunk|shard|Shard"):
             reader.read_construction_payload(first)
@@ -216,7 +164,7 @@ def test_display_batch_reads_each_point_array_once_and_splits_payloads(
     calls: list[tuple[str, tuple[object, ...]]] = []
 
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-        _load_lookup(reader)
+        reader.set_tile_descriptors(result.tile_descriptors)
         original_array = reader._array
 
         class _TrackedArray:
@@ -234,116 +182,125 @@ def test_display_batch_reads_each_point_array_once_and_splits_payloads(
             return original_array(name)
 
         monkeypatch.setattr(reader, "_array", tracked_array)
-        complete = reader.read_display_payloads(((first, None), (second, None)))
+        complete = reader.read_complete_display_payloads((first, second))
         assert [name for name, _ in calls] == ["location", "value_id"]
         assert all(selection[0] == slice(0, 8) for _, selection in calls)
         assert complete[0] is not None and complete[0].value_id.tolist() == [0, 0, 1, 2, 2]
         assert complete[1] is not None and complete[1].value_id.tolist() == [1, 1, 3]
 
-        calls.clear()
-
-        # Treat point-level `value_id` access as a hard regression. Selected-value
-        # reads must reconstruct aligned IDs from the in-memory `ranges/value_id`
-        # lookup metadata and fetch only `location` from the point arrays.
-        def tracked_subset_array(name: str) -> object:
-            if name == "value_id":
-                raise AssertionError("Subset display batch accessed point-level value IDs.")
-            if name == "location":
-                return _TrackedArray(name)
-            return original_array(name)
-
-        monkeypatch.setattr(reader, "_array", tracked_subset_array)
-        selected = reader.read_display_payloads(
-            (
-                (first, np.array([0, 2], dtype=np.uint32)),
-                (second, np.array([1], dtype=np.uint32)),
-            )
-        )
-        assert [name for name, _ in calls] == ["location"]
-        assert all(isinstance(selection[0], np.ndarray) for _, selection in calls)
-        selected_rows = calls[0][1][0]
-        assert isinstance(selected_rows, np.ndarray)
-        assert selected_rows.tolist() == [0, 1, 3, 4, 5, 6]
-        assert selected[0] is not None and selected[0].value_id.tolist() == [0, 0, 2, 2]
-        assert selected[1] is not None and selected[1].value_id.tolist() == [1, 1]
+        assert complete[0].location.base is complete[1].location.base
+        assert complete[0].value_id.base is complete[1].value_id.base
         assert all(
-            payload is not None
-            and payload.location.flags.c_contiguous
+            payload.location.flags.c_contiguous
+            and payload.value_id.flags.c_contiguous
             and not payload.location.flags.writeable
             and not payload.value_id.flags.writeable
-            for payload in selected
+            for payload in complete
         )
 
 
-@pytest.mark.parametrize("complete_first", [True, False])
-def test_display_batch_rejects_mixed_selection_modes_before_resolution_or_io(
+@pytest.mark.parametrize("malformed", ["empty", "list", "pair", "invalid-second"])
+def test_complete_display_batch_validates_requests_before_resolution_or_io(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    complete_first: bool,
+    malformed: str,
 ) -> None:
-    result = _build_bucket(tmp_path)
-    first, second = result.tile_descriptors
-    selected = np.array([1], dtype=np.uint32)
-    requests = ((first, None), (second, selected)) if complete_first else ((first, selected), (second, None))
-
+    first = _build_bucket(tmp_path).tile_descriptors[0]
+    requests = {
+        "empty": (),
+        "list": [first],
+        "pair": ((first, None),),
+        "invalid-second": (first, None),
+    }[malformed]
     with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
 
-        def reject_side_effect(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("Mixed display batch reached interval resolution or physical access.")
+        def reject_side_effect(*args: object, **kwargs: object) -> None:
+            raise AssertionError("Malformed request reached resolution or IO.")
 
         monkeypatch.setattr(reader, "resolve_complete_tile_interval", reject_side_effect)
-        monkeypatch.setattr(reader, "resolve_selected_tile_intervals", reject_side_effect)
-        monkeypatch.setattr(reader, "_lookup_index_or_raise", reject_side_effect)
         monkeypatch.setattr(reader, "_array", reject_side_effect)
+        with pytest.raises(ValueError, match="nonempty tuple|_TileDescriptor"):
+            reader.read_complete_display_payloads(requests)
 
-        with pytest.raises(ValueError) as error:
-            reader.read_display_payloads(requests)
 
-    assert str(error.value) == (
-        "Display requests must be homogeneous: every `selected_value_ids` must be None "
-        "or every request must provide selected value IDs."
+def test_complete_display_requires_installed_descriptors_before_payload_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _build_bucket(tmp_path)
+    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
+        with monkeypatch.context() as patches:
+
+            def reject_io(*args: object, **kwargs: object) -> None:
+                raise AssertionError("Uninitialized addressing reached physical IO.")
+
+            patches.setattr(reader, "_array", reject_io)
+            with pytest.raises(RuntimeError, match="set_tile_descriptors"):
+                reader.read_complete_display_payload(result.tile_descriptors[0])
+        reader.set_tile_descriptors(result.tile_descriptors)
+        assert len(reader.read_complete_display_payload(result.tile_descriptors[0]).value_id) == 5
+
+
+def test_complete_display_batch_omits_skipped_tiles_and_rejects_out_of_order_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read nonadjacent complete tiles without selecting intervening tile rows.
+
+    Check that location and value-ID arrays use the same exact row selection
+    and return aligned per-tile payloads, without accessing point IDs or sparse
+    ranges. Reversed or duplicate tile requests must fail before payload IO.
+    """
+    plan = _BucketPlan(
+        level=0,
+        bucket_id=0,
+        tiles=tuple(_PlannedTile(x, 0, 2) for x in range(3)),
+        settings=_ZarrWriteSettings(2, 4, 2, 4, "zstd-v1"),
     )
-
-
-def test_display_batch_validates_every_request_pair_before_resolution_or_io(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = _build_bucket(tmp_path)
-    first, second = result.tile_descriptors
-
-    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-
-        def reject_side_effect(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("Malformed display batch reached interval resolution or physical access.")
-
-        monkeypatch.setattr(reader, "resolve_complete_tile_interval", reject_side_effect)
-        monkeypatch.setattr(reader, "resolve_selected_tile_intervals", reject_side_effect)
-        monkeypatch.setattr(reader, "_lookup_index_or_raise", reject_side_effect)
-        monkeypatch.setattr(reader, "_array", reject_side_effect)
-
-        with pytest.raises(ValueError, match="Every display request must be"):
-            reader.read_display_payloads(((first, None), (second,)))  # type: ignore[arg-type]
-
-
-def test_display_batch_omits_unrequested_row_gaps_and_preserves_empty_results(tmp_path: Path) -> None:
-    result = _build_bucket(tmp_path)
-    first, second = result.tile_descriptors
-    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-        _load_lookup(reader)
-        payloads = reader.read_display_payloads(
-            (
-                (first, np.array([0], dtype=np.uint32)),
-                (second, np.array([3], dtype=np.uint32)),
+    with _BucketWriter(tmp_path, plan) as writer:
+        for x in range(3):
+            writer.write_tile(
+                x,
+                0,
+                _PointPayload(
+                    x_rel=np.array([x, x + 0.5], dtype=np.float32),
+                    y_rel=np.array([0, 1], dtype=np.float32),
+                    value_id=np.array([0, 1], dtype=np.uint32),
+                    point_id=np.array([2 * x, 2 * x + 1], dtype=np.uint64),
+                ),
             )
-        )
-        assert payloads[0] is not None and payloads[0].value_id.tolist() == [0, 0]
-        assert payloads[1] is not None and payloads[1].value_id.tolist() == [3]
+        result = writer.finalize()
+    with _BucketReader(tmp_path, level=0, bucket_id=0) as reader:
+        reader.set_tile_descriptors(result.tile_descriptors)
+        first, _, last = result.tile_descriptors
+        original_array = reader._array
+        selections = []
 
-        assert reader.read_display_payloads(((second, np.array([2], dtype=np.uint32)),)) == (None,)
+        class TrackedArray:
+            def __init__(self, name):
+                self.array = original_array(name)
 
-        with pytest.raises(ValueError, match="increasing bucket-local"):
-            reader.read_display_payloads(((second, None), (first, None)))
+            def get_orthogonal_selection(self, selection):
+                selections.append(selection[0])
+                return self.array.get_orthogonal_selection(selection)
+
+        def tracked_array(name):
+            if name.startswith("ranges/") or name == "point_id":
+                raise AssertionError("Display accessed sparse ranges or point IDs.")
+            return TrackedArray(name)
+
+        monkeypatch.setattr(reader, "_array", tracked_array)
+        payloads = reader.read_complete_display_payloads((first, last))
+        assert len(selections) == 2
+        for selection in selections:
+            np.testing.assert_array_equal(selection, [0, 1, 4, 5])
+        assert [payload.location[:, 0].tolist() for payload in payloads] == [[0, 0.5], [2, 2.5]]
+        assert [payload.value_id.tolist() for payload in payloads] == [[0, 1], [0, 1]]
+        selections.clear()
+        for invalid in ((last, first), (first, first)):
+            with pytest.raises(ValueError, match="increasing bucket-local"):
+                reader.read_complete_display_payloads(invalid)
+        assert selections == []
 
 
 def test_direct_construction_and_display_batch_reach_the_final_partial_chunk(tmp_path: Path) -> None:
@@ -354,41 +311,10 @@ def test_direct_construction_and_display_batch_reach_the_final_partial_chunk(tmp
         assert constructed.point_id.tolist() == [2, 3, 4]
         assert constructed.value_id.tolist() == [0, 1, 2]
 
-        _load_lookup(reader)
-        displayed = reader.read_display_payloads(((first, None), (second, None)))
+        reader.set_tile_descriptors(result.tile_descriptors)
+        displayed = reader.read_complete_display_payloads((first, second))
         assert displayed[0] is not None and displayed[0].value_id.tolist() == [0, 1]
         assert displayed[1] is not None and displayed[1].value_id.tolist() == [0, 1, 2]
-
-
-@pytest.mark.parametrize(
-    "selected",
-    [
-        np.array([], dtype=np.uint32),
-        np.array([1, 1], dtype=np.uint32),
-        np.array([2, 1], dtype=np.uint32),
-        np.array([1], dtype=np.uint64),
-        np.array([[1]], dtype=np.uint32),
-    ],
-)
-def test_reader_rejects_invalid_selected_value_ids(tmp_path: Path, selected: np.ndarray) -> None:
-    result = _build_bucket(tmp_path)
-    descriptor = result.tile_descriptors[0]
-    with _BucketReader(tmp_path, level=1, bucket_id=3) as reader:
-        _load_lookup(reader)
-        with pytest.raises(ValueError, match="selected_value_ids"):
-            reader.read_display_payload(descriptor, selected)  # type: ignore[arg-type]
-
-
-def test_closing_reader_releases_resident_lookup_index(tmp_path: Path) -> None:
-    _build_bucket(tmp_path)
-    reader = _BucketReader(tmp_path, level=1, bucket_id=3)
-    with reader:
-        _load_lookup(reader)
-        assert reader.lookup_index_loaded
-        assert reader.resident_lookup_bytes == reader.projected_lookup_bytes
-
-    assert not reader.lookup_index_loaded
-    assert reader.resident_lookup_bytes == 0
 
 
 def test_reader_rejects_unknown_descriptor_and_calls_after_close(tmp_path: Path) -> None:
@@ -408,15 +334,6 @@ def test_reader_rejects_unknown_descriptor_and_calls_after_close(tmp_path: Path)
             reader.read_construction_payload(wrong_count)
         with pytest.raises(ValueError, match="row start"):
             reader.read_construction_payload(replace(descriptor, bucket_row_start=1))
-        _load_lookup(reader)
-        # Diagnostic reads must compare the supplied start with independently
-        # loaded stored offsets, even without a viewer descriptor installation.
-        with pytest.raises(ValueError, match="row start"):
-            reader.resolve_complete_tile_interval(replace(descriptor, bucket_row_start=1))
-        with pytest.raises(ValueError, match="interval"):
-            reader.resolve_selected_tile_intervals(
-                replace(descriptor, bucket_row_start=1), np.array([0], dtype=np.uint32)
-            )
     with pytest.raises(RuntimeError, match="not open"):
         reader.read_construction_payload(descriptor)
     with pytest.raises(RuntimeError, match="entered only once"):

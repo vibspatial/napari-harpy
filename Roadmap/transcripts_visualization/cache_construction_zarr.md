@@ -3875,9 +3875,9 @@ The mandatory path is:
 
 ```text
 staging_root only
-  -> open a fresh read-only _CatalogReader
+  -> open a fresh read-only _CacheRootReader
   -> parse and validate root attributes, hierarchy, and catalog layouts
-  -> _CatalogReader.validate_contents()
+  -> _CacheRootReader.validate_contents()
   -> reconstruct manifest descriptors grouped by physical bucket
   -> enumerate and validate the exact physical bucket inventory
   -> reopen every bucket through the compact validation path
@@ -3888,7 +3888,7 @@ staging_root only
   -> return None
 ```
 
-`_CatalogReader.validate_contents()` is the cache-wide catalog primitive owned
+`_CacheRootReader.validate_contents()` is the cache-wide catalog primitive owned
 by Z6. It validates value totals, manifest pointers and ordering, bucket-local
 addresses, `value_tiles` pointers and ordering, and per-manifest, per-level, and
 Exact per-value totals. Z7 consumes it; it does not duplicate those checks in
@@ -4534,7 +4534,7 @@ scripts/benchmark_multi_scale_cache_points_zarr_acceptance.py
 ```
 
 `reader.py` owns the high-level cache, tile, viewport, and level-selection
-contracts. It composes the existing strict `_CatalogReader`, `_BucketReader`,
+contracts. It composes the existing strict `_CacheRootReader`, `_BucketReader`,
 and `_BucketReaderCache`; it does not duplicate Zarr schema parsing or import
 the existing Parquet-backed cache reader. Low-level visualization reads may be
 added to `storage/bucket_reader.py`, but existing construction-facing
@@ -4548,7 +4548,7 @@ paths, or pass/fail timings become cache-format metadata.
 
 Implement one private `_PointsCacheReader` context manager. On entry it:
 
-1. opens the cache through `_CatalogReader` and therefore validates the frozen
+1. opens the cache through `_CacheRootReader` and therefore validates the frozen
    root, hierarchy, and catalog array layouts;
 2. requires root `publication_state = "complete"` and rejects a staging or
    unsupported generation;
@@ -4582,7 +4582,7 @@ metadata are retained. Point payloads and decoded chunks are not stored in
 `_BucketReaderCache`; operating-system and codec caching remain separate.
 
 Opening an accepted published cache must not call
-`_CatalogReader.validate_contents()` or `_validate_staged_cache()`. Publication
+`_CacheRootReader.validate_contents()` or `_validate_staged_cache()`. Publication
 already ran the independent complete-generation validator; replaying its full
 compact reconciliation on every viewer open would add seconds of unnecessary
 startup work. Runtime reads still fail closed on malformed root/layout metadata
@@ -4607,7 +4607,7 @@ viewer runtime
 Once published, the cache's globally reconciled semantic contents are trusted.
 Neither reader entry nor any tile, viewport, selection, panning, or LOD request
 may revalidate the canonical Parquet source, call `_validate_staged_cache()`,
-call `_CatalogReader.validate_contents()`, reconcile the complete manifest and
+call `_CacheRootReader.validate_contents()`, reconcile the complete manifest and
 `value_tiles`, scan all bucket ranges, or scan a complete point payload.
 
 “Trusted” does not disable cheap defensive checks local to data being opened or
@@ -5589,7 +5589,7 @@ selected-value index rather than raw value IDs:
    selected values required by bucket-local sparse-range reads.
 
 Repeated viewport planning for one selected-value index must not call
-`CatalogReader.array(...)`, slice `value_tiles/manifest_index` or
+`_CacheRootReader.array(...)`, slice `value_tiles/manifest_index` or
 `value_tiles/n_points`, open a bucket reader, or read a point payload. Viewport
 payload loading is still I/O by definition, but it must not repeat the
 cache-wide selected-value catalog lookup before opening the already identified

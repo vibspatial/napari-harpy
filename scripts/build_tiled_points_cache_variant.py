@@ -26,7 +26,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 _RSS_SAMPLE_INTERVAL_SECONDS = 0.25
@@ -175,7 +175,7 @@ def main() -> None:
         )
         build_seconds = perf_counter() - started
     stored_bytes, file_count = _directory_summary(output)
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         attributes = reader.attributes
         value_count = attributes.catalog.value_count
         levels = tuple(

@@ -676,9 +676,10 @@ The following constraints apply to every slice:
 | 10 | Remove bucket sparse-range indexes from the viewer runtime | Slices 8 and 9 | Startup time, lookup RSS, and fallback-cache complexity are removed |
 | 10b | Make complete-tile addressing self-contained in `_TileDescriptor` | Slice 10 | Required tile index and point-row start replace the separate `_BucketTileIndex`, preserving first-use validation |
 | 10c | Remove the complete-tile fallback and retire the resident bucket sparse lookup | Slice 10b | One complete-tile display contract; diagnostic subsets filter tile-major point arrays without changing the cache format |
-| 11 | Add measured adaptive routing for proper subsets | Slices 9, 10b, and 10c | Dense subsets may use complete tile-major reads and in-memory filtering without restoring sparse indexes |
+| 10d | Consolidate value-major array ownership in a per-level reader | Slice 10c | One `_ValueMajorLevelReader` per level owns both Zarr array references, validates their layouts, loads pointers, and performs bounded location reads |
+| 11 | Add measured adaptive routing for proper subsets | Slices 9, 10b, 10c, and 10d | Dense subsets may use complete tile-major reads and in-memory filtering without restoring sparse indexes |
 | 12 | Add stable render coverage, LOD hysteresis, and bounded packed-batch reuse | Slices 2, 10, and 11 | Smooth interaction on both sides of the 100,000-point boundary without a special-case performance cliff |
-| 13 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6 and 8–12, including 10b and 10c; Slice 7 optional | Evidence-backed validation of storage routing, render coverage, and interaction latency |
+| 13 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6 and 8–12, including 10b, 10c, and 10d; Slice 7 optional | Evidence-backed validation of storage routing, render coverage, and interaction latency |
 | 14 | Add viewport debounce only if dispatch churn remains material | Slice 13 | Conditional reduction of obsolete work after coverage reuse |
 | 15 | Evaluate optional ping-pong storage and a larger point budget | Slice 13 | Conditional hardening/scaling work, not part of the initial solution |
 | 16 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
@@ -686,7 +687,7 @@ The following constraints apply to every slice:
 
 Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 6 and 8 form one cache-locality milestone: publishing all-level sidecars that no read path consumes is useful only as a short-lived, testable construction boundary. Slice 7 is an optional developer-validation layer between those production slices and is not a prerequisite for publication or runtime routing. Slice 9 removes the duplicate per-tile projection introduced by the first sidecar reader before another physical route is added. Slices 8 through 10 establish the simple sidecar-first runtime without sparse indexes; Slice 11 is the deliberately later optimization that adds adaptive proper-subset routing only after both physical routes can be compared without reviving the removed index architecture. Slice 12 then changes the unit of interaction from the exact camera viewport to a reusable, budget-bounded render coverage. It deliberately follows Slice 11 so any new coverage miss set can use the final physical-route estimator, and deliberately precedes the integrated matrix and conditional debounce so those later decisions measure the completed interaction architecture.
 
-Slice 10c follows the descriptor cleanup in Slice 10b and precedes adaptive routing. It retires the remaining in-memory bucket lookup and diagnostic sparse-read contract without changing stored arrays. Optional Slice 17 follows the integrated acceptance checkpoint and separately evaluates removing the persisted ranges still consumed by construction and validation. It does not block completion of the initial visualization improvements.
+Slice 10c follows the descriptor cleanup in Slice 10b and retires the remaining in-memory bucket lookup and diagnostic sparse-read contract without changing stored arrays. Slice 10d then consolidates value-major array ownership and storage operations before adaptive routing in Slice 11; it is a clarity refactor, not another physical-layout or performance optimization. Optional Slice 17 follows the integrated acceptance checkpoint and separately evaluates removing the persisted ranges still consumed by construction and validation. It does not block completion of the initial visualization improvements.
 
 ### Slice 0 — Preserve the opt-in boundary and freeze the baseline
 
@@ -1058,7 +1059,7 @@ This slice makes the new physical ordering constructible, atomically published, 
 
 **Implemented storage contract**
 
-The implemented cache has one strict `harpy-multiscale-points-zarr-cache-0.2` root contract. `_CacheAttributes.to_dict()` always emits that version, `_parse_cache_attributes()` requires its exact root-key set, and `_CatalogReader` requires the five root groups `tile_major`, `values`, `manifest`, `value_tiles`, and `value_major`. At every level, rows in the original point payload are physically ordered by tile and then by `(value_id, point_id)` within each tile. The `value_tiles` catalog transposes compact range records into `(level, value_id, manifest_index)` order, but contains counts and tile references rather than coordinates.
+The implemented cache has one strict `harpy-multiscale-points-zarr-cache-0.2` root contract. `_CacheAttributes.to_dict()` always emits that version, `_parse_cache_attributes()` requires its exact root-key set, and `_CacheRootReader` requires the five root groups `tile_major`, `values`, `manifest`, `value_tiles`, and `value_major`. At every level, rows in the original point payload are physically ordered by tile and then by `(value_id, point_id)` within each tile. The `value_tiles` catalog transposes compact range records into `(level, value_id, manifest_index)` order, but contains counts and tile references rather than coordinates.
 
 Slice 6 adds a second location payload for every serialized level alongside the tile-major buckets. It does not replace `_BucketWriter`, alter the tile-major payload, or change the logical tile contract. Each level sidecar keeps the same tile-relative `(N, 2) float32` location representation and changes only physical row order:
 
@@ -1289,7 +1290,7 @@ There are conceptually three outcomes—no payload, tile-major, and value-major�
 
 3. Make the route decision once per plan in `_PointsCacheReader`; do not decide independently in the GUI, cache session, individual bucket readers, or VisPy. The route is chosen only after LOD selection, so Exact, Bridge, and every Spatial level use the sidecar belonging to the level that was actually selected.
 4. Keep `read_planned_tiles(plan, tile_keys_to_read)` as the single physical-read dispatch boundary. CPU residency is evaluated before this call, so the value-major path must read only requested nonresident tiles rather than rereading every positive tile in the viewport. For a proper subset, the plan must retain a reference to the immutable `_SelectedValueLevelIndex` used to construct it; do not copy its arrays, add mutable selected-value state to `_PointsCacheReader`, or force `read_planned_tiles()` to reload catalog records. An all-values plan retains no selected-level index. Validate this private plan field against the plan's generation, level, requested IDs, and route.
-5. Add a dedicated value-major sidecar reader under the storage layer. Reuse the strict sidecar arrays already opened by `_CatalogReader`; do not reopen a store per tile. During `_PointsCacheReader` entry, materialize every level's compact `value_point_indptr` vector once and retain it for that reader's lifetime, including its bytes in `resident_index_bytes`. For the supplied nine-level, 5,122-value cache this is only 368,856 bytes. Keep `location` as an on-disk Zarr array. A full-extent one-value read should reduce to one basic sidecar interval whenever all of that value's records are requested.
+5. Add a dedicated value-major sidecar reader under the storage layer. Reuse the strict sidecar arrays already opened by `_CacheRootReader`; do not reopen a store per tile. During `_PointsCacheReader` entry, materialize every level's compact `value_point_indptr` vector once and retain it for that reader's lifetime, including its bytes in `resident_index_bytes`. For the supplied nine-level, 5,122-value cache this is only 368,856 bytes. Keep `location` as an on-disk Zarr array. A full-extent one-value read should reduce to one basic sidecar interval whenever all of that value's records are requested.
 6. Use the existing `_SelectedValueLevelIndex` arrays. Its `value_indptr` partitions the selected values, while aligned `manifest_index` and `n_points` identify every tile record and its point count. These arrays already retain all records for each selected value at the chosen level, including records outside the current viewport, so no bucket sparse-range lookup is needed to derive sidecar addresses.
 7. Derive per-record sidecar offsets from the value's base pointer and an exclusive cumulative sum of its complete ordered `n_points` records. Do not introduce a persisted or cache-wide resident `record_point_indptr`. For example:
 
@@ -1671,13 +1672,13 @@ Every finalized `_TileDescriptor` carries an explicit tile index and complete po
 
 ### Slice 10c — Remove the complete-tile fallback and retire `_BucketLookupIndex`
 
-**Status: Planned**
+**Status: Implemented**
 
 This is a bounded contract-simplification follow-up to Slice 10b, scheduled before adaptive routing in Slice 11. First remove the alternate complete-tile lookup path, then replace the remaining diagnostic sparse-subset consumers and remove the resident lookup machinery. Later slice numbers remain unchanged. This changes Python reader contracts, not the published cache format, and does not depend on optional Slice 17.
 
 **Current code and scope**
 
-`_BucketReader.resolve_complete_tile_interval()` currently accepts two initialization modes: an installed, validated descriptor tuple, or an explicitly loaded `_BucketLookupIndex` whose `tile_offset` supplies the interval. Normal viewer complete-tile reads always use the first mode through `_PointsCacheReader._complete_tile_reader()`. Standalone bucket callers and tests retain the second mode.
+Before this slice, `_BucketReader.resolve_complete_tile_interval()` accepted two initialization modes: an installed, validated descriptor tuple, or an explicitly loaded `_BucketLookupIndex` whose `tile_offset` supplied the interval. Normal viewer complete-tile reads already used the first mode through `_PointsCacheReader._get_bucket_reader_for_complete_display()`. Standalone bucket callers and tests retained the second mode.
 
 Removing that fallback alone does not make `_BucketLookupIndex` unused. `resolve_selected_tile_intervals()` still consumes its sparse ranges through bucket display APIs and `read_tile(..., value_ids=...)`. Value-major equivalence tests use these explicitly primed reads as their independent tile-major reference; diagnostic benchmarks also reference the APIs. These consumers must be adapted before deleting the object.
 
@@ -1704,7 +1705,7 @@ Include a small scheme connecting the coordinating reader, its lower-level reade
 ```text
 _PointsCacheReader — coordinates reads for one cache generation
     |
-    +-- _CatalogReader
+    +-- _CacheRootReader
     |     cache-wide metadata and value-major array handles
     |
     +-- _BucketReaderCache
@@ -1717,7 +1718,7 @@ _PointsCacheReader — coordinates reads for one cache generation
           selected value/tile intervals
 ```
 
-Explain that `_ValueMajorLocationReader` wraps an array handle owned and validated by `_CatalogReader`; it does not open an additional store. Opening an array handle is not reading its point payload. `_BucketReaderCache` retains lazily opened bucket readers and their metadata, not decoded chunks or point payloads. CPU tile residency is owned outside `_PointsCacheReader`. The cache reader supplies each bucket reader with its existing per-bucket descriptor tuple for complete-tile validation and addressing, without copying those descriptors.
+Explain that `_ValueMajorLocationReader` wraps an array handle owned and validated by `_CacheRootReader`; it does not open an additional store. Opening an array handle is not reading its point payload. `_BucketReaderCache` retains lazily opened bucket readers and their metadata, not decoded chunks or point payloads. CPU tile residency is owned outside `_PointsCacheReader`. The cache reader supplies each bucket reader with its existing per-bucket descriptor tuple for complete-tile validation and addressing, without copying those descriptors.
 
 Document **descriptor construction, sharing, and validation** here rather than in the manifest-format explanation. Each manifest row becomes one immutable `_TileDescriptor`, retained in manifest order in `_descriptors`; `_descriptors_by_bucket` groups references to those same objects, and each bucket reader receives the existing tuple for its bucket. Explain that `bucket_tile_index` matches the persisted manifest column, while `bucket_row_start` is derived once from complete preceding tile counts within each `(level, bucket_id)`, including tiles outside the viewport. The reader retains no parallel derived offset array. On first complete-tile use of an opened bucket, validate its full descriptor tuple against stored `tile_offset`, tile coordinates, and totals before accepting it or reading display payloads. Distinguish that atomic first-use check from warm reuse of the accepted tuple, and explain release of the retained references on closure.
 
@@ -1758,13 +1759,80 @@ Basic descriptor field bounds and interval overflow are already covered in `test
 
 For any consolidated test, identify which surviving test retains its distinct guarantees. This is a bounded review alongside the reader-contract migration, not a requirement to reduce test counts, delete `test_compact_tile_addressing.py`, or reorganize unrelated tests.
 
+**Implementation and verification (2026-09-08)**
+
+- Complete display reads now require an accepted descriptor tuple. The bucket APIs are `read_complete_display_payload()` and `read_complete_display_payloads()`, accepting a descriptor or a tuple of descriptors, with no per-tile selection argument or compatibility aliases. Complete tiles are nonempty by contract, so these APIs return `_PointDisplayPayload` rather than optional payloads.
+- Diagnostic `read_tile(..., value_ids=...)` reads complete tile-major point arrays and filters both with one membership mask. Missing tiles and empty filtered results still return `None`. Independent multi-tile references retain bucket batching and filter actual point-level IDs. The resident lookup object, fallback, sparse-subset resolver, ID synthesis, priming/projection/rollback code, and lookup metrics have been removed; persisted arrays and their construction/validation consumers are unchanged.
+- Migrated benchmark hooks, standalone bucket/Exact diagnostics, acceptance measurements, selected-index reports, and worker test doubles. Diagnostic timings and decode-amplification estimates now describe complete reads plus filtering. Added `test_benchmark_readers.py` to exercise both physical-route timing hooks and the affected diagnostic/reporting helpers on small caches.
+- **Test consolidation:** kept `test_compact_tile_addressing.py` and its distinct first-use validation, atomic rejection/retry, tuple sharing, closure, and independent-address checks. Retired `test_primed_display_reads_do_not_reread_bucket_lookup_arrays()`; its warm complete-read guarantee remains in `test_complete_tile_descriptors_are_validated_once_reused_and_released()`, with persisted-range access guards retained separately. Replaced obsolete mixed-mode/selected-range bucket tests with complete-batch validation, disjoint selection, shared-allocation, and no-point-ID tests. Diagnostic filtering and invalid selected IDs are tested at the cache-reader boundary. Replaced the impossible complete-batch `None` injection with a real array-boundary truncated-payload rejection test.
+- **198 focused test cases passed** across bucket/cache readers, addressing, value-major viewport reads, reader lifetime, Exact construction, staged and exhaustive validation, benchmark helpers, and worker sessions. Changed Python files pass Ruff lint/format checks; `git diff --check` passes. Dependency deprecation warnings remain. No full repository suite or real-canvas/GPU timing run was required for this reader-only cleanup.
+
+Existing-cache worker comparisons used five repeats per selected-value case, at a 100,000-point budget. Cold means empty CPU tile residency, not a flushed filesystem cache. The before/after render-batch SHA-256 hashes matched at both viewport sizes and across cold, partial, and full CPU residency.
+
+| Selected-value viewport | Cold worker, before → after | Partially resident worker, before → after | Fully resident worker, before → after |
+|---|---:|---:|---:|
+| Full extent: 60,512 points / 4,453 tiles | 97.15 → 98.48 ms | 73.60 → 77.46 ms | 40.46 → 42.15 ms |
+| Centered 0.2 width/height fraction: 4,846 points / 247 tiles | 7.28 → 8.55 ms | 6.27 → 7.13 ms | 2.43 → 2.39 ms |
+
+The all-values smoke run retained the same level-8, one-tile, 100,000-point snapshot. Cold worker time was 89.75 ms before and 86.26 ms in the first after-run; a subsequent final-code run measured 24.60 ms. Warm snapshots were 1.26 ms before and approximately 1.1–1.3 ms after. This variation illustrates the uncontrolled filesystem/codec-cache effects: these samples are correctness and cost checks, not evidence of a speedup or a statistical guarantee of zero regression. Selected-value trace process peak RSS was 327.47 → 333.50 MiB; retained compact NumPy metadata remains unchanged. No selection, value-major read, packing, or rendering algorithm was changed.
+
+Diagnostic cost was measured separately on one 108,598-point Exact tile, with nine warm repetitions and allocation tracing disabled during timing. Returning one selected point took 12.02 ms for complete read plus filtering; returning 4,191 points took 11.81 ms. Filtering already-loaded arrays alone took 0.39–0.40 ms. Separate traced allocation peaks were approximately 3.14–3.20 MiB for complete read plus filtering and 0.42 MiB for filtering alone, including returned allocations rather than reporting process RSS. This cost is bounded to the requested complete tile and is outside normal proper-subset viewport routing.
+
+Evidence: `/private/tmp/napari-harpy-slice10c-before.json`, `/private/tmp/napari-harpy-slice10c-after.json`, `/private/tmp/napari-harpy-slice10c-all-before.json`, `/private/tmp/napari-harpy-slice10c-all-after.json`, `/private/tmp/napari-harpy-slice10c-all-after-final.json`, `/private/tmp/napari-harpy-slice10c-bucket-smoke.json`, and `/private/tmp/napari-harpy-slice10c-diagnostic.json`. The diagnostic measurement driver is `/private/tmp/napari_harpy_slice10c_diagnostic.py`.
+
 **Exit condition**
 
 Complete-tile display reads have one descriptor-based addressing contract. No `_BucketLookupIndex`, sparse-subset display branch, or lookup-priming/accounting machinery remains. Diagnostics and equivalence references independently filter actual tile-major point arrays. The `_PointsCacheReader` docstring defines catalog metadata and documents reader ownership, both physical layouts, and when metadata versus payloads are read. Any test consolidation preserves the distinct addressing, validation, lifecycle, and IO guarantees. The current cache format, persisted sparse ranges, construction and validation guarantees, normal viewer routing, and physical batching remain intact. Optional Slice 17 is concerned only with the separate persisted-range removal decision and its remaining consumers.
 
+### Slice 10d — Consolidate value-major array ownership in `_ValueMajorLevelReader`
+
+**Status: Planned**
+
+This is a bounded reader-responsibility refactor following Slice 10c and preceding adaptive routing in Slice 11. It makes the value-major component easier to follow without changing the stored cache, physical read algorithm, or viewport behavior. Later slice numbers remain unchanged. It is not an expected loading/rendering-speed improvement or a cache-rebuild task.
+
+**Current responsibilities and intended boundary**
+
+The work is currently split across three classes, not contained entirely in `_PointsCacheReader`:
+
+| Responsibility | Current implementation | After this slice |
+|---|---|---|
+| Open and retain `value_major/level_N/location` and `value_major/level_N/value_point_indptr` Zarr objects | `_CacheRootReader` opens both into its generic array dictionary; `_ValueMajorLocationReader` borrows `location` | `_ValueMajorLevelReader` opens and retains both array references for its level |
+| Validate the two arrays' complete storage layouts | `_CacheRootReader._validate_layouts()` | `_ValueMajorLevelReader`, using shared strict validation helpers |
+| Load the compact point-pointer vector into a read-only NumPy array | `_PointsCacheReader._load_runtime_indexes()` via `_read_only_array()` | A level-reader operation supplies the vector; `_PointsCacheReader` still retains it for planning |
+| Read bounded ordered location intervals | `_ValueMajorLocationReader.read_intervals()` | `_ValueMajorLevelReader`, preserving the existing implementation and cancellation boundaries |
+
+Ownership here means responsibility for the Zarr array objects and their valid lifetime, not an additional copy of their contents. The loaded NumPy pointer vectors remain distinct from the stored arrays they describe.
+
+**Implementation sequence**
+
+1. **Expand and rename the existing location reader.** Replace `_ValueMajorLocationReader` with `_ValueMajorLevelReader`, rather than adding another wrapper around it. It owns the two Zarr array references for one level, validates their dtype, shape, chunk/shard layout, codec, and required array-attribute contract, supplies the compact pointer vector, and performs bounded location reads. Keep shared selection and validation helpers shared; do not introduce a second implementation or a compatibility alias for the old class.
+2. **Delegate from the root reader while keeping one root store.** `_CacheRootReader` continues owning the root store/group, parsed `_CacheAttributes`, and the `manifest/*`, `values/n_points`, and `value_tiles/*` Zarr objects. It creates and retains one level reader per serialized level using that already-open root/group, exposes the existing level-reader instance to consumers, and delegates value-major layout validation to it. Remove the value-major entries from the root reader's generic array dictionary. Do not open an additional `LocalStore` per level or create separate level readers for validation and viewer access within the same root-reader lifetime. Preserve eager structural/layout rejection at root opening; location payloads remain unread until requested.
+3. **Keep viewport semantics and NumPy residency in `_PointsCacheReader`.** Obtain the existing level readers through the root reader, load each compact `value_point_indptr` vector once at runtime startup, and retain/account for those read-only NumPy arrays exactly as before. Do not also retain a second pointer-vector copy in each level reader. LOD selection, `_SelectedValueIndex`, viewport-to-manifest intersection, resolving requested value-major intervals, reconstructing value IDs, scattering results into logical tiles, and CPU residency remain in their current layers. The new level reader accepts physical row intervals, not a viewport plan or selected-value index.
+4. **Preserve independent validation and lifecycle guarantees.** Keep cache-wide reconciliation in `_CacheRootReader.validate_contents()`, obtaining pointer data through the level-reader boundary. In particular, retain validation of pointer origin, monotonicity, terminal count, and per-value differences against counts independently accumulated from `value_tiles`. Routine viewer startup must not begin running this full reconciliation or optional exhaustive validation. On normal closure and failed startup, release/invalidate the level readers' array references before closing the shared root store; partially initialized readers must not leak resources, and borrowed readers must not remain usable after their owner closes.
+5. **Migrate consumers and explanations together.** Update imports, focused tests, worker test doubles, and benchmark hooks that refer to `_ValueMajorLocationReader` or obtain value-major arrays through `_CacheRootReader.array(...)`. Adapt `scripts/validate_multi_scale_cache_points_zarr_exhaustive.py` and related diagnostics to the new level-reader boundary without routing their independent tile-major reference through viewport assembly. Update `_PointsCacheReader` and storage-reader docstrings to distinguish root-store ownership, delegated level-array ownership, borrowed reader references, retained NumPy pointers, and returned location payloads. Retain explicit cache-relative paths. Keep `CACHE_FORMAT.md` focused on the unchanged persisted format.
+
+**Boundaries and non-goals**
+
+- No schema/version change, rebuild, compatibility path, in-place cache mutation, optional level, or new persisted array. Both value-major arrays remain mandatory at every level.
+- No changes to `_BucketReaderCache`, complete-tile descriptor addressing, tile-major reads, sparse-range removal, physical routing, selection semantics, render budgets, packing, or GPU resources. Adaptive routing remains Slice 11 work.
+- Preserve contiguous/basic and disjoint/orthogonal selections, bounded batch sizes, output order, cancellation checks, strict missing-chunk behavior, and the absence of eager location decoding. This refactor must not introduce extra payload reads, repeated pointer loads during pan/zoom, or extra stores.
+- Root-level structural checks, value-major layout checks, compact runtime pointer checks, mandatory publication reconciliation, and optional exhaustive location-equivalence validation remain distinct guarantees. Moving ownership must not weaken them or increase the validation performed during viewer startup.
+
+**Focused tests and verification**
+
+- Adapt the existing location-reader tests to the level-reader contract and retain adjacent, disjoint, empty, multi-batch, invalid-interval, and cancellation coverage. Verify that opening the reader does not decode locations.
+- Retain root-open rejection of missing/malformed level arrays, invalid dtypes/shapes/layouts/codecs, and unexpected attributes. Keep staged-validation tests that reject total or per-value pointer disagreement with `value_tiles`, and exhaustive-validation corruption cases with an independent tile-major reference.
+- Verify reuse of the same per-level reader instances and shared root store, one runtime pointer load per level, unchanged resident-index byte accounting, no pointer reload during unchanged-selection viewport requests, and cleanup after normal closure or partial opening failure. Test these behaviors at the read/store boundaries, not only by asserting renamed class types.
+- Run focused reader, value-major viewport-equivalence, validation, benchmark-helper, and cache-session tests affected by the new boundary. Preserve Exact, Bridge, and Spatial outputs, partial/missing-tile behavior, canonical value IDs, and normal-viewer no-sparse-read guards.
+- Smoke-test migrated scripts/hooks. Compare startup and representative cold/warm worker requests on the same existing cache, checking output equality, physical read counts, compact resident bytes, and any additional allocation or latency. Treat this as a regression check, not evidence of a speedup; no cache construction or GPU benchmark is required solely for this ownership refactor.
+
+**Exit condition**
+
+Each value-major level has one explicit reader responsible for its two Zarr array objects, layout checks, compact-pointer loading, and bounded location reads. `_CacheRootReader` owns the shared store and delegates value-major access instead of duplicating those array references in its generic dictionary. `_PointsCacheReader` remains the viewport coordinator and owner of its loaded runtime pointer vectors. Independent validation, resource cleanup, IO counts, memory-accounting semantics, and both viewer routes are preserved. No old reader-class alias or second location-reading implementation remains.
+
 ### Slice 11 — Measured adaptive proper-subset physical routing
 
-This is a follow-up optimization to the deliberately simple Slice 8 routing rule. It addresses the case where a proper subset contains enough values, and the viewport covers few enough tiles, that reading complete tile-major tiles plus point-level `value_id` and filtering in memory is physically cheaper than gathering many value-major intervals. It builds on Slice 9's lean semantic plan, Slice 10b's self-contained tile descriptors, and Slice 10c's complete-only bucket display contract. It must not restore the sparse range indexes excluded from the viewer in Slice 10 and retired from diagnostic reads in Slice 10c.
+This is a follow-up optimization to the deliberately simple Slice 8 routing rule. It addresses the case where a proper subset contains enough values, and the viewport covers few enough tiles, that reading complete tile-major tiles plus point-level `value_id` and filtering in memory is physically cheaper than gathering many value-major intervals. It builds on Slice 9's lean semantic plan, Slice 10b's self-contained tile descriptors, Slice 10c's complete-only bucket display contract, and Slice 10d's per-level value-major reader boundary. It must not restore the sparse range indexes excluded from the viewer in Slice 10 and retired from diagnostic reads in Slice 10c.
 
 The semantic selection and the physical payload route are separate decisions:
 

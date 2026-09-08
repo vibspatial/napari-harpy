@@ -306,15 +306,10 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
 
     patches.patch(_PointsCacheReader, "plan_viewport", plan_viewport)
     timed_method(_PointsCacheReader, "read_planned_tiles", "read_planned_tiles")
-    timed_method(_PointsCacheReader, "_complete_tile_reader", "complete_tile_bucket_setup")
+    timed_method(_PointsCacheReader, "_get_bucket_reader_for_complete_display", "complete_tile_bucket_setup")
     timed_method(_PointsCacheReader, "_read_value_major_requests", "value_major_tile_assembly")
     timed_method(value_major_reader_module._ValueMajorLocationReader, "read_intervals", "value_major_location_read")
-    timed_method(bucket_reader_module._BucketReader, "read_display_payloads", "bucket_batch")
-    timed_method(
-        bucket_reader_module._BucketReader,
-        "resolve_selected_tile_intervals",
-        "sparse_interval_resolution",
-    )
+    timed_method(bucket_reader_module._BucketReader, "read_complete_display_payloads", "bucket_batch")
     timed_method(bucket_reader_module, "_exact_row_selection", "exact_row_selector_construction")
     timed_method(value_major_reader_module, "_build_exact_row_selection", "value_major_row_selector_construction")
     timed_method(_CpuTileResidency, "get", "cpu_residency_get")
@@ -748,8 +743,6 @@ def main() -> None:
         "index_memory_scope": "NumPy arrays only; Python descriptors and containers are excluded.",
         "resident_value_major_pointer_mib": reader.resident_value_major_pointer_bytes / _MIB,
         "open_bucket_readers": reader.open_bucket_reader_count,
-        "sparse_index_count": reader.loaded_bucket_lookup_index_count,
-        "sparse_index_bytes": reader.resident_bucket_lookup_bytes,
         "rss_after_reader_enter_mib": _rss_mib(),
     }
     try:
@@ -848,8 +841,6 @@ def main() -> None:
             "cpu_resident_mib": residency.resident_bytes / _MIB,
             "cpu_resident_tiles": residency.tile_count,
             "open_bucket_readers": reader.open_bucket_reader_count,
-            "sparse_index_count": reader.loaded_bucket_lookup_index_count,
-            "sparse_index_bytes": reader.resident_bucket_lookup_bytes,
             "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             / (_MIB if platform.system() == "Darwin" else 1024),
         }

@@ -10,8 +10,9 @@ from time import perf_counter
 
 import numpy as np
 
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader, _PointDisplayPayload
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
@@ -32,9 +33,7 @@ def _payload(point_count: int, *, point_id_start: int, value_count: int) -> _Poi
     point_id = np.arange(point_id_start, point_id_start + point_count, dtype=np.uint64)
     # Unequal deterministic run lengths exercise both localized values and
     # selected values whose runs intersect several inner chunks.
-    value_id = np.floor(
-        np.linspace(0, value_count, point_count, endpoint=False, dtype=np.float64)
-    ).astype(np.uint32)
+    value_id = np.floor(np.linspace(0, value_count, point_count, endpoint=False, dtype=np.float64)).astype(np.uint32)
     x_rel = np.remainder(point_id, np.uint64(512)).astype(np.float32)
     y_rel = np.remainder(point_id // np.uint64(512), np.uint64(512)).astype(np.float32)
     return _PointPayload(x_rel=x_rel, y_rel=y_rel, value_id=value_id, point_id=point_id)
@@ -57,6 +56,23 @@ def _time_read(operation: Callable[[], object], *, repeats: int = 5) -> list[flo
         operation()
         timings.append(perf_counter() - start)
     return timings
+
+
+def _read_filtered_display_payload(
+    reader: _BucketReader,
+    descriptor: _TileDescriptor,
+    selected: np.ndarray,
+) -> _PointDisplayPayload | None:
+    """Timeable diagnostic: read both complete tile-major arrays, then filter them.
+
+    The caller installs the complete bucket descriptor tuple before timing.
+    This is not a sparse physical read and does not describe viewport routing.
+    """
+    complete = reader.read_complete_display_payload(descriptor)
+    matches = np.isin(complete.value_id, selected)
+    if not matches.any():
+        return None
+    return _PointDisplayPayload(location=complete.location[matches], value_id=complete.value_id[matches])
 
 
 def main() -> None:
@@ -104,22 +120,25 @@ def main() -> None:
         file_count, byte_count = _directory_summary(workspace / result.bucket_path)
         reads: dict[str, object] = {}
         with _BucketReader(workspace, level=0, bucket_id=0) as reader:
+            reader.set_tile_descriptors(result.tile_descriptors)
             for descriptor, (name, _, value_count) in zip(result.tile_descriptors, scenarios, strict=True):
                 complete = _time_read(lambda descriptor=descriptor: reader.read_construction_payload(descriptor))
                 localized = np.array([value_count // 2], dtype=np.uint32)
                 distributed = np.array([0, value_count // 2, value_count - 1], dtype=np.uint32)
                 localized_times = _time_read(
-                    lambda descriptor=descriptor, selected=localized: reader.read_display_payload(descriptor, selected)
+                    lambda descriptor=descriptor, selected=localized: _read_filtered_display_payload(
+                        reader, descriptor, selected
+                    )
                 )
                 distributed_times = _time_read(
-                    lambda descriptor=descriptor, selected=distributed: reader.read_display_payload(
-                        descriptor, selected
+                    lambda descriptor=descriptor, selected=distributed: _read_filtered_display_payload(
+                        reader, descriptor, selected
                     )
                 )
                 reads[name] = {
-                    "complete_seconds": complete,
-                    "localized_one_value_seconds": localized_times,
-                    "distributed_three_values_seconds": distributed_times,
+                    "construction_complete_seconds": complete,
+                    "complete_read_then_filter_one_value_seconds": localized_times,
+                    "complete_read_then_filter_three_values_seconds": distributed_times,
                 }
 
         report = {

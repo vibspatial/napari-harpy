@@ -177,8 +177,6 @@ def main() -> None:
         report["tile_descriptor_count"] = reader.tile_descriptor_count
         report["index_memory_scope"] = "NumPy arrays only; Python descriptors and containers are excluded."
         report["resident_value_major_pointer_bytes"] = reader.resident_value_major_pointer_bytes
-        report["sparse_index_bytes"] = reader.resident_bucket_lookup_bytes
-        report["sparse_index_count"] = reader.loaded_bucket_lookup_index_count
         report["open_bucket_readers"] = reader.open_bucket_reader_count
         for names in args.selection:
             ids = tuple(sorted({reader.value_names.index(name) for name in names}))
@@ -220,8 +218,6 @@ def main() -> None:
                 report["cases"].append(case)
                 print(f"Measured {names}, viewport fraction {fraction}", flush=True)
         report["after_viewport_trace"] = {
-            "sparse_index_bytes": reader.resident_bucket_lookup_bytes,
-            "sparse_index_count": reader.loaded_bucket_lookup_index_count,
             "open_bucket_readers": reader.open_bucket_reader_count,
         }
     peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
