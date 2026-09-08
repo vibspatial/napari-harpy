@@ -370,7 +370,10 @@ def _validate_tile_ranges(
 
 
 def _strict_array(root: zarr.Group, name: str) -> zarr.Array:
+    """Open an attribute-free cache array whose missing chunks must raise."""
     node = root[name]
     if not isinstance(node, zarr.Array):
-        raise ValueError(f"Required bucket node is not an array: {name}.")
+        raise ValueError(f"Required cache node is not an array: {name}.")
+    if dict(node.attrs):
+        raise ValueError(f"Cache arrays must not contain attributes: {name}.")
     return node.with_config({"read_missing_chunks": ZARR_READ_MISSING_CHUNKS})
