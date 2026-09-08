@@ -113,8 +113,8 @@ def test_normal_staged_validation_accepts_complete_multilevel_generation(
     _validate_staged_cache(catalog_exact_fixture.staging_root)
     with _CacheRootReader(catalog_exact_fixture.staging_root) as reader:
         for level, metadata in enumerate(reader.attributes.levels):
-            assert reader.array(f"value_major/level_{level}/location").shape == (metadata.point_count, 2)
-            pointer = reader.array(f"value_major/level_{level}/value_point_indptr")[:]
+            # Root opening already validates the location shape without payload IO.
+            pointer = reader.value_major_level(level).load_point_indptr()
             assert int(pointer[0]) == 0
             assert int(pointer[-1]) == metadata.point_count
 

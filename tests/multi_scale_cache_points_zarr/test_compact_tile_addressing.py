@@ -128,8 +128,8 @@ def test_bucket_address_mismatch_fails_before_payload_io_without_accepting_descr
 def test_invalid_manifest_addressing_is_rejected_without_opening_buckets(reader_fixture: Any, monkeypatch, corruption):
     original_read = reader_module._read_only_array
 
-    def corrupted_read(catalog: Any, name: str, **kwargs: Any) -> np.ndarray:
-        values = original_read(catalog, name, **kwargs)
+    def corrupted_read(cache_root_reader: Any, name: str, **kwargs: Any) -> np.ndarray:
+        values = original_read(cache_root_reader, name, **kwargs)
         if (
             corruption in {"duplicate-tile-index", "out-of-order-tile-index"} and name == MANIFEST_BUCKET_TILE_INDEX
         ) or (corruption == "row-overflow" and name == MANIFEST_N_POINTS):
@@ -214,9 +214,9 @@ def test_mismatched_request_cannot_borrow_accepted_descriptor_validation(reader_
 def test_manifest_and_independent_bucket_validation_produce_identical_addresses(reader_fixture: Any) -> None:
     with (
         _PointsCacheReader(reader_fixture.cache_root) as reader,
-        _CacheRootReader(reader_fixture.cache_root) as catalog,
+        _CacheRootReader(reader_fixture.cache_root) as cache_root_reader,
     ):
-        inventory = _read_manifest_inventory(catalog)
+        inventory = _read_manifest_inventory(cache_root_reader)
         assert reader.open_bucket_reader_count == 0
         for level in inventory.levels:
             for bucket in level.buckets:
@@ -234,8 +234,8 @@ def test_manifest_and_independent_bucket_validation_produce_identical_addresses(
 def test_manifest_row_starts_reset_across_levels_with_non_dense_bucket_ids(reader_fixture: Any, monkeypatch) -> None:
     original_read = reader_module._read_only_array
 
-    def remapped_read(catalog: Any, name: str, **kwargs: Any) -> np.ndarray:
-        values = original_read(catalog, name, **kwargs)
+    def remapped_read(cache_root_reader: Any, name: str, **kwargs: Any) -> np.ndarray:
+        values = original_read(cache_root_reader, name, **kwargs)
         if name == MANIFEST_BUCKET_ID:
             values = values * np.uint32(7) + np.uint32(11)
             values.flags.writeable = False

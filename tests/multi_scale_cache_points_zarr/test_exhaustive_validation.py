@@ -28,7 +28,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import value_major_point_indptr
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
@@ -189,7 +188,7 @@ def test_exhaustive_comparison_covers_all_levels_in_bounded_cross_chunk_batches(
     with _CacheRootReader(exhaustive_fixture.cache_root) as reader:
         expected_levels = set(range(len(reader.attributes.levels)))
         assert any(
-            bool((np.diff(reader.array(value_major_point_indptr(level))[:]) == 0).any())
+            bool((np.diff(reader.value_major_level(level).load_point_indptr()) == 0).any())
             for level in range(1, len(reader.attributes.levels))
         )
     assert compared_levels == expected_levels

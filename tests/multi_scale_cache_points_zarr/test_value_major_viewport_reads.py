@@ -39,7 +39,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader impor
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
-    _ValueMajorLocationReader,
+    _ValueMajorLevelReader,
 )
 
 
@@ -88,14 +88,14 @@ def _assert_value_major_read_matches_tile_major(
     def reject_bucket_payload(*args: object, **kwargs: object) -> object:
         raise AssertionError("Value-major comparison fell back to tile-major payload reads.")
 
-    original_read = _ValueMajorLocationReader.read_intervals
+    original_read = _ValueMajorLevelReader.read_intervals
     selected_row_counts: list[int] = []
 
     # Count requested rows while preserving the real read: matching output
     # alone would not catch reading extra tiles and filtering them afterward.
     # This does not count additional rows decoded from shared Zarr chunks.
     def tracked_read(
-        self: _ValueMajorLocationReader,
+        self: _ValueMajorLevelReader,
         intervals: tuple[tuple[int, int], ...],
         **kwargs: Any,
     ) -> npt.NDArray[np.float32]:
@@ -104,7 +104,7 @@ def _assert_value_major_read_matches_tile_major(
 
     with monkeypatch.context() as patches:
         patches.setattr(_BucketReader, "read_complete_display_payloads", reject_bucket_payload)
-        patches.setattr(_ValueMajorLocationReader, "read_intervals", tracked_read)
+        patches.setattr(_ValueMajorLevelReader, "read_intervals", tracked_read)
         # Input order must not change the logical output's original plan order.
         result_value_major = reader.read_planned_tiles(plan, tuple(reversed(tile_keys_to_read)))
 
@@ -322,7 +322,7 @@ def test_selected_viewport_reads_value_major_sidecar_without_bucket_payload_acce
         def reject_catalog_array(*args: object, **kwargs: object) -> object:
             raise AssertionError("Viewport read reopened a catalog or sidecar array.")
 
-        monkeypatch.setattr(reader._catalog_or_raise(), "array", reject_catalog_array)
+        monkeypatch.setattr(reader._cache_root_reader_or_raise(), "array", reject_catalog_array)
         plan = reader.plan_viewport(0, full, value_index=value_index)
 
         # Read only the second logical tile. Its value-major address follows
@@ -365,7 +365,7 @@ def test_all_values_viewport_retains_tile_major_route_at_every_level(
     def reject_sidecar_read(*args: object, **kwargs: object) -> object:
         raise AssertionError("An all-values viewport read accessed a value-major sidecar.")
 
-    monkeypatch.setattr(_ValueMajorLocationReader, "read_intervals", reject_sidecar_read)
+    monkeypatch.setattr(_ValueMajorLevelReader, "read_intervals", reject_sidecar_read)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         for level in range(reader.level_count):
             plan = reader.plan_viewport(level, full)
@@ -516,7 +516,7 @@ def test_viewport_payload_failure_propagates_without_returning_partial_tiles(
         )
         plan = reader.plan_viewport(0, _IntrinsicViewport(0, 0, 12, 10), value_index=value_index)
         monkeypatch.setattr(_BucketReader, "read_complete_display_payloads", fail_read)
-        monkeypatch.setattr(_ValueMajorLocationReader, "read_intervals", fail_read)
+        monkeypatch.setattr(_ValueMajorLevelReader, "read_intervals", fail_read)
         with pytest.raises(OSError, match="injected payload failure"):
             reader.read_planned_tiles(plan, plan.tile_keys)
 

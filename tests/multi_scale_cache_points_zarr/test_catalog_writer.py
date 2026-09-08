@@ -83,8 +83,9 @@ def test_catalog_coordinator_writes_exact_zarr_hierarchy_and_inverted_index(
         assert reader.array("value_tiles/indptr")[:].tolist() == [[0, 1, 3]]
         assert reader.array("value_tiles/manifest_index")[:].tolist() == [0, 0, 1]
         assert reader.array("value_tiles/n_points")[:].tolist() == [3, 1, 2]
-        assert reader.array("value_major/level_0/value_point_indptr")[:].tolist() == [0, 3, 6]
-        assert reader.array("value_major/level_0/location")[:].tolist() == [
+        level_reader = reader.value_major_level(0)
+        assert level_reader.load_point_indptr().tolist() == [0, 3, 6]
+        assert level_reader.read_intervals(((0, 6),), expected_row_count=6).tolist() == [
             [1.0, 1.0],
             [2.0, 3.0],
             [4.0, 4.0],

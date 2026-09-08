@@ -178,8 +178,14 @@ def test_writer_persists_complete_multilevel_locations_and_empty_value_interval(
     assert len(level_results) == len(expected)
     with _CacheRootReader(fixture.staging_root) as reader:
         for level, (expected_pointer, expected_locations) in enumerate(expected):
-            assert reader.array(f"value_major/level_{level}/value_point_indptr")[:].tolist() == expected_pointer
-            assert reader.array(f"value_major/level_{level}/location")[:].tolist() == expected_locations
+            assert reader.attributes.levels[level].point_count == len(expected_locations)
+            level_reader = reader.value_major_level(level)
+            assert level_reader.load_point_indptr().tolist() == expected_pointer
+            point_count = len(expected_locations)
+            assert (
+                level_reader.read_intervals(((0, point_count),), expected_row_count=point_count).tolist()
+                == expected_locations
+            )
 
 
 def test_writer_preserves_output_while_bounded_bucket_readers_are_reopened(
@@ -268,8 +274,9 @@ def test_writer_preserves_output_while_bounded_bucket_readers_are_reopened(
         (0, second_bucket),
     ]
     with _CacheRootReader(staging_root) as reader:
-        assert reader.array("value_major/level_0/value_point_indptr")[:].tolist() == [0, 2, 4]
-        assert reader.array("value_major/level_0/location")[:].tolist() == [
+        level_reader = reader.value_major_level(0)
+        assert level_reader.load_point_indptr().tolist() == [0, 2, 4]
+        assert level_reader.read_intervals(((0, 4),), expected_row_count=4).tolist() == [
             [1, 1],
             [1, 1],
             [2, 1],

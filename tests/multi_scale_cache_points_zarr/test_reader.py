@@ -540,8 +540,8 @@ def test_complete_value_index_load_is_rejected_without_catalog_payload_reads(
     calls = {VALUE_TILES_MANIFEST_INDEX: 0, VALUE_TILES_N_POINTS: 0}
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        catalog = reader._catalog_or_raise()
-        original_array = catalog.array
+        cache_root_reader = reader._cache_root_reader_or_raise()
+        original_array = cache_root_reader.array
 
         class _CountingArray:
             def __init__(self, name: str) -> None:
@@ -557,7 +557,7 @@ def test_complete_value_index_load_is_rejected_without_catalog_payload_reads(
                 return _CountingArray(name)
             return original_array(name)
 
-        monkeypatch.setattr(catalog, "array", counted_array)
+        monkeypatch.setattr(cache_root_reader, "array", counted_array)
         with pytest.raises(ValueError, match="proper subset"):
             reader.load_selected_value_index(
                 selected_all,
@@ -591,15 +591,15 @@ def test_selected_value_index_is_immutable_bounded_and_catalog_io_free(
         )
         assert np.diff(value_index.levels[1].value_indptr).tolist() == [0]
 
-        catalog = reader._catalog_or_raise()
-        original_array = catalog.array
+        cache_root_reader = reader._cache_root_reader_or_raise()
+        original_array = cache_root_reader.array
 
         def reject_value_tile_payload(name: str) -> object:
             if name in (VALUE_TILES_MANIFEST_INDEX, VALUE_TILES_N_POINTS):
                 raise AssertionError("Viewport planning reread selected-value catalog payloads.")
             return original_array(name)
 
-        monkeypatch.setattr(catalog, "array", reject_value_tile_payload)
+        monkeypatch.setattr(cache_root_reader, "array", reject_value_tile_payload)
         exact = reader.select_level(full, 2, value_index=value_index)
         assert (exact.level, exact.estimated_point_count) == (0, 2)
         sampled = reader.select_level(full, 1, value_index=value_index)
@@ -640,8 +640,8 @@ def test_selected_value_index_uses_one_exact_selection_per_nonempty_level(
         selected_indexes = selected_a_and_c.astype(np.int64, copy=False)
         record_counts = pointers[:, selected_indexes + 1] - pointers[:, selected_indexes]
         expected_nonempty_levels = int((record_counts.sum(axis=1, dtype=np.uint64) > 0).sum())
-        catalog = reader._catalog_or_raise()
-        original_array = catalog.array
+        cache_root_reader = reader._cache_root_reader_or_raise()
+        original_array = cache_root_reader.array
 
         class _TrackingArray:
             def __init__(self, name: str) -> None:
@@ -660,7 +660,7 @@ def test_selected_value_index_uses_one_exact_selection_per_nonempty_level(
                 return _TrackingArray(name)
             return original_array(name)
 
-        monkeypatch.setattr(catalog, "array", tracked_array)
+        monkeypatch.setattr(cache_root_reader, "array", tracked_array)
         value_index = _load_selected_value_index(reader, selected_a_and_c)
 
     assert len(selections[VALUE_TILES_MANIFEST_INDEX]) == expected_nonempty_levels
@@ -688,15 +688,15 @@ def test_value_index_load_rejects_budget_before_catalog_payload_reads(
     calls = {VALUE_TILES_MANIFEST_INDEX: 0, VALUE_TILES_N_POINTS: 0}
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        catalog = reader._catalog_or_raise()
-        original_array = catalog.array
+        cache_root_reader = reader._cache_root_reader_or_raise()
+        original_array = cache_root_reader.array
 
         def counted_array(name: str) -> object:
             if name in calls:
                 calls[name] += 1
             return original_array(name)
 
-        monkeypatch.setattr(catalog, "array", counted_array)
+        monkeypatch.setattr(cache_root_reader, "array", counted_array)
         with pytest.raises(ValueError, match="resident bytes"):
             reader.load_selected_value_index(selected_a, max_resident_bytes=1)
 
