@@ -88,6 +88,11 @@ class _ManifestBucket:
             sorted(self.descriptors, key=lambda descriptor: (descriptor.tile_y, descriptor.tile_x))
         ):
             raise ValueError("Manifest-bucket descriptors must follow (tile_y, tile_x) order.")
+        row_start = 0
+        for descriptor in self.descriptors:
+            if descriptor.bucket_row_start != row_start:
+                raise ValueError("Manifest-bucket point intervals must be contiguous from zero.")
+            row_start += descriptor.n_points
         if (
             not isinstance(self.manifest_indexes, np.ndarray)
             or self.manifest_indexes.dtype != np.dtype(np.uint64)
@@ -202,9 +207,7 @@ def _validate_cache_generation(
     _validate_cache_artifacts(cache_root)
     with _CatalogReader(cache_root) as reader:
         if reader.attributes.publication_state != expected_publication_state:
-            raise ValueError(
-                f"Cache validation requires publication_state={expected_publication_state!r}."
-            )
+            raise ValueError(f"Cache validation requires publication_state={expected_publication_state!r}.")
         reader.validate_contents()
         inventory = _read_manifest_inventory(reader)
         _validate_persisted_build(reader.attributes, inventory)
@@ -214,10 +217,46 @@ def _validate_cache_generation(
 
 
 def _read_manifest_inventory(reader: _CatalogReader) -> _ManifestInventory:
-    """Reconstruct ordered tile descriptors and physical buckets from manifest arrays."""
+    """Reconstruct ordered tile descriptors and physical buckets from manifest arrays.
+
+    For each level, ``grouped`` has the following structure::
+
+        {
+            bucket_id: [
+                (manifest_row_index, tile_descriptor),
+                ...
+            ]
+        }
+
+    ``bucket_id`` identifies a physical bucket within the current level.
+    ``manifest_row_index`` indexes the cache-wide manifest arrays; it is
+    neither a bucket-local tile index nor a point-row address.
+    ``tile_descriptor`` is the reconstructed ``_TileDescriptor`` containing
+    that tile's identity and complete point-row interval within its bucket.
+
+    For example::
+
+        {
+            4: [(10, descriptor_a), (12, descriptor_b)],
+            7: [(11, descriptor_c)],
+        }
+
+    Here, manifest rows 10 and 12 belong to bucket 4, while row 11 belongs
+    to bucket 7. Each bucket's list follows bucket-local tile order. The
+    mapping is recreated for every level.
+
+    ``rows = grouped[current_bucket_id]`` references that bucket's list;
+    a previously unseen bucket gets an empty list. Appending to ``rows``
+    therefore updates ``grouped``. Its last descriptor supplies the
+    preceding tile's start and count when deriving the next row start.
+
+    After processing the level, each list is split into the aligned
+    ``descriptors`` tuple and ``manifest_indexes`` array of a
+    ``_ManifestBucket``.
+    """
     level_indptr = np.asarray(reader.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
     bucket_id = np.asarray(reader.array(MANIFEST_BUCKET_ID)[:], dtype=np.uint32)
-    bucket_tile_index = np.asarray(reader.array(MANIFEST_BUCKET_TILE_INDEX)[:], dtype=np.uint32)
+    bucket_tile_indexes = np.asarray(reader.array(MANIFEST_BUCKET_TILE_INDEX)[:], dtype=np.uint32)
     tile_x = np.asarray(reader.array(MANIFEST_TILE_X)[:], dtype=np.uint32)
     tile_y = np.asarray(reader.array(MANIFEST_TILE_Y)[:], dtype=np.uint32)
     n_points = np.asarray(reader.array(MANIFEST_N_POINTS)[:], dtype=np.uint64)
@@ -226,23 +265,34 @@ def _read_manifest_inventory(reader: _CatalogReader) -> _ManifestInventory:
     for level, (stored_start, stored_stop) in enumerate(zip(level_indptr[:-1], level_indptr[1:], strict=True)):
         start = int(stored_start)
         stop = int(stored_stop)
-        descriptors = tuple(
-            _TileDescriptor(
+        grouped: dict[int, list[tuple[int, _TileDescriptor]]] = defaultdict(list)
+        for index in range(start, stop):
+            current_bucket_id = int(bucket_id[index])
+            rows = grouped[current_bucket_id]
+            bucket_tile_index = int(bucket_tile_indexes[index])
+            if bucket_tile_index != len(rows):
+                raise ValueError("Manifest tiles must follow contiguous bucket-local tile indexes.")
+            previous = rows[-1][1] if rows else None
+            # Derive from complete manifest counts, independently of the stored
+            # bucket offsets that validation will compare these starts against.
+            row_start = previous.bucket_row_start + previous.n_points if previous is not None else 0
+            descriptor = _TileDescriptor(
                 level=level,
-                bucket_id=int(bucket_id[index]),
-                bucket_tile_index=int(bucket_tile_index[index]),
+                bucket_id=current_bucket_id,
+                bucket_tile_index=bucket_tile_index,
+                bucket_row_start=row_start,
                 tile_x=int(tile_x[index]),
                 tile_y=int(tile_y[index]),
                 n_points=int(n_points[index]),
             )
-            for index in range(start, stop)
-        )
-        grouped: dict[int, list[tuple[int, _TileDescriptor]]] = defaultdict(list)
-        for manifest_index, descriptor in zip(range(start, stop), descriptors, strict=True):
-            grouped[descriptor.bucket_id].append((manifest_index, descriptor))
+            rows.append((index, descriptor))
         level_buckets: list[_ManifestBucket] = []
         for current_bucket_id in sorted(grouped):
-            rows = sorted(grouped[current_bucket_id], key=lambda item: item[1].bucket_tile_index)
+            # Manifest coordinate order already preserves each bucket's tile-index
+            # order. The earlier `bucket_tile_index != len(rows)` check enforces
+            # indexes 0, 1, 2, ... as records are collected; reject inconsistent
+            # ordering there instead of sorting it away here.
+            rows = grouped[current_bucket_id]
             level_buckets.append(
                 _ManifestBucket(
                     level=level,
