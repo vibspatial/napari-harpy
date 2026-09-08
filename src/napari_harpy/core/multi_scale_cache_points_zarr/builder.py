@@ -31,7 +31,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     ZARR_FORMAT_VERSION,
     ZARR_USE_CONSOLIDATED,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
@@ -318,7 +318,7 @@ def _get_existing_complete_cache_generation_id(output_path: Path) -> str | None:
 
 def _require_complete_cache_generation_id(cache_root: Path) -> str:
     """Require complete root metadata and return its cache-generation UUID."""
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         attributes = reader.attributes
         if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
             raise ValueError("Cache root publication_state is not 'complete'.")
