@@ -472,6 +472,7 @@ class _BucketWriter:
                 level=self._plan.level,
                 bucket_id=self._plan.bucket_id,
                 bucket_tile_index=index,
+                bucket_row_start=int(self._plan.tile_offset[index]),
                 tile_x=tile.tile_x,
                 tile_y=tile.tile_y,
                 n_points=tile.n_points,

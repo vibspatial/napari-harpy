@@ -155,7 +155,7 @@ class _BucketWriteResult:
     tile_descriptors
         One descriptor for every nonempty logical tile in the finalized bucket,
         ordered by ``(tile_y, tile_x)``. All descriptors have the same level,
-        bucket ID, and bucket path, and their bucket-local indexes are exactly
+        bucket ID, and bucket path, and their bucket-local tile indexes are exactly
         ``0..K-1``. They are standalone tile addresses that later become
         manifest rows.
     point_count
@@ -194,10 +194,7 @@ class _BucketWriteResult:
             raise ValueError("`tile_descriptors` must be a tuple of _TileDescriptor values.")
 
         identity = (self.tile_descriptors[0].level, self.tile_descriptors[0].bucket_id)
-        if any(
-            (tile.level, tile.bucket_id) != identity
-            for tile in self.tile_descriptors
-        ):
+        if any((tile.level, tile.bucket_id) != identity for tile in self.tile_descriptors):
             raise ValueError("Every tile descriptor in a bucket result must have the same bucket identity.")
         if tuple(tile.bucket_tile_index for tile in self.tile_descriptors) != tuple(range(len(self.tile_descriptors))):
             raise ValueError("Bucket-local tile indexes must be contiguous from zero.")
@@ -207,6 +204,11 @@ class _BucketWriteResult:
             raise ValueError("Bucket tile coordinates must be unique.")
         if sum(tile.n_points for tile in self.tile_descriptors) != self.point_count:
             raise ValueError("Bucket descriptor rows do not match `point_count`.")
+        row_start = 0
+        for tile in self.tile_descriptors:
+            if tile.bucket_row_start != row_start:
+                raise ValueError("Bucket descriptor intervals must be contiguous from zero.")
+            row_start += tile.n_points
         if not len(self.tile_descriptors) <= self.range_count <= self.point_count:
             raise ValueError("`range_count` must lie between tile count and point count.")
 
@@ -254,7 +256,7 @@ class _LevelWriteResult:
         if len({(tile.tile_x, tile.tile_y) for tile in tiles}) != len(tiles):
             raise ValueError("Level tile coordinates must be unique.")
         if len({(tile.bucket_id, tile.bucket_tile_index) for tile in tiles}) != len(tiles):
-            raise ValueError("Level bucket ID/index keys must be unique.")
+            raise ValueError("Level (bucket ID, tile index) keys must be unique.")
 
     @property
     def level(self) -> int:

@@ -300,6 +300,7 @@ def _validate_logical_contents(
                 level=attributes.level,
                 bucket_id=attributes.bucket_id,
                 bucket_tile_index=tile_index,
+                bucket_row_start=point_start,
                 tile_x=tile_coordinate_x,
                 tile_y=tile_coordinate_y,
                 n_points=point_stop - point_start,

@@ -690,6 +690,7 @@ def _iter_compact_bucket_range_batches(
                 descriptor.bucket_tile_index != index
                 or int(tile_x[index]) != descriptor.tile_x
                 or int(tile_y[index]) != descriptor.tile_y
+                or int(tile_offset[index]) != descriptor.bucket_row_start
                 or int(tile_offset[index + 1] - tile_offset[index]) != descriptor.n_points
             ):
                 raise ValueError("Bucket compact tile arrays do not match finalized descriptors.")

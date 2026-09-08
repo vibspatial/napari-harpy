@@ -326,6 +326,12 @@ def _build_manifest_arrays(
                 raise ValueError("Manifest contains a duplicate bucket-local tile address.")
             address_to_manifest_row[address] = cursor
             bucket_id[cursor] = descriptor.bucket_id
+            # The row start is already stored in the bucket's
+            # tile_offset[bucket_tile_index]; do not duplicate it in the manifest.
+            # At reader startup, reconstruct bucket_row_start from preceding tiles'
+            # n_points within each (level, bucket_id), without opening every bucket.
+            # These retained starts are checked against stored offsets on first
+            # complete-tile use, not recomputed for each viewport.
             bucket_tile_index[cursor] = descriptor.bucket_tile_index
             tile_x[cursor] = descriptor.tile_x
             tile_y[cursor] = descriptor.tile_y

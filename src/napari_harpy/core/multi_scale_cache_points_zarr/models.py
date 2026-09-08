@@ -33,12 +33,18 @@ class _TileDescriptor:
         Deterministic identifier of the Zarr bucket containing the tile. Together
         with ``level``, it determines the canonical ``bucket_path`` property.
     bucket_tile_index
-        Zero-based ordinal of this tile among all nonempty tiles in its bucket,
+        Zero-based index of this tile among all nonempty tiles in its bucket,
         after ordering them by ``(tile_y, tile_x)``. For index ``i``, the bucket
         stores this tile's identity at ``tile_x[i]`` and ``tile_y[i]``, its
         complete point interval at ``tile_offset[i:i + 2]``, and its sparse
         value-range interval at ``tile_indptr[i:i + 2]``. It is not a point
         offset, chunk number, shard number, or Parquet row group.
+    bucket_row_start
+        Zero-based start in the bucket's aligned tile-major ``location``,
+        point-level ``value_id``, and ``point_id`` arrays. Together with
+        ``n_points``, it gives the complete tile interval
+        ``[bucket_row_start, bucket_row_start + n_points)``. This is not a
+        spatial origin, byte offset, or row address in the value-major cache.
     tile_x
         Logical x index of the tile in this cache level's aligned tile grid.
     tile_y
@@ -53,17 +59,23 @@ class _TileDescriptor:
     ``bucket_path`` is derived canonically from ``level`` and ``bucket_id`` so
     those integer fields are the only stored source of bucket identity.
 
-    The descriptor is a construction result and later becomes one manifest row.
-    Keeping ``bucket_tile_index`` in that row gives the runtime reader direct
-    access to both tile pointer arrays without searching the bucket's coordinate
-    arrays. Construction reads still reconcile ``tile_x[i]`` and ``tile_y[i]``;
-    visualization trusts the independently validated manifest coordinates and
-    uses the resident bucket lookup index directly.
+    The writer obtains row starts from its planned bucket offsets. On reopening,
+    manifest readers derive them once from complete bucket counts, including
+    offscreen tiles. Counts ``[3, 5, 2]`` produce row starts ``[0, 3, 8]``;
+    tile index 1 therefore occupies rows ``[3:8)``. ``bucket_tile_index`` has
+    the same name in the descriptor and the persisted manifest; no row-start
+    column is stored in the manifest.
+
+    Before normal tile-major display reads, the bucket reader validates the complete
+    descriptor tuple against stored offsets and tile coordinates. Subsequent
+    reads use the accepted descriptor directly, without retaining another
+    derived offset array. Construction and diagnostic reads independently
+    reconcile their addresses with persisted bucket pointers.
 
     Value membership is deliberately absent. A tile can contain a variable and
     potentially large number of distinct ``value_id`` values; duplicating them
-    here would turn the compact descriptor into a second sparse index. Instead,
-    ``bucket_tile_index`` locates the tile's records through
+    here would turn the compact descriptor into a second sparse index. For
+    diagnostic subset reads, ``bucket_tile_index`` locates records through
     ``tile_indptr[i:i + 2]``, and those records store each present value together
     with its point-row start and count.
     """
@@ -71,6 +83,7 @@ class _TileDescriptor:
     level: int
     bucket_id: int
     bucket_tile_index: int
+    bucket_row_start: int
     tile_x: int
     tile_y: int
     n_points: int
@@ -79,9 +92,12 @@ class _TileDescriptor:
         _require_integer_in_range(self.level, "level", maximum=_INT16_MAX)
         _require_integer_in_range(self.bucket_id, "bucket_id", maximum=_UINT32_MAX)
         _require_integer_in_range(self.bucket_tile_index, "bucket_tile_index", maximum=_UINT32_MAX)
+        _require_integer_in_range(self.bucket_row_start, "bucket_row_start", maximum=_INT64_MAX)
         _require_integer_in_range(self.tile_x, "tile_x", maximum=_UINT32_MAX)
         _require_integer_in_range(self.tile_y, "tile_y", maximum=_UINT32_MAX)
         _require_integer_in_range(self.n_points, "n_points", minimum=1, maximum=_INT64_MAX)
+        if self.bucket_row_start + self.n_points > _INT64_MAX:
+            raise ValueError("Tile point interval exceeds the supported row domain.")
 
     @property
     def bucket_path(self) -> str:
