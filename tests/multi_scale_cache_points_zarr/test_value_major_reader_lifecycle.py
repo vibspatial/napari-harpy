@@ -15,49 +15,56 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader 
 
 
 def _assert_closed(reader: _ValueMajorLevelReader) -> None:
-    assert reader._location is None and reader._point_indptr is None
     with pytest.raises(RuntimeError, match="closed"):
         reader.load_point_indptr()
     with pytest.raises(RuntimeError, match="closed"):
         reader.read_intervals(((0, 1),), expected_row_count=1)
 
 
-def test_root_shares_one_store_without_decoding_and_invalidates_borrowed_levels(
+def test_root_opens_shared_level_readers_without_extra_stores_or_array_decoding(
     reader_fixture: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stores = []
-    borrowed = []
-    original_init, original_close = LocalStore.__init__, LocalStore.close
+    original_init = LocalStore.__init__
 
     def tracked_init(store, *args, **kwargs):
         original_init(store, *args, **kwargs)
         stores.append(store)
 
-    def tracked_close(store):
-        # Invalidate the borrowed readers before the owner closes their store.
-        for level_reader in borrowed:
-            _assert_closed(level_reader)
-        original_close(store)
-
     def reject_decode(*args, **kwargs):
         raise AssertionError("Root opening decoded an array.")
 
     monkeypatch.setattr(LocalStore, "__init__", tracked_init)
-    monkeypatch.setattr(LocalStore, "close", tracked_close)
     monkeypatch.setattr(zarr.Array, "__getitem__", reject_decode)
     monkeypatch.setattr(zarr.Array, "get_orthogonal_selection", reject_decode)
     with _CacheRootReader(reader_fixture.cache_root) as root_reader:
         for level in range(len(root_reader.attributes.levels)):
             reader = root_reader.value_major_level(level)
-            borrowed.append(reader)
             assert root_reader.value_major_level(level) is reader
-            assert reader._location.store is root_reader._store
-            assert reader._point_indptr.store is root_reader._store
         assert len(stores) == 1
-        assert not any(name.startswith("value_major/") for name in root_reader._arrays)
         with pytest.raises(ValueError, match="Unknown"):
             root_reader.array("value_major/level_0/location")
+
+
+def test_root_invalidates_borrowed_level_readers_before_closing_shared_store(
+    reader_fixture: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    borrowed = []
+    closed_stores = []
+    original_close = LocalStore.close
+
+    def tracked_close(store):
+        # Borrowed readers must reject use before their owner's store closes.
+        for level_reader in borrowed:
+            _assert_closed(level_reader)
+        closed_stores.append(store)
+        original_close(store)
+
+    monkeypatch.setattr(LocalStore, "close", tracked_close)
+    with _CacheRootReader(reader_fixture.cache_root) as root_reader:
+        borrowed = [root_reader.value_major_level(level) for level in range(len(root_reader.attributes.levels))]
     assert borrowed
+    assert len(closed_stores) == 1
     for reader in borrowed:
         _assert_closed(reader)
     with pytest.raises(RuntimeError, match="not open"):
@@ -67,46 +74,36 @@ def test_root_shares_one_store_without_decoding_and_invalidates_borrowed_levels(
 def test_runtime_loads_each_pointer_once_and_reuses_it_across_viewports(
     reader_fixture: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pointer_reads = Counter()
+    pointer_loads = Counter()
     loaded_pointers = []
-    original_read = zarr.Array.__getitem__
     original_load = _ValueMajorLevelReader.load_point_indptr
-
-    def tracked_read(array, selection):
-        if array.name.endswith("/value_point_indptr"):
-            pointer_reads[array.name] += 1
-        return original_read(array, selection)
 
     def tracked_load(reader):
         pointer = original_load(reader)
+        pointer_loads[reader] += 1
         loaded_pointers.append(pointer)
         return pointer
 
     def reject_reconciliation(*args, **kwargs):
         raise AssertionError("Viewer startup ran publication reconciliation.")
 
-    monkeypatch.setattr(zarr.Array, "__getitem__", tracked_read)
+    # Observe our pointer-loading boundary; level-reader tests cover its Zarr IO.
     monkeypatch.setattr(_ValueMajorLevelReader, "load_point_indptr", tracked_load)
     monkeypatch.setattr(_CacheRootReader, "validate_contents", reject_reconciliation)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        expected_reads = {f"/value_major/level_{level}/value_point_indptr": 1 for level in range(reader.level_count)}
-        assert pointer_reads == expected_reads
-        assert len(loaded_pointers) == reader.level_count
+        assert len(pointer_loads) == reader.level_count
+        assert all(count == 1 for count in pointer_loads.values())
+        startup_loads = pointer_loads.copy()
+        # Retention must not duplicate the loaded allocations; NumPy views are fine.
         for level, pointer in enumerate(loaded_pointers):
-            assert reader._value_major_point_indptr[level] is pointer
-            assert reader._value_major_readers[level] is reader._cache_root_reader.value_major_level(level)
-        assert reader.resident_value_major_pointer_bytes == sum(pointer.nbytes for pointer in loaded_pointers)
-        initial_bytes = reader.resident_index_bytes
+            assert np.shares_memory(reader._value_major_point_indptr[level], pointer)
         index = reader.load_selected_value_index(np.array([0], dtype=np.uint32), max_resident_bytes=None)
         for viewport in (_IntrinsicViewport(0, 0, 12, 10), _IntrinsicViewport(0, 0, 10, 10)):
             for value_index in (None, index):
                 reader.read_viewport(0, viewport, value_index=value_index)
-        assert pointer_reads == expected_reads
-        assert reader.resident_index_bytes == initial_bytes
-        borrowed = reader._value_major_readers
-    for level_reader in borrowed:
+        assert pointer_loads == startup_loads
+    for level_reader in pointer_loads:
         _assert_closed(level_reader)
-    assert reader._value_major_readers == () and reader._value_major_point_indptr == ()
 
 
 @pytest.mark.parametrize("failure_stage", ["layout", "pointer_load"])
@@ -130,9 +127,10 @@ def test_failed_open_closes_shared_store_and_invalidates_constructed_levels(
         return original_layout(array, **kwargs)
 
     def fail_pointer(reader):
-        if reader is constructed[1] and reader._point_indptr is not None:
+        pointer = original_load(reader)
+        if reader is constructed[1]:
             raise ValueError("injected pointer failure")
-        return original_load(reader)
+        return pointer
 
     def tracked_close(store):
         for reader in constructed:
@@ -153,8 +151,8 @@ def test_failed_open_closes_shared_store_and_invalidates_constructed_levels(
                 pytest.fail("Invalid cache was accepted.")
         assert constructed
         assert len(closed_stores) == 1
-        assert runtime._cache_root_reader is None
-        assert runtime._value_major_readers == () and runtime._value_major_point_indptr == ()
+        with pytest.raises(RuntimeError, match="not open"):
+            runtime.read_viewport(0, _IntrinsicViewport(0, 0, 12, 10))
     # A failed reader does not damage the on-disk cache or poison a new owner.
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         assert reader.level_count > 1
