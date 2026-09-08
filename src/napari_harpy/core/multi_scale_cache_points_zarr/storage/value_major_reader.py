@@ -22,7 +22,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import VALU
 class _ValueMajorLocationReader:
     """Read exact ordered row intervals from one validated sidecar array.
 
-    The catalog reader owns and validates ``location``. This lightweight
+    ``_CacheRootReader`` owns and validates ``location``. This lightweight
     wrapper does not open another Zarr store; it only provides the bounded
     selection and cancellation contract needed by viewport reads.
     """

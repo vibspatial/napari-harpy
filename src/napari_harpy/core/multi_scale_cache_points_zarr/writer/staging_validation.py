@@ -55,7 +55,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_N_POINTS,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
-    _CatalogReader,
+    _CacheRootReader,
     _iter_compact_bucket_range_batches,
 )
 
@@ -164,7 +164,7 @@ def _validate_staged_cache(staging_root: Path) -> None:
 
     Its logical validation responsibilities are split as follows::
 
-        _CatalogReader.validate_contents()
+        _CacheRootReader.validate_contents()
             Catalog arrays are internally consistent.
 
         _validate_persisted_build()
@@ -205,7 +205,7 @@ def _validate_cache_generation(
         raise ValueError("`expected_publication_state` must be 'staging' or 'complete'.")
     _require_cache_root(cache_root)
     _validate_cache_artifacts(cache_root)
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         if reader.attributes.publication_state != expected_publication_state:
             raise ValueError(f"Cache validation requires publication_state={expected_publication_state!r}.")
         reader.validate_contents()
@@ -216,7 +216,7 @@ def _validate_cache_generation(
     _validate_cache_artifacts(cache_root)
 
 
-def _read_manifest_inventory(reader: _CatalogReader) -> _ManifestInventory:
+def _read_manifest_inventory(reader: _CacheRootReader) -> _ManifestInventory:
     """Reconstruct ordered tile descriptors and physical buckets from manifest arrays.
 
     For each level, ``grouped`` has the following structure::
@@ -448,7 +448,7 @@ def _expected_level_plan(attributes: _CacheAttributes) -> tuple[tuple[object, ..
 
 
 def _validate_bucket_ranges_against_catalog(
-    reader: _CatalogReader,
+    reader: _CacheRootReader,
     inventory: _ManifestInventory,
     *,
     cache_root: Path,
