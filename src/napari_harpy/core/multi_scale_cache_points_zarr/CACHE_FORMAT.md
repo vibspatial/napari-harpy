@@ -450,7 +450,7 @@ With multiple levels, `value_tiles/indptr` has shape `(L, V + 1)`. Its pointers
 are global offsets into the two flat record arrays, whose level sections are
 concatenated in serialized level order.
 
-## 8. Current tile-major lookups
+## 8. Tile-major addressing
 
 ### All values in one visible tile
 
@@ -468,7 +468,13 @@ For all values in tile C:
 
 No sparse value ranges are needed because the complete tile is selected.
 
-### One selected value in visible tiles
+### Stored per-value ranges
+
+The following example explains persisted range addresses used by construction
+and validation, not the viewer's selected-value read path. Proper-subset viewport
+reads use the value-major cache described below. Diagnostic tile-major selections
+read complete tiles and filter their point-level `value_id` and `location` arrays
+in memory; they do not load these sparse ranges.
 
 For gamma, value 2, in visible tiles A and B:
 
@@ -679,28 +685,20 @@ The current implementation treats these structures differently:
 | Complete `value_tiles/manifest_index` and `n_points` | Yes | No | Selected intervals are loaded when the active proper subset changes |
 | Selected-value index | No | Yes, for the active proper subset | Compact copies of selected manifest/count records, reused across viewports |
 | Complete-tile addresses | Yes as bucket `tile_offset` | Row starts derived once from manifest counts | Prefixes reset per level/bucket and include all preceding tiles; stored offsets supply the independent addressing check |
-| Bucket sparse-range arrays | Yes | No in normal viewer sessions | Four `ranges/*` arrays remain for construction, validation, and explicitly primed diagnostic/reference subset reads |
+| Bucket sparse-range arrays | Yes | No in display readers | Four `ranges/*` arrays remain for construction and independent validation |
 | Bucket `location`, point-level `value_id`, and `point_id` | Yes | No as lookup metadata | Decoded only for requested payloads; decoded tiles may enter CPU residency |
 | Value-major `location` and `value_point_indptr` | Yes | Pointers only | Every level pointer is retained; proper-subset locations remain on disk until selected viewport rows are read |
 | `bucket_manifest_indexes` | No | Construction only | In-memory translation from bucket-local tile index to manifest index |
 | `ordered_row_start` | No | Construction only, disk-backed | Cache-wide temporary companion aligned with sorted value-tile rows |
 
-The diagnostic/reference bucket lookup object, loaded only on explicit request,
-retains exactly:
-
-```text
-tile_offset
-ranges/tile_indptr
-ranges/value_id
-ranges/row_start
-ranges/row_count
-```
-
-It does not retain locations, point-level value IDs, or point IDs. Normal viewer
-startup and viewport reads do not load this object. Complete-tile reads use
-the validated descriptors' row starts and counts, and read point-level `value_id` alongside
-`location`; proper-subset viewport reads use the value-major cache. The stored
-sparse arrays and the resident diagnostic lookup are distinct contracts.
+Display readers retain no bucket sparse-range lookup object. Complete-tile reads
+use validated row starts and counts, and read point-level `value_id` alongside
+`location`; proper-subset viewport reads use the value-major cache. Diagnostic
+single-tile selections read complete tile-major payloads and apply one membership
+mask to both arrays in memory. This may read substantially more points than it
+returns, but does not require resident sparse ranges. Persisted ranges remain
+available for construction and independent validation; their storage contract is
+unchanged.
 
 Runtime `resident_index_bytes` reports retained NumPy catalog/pointer arrays,
 not Python descriptor objects or grouping containers. Removing the derived
