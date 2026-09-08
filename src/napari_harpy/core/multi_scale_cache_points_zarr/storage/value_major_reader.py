@@ -1,4 +1,4 @@
-"""Read bounded location selections from one value-major cache level."""
+"""Own validated array references and bounded reads for one value-major level."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import zarr
 
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _ValueMajorMetadata
 from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _INT64_MAX,
     _require_integer_in_range,
@@ -16,34 +17,111 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._row_selection import (
     _build_exact_row_selection,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import VALUE_MAJOR_LOCATION_DTYPE
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    VALUE_MAJOR_LOCATION_DTYPE,
+    VALUE_MAJOR_POINTER_DTYPE,
+    value_major_location,
+    value_major_point_indptr,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
+    _strict_array,
+    _validate_array_layout,
+)
 
 
-class _ValueMajorLocationReader:
-    """Read exact ordered row intervals from one validated sidecar array.
+class _ValueMajorLevelReader:
+    """Own the two Zarr array references for one value-major cache level.
 
-    ``_CacheRootReader`` owns and validates ``location``. This lightweight
-    wrapper does not open another Zarr store; it only provides the bounded
-    selection and cancellation contract needed by viewport reads.
+    ``_CacheRootReader`` supplies its already-open root group and owns the
+    shared store. This reader opens and validates
+    ``value_major/level_N/location`` and
+    ``value_major/level_N/value_point_indptr`` without decoding either array.
+    It opens no additional store and retains no decoded payloads.
+
+    ``load_point_indptr()`` returns a read-only NumPy vector owned by its caller;
+    it is not cached here. ``read_intervals()`` accepts physical location-row
+    intervals, not viewport plans or value selections. The root reader closes
+    this reader before its store, invalidating even borrowed reader references.
+
+    Parameters
+    ----------
+    root
+        Already-open cache-root Zarr group; the caller owns its store.
+    level
+        Serialized level whose arrays to open.
+    point_count
+        Expected number of point rows at this level.
+    value_count
+        Number of canonical values across the cache, including values with
+        zero points at this level.
+    metadata
+        Expected chunk and shard row counts for value-major point arrays.
+    codec_id
+        Expected cache-wide compression profile.
     """
 
-    def __init__(self, location: zarr.Array) -> None:
-        if (
-            not isinstance(location, zarr.Array)
-            or location.ndim != 2
-            or location.shape[1:] != (2,)
-            or location.dtype != VALUE_MAJOR_LOCATION_DTYPE
-        ):
-            raise ValueError("`location` must be a two-dimensional float32 Zarr location array.")
-        shards = location.shards
-        if len(location.chunks) != 2 or shards is None or len(shards) != 2:
-            raise ValueError("Value-major locations must use a two-dimensional sharded layout.")
-        self._location = location
+    def __init__(
+        self,
+        root: zarr.Group,
+        *,
+        level: int,
+        point_count: int,
+        value_count: int,
+        metadata: _ValueMajorMetadata,
+        codec_id: str,
+    ) -> None:
+        # Install references only after both layouts pass validation. A failed
+        # constructor neither owns a store to close nor publishes usable arrays.
+        location = _strict_array(root, value_major_location(level))
+        point_indptr = _strict_array(root, value_major_point_indptr(level))
+        _validate_array_layout(
+            location,
+            name=value_major_location(level),
+            dtype=VALUE_MAJOR_LOCATION_DTYPE,
+            shape=(point_count, 2),
+            chunks=(metadata.point_chunk_rows, 2),
+            shards=(metadata.point_shard_rows, 2),
+            codec_id=codec_id,
+        )
+        _validate_array_layout(
+            point_indptr,
+            name=value_major_point_indptr(level),
+            dtype=VALUE_MAJOR_POINTER_DTYPE,
+            shape=(value_count + 1,),
+            chunks=(value_count + 1,),
+            shards=None,
+            codec_id=codec_id,
+        )
+        self._location: zarr.Array | None = location
+        self._point_indptr: zarr.Array | None = point_indptr
         # Reuse the physical shard length only as a selected-row budget for one
         # Zarr operation. This bounds the integer selector and temporary result;
         # it does not imply that the selected intervals occupy one physical
         # shard, and a single operation may access several shards.
-        self._max_batch_rows = int(shards[0])
+        self._max_batch_rows = metadata.point_shard_rows
+
+    def load_point_indptr(self) -> npt.NDArray[np.uint64]:
+        """Read the complete pointer vector without retaining a NumPy copy here.
+
+        The caller controls residency and content validation: runtime startup
+        checks pointer bounds/order, while publication validation additionally
+        reconciles counts against the independent value-tile records.
+        """
+        if self._point_indptr is None:
+            raise RuntimeError("Value-major level reader is closed.")
+        pointer = np.ascontiguousarray(self._point_indptr[:], dtype=VALUE_MAJOR_POINTER_DTYPE)
+        pointer.flags.writeable = False
+        return pointer
+
+    def close(self) -> None:
+        """Release array references without closing the root reader's shared store."""
+        self._location = None
+        self._point_indptr = None
+
+    def _location_or_raise(self) -> zarr.Array:
+        if self._location is None:
+            raise RuntimeError("Value-major level reader is closed.")
+        return self._location
 
     def read_intervals(
         self,
@@ -52,13 +130,14 @@ class _ValueMajorLocationReader:
         expected_row_count: int,
         raise_if_cancelled: Callable[[], None] | None = None,
     ) -> npt.NDArray[np.float32]:
-        """Return locations for ordered, nonoverlapping sidecar intervals.
+        """Return locations for ordered, nonoverlapping value-major intervals.
 
         Adjacent intervals become one basic slice. Disjoint intervals within a
         bounded batch become one exact orthogonal row selection. Larger inputs
         are split at row boundaries so cancellation can be observed between
         Zarr operations without changing output order.
         """
+        location = self._location_or_raise()
         _require_integer_in_range(
             expected_row_count,
             "expected_row_count",
@@ -66,7 +145,7 @@ class _ValueMajorLocationReader:
         )
         if raise_if_cancelled is not None and not callable(raise_if_cancelled):
             raise ValueError("`raise_if_cancelled` must be callable or None.")
-        intervals = _validate_intervals(intervals, point_count=int(self._location.shape[0]))
+        intervals = _validate_intervals(intervals, point_count=int(location.shape[0]))
         if sum(stop - start for start, stop in intervals) != expected_row_count:
             raise ValueError("Value-major intervals do not match `expected_row_count`.")
         if expected_row_count == 0:
@@ -98,7 +177,7 @@ class _ValueMajorLocationReader:
         expected_row_count = sum(stop - start for start, stop in intervals)
         row_selection = _build_exact_row_selection(intervals)
         locations = np.ascontiguousarray(
-            self._location.get_orthogonal_selection((row_selection, slice(None))),
+            self._location_or_raise().get_orthogonal_selection((row_selection, slice(None))),
             dtype=np.float32,
         )
         expected_shape = (expected_row_count, 2)
