@@ -56,7 +56,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader impor
     _BucketReader,
     _PointDisplayPayload,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLocationReader
 
@@ -531,23 +531,132 @@ class _ValueTileInterval:
 
 
 class _PointsCacheReader:
-    """Read one trusted, completed Zarr cache generation.
+    """Coordinate metadata and point reads for one completed cache generation.
 
-    Entering validates the frozen root and array layouts, then materializes only
-    the compact catalog arrays and manifest-aligned tile descriptors. It does
-    not replay complete staged validation. Bucket stores are opened lazily
-    or by explicit lookup-index loading and retained for this reader's lifetime.
-    Complete-tile row starts are derived once in those descriptors and checked
-    against storage when each bucket is first used. Only explicit diagnostic
-    tile-major subset reads require sparse lookup priming. Proper-subset
-    viewport reads use the value-major cache, so neither normal viewer route
-    loads bucket sparse ranges.
+    Cache-wide lookup metadata
+    --------------------------
+    Cache-wide metadata used to plan and interpret reads from tile-major and
+    value-major storage:
+
+    - ``manifest/*``: tile coordinates, physical bucket addresses, and point counts.
+    - ``values/n_points``: per-value totals.
+    - ``value_tiles/*``: manifest tiles containing each value, with their point counts.
+
+    Memory residency
+    ----------------
+    Resident data means materialized data in memory, not merely Zarr array
+    references. The table names cache-relative arrays whose contents are loaded
+    into NumPy arrays; the persisted arrays remain on disk::
+
+        Boundary                   Cache fields loaded into memory                     Retained by
+        -------------------------  --------------------------------------------------  ------------------
+        Startup (complete arrays)  manifest/level_indptr                               _PointsCacheReader
+                                   manifest/bucket_id
+                                   manifest/bucket_tile_index
+                                   manifest/tile_x
+                                   manifest/tile_y
+                                   manifest/n_points
+                                   values/n_points
+                                   value_tiles/indptr
+        Startup (every level)      value_major/level_N/value_point_indptr              _PointsCacheReader
+        New selected-value subset  value_tiles/manifest_index                          Caller
+        (selected rows)            value_tiles/n_points
+        Tile-major payload         tile_major/level_N/bucket-....zarr/location         Caller
+        (requested tile rows)      tile_major/level_N/bucket-....zarr/value_id
+        Value-major payload        value_major/level_N/location                        Caller
+        (requested intervals)
+
+    ``level_N`` and ``bucket-....zarr`` stand for the relevant level and bucket.
+    The table lists persisted sources; additional runtime data is derived:
+
+    - Startup constructs ``_TileDescriptor`` objects and lookup mappings from
+      the stored manifest arrays. These Python objects exist only in memory
+      and are rebuilt whenever the reader opens the cache.
+    - Selected rows from ``value_tiles/manifest_index`` and
+      ``value_tiles/n_points`` populate the per-level records retained by
+      ``_SelectedValueIndex``, which also retains the selected value IDs. Each
+      contained ``_SelectedValueLevelIndex`` stores derived ``value_indptr``
+      pointers that partition its in-memory ``manifest_index`` and ``n_points``
+      arrays by selected-value position.
+    - Value-major payloads reconstruct aligned point-level value IDs. There is
+      no point-level ``value_id`` array in value-major storage.
+
+    ``load_selected_value_index()`` supplies records for the selected values
+    across every level, including tiles outside the viewport. While the selected
+    value IDs remain unchanged, pan and zoom reuse the existing
+    ``_SelectedValueIndex``. They neither reload its records from
+    ``value_tiles/manifest_index`` and ``value_tiles/n_points`` nor construct
+    a new ``_SelectedValueIndex``. CPU tile residency is managed outside this
+    reader.
+
+    A ``zarr.Array`` object refers to stored data, not an in-memory NumPy copy of
+    its point payload. Opening that object or constructing a location-reader
+    wrapper does not decode locations; point rows are read only when requested.
+
+    Reader ownership
+    ----------------
+    Owned readers and shared references::
+
+        _PointsCacheReader
+            +-- _CacheRootReader
+            |     Parsed cache-root attributes (_CacheAttributes)
+            |     Zarr array objects (cache-relative paths):
+            |       manifest/*
+            |       values/n_points
+            |       value_tiles/*
+            |       value_major/level_N/location
+            |       value_major/level_N/value_point_indptr
+            +-- _ValueMajorLocationReader per level
+            |     borrows the location Zarr object from _CacheRootReader
+            |     (no additional store)
+            +-- _BucketReaderCache
+                  (level, bucket_id) -> lazily opened _BucketReader
+                    Bucket identity: level and bucket_id
+                    Path: tile_major/level_N/bucket-....zarr
+                    Opened bucket store and root Zarr group
+                    Parsed bucket attributes (_BucketAttributes)
+                    Zarr array objects (cache-relative paths):
+                      tile_major/level_N/bucket-....zarr/location
+                      tile_major/level_N/bucket-....zarr/point_id
+                      tile_major/level_N/bucket-....zarr/value_id
+                      tile_major/level_N/bucket-....zarr/tile_x
+                      tile_major/level_N/bucket-....zarr/tile_y
+                      tile_major/level_N/bucket-....zarr/tile_offset
+                      tile_major/level_N/bucket-....zarr/ranges/*
+                    Accepted tuple of _TileDescriptor objects (once installed):
+                      borrowed from _PointsCacheReader._descriptors_by_bucket
+                      neither the tuple nor its descriptors are copied
+
+    - ``_descriptors`` retains one immutable ``_TileDescriptor`` per manifest row,
+      in manifest order. ``_descriptors_by_bucket`` groups the same objects without
+      copying them.
+    - ``bucket_tile_index`` matches the persisted manifest column.
+      ``bucket_row_start`` is derived once from all preceding tile counts in the
+      same level/bucket, including tiles outside the viewport. No parallel derived
+      offset array is retained.
+    - Bucket readers retain opened Zarr array references and accepted descriptors,
+      not decoded point payloads or resident sparse-range indexes.
+
+    Read routing and lifecycle
+    --------------------------
+    - Startup validates root and array layouts, without replaying independent
+      staged or exhaustive validation.
+    - First complete-tile use validates the full descriptor tuple against stored
+      offsets, coordinates, and totals before accepting it atomically. Warm reads
+      reuse that tuple without rereading addressing metadata.
+    - ``read_planned_tiles()`` routes all values to batched complete tile-major reads,
+      and proper subsets to value-major intervals. Both return ordered logical tiles;
+      value-major locations are regrouped by tile with reconstructed aligned IDs.
+    - Diagnostic ``read_tile(value_ids=...)`` reads a complete tile-major payload,
+      then filters both arrays in memory. No display path loads bucket sparse ranges.
+    - Closure closes owned readers/stores and releases metadata, array wrappers,
+      and descriptor references. Returned selections and tiles remain caller-owned.
     """
 
     def __init__(self, cache_root: str | Path) -> None:
         self._cache_root = Path(cache_root)
         self._stack: ExitStack | None = None
-        self._catalog: _CatalogReader | None = None
+        self._catalog: _CacheRootReader | None = None
         self._bucket_cache: _BucketReaderCache | None = None
         self._attributes: _CacheAttributes | None = None
         self._dataset_info: _CacheDatasetInfo | None = None
@@ -574,12 +683,12 @@ class _PointsCacheReader:
         self._entered = True
         stack = ExitStack()
         try:
-            catalog = stack.enter_context(_CatalogReader(self._cache_root))
+            catalog = stack.enter_context(_CacheRootReader(self._cache_root))
             attributes = catalog.attributes
             if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
                 raise ValueError("Cache root publication_state is not 'complete'.")
             # Retain bucket metadata after its first payload read. Entering this
-            # cache does not open buckets or prime sparse lookup indexes.
+            # cache does not open buckets or read sparse-range payloads.
             bucket_cache = stack.enter_context(
                 _BucketReaderCache(
                     self._cache_root,
@@ -666,116 +775,6 @@ class _PointsCacheReader:
         """Return the number of lazily entered bucket readers."""
         return self._bucket_cache_or_raise().open_reader_count
 
-    @property
-    def loaded_bucket_lookup_index_count(self) -> int:
-        """Return the number of buckets with resident lookup metadata."""
-        return self._bucket_cache_or_raise().loaded_lookup_index_count
-
-    @property
-    def resident_bucket_lookup_bytes(self) -> int:
-        """Return bytes retained by all loaded bucket lookup indexes."""
-        return self._bucket_cache_or_raise().resident_lookup_bytes
-
-    def project_bucket_lookup_index_bytes(
-        self,
-        *,
-        levels: tuple[int, ...] | None = None,
-        bucket_keys: tuple[tuple[int, int], ...] | None = None,
-    ) -> int:
-        """Return exact resident bytes for a requested bucket set.
-
-        This opens the requested bucket readers and validates their Zarr layouts
-        so their declared tile and range counts are available. It does not read
-        tile pointers, sparse ranges, or point payload arrays.
-        """
-        keys = self._requested_bucket_keys(levels=levels, bucket_keys=bucket_keys)
-        cache = self._bucket_cache_or_raise()
-        return sum(cache.get(level=level, bucket_id=bucket_id).projected_lookup_bytes for level, bucket_id in keys)
-
-    def load_bucket_lookup_indexes(
-        self,
-        *,
-        max_resident_bytes: int | None,
-        levels: tuple[int, ...] | None = None,
-        bucket_keys: tuple[tuple[int, int], ...] | None = None,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> int:
-        """Load immutable sparse lookups for explicit diagnostic/reference reads.
-
-        Use this to prime tile-major subset reads such as
-        ``read_tile(..., value_ids=...)``. Normal viewer startup and viewport
-        reads never call this method: complete-tile reads use compact
-        manifest-derived offsets, and selected-value reads use the value-major
-        cache. This loader is not an implicit viewer fallback.
-
-        Construction and validation consume the persisted range arrays
-        directly; they do not require this bulk resident-index loader.
-
-        The complete requested set is projected before any large lookup array is
-        read. Loading is atomic with respect to indexes introduced by this call:
-        if one bucket or the progress callback fails, those new indexes are
-        released while indexes resident before the call remain available.
-
-        Parameters
-        ----------
-        max_resident_bytes
-            Positive upper bound for all cached bucket lookup-index array bytes
-            after the operation, including indexes cached by earlier calls.
-            ``None`` disables the configured limit; projection and exact
-            post-load byte reconciliation still run.
-        levels
-            Optional sorted unique levels to load. ``None`` with no
-            ``bucket_keys`` requests every serialized bucket.
-        bucket_keys
-            Optional sorted unique ``(level, bucket_id)`` addresses. It is
-            mutually exclusive with ``levels``.
-        progress
-            Optional callback receiving ``(completed_buckets, total_buckets)``
-            after every requested bucket becomes ready.
-
-        Returns
-        -------
-        int
-            Exact bytes retained by all loaded bucket lookup indexes.
-        """
-        if max_resident_bytes is not None:
-            _require_integer_in_range(
-                max_resident_bytes,
-                "max_resident_bytes",
-                minimum=1,
-                maximum=_INT64_MAX,
-            )
-        if progress is not None and not callable(progress):
-            raise ValueError("`progress` must be callable or None.")
-        keys = self._requested_bucket_keys(levels=levels, bucket_keys=bucket_keys)
-        cache = self._bucket_cache_or_raise()
-        readers = {key: cache.get(level=key[0], bucket_id=key[1]) for key in keys}
-        projected_total = cache.resident_lookup_bytes + sum(
-            reader.projected_lookup_bytes for reader in readers.values() if not reader.lookup_index_loaded
-        )
-        if max_resident_bytes is not None and projected_total > max_resident_bytes:
-            raise ValueError(
-                f"Bucket lookup indexes require {projected_total} resident bytes, "
-                f"exceeding `max_resident_bytes={max_resident_bytes}`."
-            )
-
-        newly_loaded: list[tuple[int, int]] = []
-        try:
-            for completed, key in enumerate(keys, start=1):
-                reader = readers[key]
-                if not reader.lookup_index_loaded:
-                    reader.load_lookup_index()
-                    newly_loaded.append(key)
-                if progress is not None:
-                    progress(completed, len(keys))
-        except Exception:
-            cache.release_lookup_indexes(tuple(newly_loaded))
-            raise
-        if cache.resident_lookup_bytes != projected_total:
-            cache.release_lookup_indexes(tuple(newly_loaded))
-            raise RuntimeError("Resident bucket lookup bytes differ from the preflight projection.")
-        return cache.resident_lookup_bytes
-
     def read_tile(
         self,
         level: int,
@@ -793,9 +792,14 @@ class _PointsCacheReader:
 
         Do not loop over this method to fetch viewport or other multi-tile data.
         Such consumers must use :meth:`read_viewport`, which groups all logical
-        requests by bucket and preserves coordinated Zarr selection. The target
-        bucket's sparse lookup must be explicitly primed only when ``value_ids``
-        requests a subset. Complete tiles use compact manifest-derived offsets.
+        requests by physical layout and preserves coordinated Zarr selection.
+
+        This diagnostic method always reads a complete tile-major display payload
+        after descriptor validation, then applies the same membership mask to
+        locations and point-level value IDs when ``value_ids`` is supplied.
+        It does not use sparse ranges or the value-major cache. Filtering can
+        therefore read substantially more points than it returns. A missing tile
+        or a tile with no matching points returns ``None``.
         """
         metadata = self._require_level(level)
         _require_integer_in_range(tile_x, "tile_x", maximum=metadata.grid_width - 1)
@@ -805,14 +809,16 @@ class _PointsCacheReader:
         if manifest_row is None:
             return None
         descriptor = self._descriptors[manifest_row]
-        bucket_reader = (
-            self._complete_tile_reader(level=level, bucket_id=descriptor.bucket_id)
-            if value_ids is None
-            else self._bucket_cache_or_raise().get(level=level, bucket_id=descriptor.bucket_id)
-        )
-        payload = bucket_reader.read_display_payload(descriptor, value_ids)
-        if payload is None:
-            return None
+        bucket_reader = self._get_bucket_reader_for_complete_display(level=level, bucket_id=descriptor.bucket_id)
+        payload = bucket_reader.read_complete_display_payload(descriptor)
+        if value_ids is not None:
+            matches = np.isin(payload.value_id, value_ids)
+            if not bool(matches.any()):
+                return None
+            payload = _PointDisplayPayload(
+                location=payload.location[matches],
+                value_id=payload.value_id[matches],
+            )
         return self._tile_result(descriptor, payload)
 
     def load_selected_value_index(
@@ -1297,51 +1303,6 @@ class _PointsCacheReader:
         if bucket_counts_by_level != [metadata.bucket_count for metadata in attributes.levels]:
             raise ValueError("Manifest bucket counts disagree with level metadata.")
         self._manifest_row_by_tile = lookup
-
-    def _requested_bucket_keys(
-        self,
-        *,
-        levels: tuple[int, ...] | None,
-        bucket_keys: tuple[tuple[int, int], ...] | None,
-    ) -> tuple[tuple[int, int], ...]:
-        """Normalize one all-level, level-scoped, or bucket-scoped prime request."""
-        self._require_open()
-        if levels is not None and bucket_keys is not None:
-            raise ValueError("`levels` and `bucket_keys` are mutually exclusive.")
-        available = self._descriptors_by_bucket
-        if levels is None and bucket_keys is None:
-            return tuple(sorted(available))
-        if levels is not None:
-            if (
-                not isinstance(levels, tuple)
-                or not levels
-                or any(not isinstance(level, int) or isinstance(level, bool) for level in levels)
-                or levels != tuple(sorted(set(levels)))
-            ):
-                raise ValueError("`levels` must be a nonempty sorted unique tuple of integers.")
-            for level in levels:
-                self._require_level(level)
-            selected_levels = set(levels)
-            return tuple(key for key in sorted(available) if key[0] in selected_levels)
-
-        if bucket_keys is None:
-            raise RuntimeError("Bucket-key normalization reached an impossible state.")
-        if (
-            not isinstance(bucket_keys, tuple)
-            or not bucket_keys
-            or any(
-                not isinstance(key, tuple)
-                or len(key) != 2
-                or any(not isinstance(value, int) or isinstance(value, bool) for value in key)
-                for key in bucket_keys
-            )
-            or bucket_keys != tuple(sorted(set(bucket_keys)))
-        ):
-            raise ValueError("`bucket_keys` must be a nonempty sorted unique tuple of (level, bucket_id) pairs.")
-        unknown = tuple(key for key in bucket_keys if key not in available)
-        if unknown:
-            raise ValueError(f"`bucket_keys` contains an unknown bucket address: {unknown[0]}.")
-        return bucket_keys
 
     def _visible_manifest_rows(
         self,
@@ -1945,7 +1906,7 @@ class _PointsCacheReader:
         Every supplied manifest row identifies one complete logical tile at
         ``level``, without a per-tile value selection. This method groups
         those rows by physical bucket and makes exactly one
-        ``read_display_payloads`` call for each nonempty bucket group. The call
+        ``read_complete_display_payloads`` call for each nonempty bucket group. The call
         contains every requested tile in that bucket; the bucket reader performs
         coordinated point-array selections and returns one result per tile. The
         resulting complete tile payloads are restored to the original manifest
@@ -1982,27 +1943,17 @@ class _PointsCacheReader:
         for bucket_id, bucket_manifest_rows in grouped.items():
             if raise_if_cancelled is not None:
                 raise_if_cancelled()
-            bucket_reader = self._complete_tile_reader(level=level, bucket_id=bucket_id)
+            bucket_reader = self._get_bucket_reader_for_complete_display(level=level, bucket_id=bucket_id)
             # This is one physical-reader call for the bucket, not one call per
             # tile. Its tuple retains every logical tile request in the group.
             # Manifest rows are converted to tile descriptors for the bucket API.
-            # `_read_complete_tile_major_requests()` accepts no per-tile value
-            # selections: it always reads all values. Pass `selected_value_ids=None`
-            # to the bucket reader's `read_display_payloads()` to request every
-            # point in each tile.
-            payloads = bucket_reader.read_display_payloads(
-                tuple((self._descriptors[manifest_row], None) for manifest_row in bucket_manifest_rows)
+            payloads = bucket_reader.read_complete_display_payloads(
+                tuple(self._descriptors[manifest_row] for manifest_row in bucket_manifest_rows)
             )
             if raise_if_cancelled is not None:
                 raise_if_cancelled()
             for manifest_row, payload in zip(bucket_manifest_rows, payloads, strict=True):
                 descriptor = self._descriptors[manifest_row]
-                if payload is None:
-                    raise ValueError(
-                        "Could not load cached points for tile "
-                        f"({descriptor.tile_x}, {descriptor.tile_y}) at level {level}: "
-                        "no point data was returned."
-                    )
                 results[manifest_row] = self._tile_result(descriptor, payload)
 
         ordered_tiles = tuple(results[manifest_row] for manifest_row in manifest_rows)
@@ -2088,14 +2039,20 @@ class _PointsCacheReader:
         _require_integer_in_range(level, "level", maximum=len(attributes.levels) - 1)
         return attributes.levels[level]
 
-    def _catalog_or_raise(self) -> _CatalogReader:
+    def _catalog_or_raise(self) -> _CacheRootReader:
         self._require_open_or_initializing()
         if self._catalog is None:
-            raise RuntimeError("Catalog reader is not open.")
+            raise RuntimeError("Cache-root reader is not open.")
         return self._catalog
 
-    def _complete_tile_reader(self, *, level: int, bucket_id: int) -> _BucketReader:
-        """Open a bucket lazily and validate its descriptor tuple before payload IO."""
+    def _get_bucket_reader_for_complete_display(self, *, level: int, bucket_id: int) -> _BucketReader:
+        """Get a cached bucket reader ready for complete-tile display reads.
+
+        Open the bucket lazily and ensure its complete descriptor tuple is
+        validated and installed. Subsequent calls reuse the reader and accepted
+        tuple without repeating descriptor-validation IO. This method does not
+        read point payloads.
+        """
         bucket_reader = self._bucket_cache_or_raise().get(level=level, bucket_id=bucket_id)
         key = (level, bucket_id)
         bucket_reader.set_tile_descriptors(self._descriptors_by_bucket[key])
@@ -2187,7 +2144,7 @@ def _read_cache_dataset_info(cache_root: str | Path) -> _CacheDatasetInfo:
     catalog indexes, open bucket stores, or read point payloads. It is intended
     for application discovery before a long-lived worker-owned reader exists.
     """
-    with _CatalogReader(Path(cache_root)) as catalog:
+    with _CacheRootReader(Path(cache_root)) as catalog:
         attributes = catalog.attributes
         if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
             raise ValueError("Cache root publication_state is not 'complete'.")
@@ -2254,7 +2211,7 @@ def _require_requested_value_ids(value: object) -> None:
 
 
 def _read_only_array(
-    catalog: _CatalogReader,
+    catalog: _CacheRootReader,
     name: str,
     *,
     dtype: npt.DTypeLike | None = None,
