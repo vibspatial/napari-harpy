@@ -245,9 +245,9 @@ def test_bridge_default_reader_capacity_keeps_every_exact_bucket_open(
 
 def test_bridge_routing_omits_empty_bucket_ids_and_orders_tiles(monkeypatch: pytest.MonkeyPatch) -> None:
     descriptors = (
-        _TileDescriptor(0, 0, 0, 1, 0, 2),
-        _TileDescriptor(0, 1, 0, 0, 1, 2),
-        _TileDescriptor(0, 2, 0, 0, 0, 2),
+        _TileDescriptor(0, 0, 0, 0, 1, 0, 2),
+        _TileDescriptor(0, 1, 0, 0, 0, 1, 2),
+        _TileDescriptor(0, 2, 0, 0, 0, 0, 2),
     )
     monkeypatch.setattr(
         bridge_module,

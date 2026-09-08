@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -396,15 +397,26 @@ def test_reader_rejects_unknown_descriptor_and_calls_after_close(tmp_path: Path)
     with pytest.raises(RuntimeError, match="not open"):
         reader.read_construction_payload(descriptor)
     with reader:
-        wrong_bucket = _TileDescriptor(1, 4, 0, 0, 0, 5)
+        wrong_bucket = _TileDescriptor(1, 4, 0, 0, 0, 0, 5)
         with pytest.raises(ValueError, match="different bucket"):
             reader.read_construction_payload(wrong_bucket)
-        wrong_coordinate = _TileDescriptor(1, 3, 0, 2, 0, 5)
+        wrong_coordinate = _TileDescriptor(1, 3, 0, 0, 2, 0, 5)
         with pytest.raises(ValueError, match="coordinates"):
             reader.read_construction_payload(wrong_coordinate)
-        wrong_count = _TileDescriptor(1, 3, 0, 0, 0, 4)
+        wrong_count = _TileDescriptor(1, 3, 0, 0, 0, 0, 4)
         with pytest.raises(ValueError, match="count"):
             reader.read_construction_payload(wrong_count)
+        with pytest.raises(ValueError, match="row start"):
+            reader.read_construction_payload(replace(descriptor, bucket_row_start=1))
+        _load_lookup(reader)
+        # Diagnostic reads must compare the supplied start with independently
+        # loaded stored offsets, even without a viewer descriptor installation.
+        with pytest.raises(ValueError, match="row start"):
+            reader.resolve_complete_tile_interval(replace(descriptor, bucket_row_start=1))
+        with pytest.raises(ValueError, match="interval"):
+            reader.resolve_selected_tile_intervals(
+                replace(descriptor, bucket_row_start=1), np.array([0], dtype=np.uint32)
+            )
     with pytest.raises(RuntimeError, match="not open"):
         reader.read_construction_payload(descriptor)
     with pytest.raises(RuntimeError, match="entered only once"):

@@ -56,10 +56,13 @@ def _assert_value_major_read_matches_tile_major(
     requested_keys = set(tile_keys_to_read)
     requests = tuple(request for request in plan.requests if request.tile_key in requested_keys)
     expected_keys = tuple(request.tile_key for request in requests)
-    reader.load_bucket_lookup_indexes(levels=(plan.level,), max_resident_bytes=10_000_000)
-    result_tile_major = tuple(
-        reader.read_tile(plan.level, request.tile_x, request.tile_y, value_ids=selected) for request in requests
-    )
+    # Prime only the independent reference reader, never the viewer reader.
+    with _PointsCacheReader(reader._cache_root) as reference_reader:
+        reference_reader.load_bucket_lookup_indexes(levels=(plan.level,), max_resident_bytes=10_000_000)
+        result_tile_major = tuple(
+            reference_reader.read_tile(plan.level, request.tile_x, request.tile_y, value_ids=selected)
+            for request in requests
+        )
     assert all(tile is not None for tile in result_tile_major)
     expected_point_count = sum(len(tile.location) for tile in result_tile_major if tile is not None)
 
@@ -82,11 +85,13 @@ def _assert_value_major_read_matches_tile_major(
 
     with monkeypatch.context() as patches:
         patches.setattr(_BucketReader, "read_display_payloads", reject_bucket_payload)
+        patches.setattr(_BucketReader, "load_lookup_index", reject_bucket_payload)
         patches.setattr(_ValueMajorLocationReader, "read_intervals", tracked_read)
         # Input order must not change the logical output's original plan order.
         result_value_major = reader.read_planned_tiles(plan, tuple(reversed(tile_keys_to_read)))
 
     assert result_value_major.level == plan.level
+    assert reader.loaded_bucket_lookup_index_count == reader.resident_bucket_lookup_bytes == 0
     assert tuple((tile.level, tile.tile_x, tile.tile_y) for tile in result_value_major.tiles) == expected_keys
     assert selected_row_counts == [expected_point_count]
     assert len(result_value_major.tiles) == len(result_tile_major)
@@ -332,7 +337,6 @@ def test_all_values_viewport_retains_tile_major_route_at_every_level(
 
     monkeypatch.setattr(_ValueMajorLocationReader, "read_intervals", reject_sidecar_read)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        reader.load_bucket_lookup_indexes(max_resident_bytes=10_000_000)
         for level in range(reader.level_count):
             plan = reader.plan_viewport(level, full)
             result = reader.read_planned_tiles(plan, plan.tile_keys)
@@ -343,6 +347,42 @@ def test_all_values_viewport_retains_tile_major_route_at_every_level(
             assert sum(len(tile.location) for tile in result.tiles) == sum(
                 reader._descriptors[request.manifest_row].n_points for request in plan.requests
             )
+
+
+def test_complete_tile_major_offsets_cover_disjoint_tiles_across_levels_and_buckets(
+    multi_tile_reader_cache: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Check complete tile-major reads retain correct offsets when tiles are skipped.
+
+    Read all values for alternating tiles across levels and buckets. Skipped
+    tiles' counts must still contribute to later row starts in the same bucket.
+    Check requested tile order and compare locations and value IDs against
+    construction reads that independently use persisted bucket offsets.
+    Sparse lookup loading is forbidden and its residency must remain zero.
+    """
+
+    def reject_lookup(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Complete-tile reads loaded sparse ranges.")
+
+    monkeypatch.setattr(_BucketReader, "load_lookup_index", reject_lookup)
+    with _PointsCacheReader(multi_tile_reader_cache) as reader:
+        for level in range(reader.level_count):
+            plan = reader.plan_viewport(level, _IntrinsicViewport(100, -60, 160, -10))
+            # Skip alternating tiles, including the first one when possible.
+            # Their counts must still contribute to bucket-local row offsets.
+            keys = plan.tile_keys[1::2] if len(plan.tile_keys) > 1 else plan.tile_keys
+            result = reader.read_planned_tiles(plan, keys)
+            assert tuple((tile.level, tile.tile_x, tile.tile_y) for tile in result.tiles) == keys
+            for tile in result.tiles:
+                descriptor = reader._descriptors[reader._manifest_row_by_tile[(level, tile.tile_x, tile.tile_y)]]
+                bucket = reader._bucket_cache_or_raise().get(level=level, bucket_id=descriptor.bucket_id)
+                # Construction reads use the persisted offsets independently
+                # of the viewer's manifest-derived addressing.
+                reference = bucket.read_construction_payload(descriptor)
+                np.testing.assert_array_equal(tile.location, np.column_stack((reference.x_rel, reference.y_rel)))
+                np.testing.assert_array_equal(tile.value_id, reference.value_id)
+            assert reader.loaded_bucket_lookup_index_count == reader.resident_bucket_lookup_bytes == 0
 
 
 def test_complete_tile_major_reads_batch_by_bucket_and_check_cancellation_on_both_sides(
@@ -366,10 +406,11 @@ def test_complete_tile_major_reads_batch_by_bucket_and_check_cancellation_on_bot
         events.append("check")
 
     with _PointsCacheReader(multi_tile_reader_cache) as reader:
-        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
         plan = reader.plan_viewport(0, _IntrinsicViewport(100, -60, 160, -10))
         bucket_count = len(plan.required_bucket_keys)
         assert bucket_count > 1
+        # Empty hash buckets are omitted: serialized IDs need not be dense.
+        assert any(bucket_id >= bucket_count for _, bucket_id in plan.required_bucket_keys)
         monkeypatch.setattr(_BucketReader, "read_display_payloads", tracked_read)
         result = reader.read_planned_tiles(plan, plan.tile_keys, raise_if_cancelled=check_cancelled)
         assert events == ["check", "read", "check"] * bucket_count
@@ -395,7 +436,6 @@ def test_complete_tile_major_cancellation_prevents_later_bucket_reads(
             raise RuntimeError("cancelled bucket read")
 
     with _PointsCacheReader(multi_tile_reader_cache) as reader:
-        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
         plan = reader.plan_viewport(0, _IntrinsicViewport(100, -60, 160, -10))
         assert len(plan.required_bucket_keys) > 1
         monkeypatch.setattr(_BucketReader, "read_display_payloads", tracked_read)
@@ -416,7 +456,6 @@ def test_complete_tile_major_missing_payload_error_identifies_tile_and_level(
         return (None,) * len(requests)
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        reader.load_bucket_lookup_indexes(levels=(1,), max_resident_bytes=10_000_000)
         plan = reader.plan_viewport(1, _IntrinsicViewport(0, 0, 12, 10))
         monkeypatch.setattr(_BucketReader, "read_display_payloads", missing_payload)
         with pytest.raises(ValueError) as error:
@@ -440,7 +479,6 @@ def test_viewport_payload_failure_propagates_without_returning_partial_tiles(
             if use_subset
             else None
         )
-        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
         plan = reader.plan_viewport(0, _IntrinsicViewport(0, 0, 12, 10), value_index=value_index)
         monkeypatch.setattr(_BucketReader, "read_display_payloads", fail_read)
         monkeypatch.setattr(_ValueMajorLocationReader, "read_intervals", fail_read)
@@ -457,20 +495,22 @@ def test_value_major_and_tile_major_subset_paths_return_identical_logical_tiles(
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         value_index = reader.load_selected_value_index(selected_a_and_b, max_resident_bytes=10_000_000)
         plan = reader.plan_viewport(0, full, value_index=value_index)
-        reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
-        result_tile_major = tuple(
-            reader.read_tile(
-                request.level,
-                request.tile_x,
-                request.tile_y,
-                value_ids=selected_a_and_b,
+        with _PointsCacheReader(reader_fixture.cache_root) as reference_reader:
+            reference_reader.load_bucket_lookup_indexes(levels=(0,), max_resident_bytes=10_000_000)
+            result_tile_major = tuple(
+                reference_reader.read_tile(
+                    request.level,
+                    request.tile_x,
+                    request.tile_y,
+                    value_ids=selected_a_and_b,
+                )
+                for request in plan.requests
             )
-            for request in plan.requests
-        )
         # Selecting A and B but not C gives this plan the `value_major_subset`
         # route, so this call reads value-major locations rather than the
         # tile-major buckets used to build `result_tile_major` above.
         result_value_major = reader.read_planned_tiles(plan, plan.tile_keys).tiles
+        assert reader.loaded_bucket_lookup_index_count == reader.resident_bucket_lookup_bytes == 0
 
     assert len(result_value_major) == len(result_tile_major)
     for value_major_tile, tile_major_tile in zip(result_value_major, result_tile_major, strict=True):

@@ -36,15 +36,12 @@ class _BackedSpatialData:
 
 def test_points_cache_location_convention(tmp_path: Path) -> None:
     assert points_element_path("transcripts") == "points/transcripts"
-    assert points_cache_path(tmp_path, "transcripts") == (
-        tmp_path / "points" / "transcripts" / "transcripts_vis_zarr"
-    )
+    assert points_cache_path(tmp_path, "transcripts") == (tmp_path / "points" / "transcripts" / "transcripts_vis_zarr")
 
 
 def test_application_settings_freeze_product_residency_defaults() -> None:
     settings = TiledPointsApplicationSettings()
 
-    assert settings.max_bucket_lookup_bytes is None
     assert settings.max_selected_value_index_bytes is None
     assert settings.max_cpu_tile_bytes == DEFAULT_MAX_CPU_TILE_BYTES
     assert settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES

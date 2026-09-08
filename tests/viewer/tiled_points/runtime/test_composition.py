@@ -38,7 +38,6 @@ _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 class _ControllableSession(QObject):
     state_changed = Signal(object)
     dataset_available = Signal(object)
-    bucket_index_progress = Signal(int, int)
     ready = Signal()
     value_selection_ready = Signal(object, int)
     viewport_ready = Signal(object)
@@ -60,8 +59,6 @@ class _ControllableSession(QObject):
         self.dataset_available.emit(self.dataset_info)
         if self.state is _CacheSessionState.CLOSED:
             return
-        self._set_state(_CacheSessionState.LOADING_BUCKET_INDEXES)
-        self.bucket_index_progress.emit(1, 1)
         self._set_state(_CacheSessionState.READY)
         self.ready.emit()
 
@@ -158,7 +155,6 @@ def _layer(info: _CacheDatasetInfo, *, max_vertex_payload_bytes: int = 1_000_000
 
 def _settings() -> _CacheSessionSettings:
     return _CacheSessionSettings(
-        max_bucket_lookup_bytes=None,
         max_selected_value_index_bytes=None,
         max_cpu_tile_bytes=1_000_000,
         max_vertex_payload_bytes=1_000_000,

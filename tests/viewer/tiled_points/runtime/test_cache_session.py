@@ -12,11 +12,13 @@ import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_m
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _LevelSelection,
     _PlannedTileRead,
+    _PointsCacheReader,
     _SelectedValueLevelIndex,
     _TileReadResult,
     _ViewportReadPlan,
     _ViewportReadResult,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.viewer.tiled_points.contracts import TiledPointsViewportState, _ViewportRequest
 from napari_harpy.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
@@ -27,19 +29,29 @@ from napari_harpy.viewer.tiled_points.runtime.cache_session import (
 )
 
 
+@pytest.fixture(autouse=True)
+def forbid_viewer_sparse_lookup_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Guard the real reader as well as the controllable fake. These checks
+    # remain active through startup, selection changes, and viewport reads.
+    def reject(*args: object, **kwargs: object) -> object:
+        raise AssertionError("The viewer cache session accessed a bucket sparse lookup.")
+
+    monkeypatch.setattr(_PointsCacheReader, "project_bucket_lookup_index_bytes", reject)
+    monkeypatch.setattr(_PointsCacheReader, "load_bucket_lookup_indexes", reject)
+    monkeypatch.setattr(_BucketReader, "load_lookup_index", reject)
+
+
 @dataclass
 class _ReaderProbe:
-    projected_bytes: int = 64
     resident_bytes: int = 64
-    bucket_count: int = 3
     operations: list[tuple[str, int]] = field(default_factory=list)
     selection_calls: list[tuple[int, ...]] = field(default_factory=list)
-    bucket_lookup_limits: list[int | None] = field(default_factory=list)
     selected_value_limits: list[int | None] = field(default_factory=list)
     fail_selection: bool = False
-    pause_bucket_index_loading: bool = False
-    bucket_index_loading_paused: threading.Event = field(default_factory=threading.Event)
-    resume_bucket_index_loading: threading.Event = field(default_factory=threading.Event)
+    pause_entry: bool = False
+    entry_paused: threading.Event = field(default_factory=threading.Event)
+    resume_entry: threading.Event = field(default_factory=threading.Event)
+    fail_entry: bool = False
     pause_selection: bool = False
     selection_paused: threading.Event = field(default_factory=threading.Event)
     resume_selection: threading.Event = field(default_factory=threading.Event)
@@ -77,7 +89,16 @@ class _ControllableReader:
 
     def __enter__(self) -> _ControllableReader:
         self._probe.record("enter")
+        if self._probe.pause_entry:
+            self._probe.entry_paused.set()
+            assert self._probe.resume_entry.wait(timeout=5)
+        if self._probe.fail_entry:
+            raise ValueError("invalid compact metadata")
         return self
+
+    @property
+    def resident_index_bytes(self) -> int:
+        return self._probe.resident_bytes
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool:
         del exc_type, exc_value, traceback
@@ -85,24 +106,13 @@ class _ControllableReader:
         return False
 
     def project_bucket_lookup_index_bytes(self) -> int:
-        self._probe.record("project")
-        return self._probe.projected_bytes
+        raise AssertionError("Viewer startup projected sparse ranges.")
 
     def load_bucket_lookup_indexes(
         self,
-        *,
-        max_resident_bytes: int | None,
-        progress: Callable[[int, int], None],
+        **kwargs: object,
     ) -> int:
-        self._probe.record("load_bucket_indexes")
-        self._probe.bucket_lookup_limits.append(max_resident_bytes)
-        assert max_resident_bytes is None or max_resident_bytes >= self._probe.resident_bytes
-        for completed in range(1, self._probe.bucket_count + 1):
-            progress(completed, self._probe.bucket_count)
-            if completed == 1 and self._probe.pause_bucket_index_loading:
-                self._probe.bucket_index_loading_paused.set()
-                assert self._probe.resume_bucket_index_loading.wait(timeout=5)
-        return self._probe.resident_bytes
+        raise AssertionError("Viewer startup loaded sparse ranges.")
 
     def load_selected_value_index(
         self,
@@ -206,7 +216,6 @@ class _FakeDatasetInfo:
 def _session(
     probe: _ReaderProbe,
     *,
-    max_bucket_lookup_bytes: int | None = 1_000,
     max_selected_value_index_bytes: int | None = 1_000,
     max_cpu_tile_bytes: int = 1_000,
     max_vertex_payload_bytes: int = 1_000_000,
@@ -214,7 +223,6 @@ def _session(
     return _TiledPointsCacheSession(
         Path("unused.zarr"),
         _CacheSessionSettings(
-            max_bucket_lookup_bytes=max_bucket_lookup_bytes,
             max_selected_value_index_bytes=max_selected_value_index_bytes,
             max_cpu_tile_bytes=max_cpu_tile_bytes,
             max_vertex_payload_bytes=max_vertex_payload_bytes,
@@ -274,7 +282,6 @@ def test_session_settings_require_positive_worker_allocation_limits(name: str, v
     values[name] = value
     with pytest.raises(ValueError, match=name):
         _CacheSessionSettings(
-            max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             **values,  # type: ignore[arg-type]
         )
@@ -285,18 +292,14 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
     session = _session(probe)
     gui_thread_id = threading.get_ident()
     callback_thread_ids: list[int] = []
-    progress: list[tuple[int, int]] = []
     states: list[_CacheSessionState] = []
     session.ready.connect(lambda: callback_thread_ids.append(threading.get_ident()))
     session.value_selection_ready.connect(lambda _selection, _bytes: callback_thread_ids.append(threading.get_ident()))
-    session.bucket_index_progress.connect(lambda completed, total: progress.append((completed, total)))
     session.state_changed.connect(states.append)
 
     try:
         _start_ready(session, qtbot)
-        assert progress == [(1, 3), (2, 3), (3, 3)]
-        assert session.projected_lookup_bytes == 64
-        assert session.resident_lookup_bytes == 64
+        assert session.resident_index_bytes == 64
 
         with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             assert session.set_selected_value_ids((0,))
@@ -322,14 +325,11 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
     assert [operation for operation, _ in probe.operations] == [
         "construct",
         "enter",
-        "project",
-        "load_bucket_indexes",
         "load_selection",
         "exit",
     ]
     assert states == [
         _CacheSessionState.STARTING,
-        _CacheSessionState.LOADING_BUCKET_INDEXES,
         _CacheSessionState.READY,
         _CacheSessionState.UPDATING_SELECTED_VALUE_INDEX,
         _CacheSessionState.READY,
@@ -340,9 +340,9 @@ def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) ->
     ]
 
 
-def test_session_rejects_bucket_index_projection_before_loading_arrays(qtbot) -> None:
-    probe = _ReaderProbe(projected_bytes=2_000)
-    session = _session(probe, max_bucket_lookup_bytes=1_000)
+def test_session_reports_compact_metadata_startup_failure(qtbot) -> None:
+    probe = _ReaderProbe(fail_entry=True)
+    session = _session(probe)
     failures: list[_CacheSessionFailure] = []
     session.failed.connect(failures.append)
 
@@ -351,15 +351,15 @@ def test_session_rejects_bucket_index_projection_before_loading_arrays(qtbot) ->
 
     assert session.state is _CacheSessionState.CLOSED
     assert len(failures) == 1
-    assert failures[0].phase == "bucket_index_projection"
-    assert [operation for operation, _ in probe.operations] == ["construct", "enter", "project", "exit"]
+    assert failures[0].phase == "startup"
+    assert failures[0].message == "invalid compact metadata"
+    assert [operation for operation, _ in probe.operations] == ["construct", "enter"]
 
 
-def test_session_propagates_absent_lookup_and_selection_limits(qtbot) -> None:
-    probe = _ReaderProbe(projected_bytes=2_000, resident_bytes=2_000)
+def test_session_propagates_absent_selection_limit(qtbot) -> None:
+    probe = _ReaderProbe(resident_bytes=2_000)
     session = _session(
         probe,
-        max_bucket_lookup_bytes=None,
         max_selected_value_index_bytes=None,
     )
 
@@ -368,7 +368,6 @@ def test_session_propagates_absent_lookup_and_selection_limits(qtbot) -> None:
         with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             session.set_selected_value_ids((0,))
         qtbot.waitUntil(lambda: session.state is _CacheSessionState.READY)
-        assert probe.bucket_lookup_limits == [None]
         assert probe.selected_value_limits == [None]
     finally:
         _close(session, qtbot)
@@ -402,7 +401,6 @@ def test_worker_treats_selection_without_reader_as_fatal() -> None:
     worker = _TiledPointsCacheWorker(
         Path("unused.zarr"),
         _CacheSessionSettings(
-            max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             max_cpu_tile_bytes=1_000,
             max_vertex_payload_bytes=1_000_000,
@@ -426,24 +424,19 @@ def test_worker_treats_selection_without_reader_as_fatal() -> None:
     assert finished == [None]
 
 
-def test_close_during_bucket_index_loading_rolls_into_owner_thread_shutdown(qtbot) -> None:
-    probe = _ReaderProbe(pause_bucket_index_loading=True)
+def test_close_during_compact_metadata_loading_rolls_into_owner_thread_shutdown(qtbot) -> None:
+    probe = _ReaderProbe(pause_entry=True)
     session = _session(probe)
     ready_events: list[None] = []
 
-    def close_after_first_bucket(completed: int, total: int) -> None:
-        del total
-        if completed == 1:
-            session.close()
-            probe.resume_bucket_index_loading.set()
-
-    session.bucket_index_progress.connect(close_after_first_bucket)
     session.ready.connect(lambda: ready_events.append(None))
-
+    session.start()
+    qtbot.waitUntil(probe.entry_paused.is_set, timeout=5_000)
+    session.close()
     with qtbot.waitSignal(session.closed, timeout=5_000):
-        session.start()
+        probe.resume_entry.set()
 
-    assert probe.bucket_index_loading_paused.is_set()
+    assert probe.entry_paused.is_set()
     assert ready_events == []
     assert session.state is _CacheSessionState.CLOSED
     assert [operation for operation, _ in probe.operations][-1] == "exit"
@@ -703,11 +696,10 @@ def test_terminal_close_cancels_worker_render_batch_packing(
     assert session.state is _CacheSessionState.CLOSED
 
 
-def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Path, qtbot) -> None:
+def test_real_cache_session_opens_compact_metadata_and_loads_selection(real_cache_root: Path, qtbot) -> None:
     session = _TiledPointsCacheSession(
         real_cache_root,
         _CacheSessionSettings(
-            max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             max_cpu_tile_bytes=1_000,
             max_vertex_payload_bytes=1_000_000,
@@ -717,7 +709,7 @@ def test_real_cache_session_opens_primes_and_loads_selection(real_cache_root: Pa
         _start_ready(session, qtbot)
         assert session.dataset_info is not None
         assert session.dataset_info.value_names == ("A", "B")
-        assert session.projected_lookup_bytes == session.resident_lookup_bytes
+        assert session.resident_index_bytes is not None and session.resident_index_bytes > 0
 
         with qtbot.waitSignal(session.value_selection_ready, timeout=5_000):
             session.set_selected_value_ids((0,))
@@ -731,7 +723,6 @@ def test_real_cache_session_builds_generation_bound_viewport_snapshot(real_cache
     session = _TiledPointsCacheSession(
         real_cache_root,
         _CacheSessionSettings(
-            max_bucket_lookup_bytes=None,
             max_selected_value_index_bytes=None,
             max_cpu_tile_bytes=1_000_000,
             max_vertex_payload_bytes=1_000_000,

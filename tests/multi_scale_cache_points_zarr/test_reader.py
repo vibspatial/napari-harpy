@@ -142,6 +142,7 @@ def test_reader_materializes_and_accounts_for_compact_runtime_indexes(reader_fix
         )
         assert all(index is not None and not index.flags.writeable for index in compact_indexes)
         assert reader.resident_index_bytes == sum(index.nbytes for index in compact_indexes if index is not None)
+        assert reader.tile_descriptor_count == len(reader._manifest_n_points)
 
 
 def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
@@ -185,7 +186,6 @@ def test_planned_subset_reads_only_missing_tiles_and_preserves_plan_order(
     full = _IntrinsicViewport(0, 0, 12, 10)
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        _load_bucket_lookup_indexes(reader, levels=(0,))
         bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
         original = bucket_reader.read_display_payloads
         calls: list[tuple[int, ...]] = []
@@ -224,7 +224,6 @@ def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
 ) -> None:
     full = _IntrinsicViewport(0, 0, 12, 10)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        _load_bucket_lookup_indexes(reader, levels=(0,))
         bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
         original = bucket_reader.read_display_payloads
         calls: list[tuple[int, ...]] = []
@@ -286,7 +285,7 @@ def test_bucket_lookup_index_loading_is_explicit_immutable_and_byte_accounted(
         assert reader.open_bucket_reader_count == 1
         assert reader.loaded_bucket_lookup_index_count == 0
         with pytest.raises(RuntimeError, match="prime it before display reads"):
-            reader.read_tile(0, 0, 0)
+            reader.read_tile(0, 0, 0, value_ids=np.array([0], dtype=np.uint32))
 
         resident = reader.load_bucket_lookup_indexes(
             bucket_keys=((0, 0),),
@@ -390,6 +389,9 @@ def test_primed_display_reads_do_not_reread_bucket_lookup_arrays(
     }
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         _load_bucket_lookup_indexes(reader, levels=(0,))
+        # Compact validation happens on the first complete read, not on warm
+        # reads. Diagnostic sparse priming remains independent of it.
+        assert reader.read_tile(0, 0, 0) is not None
         bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
         original_array = bucket_reader._array
 
@@ -702,7 +704,6 @@ def test_selected_value_index_is_immutable_bounded_and_catalog_io_free(
     full = _IntrinsicViewport(0, 0, 12, 10)
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        _load_bucket_lookup_indexes(reader, levels=(0,))
         value_index = _load_selected_value_index(reader, selected_a)
         selected_a[0] = np.uint32(2)
         assert value_index.value_ids.tolist() == [0]
@@ -741,7 +742,6 @@ def test_selected_value_index_preserves_separated_values_and_empty_level_interva
     full = _IntrinsicViewport(0, 0, 12, 10)
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        _load_bucket_lookup_indexes(reader, levels=(0,))
         value_index = _load_selected_value_index(reader, selected_a_and_c)
         assert value_index.levels[0].value_indptr.tolist() == [0, 1, 2]
         assert value_index.levels[0].n_points.tolist() == [2, 1]

@@ -300,11 +300,11 @@ def test_rebase_rejects_wrong_coarser_tile_and_out_of_tile_coordinates() -> None
 def test_coarser_tile_grouping_handles_four_contributors_and_sparse_edges() -> None:
     plan = _spatial_plan()
     descriptors = (
-        _TileDescriptor(1, 0, 0, 0, 0, 2),
-        _TileDescriptor(1, 1, 0, 1, 0, 2),
-        _TileDescriptor(1, 1, 1, 0, 1, 2),
-        _TileDescriptor(1, 0, 1, 1, 1, 2),
-        _TileDescriptor(1, 0, 2, 2, 2, 1),
+        _TileDescriptor(1, 0, 0, 0, 0, 0, 2),
+        _TileDescriptor(1, 1, 0, 0, 1, 0, 2),
+        _TileDescriptor(1, 1, 1, 2, 0, 1, 2),
+        _TileDescriptor(1, 0, 1, 2, 1, 1, 2),
+        _TileDescriptor(1, 0, 2, 4, 2, 2, 1),
     )
 
     grouped = _group_finer_descriptors(
@@ -330,7 +330,8 @@ def test_coarser_tile_grouping_accepts_every_nonempty_quadrant_count(contributor
     plan = _spatial_plan()
     coordinates = ((0, 0), (1, 0), (0, 1), (1, 1))[:contributor_count]
     descriptors = tuple(
-        _TileDescriptor(1, 0, index, tile_x, tile_y, index + 1) for index, (tile_x, tile_y) in enumerate(coordinates)
+        _TileDescriptor(1, 0, index, index * (index + 1) // 2, tile_x, tile_y, index + 1)
+        for index, (tile_x, tile_y) in enumerate(coordinates)
     )
 
     grouped = _group_finer_descriptors(
@@ -346,9 +347,9 @@ def test_coarser_tile_grouping_accepts_every_nonempty_quadrant_count(contributor
 
 def test_spatial_routing_omits_empty_destinations_and_orders_tiles(monkeypatch: pytest.MonkeyPatch) -> None:
     descriptors = (
-        _TileDescriptor(1, 0, 0, 0, 0, 1),
-        _TileDescriptor(1, 0, 1, 2, 0, 1),
-        _TileDescriptor(1, 0, 2, 0, 2, 1),
+        _TileDescriptor(1, 0, 0, 0, 0, 0, 1),
+        _TileDescriptor(1, 0, 1, 1, 2, 0, 1),
+        _TileDescriptor(1, 0, 2, 2, 0, 2, 1),
     )
     tiles = (
         _CoarserTileInput(0, 0, (descriptors[0],)),

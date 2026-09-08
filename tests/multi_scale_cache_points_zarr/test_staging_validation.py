@@ -38,6 +38,7 @@ def test_manifest_bucket_rejects_descriptor_from_another_bucket() -> None:
         level=0,
         bucket_id=1,
         bucket_tile_index=0,
+        bucket_row_start=0,
         tile_x=0,
         tile_y=0,
         n_points=1,

@@ -9,6 +9,7 @@ from zarr.codecs import BytesCodec, Crc32cCodec, ShardingCodec, ZstdCodec
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
@@ -52,6 +53,9 @@ def test_writer_persists_exact_sharded_layout_ranges_and_attributes(tmp_path: Pa
     assert result.point_count == 8
     assert result.range_count == 5
     assert [tile.n_points for tile in result.tile_descriptors] == [5, 3]
+    assert [tile.bucket_tile_index for tile in result.tile_descriptors] == [0, 1]
+    assert [tile.bucket_row_start for tile in result.tile_descriptors] == [0, 5]
+    assert _validate_bucket(tmp_path, level=0, bucket_id=2).tile_descriptors == result.tile_descriptors
 
     with LocalStore(tmp_path / plan.bucket_path, read_only=True) as store:
         root = zarr.open_group(store=store, mode="r", zarr_format=3, use_consolidated=False)
