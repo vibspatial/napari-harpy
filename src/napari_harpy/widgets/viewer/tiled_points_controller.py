@@ -138,7 +138,6 @@ class TiledPointsController:
         binding = self._active_binding
         return binding is not None and binding.runtime.state in {
             _CacheSessionState.STARTING,
-            _CacheSessionState.LOADING_BUCKET_INDEXES,
             _CacheSessionState.UPDATING_SELECTED_VALUE_INDEX,
         }
 
