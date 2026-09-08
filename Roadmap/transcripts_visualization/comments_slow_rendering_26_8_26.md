@@ -1690,8 +1690,41 @@ Keep the distinction between the **resident Python lookup** and the **persisted 
 3. **Keep equivalence references independent.** Replace lookup-primed test references with complete tile-major reads and an explicit point-level membership filter. Expected results must come from actual tile-major point arrays, not value-major reads or reconstructed IDs from the selected-value catalog. This preserves an independent check of both locations and value IDs. Adapt bucket-reader and writer tests that exercised selected display reads; retain direct persisted-range validation coverage instead of keeping an obsolete display API solely for tests.
 4. **Make bucket display APIs complete-tile only, rename them, and delete retired machinery.** Rename `_BucketReader.read_display_payload()` to `read_complete_display_payload()` and `read_display_payloads()` to `read_complete_display_payloads()`. Remove their per-request `selected_value_ids` arguments, homogeneous-mode branching, `resolve_selected_tile_intervals()`, `_ResolvedSelectedValueRange`, and selected-ID synthesis once their consumers are migrated. Remove `_BucketLookupIndex`, its reader state, load/release helpers, projection and resident-byte accounting, cache-wide priming/progress/rollback code, and tests of those retired contracts. Remove helpers only after checking remaining consumers. Preserve `_BucketReaderCache` as the lazy cache of opened readers; preserve descriptor addressing, shared exact-row selection, batch output partitioning, and point-ID-free display reads. Do not retain the old method names as compatibility aliases or add a hidden sparse-subset fallback.
 5. **Update tooling and documentation together.** Update every caller, test, monkeypatch, and benchmark hook to the new complete-display method names, including the viewer's `_read_complete_tile_major_requests()` and diagnostic `read_tile()`. Audit standalone bucket/exact/acceptance benchmarks, reader fixtures, worker test doubles, and normal-viewer sparse-access guards. Retarget the cache-to-canvas bucket-batch timing hook to `read_complete_display_payloads()`; remove its hook for `resolve_selected_tile_intervals()` and obsolete lookup metrics so renamed or deleted methods do not break instrumentation. Relabel diagnostic measurements as complete-tile reads plus filtering; do not compare them as if they still measured sparse-range IO. Update affected docstrings and runtime explanations in `CACHE_FORMAT.md` without changing its persisted schema description.
+6. **Document the cache reader's responsibilities and ownership.** Expand the `_PointsCacheReader` class docstring according to the requirements below. Define catalog arrays, include a compact reader/storage relationship scheme, and explain metadata residency versus payload IO. Describe the actual complete-display APIs and routing after this cleanup, without references to roadmap slices, benchmark datasets, or planned-but-unimplemented behavior in source documentation.
 
 In the new names, **complete** means every point in each requested tile, without value filtering; it does not mean every tile in the cache. **Display** means `location` and point-level `value_id`, excluding `point_id`, unlike construction payloads. Docstrings must explicitly identify tile-major storage. The singular method remains a one-tile wrapper around the plural batched reader, which remains in the normal viewer's all-values path. These names describe the physical read, not a particular viewer route: Slice 11's future `tile_major_filter` route will also consume complete display payloads before filtering them in memory.
+
+**Required `_PointsCacheReader` docstring clarification**
+
+Define **catalog arrays** as cache-wide lookup metadata, distinct from point payloads. Give concrete examples rather than relying on the word "compact": `manifest/*` describes existing tiles, physical buckets, logical tile coordinates, and point counts; `values/n_points` stores per-value totals; `value_tiles/*` maps values to manifest tiles and their counts. This metadata supports both physical point orderings. The catalog is not another name for tile-major storage, and "catalog arrays" does not imply that every value/tile record is loaded at startup.
+
+Include a small scheme connecting the coordinating reader, its lower-level readers, and the arrays they access, along these lines:
+
+```text
+_PointsCacheReader — coordinates reads for one cache generation
+    |
+    +-- _CatalogReader
+    |     cache-wide metadata and value-major array handles
+    |
+    +-- _BucketReaderCache
+    |     +-- _BucketReader per opened bucket
+    |           tile_major/level_N/bucket-....zarr
+    |           complete display reads: location + value_id
+    |
+    +-- _ValueMajorLocationReader per level
+          value_major/level_N/location
+          selected value/tile intervals
+```
+
+Explain that `_ValueMajorLocationReader` wraps an array handle owned and validated by `_CatalogReader`; it does not open an additional store. Opening an array handle is not reading its point payload. `_BucketReaderCache` retains lazily opened bucket readers and their metadata, not decoded chunks or point payloads. CPU tile residency is owned outside `_PointsCacheReader`. The cache reader supplies each bucket reader with its existing per-bucket descriptor tuple for complete-tile validation and addressing, without copying those descriptors.
+
+Distinguish three lifecycle stages:
+
+- **Reader startup:** load the complete manifest, compact value totals and index pointers, and per-level value-major point pointers; derive complete-tile descriptors once. Construct value-major array wrappers without decoding location payloads, and do not eagerly open tile-major buckets. Describe routine opening/layout checks separately from independent staged or exhaustive validation.
+- **Selection changes:** load the requested values' `value_tiles` records through `load_selected_value_index()`. The caller retains the returned index and reuses it for planning and reads; neither the entire value/tile catalog nor a fresh selection index is loaded for every viewport.
+- **Payload requests:** `read_planned_tiles()` dispatches all-values requests to batched complete tile-major reads and proper subsets to value-major interval reads. Explain that `_PointsCacheReader` assembles the same ordered logical tile results from either layout, including regrouping value-major locations and reconstructing their aligned value IDs. Diagnostic `read_tile(..., value_ids=...)` remains distinct: complete tile-major reads followed by in-memory filtering.
+
+Keep this a reader-level explanation, not a duplicate of the full persisted-format document. Use the implemented method names, make resource ownership and release on reader closure clear, and remove descriptions of retired lookup priming. The future adaptive route remains separate implementation work; source docstrings must not present it as already available.
 
 **Boundaries and non-goals**
 
@@ -1708,10 +1741,11 @@ In the new names, **complete** means every point in each requested tile, without
 - Normal viewer startup, all-values reads, and value-major subset reads still avoid persisted sparse-range payload access. Replace monkeypatches targeting deleted loader methods with guards at the actual range-array read boundary; mere absence of an API is not the behavioral proof.
 - Focused construction, staged-validation, and exhaustive-validation tests still exercise the stored ranges and reject their existing corruption cases. Reader batching, cancellation, worker readiness, and resource cleanup remain unchanged.
 - Smoke-test affected benchmark hooks and scripts. Compare representative cold/warm viewer outputs and timings with the existing cache; measure diagnostic filtering time and temporary-memory cost separately. Do not claim a rendering improvement from deleting code that was already outside the viewer path.
+- Review the class docstring and scheme against reader startup, selection-index loading, physical dispatch, bucket setup, and closure. They must distinguish resident metadata, open array/store handles, and decoded payloads, without claiming that all catalog records are eagerly resident or that bucket readers serve value-major payloads.
 
 **Exit condition**
 
-Complete-tile display reads have one descriptor-based addressing contract. No `_BucketLookupIndex`, sparse-subset display branch, or lookup-priming/accounting machinery remains. Diagnostics and equivalence references independently filter actual tile-major point arrays. The current cache format, persisted sparse ranges, construction and validation guarantees, normal viewer routing, and physical batching remain intact. Optional Slice 17 is concerned only with the separate persisted-range removal decision and its remaining consumers.
+Complete-tile display reads have one descriptor-based addressing contract. No `_BucketLookupIndex`, sparse-subset display branch, or lookup-priming/accounting machinery remains. Diagnostics and equivalence references independently filter actual tile-major point arrays. The `_PointsCacheReader` docstring defines catalog metadata and documents reader ownership, both physical layouts, and when metadata versus payloads are read. The current cache format, persisted sparse ranges, construction and validation guarantees, normal viewer routing, and physical batching remain intact. Optional Slice 17 is concerned only with the separate persisted-range removal decision and its remaining consumers.
 
 ### Slice 11 — Measured adaptive proper-subset physical routing
 
