@@ -37,7 +37,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _SelectedValueIndex,
     _ViewportReadPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLocationReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
 from napari_harpy.viewer.tiled_points.contracts import _ViewportRequest
 from napari_harpy.viewer.tiled_points.runtime.cache_session import _read_viewport_snapshot
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
@@ -85,7 +85,7 @@ def _measure_worker(
         original_plan = _PointsCacheReader.plan_viewport
         original_read = _PointsCacheReader.read_planned_tiles
         original_value_read = _PointsCacheReader._read_value_major_requests
-        original_intervals = _ValueMajorLocationReader.read_intervals
+        original_intervals = _ValueMajorLevelReader.read_intervals
 
         def plan_viewport(*args: Any, **kwargs: Any) -> Any:
             plan = original_plan(*args, **kwargs)
@@ -114,7 +114,7 @@ def _measure_worker(
         patches.patch(_PointsCacheReader, "plan_viewport", plan_viewport)
         patches.patch(_PointsCacheReader, "read_planned_tiles", read_planned_tiles)
         patches.patch(_PointsCacheReader, "_read_value_major_requests", value_read)
-        patches.patch(_ValueMajorLocationReader, "read_intervals", read_intervals)
+        patches.patch(_ValueMajorLevelReader, "read_intervals", read_intervals)
         started = time.perf_counter()
         snapshot = _read_viewport_snapshot(
             reader,

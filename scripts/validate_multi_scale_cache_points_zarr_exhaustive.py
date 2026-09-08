@@ -32,7 +32,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
-    value_major_location,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
@@ -199,7 +198,7 @@ def _validate_value_major_location_equivalence(
             ordered_row_count = np.ascontiguousarray(row_count[order])
             del row_count, order
 
-            sidecar = reader.array(value_major_location(level))
+            level_reader = reader.value_major_level(level)
             sidecar_cursor = 0
             with _BucketReaderCache(
                 cache_root,
@@ -218,9 +217,9 @@ def _validate_value_major_location_equivalence(
                         readers=bucket_readers,
                     )
                     sidecar_stop = sidecar_cursor + fragments.point_count
-                    observed = np.ascontiguousarray(
-                        sidecar[sidecar_cursor:sidecar_stop, :],
-                        dtype=np.float32,
+                    observed = level_reader.read_intervals(
+                        ((sidecar_cursor, sidecar_stop),),
+                        expected_row_count=fragments.point_count,
                     )
                     if not np.array_equal(observed, expected):
                         raise ValueError(

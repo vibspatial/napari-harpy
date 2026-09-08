@@ -1786,15 +1786,17 @@ Complete-tile display reads have one descriptor-based addressing contract. No `_
 
 ### Slice 10d — Consolidate value-major array ownership in `_ValueMajorLevelReader`
 
-**Status: Planned**
+**Status: Implemented**
 
 This is a bounded reader-responsibility refactor following Slice 10c and preceding adaptive routing in Slice 11. It makes the value-major component easier to follow without changing the stored cache, physical read algorithm, or viewport behavior. Later slice numbers remain unchanged. It is not an expected loading/rendering-speed improvement or a cache-rebuild task.
 
+This boundary also gives future point-aligned columns, such as quality scores, a clear home for their array references, layout checks, and physical reads. Adding those columns, changing payload contracts, or introducing a generic column framework is not part of this slice.
+
 **Current responsibilities and intended boundary**
 
-The work is currently split across three classes, not contained entirely in `_PointsCacheReader`:
+Before this slice, the work was split across three classes, not contained entirely in `_PointsCacheReader`:
 
-| Responsibility | Current implementation | After this slice |
+| Responsibility | Before this slice | After this slice |
 |---|---|---|
 | Open and retain `value_major/level_N/location` and `value_major/level_N/value_point_indptr` Zarr objects | `_CacheRootReader` opens both into its generic array dictionary; `_ValueMajorLocationReader` borrows `location` | `_ValueMajorLevelReader` opens and retains both array references for its level |
 | Validate the two arrays' complete storage layouts | `_CacheRootReader._validate_layouts()` | `_ValueMajorLevelReader`, using shared strict validation helpers |
@@ -1825,6 +1827,23 @@ Ownership here means responsibility for the Zarr array objects and their valid l
 - Verify reuse of the same per-level reader instances and shared root store, one runtime pointer load per level, unchanged resident-index byte accounting, no pointer reload during unchanged-selection viewport requests, and cleanup after normal closure or partial opening failure. Test these behaviors at the read/store boundaries, not only by asserting renamed class types.
 - Run focused reader, value-major viewport-equivalence, validation, benchmark-helper, and cache-session tests affected by the new boundary. Preserve Exact, Bridge, and Spatial outputs, partial/missing-tile behavior, canonical value IDs, and normal-viewer no-sparse-read guards.
 - Smoke-test migrated scripts/hooks. Compare startup and representative cold/warm worker requests on the same existing cache, checking output equality, physical read counts, compact resident bytes, and any additional allocation or latency. Treat this as a regression check, not evidence of a speedup; no cache construction or GPU benchmark is required solely for this ownership refactor.
+
+**Implementation and verification (2026-09-08)**
+
+- `_ValueMajorLevelReader` replaces the location-only reader without an alias. It opens and validates both level arrays through shared strict-array/layout helpers, supplies explicit read-only pointer loading, and preserves bounded interval reads and cancellation. It retains no decoded pointer vector or point payload.
+- `_CacheRootReader` owns one shared store and registers each successfully constructed level reader immediately, so a later opening failure closes earlier readers. Its generic `array()` API now exposes only cache-wide lookup arrays. Normal and failed closure invalidate borrowed level readers before closing the store. `_PointsCacheReader` borrows these same instances and retains/accounts for each loaded pointer vector once.
+- Publication pointer/count reconciliation remains separate from runtime startup. The exhaustive script reads its observed locations through the level-reader boundary while retaining its independent tile-major reference. Writer tests, viewport tests, benchmark hooks, and reader ownership documentation were migrated; the persisted format and `CACHE_FORMAT.md` schema description remain unchanged.
+- **196 focused tests passed** across level/root/cache readers, lifecycle, viewport equivalence, bucket validation, catalog/value-major writers, staged/exhaustive validation, benchmark helpers, and worker sessions. Added coverage includes malformed array layouts/attributes, strict missing chunks, exact/bounded selectors, zero-payload-IO opening, one pointer load per level, unchanged residency through viewport changes, and normal/partial-failure cleanup. Ruff lint/format checks and `git diff --check` pass; dependency deprecation warnings remain.
+- Existing-cache worker comparisons used five repeats at each of two viewport sizes, with empty, partial, and full CPU tile residency. **All 30 paired render-batch hashes, physical routes, and per-array IO counters matched.** Compact resident NumPy metadata remained **1,190,344 bytes**, including **368,856 bytes** of value-major pointers. Full-extent cold reads still selected 60,512 location rows in one operation, touching 16 chunks in one shard; fully resident requests performed no payload IO.
+
+| Selected-value viewport | Cold worker, before → after | Partially resident worker, before → after | Fully resident worker, before → after |
+|---|---:|---:|---:|
+| Full extent: 60,512 points / 4,453 tiles | 98.03 → 91.97 ms | 72.39 → 70.86 ms | 40.13 → 41.74 ms |
+| Centered 0.2 width/height fraction: 4,846 points / 247 tiles | 7.15 → 7.48 ms | 5.85 → 6.39 ms | 2.31 → 2.47 ms |
+
+Single reader-startup samples were 347.41 → 155.68 ms; process peak RSS was 330.27 → 331.39 MiB. These are descriptive regression checks with uncontrolled filesystem/codec caching, not evidence of a startup speedup or a statistical guarantee of zero timing regression. Cold refers to CPU tile residency, not a flushed filesystem cache. No cache rebuild or GPU benchmark was performed.
+
+Evidence: `/private/tmp/napari-harpy-slice10d-before.json` and `/private/tmp/napari-harpy-slice10d-after.json`, generated by `scripts/benchmark_tiled_points_viewport_planning.py`.
 
 **Exit condition**
 

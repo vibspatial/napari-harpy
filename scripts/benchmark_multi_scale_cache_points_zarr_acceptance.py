@@ -255,14 +255,14 @@ def _assert_selected_matches_complete(complete: _TileReadResult, selected: _Tile
 
 
 def _evaluate_reader(cache_root: Path) -> dict[str, object]:
-    with _CacheRootReader(cache_root) as catalog:
-        attributes = catalog.attributes
-        level_indptr = np.asarray(catalog.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
-        n_points = np.asarray(catalog.array(MANIFEST_N_POINTS)[:], dtype=np.uint64)
-        tile_x = np.asarray(catalog.array(MANIFEST_TILE_X)[:], dtype=np.uint32)
-        tile_y = np.asarray(catalog.array(MANIFEST_TILE_Y)[:], dtype=np.uint32)
-        value_indptr = np.asarray(catalog.array(VALUE_TILES_INDPTR)[:], dtype=np.uint64)
-        value_counts = np.asarray(catalog.array(VALUES_N_POINTS)[:], dtype=np.uint64)
+    with _CacheRootReader(cache_root) as cache_root_reader:
+        attributes = cache_root_reader.attributes
+        level_indptr = np.asarray(cache_root_reader.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
+        n_points = np.asarray(cache_root_reader.array(MANIFEST_N_POINTS)[:], dtype=np.uint64)
+        tile_x = np.asarray(cache_root_reader.array(MANIFEST_TILE_X)[:], dtype=np.uint32)
+        tile_y = np.asarray(cache_root_reader.array(MANIFEST_TILE_Y)[:], dtype=np.uint32)
+        value_indptr = np.asarray(cache_root_reader.array(VALUE_TILES_INDPTR)[:], dtype=np.uint64)
+        value_counts = np.asarray(cache_root_reader.array(VALUES_N_POINTS)[:], dtype=np.uint64)
         representative_levels = _representative_level_ids(len(attributes.levels))
         representative_tiles = {
             str(level): _representative_tiles(level, level_indptr, n_points, tile_x, tile_y)
@@ -273,7 +273,7 @@ def _evaluate_reader(cache_root: Path) -> dict[str, object]:
         representative_value_manifest_rows = {
             label: int(
                 np.asarray(
-                    catalog.array(VALUE_TILES_MANIFEST_INDEX)[
+                    cache_root_reader.array(VALUE_TILES_MANIFEST_INDEX)[
                         int(value_indptr[0, value_id]) : int(value_indptr[0, value_id]) + 1
                     ],
                     dtype=np.uint64,

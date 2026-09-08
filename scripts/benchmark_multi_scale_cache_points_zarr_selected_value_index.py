@@ -105,8 +105,8 @@ class _TrackedArray:
 
 class _CatalogSelectionTracker:
     def __init__(self, reader: _PointsCacheReader) -> None:
-        catalog = reader._catalog_or_raise()
-        self._original_array = catalog.array
+        cache_root_reader = reader._cache_root_reader_or_raise()
+        self._original_array = cache_root_reader.array
         self.selections = {name: [] for name in _TARGET_ARRAYS}
 
         def tracked_array(name: str) -> object:
@@ -115,7 +115,7 @@ class _CatalogSelectionTracker:
                 return _TrackedArray(name, array, self.selections)
             return array
 
-        catalog.array = tracked_array  # type: ignore[method-assign]
+        cache_root_reader.array = tracked_array  # type: ignore[method-assign]
 
     def reset(self) -> None:
         for selections in self.selections.values():

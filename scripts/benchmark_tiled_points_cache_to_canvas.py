@@ -308,7 +308,7 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
     timed_method(_PointsCacheReader, "read_planned_tiles", "read_planned_tiles")
     timed_method(_PointsCacheReader, "_get_bucket_reader_for_complete_display", "complete_tile_bucket_setup")
     timed_method(_PointsCacheReader, "_read_value_major_requests", "value_major_tile_assembly")
-    timed_method(value_major_reader_module._ValueMajorLocationReader, "read_intervals", "value_major_location_read")
+    timed_method(value_major_reader_module._ValueMajorLevelReader, "read_intervals", "value_major_location_read")
     timed_method(bucket_reader_module._BucketReader, "read_complete_display_payloads", "bucket_batch")
     timed_method(bucket_reader_module, "_exact_row_selection", "exact_row_selector_construction")
     timed_method(value_major_reader_module, "_build_exact_row_selection", "value_major_row_selector_construction")
