@@ -380,6 +380,19 @@ logical viewport tile -> manifest row
 manifest row -> logical coordinates and physical bucket address
 ```
 
+For each manifest row, `manifest/bucket_tile_index` identifies the zero-based
+tile index `i` within its physical bucket. That bucket's `tile_offset[i]` and
+`tile_offset[i + 1]` give the complete tile's half-open point-row interval
+`[tile_offset[i], tile_offset[i + 1])` in its aligned point arrays.
+
+The row start also equals the sum of preceding tiles' `manifest/n_points`
+within the same level and bucket, in bucket-local tile-index order. These
+counts include tiles outside any requested viewport. For the example above,
+manifest rows `[0, 1, 2]` have starts `[0, 0, 3]`: prefixes reset per bucket.
+The interval length equals that manifest row's `n_points`. Row starts are
+already persisted in bucket `tile_offset` arrays and are not duplicated in a
+separate manifest column.
+
 ## 7. `value_tiles`: values to manifest tiles
 
 The manifest does not answer which tiles contain a requested value.
@@ -665,13 +678,15 @@ The current implementation treats these structures differently:
 | `value_tiles/indptr` | Yes | Yes | Compact level/value pointer table |
 | Complete `value_tiles/manifest_index` and `n_points` | Yes | No | Selected intervals are loaded when the active proper subset changes |
 | Selected-value index | No | Yes, for the active proper subset | Compact copies of selected manifest/count records, reused across viewports |
-| Bucket lookup arrays | Yes | Yes in the current cache session | `tile_offset` and four `ranges/*` arrays; currently loaded at startup, although proper-subset viewport payload reads no longer consume them |
+| Complete-tile addresses | Yes as bucket `tile_offset` | Row starts derived once from manifest counts | Prefixes reset per level/bucket and include all preceding tiles; stored offsets supply the independent addressing check |
+| Bucket sparse-range arrays | Yes | No in normal viewer sessions | Four `ranges/*` arrays remain for construction, validation, and explicitly primed diagnostic/reference subset reads |
 | Bucket `location`, point-level `value_id`, and `point_id` | Yes | No as lookup metadata | Decoded only for requested payloads; decoded tiles may enter CPU residency |
 | Value-major `location` and `value_point_indptr` | Yes | Pointers only | Every level pointer is retained; proper-subset locations remain on disk until selected viewport rows are read |
 | `bucket_manifest_indexes` | No | Construction only | In-memory translation from bucket-local tile index to manifest index |
 | `ordered_row_start` | No | Construction only, disk-backed | Cache-wide temporary companion aligned with sorted value-tile rows |
 
-The current bucket lookup object retains exactly:
+The diagnostic/reference bucket lookup object, loaded only on explicit request,
+retains exactly:
 
 ```text
 tile_offset
@@ -681,7 +696,17 @@ ranges/row_start
 ranges/row_count
 ```
 
-It does not retain locations, point-level value IDs, or point IDs.
+It does not retain locations, point-level value IDs, or point IDs. Normal viewer
+startup and viewport reads do not load this object. Complete-tile reads use
+the validated descriptors' row starts and counts, and read point-level `value_id` alongside
+`location`; proper-subset viewport reads use the value-major cache. The stored
+sparse arrays and the resident diagnostic lookup are distinct contracts.
+
+Runtime `resident_index_bytes` reports retained NumPy catalog/pointer arrays,
+not Python descriptor objects or grouping containers. Removing the derived
+offset array does not eliminate address-storage cost: each stored tile now
+has a Python integer row start. Report `tile_descriptor_count` and process RSS
+alongside array bytes when evaluating runtime memory.
 
 ## 12. Pointer glossary
 

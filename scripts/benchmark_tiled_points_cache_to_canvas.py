@@ -1,6 +1,6 @@
 """Benchmark one value-selection request from a completed cache to the canvas.
 
-The default run measures cache/catalog startup, resident bucket-index loading,
+The default run measures compact-metadata startup, lazy complete-tile addressing,
 selected-value-index loading, cold and warm worker snapshots, Zarr selection
 amplification, CPU residency, and steady Qt delivery. Add ``--real-canvas`` to
 also measure VisPy resource creation/residency and synchronous physical draws.
@@ -27,6 +27,7 @@ import json
 import math
 import os
 import platform
+import resource
 import statistics
 import subprocess
 import time
@@ -305,6 +306,7 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
 
     patches.patch(_PointsCacheReader, "plan_viewport", plan_viewport)
     timed_method(_PointsCacheReader, "read_planned_tiles", "read_planned_tiles")
+    timed_method(_PointsCacheReader, "_complete_tile_reader", "complete_tile_bucket_setup")
     timed_method(_PointsCacheReader, "_read_value_major_requests", "value_major_tile_assembly")
     timed_method(value_major_reader_module._ValueMajorLocationReader, "read_intervals", "value_major_location_read")
     timed_method(bucket_reader_module._BucketReader, "read_display_payloads", "bucket_batch")
@@ -678,8 +680,7 @@ def _print_summary(report: dict[str, object]) -> None:
     )
     print(
         f"Startup: reader={startup['reader_enter_ms']:.1f} ms, "
-        f"bucket-index projection={startup['bucket_index_projection_ms']:.1f} ms, "
-        f"bucket-index load={startup['bucket_index_loading_ms']:.1f} ms, "
+        f"compact indexes={startup['resident_compact_index_mib']:.2f} MiB, "
         f"value-index load={startup['selected_value_index_ms']:.1f} ms"
     )
     print(f"Worker snapshot: cold={worker['cold_snapshot_ms']:.1f} ms, warm={worker['warm_snapshot_ms']:.1f} ms")
@@ -729,7 +730,8 @@ def main() -> None:
             "git": _git_state(),
         },
         "notes": (
-            "Cold means the first request in this process after indexes were loaded; it does not flush operating-system "
+            "Cold means the first request after compact metadata and the selected-value index were loaded; "
+            "tile-major buckets open lazily. It does not flush operating-system "
             "filesystem caches. Detailed method hooks add small instrumentation overhead. Canvas.render() is synchronous "
             "and includes framebuffer readback."
         ),
@@ -741,23 +743,16 @@ def main() -> None:
     reader = reader_context.__enter__()
     startup: dict[str, object] = {
         "reader_enter_ms": _elapsed_ms(started),
-        "resident_catalog_index_mib": reader.resident_index_bytes / _MIB,
+        "resident_compact_index_mib": reader.resident_index_bytes / _MIB,
+        "tile_descriptor_count": reader.tile_descriptor_count,
+        "index_memory_scope": "NumPy arrays only; Python descriptors and containers are excluded.",
+        "resident_value_major_pointer_mib": reader.resident_value_major_pointer_bytes / _MIB,
+        "open_bucket_readers": reader.open_bucket_reader_count,
+        "sparse_index_count": reader.loaded_bucket_lookup_index_count,
+        "sparse_index_bytes": reader.resident_bucket_lookup_bytes,
         "rss_after_reader_enter_mib": _rss_mib(),
     }
     try:
-        started = time.perf_counter()
-        projected_lookup_bytes = reader.project_bucket_lookup_index_bytes()
-        startup["bucket_index_projection_ms"] = _elapsed_ms(started)
-        startup["bucket_index_projected_mib"] = projected_lookup_bytes / _MIB
-        startup["rss_after_bucket_index_projection_mib"] = _rss_mib()
-
-        started = time.perf_counter()
-        resident_lookup_bytes = reader.load_bucket_lookup_indexes(max_resident_bytes=None)
-        startup["bucket_index_loading_ms"] = _elapsed_ms(started)
-        startup["bucket_index_resident_mib"] = resident_lookup_bytes / _MIB
-        startup["bucket_index_count"] = reader.loaded_bucket_lookup_index_count
-        startup["rss_after_bucket_index_loading_mib"] = _rss_mib()
-
         value_id: int | None
         if args.all_values:
             value_id = None
@@ -852,6 +847,11 @@ def main() -> None:
             "warm_breakdown": warm_breakdown,
             "cpu_resident_mib": residency.resident_bytes / _MIB,
             "cpu_resident_tiles": residency.tile_count,
+            "open_bucket_readers": reader.open_bucket_reader_count,
+            "sparse_index_count": reader.loaded_bucket_lookup_index_count,
+            "sparse_index_bytes": reader.resident_bucket_lookup_bytes,
+            "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            / (_MIB if platform.system() == "Darwin" else 1024),
         }
         report["snapshot"] = {
             "level": snapshot.level,

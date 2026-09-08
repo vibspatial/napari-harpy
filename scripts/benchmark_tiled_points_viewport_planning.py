@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import resource
+import sys
 import time
 from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
@@ -171,10 +173,13 @@ def main() -> None:
     with _PointsCacheReader(args.cache_root) as reader:
         report["reader_enter_ms"] = _elapsed_ms(started)
         report["cache_generation_id"] = reader.cache_generation_id
-        started = time.perf_counter()
-        reader.load_bucket_lookup_indexes(max_resident_bytes=None)
-        report["bucket_index_loading_ms"] = _elapsed_ms(started)
-        report["bucket_index_bytes"] = reader.resident_bucket_lookup_bytes
+        report["resident_compact_index_bytes"] = reader.resident_index_bytes
+        report["tile_descriptor_count"] = reader.tile_descriptor_count
+        report["index_memory_scope"] = "NumPy arrays only; Python descriptors and containers are excluded."
+        report["resident_value_major_pointer_bytes"] = reader.resident_value_major_pointer_bytes
+        report["sparse_index_bytes"] = reader.resident_bucket_lookup_bytes
+        report["sparse_index_count"] = reader.loaded_bucket_lookup_index_count
+        report["open_bucket_readers"] = reader.open_bucket_reader_count
         for names in args.selection:
             ids = tuple(sorted({reader.value_names.index(name) for name in names}))
             started = time.perf_counter()
@@ -214,6 +219,13 @@ def main() -> None:
                     raise RuntimeError("Residency changed the rendered payload.")
                 report["cases"].append(case)
                 print(f"Measured {names}, viewport fraction {fraction}", flush=True)
+        report["after_viewport_trace"] = {
+            "sparse_index_bytes": reader.resident_bucket_lookup_bytes,
+            "sparse_index_count": reader.loaded_bucket_lookup_index_count,
+            "open_bucket_readers": reader.open_bucket_reader_count,
+        }
+    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    report["peak_rss_mib"] = peak_rss / ((1 << 20) if sys.platform == "darwin" else 1024)
     args.json_output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"Report: {args.json_output}")
 

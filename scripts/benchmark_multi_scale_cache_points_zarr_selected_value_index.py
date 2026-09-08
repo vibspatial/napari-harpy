@@ -360,26 +360,6 @@ def _measure_selected_viewport(
         planning_seconds = perf_counter() - started
         visible_rows = reader._visible_manifest_rows(level, viewport)
         visible_tile_count = len(visible_rows)
-        positive_rows = reader._positive_visible_manifest_rows(level, visible_rows, value_index)
-        bucket_keys = tuple(
-            sorted(
-                {
-                    (reader._descriptors[manifest_row].level, reader._descriptors[manifest_row].bucket_id)
-                    for manifest_row in positive_rows
-                }
-            )
-        )
-        started = perf_counter()
-        if bucket_keys:
-            projected_lookup_bytes = reader.project_bucket_lookup_index_bytes(bucket_keys=bucket_keys)
-            resident_lookup_bytes = reader.load_bucket_lookup_indexes(
-                bucket_keys=bucket_keys,
-                max_resident_bytes=projected_lookup_bytes,
-            )
-        else:
-            resident_lookup_bytes = 0
-        bucket_lookup_prime_seconds = perf_counter() - started
-
         open_before = reader.open_bucket_reader_count
         started = perf_counter()
         first = reader.read_viewport(level, viewport, value_index=value_index)
@@ -418,8 +398,11 @@ def _measure_selected_viewport(
             "estimated_points": estimated_points,
             "index_load_seconds": index_load_seconds,
             "planning_seconds": planning_seconds,
-            "bucket_lookup_prime_seconds": bucket_lookup_prime_seconds,
-            "resident_bucket_lookup_bytes": resident_lookup_bytes,
+            "resident_compact_index_bytes": reader.resident_index_bytes,
+            "tile_descriptor_count": reader.tile_descriptor_count,
+            "index_memory_scope": "NumPy arrays only; Python descriptors and containers are excluded.",
+            "resident_bucket_lookup_bytes": reader.resident_bucket_lookup_bytes,
+            "loaded_bucket_lookup_index_count": reader.loaded_bucket_lookup_index_count,
             "first": first_summary,
             "repeated": repeated_summary,
         }

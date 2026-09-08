@@ -134,6 +134,7 @@ def _level_results_inventory(level_results: tuple[_LevelWriteResult, ...]) -> li
                     "tiles": [
                         {
                             "bucket_tile_index": tile.bucket_tile_index,
+                            "bucket_row_start": tile.bucket_row_start,
                             "tile_x": tile.tile_x,
                             "tile_y": tile.tile_y,
                             "n_points": tile.n_points,
@@ -201,6 +202,7 @@ def _read_pyramid_inventory(
                                 level=raw_level["level"],
                                 bucket_id=raw_bucket["bucket_id"],
                                 bucket_tile_index=raw_tile["bucket_tile_index"],
+                                bucket_row_start=raw_tile["bucket_row_start"],
                                 tile_x=raw_tile["tile_x"],
                                 tile_y=raw_tile["tile_y"],
                                 n_points=raw_tile["n_points"],
