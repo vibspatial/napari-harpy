@@ -221,7 +221,6 @@ class _TiledPointsViewportCoordinator(QObject):
         startup = self._session.state in {
             _CacheSessionState.NEW,
             _CacheSessionState.STARTING,
-            _CacheSessionState.LOADING_BUCKET_INDEXES,
         }
         session_change_pending = False
         if not startup:
