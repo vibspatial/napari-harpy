@@ -48,18 +48,13 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     TILE_MAJOR_TILE_Y,
     TILE_MAJOR_VALUE_ID,
     VALUE_MAJOR_LEVEL_ARRAYS,
-    VALUE_MAJOR_LOCATION_DTYPE,
-    VALUE_MAJOR_POINTER_DTYPE,
     VALUE_TILES_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
     VALUES_N_POINTS,
     ZARR_FORMAT_VERSION,
-    ZARR_READ_MISSING_CHUNKS,
     ZARR_USE_CONSOLIDATED,
     _parse_root_attributes,
-    value_major_location,
-    value_major_point_indptr,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
     _strict_array,
@@ -71,6 +66,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketWriteResult,
     _ZarrWriteSettings,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
 
 
 @dataclass(frozen=True, eq=False)
@@ -123,7 +119,28 @@ class _RangeRecordBatch:
 
 
 class _CacheRootReader:
-    """Own the cache-root store and validate its catalog and value-major array layouts."""
+    """Own the cache-root store, lookup arrays, and value-major level readers.
+
+    Ownership and access
+    --------------------
+    - Own the cache-root store and Zarr group.
+    - Retain cache-wide lookup Zarr arrays: ``manifest/*``,
+      ``values/n_points``, and ``value_tiles/*``. Access these through
+      ``array(name)``.
+    - Own one ``_ValueMajorLevelReader`` per level. Each owns its location
+      and point-pointer array references and uses the same root store.
+      ``value_major_level(level)`` returns that existing reader.
+
+    Validation and lifecycle
+    ------------------------
+    - Opening validates the hierarchy and array layouts without decoding
+      point payloads or loading pointer vectors.
+    - ``validate_contents()`` separately reads lookup metadata and
+      value-major pointers to check their consistency, without reading
+      point payloads.
+    - Closing invalidates every value-major level reader before closing
+      the shared root store.
+    """
 
     def __init__(self, cache_root: Path) -> None:
         self._cache_root = cache_root
@@ -131,6 +148,7 @@ class _CacheRootReader:
         self._root: zarr.Group | None = None
         self._attributes: _CacheAttributes | None = None
         self._arrays: dict[str, zarr.Array] = {}
+        self._value_major_readers: list[_ValueMajorLevelReader] = []
 
     @property
     def attributes(self) -> _CacheAttributes:
@@ -153,13 +171,21 @@ class _CacheRootReader:
             )
             self._attributes = _parse_cache_attributes(dict(self._root.attrs))
             self._validate_hierarchy()
-            sidecar_paths = tuple(
-                path
-                for level in range(self.attributes.catalog.level_count)
-                for path in (value_major_location(level), value_major_point_indptr(level))
-            )
-            self._arrays = {name: self._strict_array(name) for name in (*CATALOG_ARRAY_PATHS, *sidecar_paths)}
+            self._arrays = {name: _strict_array(self._root, name) for name in CATALOG_ARRAY_PATHS}
             self._validate_layouts()
+            for level, metadata in enumerate(self.attributes.levels):
+                # Register each successful construction immediately so failure
+                # at a later level still invalidates all earlier readers.
+                self._value_major_readers.append(
+                    _ValueMajorLevelReader(
+                        self._root,
+                        level=level,
+                        point_count=metadata.point_count,
+                        value_count=self.attributes.catalog.value_count,
+                        metadata=self.attributes.value_major,
+                        codec_id=self.attributes.zarr_settings.codec_id,
+                    )
+                )
         except Exception:
             self._close()
             raise
@@ -176,11 +202,17 @@ class _CacheRootReader:
         return False
 
     def array(self, name: str) -> zarr.Array:
-        """Return a strict catalog or value-major Zarr array by its cache-relative path."""
+        """Return a cache-wide lookup Zarr array by its cache-relative path."""
         try:
             return self._arrays[name]
         except KeyError as error:
             raise ValueError(f"Unknown or unopened cache-root array: {name}.") from error
+
+    def value_major_level(self, level: int) -> _ValueMajorLevelReader:
+        """Borrow an existing level reader, valid only while this root is open."""
+        self._root_or_raise()
+        _require_integer_in_range(level, "level", maximum=len(self._value_major_readers) - 1)
+        return self._value_major_readers[level]
 
     def validate_contents(self) -> None:
         """Validate the logical catalog without reading point payload arrays.
@@ -188,7 +220,7 @@ class _CacheRootReader:
         Within staged validation, this method establishes that the catalog
         arrays are internally consistent.
 
-        Validation proceeds in four layers:
+        Validation proceeds in five layers:
 
         1. Canonical values: require every value to have a positive Exact count
            and require their sum to equal the validated source row count.
@@ -410,11 +442,11 @@ class _CacheRootReader:
 
         # 5. Value-major pointer reconciliation
         # -------------------------------------
-        # Location arrays remain unopened by mandatory publication validation.
+        # Location payloads remain unread by this mandatory validation step.
         # The compact pointer vectors are sufficient to prove that every level
         # declares the same per-value and total row counts as ``value_tiles``.
         for level, metadata in enumerate(attributes.levels):
-            point_indptr = np.asarray(self.array(value_major_point_indptr(level))[:], dtype=np.uint64)
+            point_indptr = self.value_major_level(level).load_point_indptr()
             if (
                 int(point_indptr[0]) != 0
                 or int(point_indptr[-1]) != metadata.point_count
@@ -511,42 +543,15 @@ class _CacheRootReader:
                 codec_id=codec_id,
             )
 
-        sidecar_metadata = attributes.value_major
-        for level, metadata in enumerate(attributes.levels):
-            _validate_array_layout(
-                self._arrays[value_major_location(level)],
-                name=value_major_location(level),
-                dtype=VALUE_MAJOR_LOCATION_DTYPE,
-                shape=(metadata.point_count, 2),
-                chunks=(sidecar_metadata.point_chunk_rows, 2),
-                shards=(sidecar_metadata.point_shard_rows, 2),
-                codec_id=codec_id,
-            )
-            _validate_array_layout(
-                self._arrays[value_major_point_indptr(level)],
-                name=value_major_point_indptr(level),
-                dtype=VALUE_MAJOR_POINTER_DTYPE,
-                shape=(catalog.value_count + 1,),
-                chunks=(catalog.value_count + 1,),
-                shards=None,
-                codec_id=codec_id,
-            )
-
-    def _strict_array(self, name: str) -> zarr.Array:
-        root = self._root_or_raise()
-        node = root[name]
-        if not isinstance(node, zarr.Array):
-            raise ValueError(f"Required cache-root node is not an array: {name}.")
-        if dict(node.attrs):
-            raise ValueError(f"Cache-root arrays must not contain attributes: {name}.")
-        return node.with_config({"read_missing_chunks": ZARR_READ_MISSING_CHUNKS})
-
     def _root_or_raise(self) -> zarr.Group:
         if self._root is None:
             raise RuntimeError("Cache root is not open.")
         return self._root
 
     def _close(self) -> None:
+        for reader in self._value_major_readers:
+            reader.close()
+        self._value_major_readers.clear()
         if self._store is not None:
             self._store.close()
         self._store = None

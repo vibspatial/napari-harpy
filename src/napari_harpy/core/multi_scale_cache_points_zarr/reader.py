@@ -49,8 +49,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
     VALUES_N_POINTS,
-    value_major_location,
-    value_major_point_indptr,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
     _BucketReader,
@@ -58,7 +56,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader impor
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLocationReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
 
 _ViewportReadRoute = Literal["tile_major_all_values", "value_major_subset"]
 
@@ -590,25 +588,36 @@ class _PointsCacheReader:
     reader.
 
     A ``zarr.Array`` object refers to stored data, not an in-memory NumPy copy of
-    its point payload. Opening that object or constructing a location-reader
-    wrapper does not decode locations; point rows are read only when requested.
+    its point payload. Opening a level reader validates its array layouts
+    without decoding locations; point rows are read only when requested.
 
     Reader ownership
     ----------------
-    Owned readers and shared references::
+    ``_ValueMajorLevelReader`` instances belong to ``_CacheRootReader`` because
+    storage validation also needs them without initializing the in-memory
+    viewport-planning state maintained by ``_PointsCacheReader``. This keeps
+    array opening and layout validation in one storage-level implementation
+    (``_CacheRootReader`` and its ``_ValueMajorLevelReader`` instances) and ties
+    each level reader's lifetime to the shared root store.
+    ``_PointsCacheReader`` borrows these readers for viewport reads.
+
+    Ownership means responsibility for creating and closing a reader or store.
+    The tree shows ownership; borrowed references are listed separately below::
 
         _PointsCacheReader
             +-- _CacheRootReader
+            |     Owns the shared cache-root store and Zarr group
             |     Parsed cache-root attributes (_CacheAttributes)
             |     Zarr array objects (cache-relative paths):
             |       manifest/*
             |       values/n_points
             |       value_tiles/*
-            |       value_major/level_N/location
-            |       value_major/level_N/value_point_indptr
-            +-- _ValueMajorLocationReader per level
-            |     borrows the location Zarr object from _CacheRootReader
-            |     (no additional store)
+            |     +-- _ValueMajorLevelReader per level
+            |           Owns validated Zarr array objects:
+            |             value_major/level_N/location
+            |             value_major/level_N/value_point_indptr
+            |           Uses the root's shared store (no additional store)
+            |           Supplies bounded location reads and pointer loading
             +-- _BucketReaderCache
                   (level, bucket_id) -> lazily opened _BucketReader
                     Bucket identity: level and bucket_id
@@ -623,9 +632,23 @@ class _PointsCacheReader:
                       tile_major/level_N/bucket-....zarr/tile_y
                       tile_major/level_N/bucket-....zarr/tile_offset
                       tile_major/level_N/bucket-....zarr/ranges/*
-                    Accepted tuple of _TileDescriptor objects (once installed):
-                      borrowed from _PointsCacheReader._descriptors_by_bucket
-                      neither the tuple nor its descriptors are copied
+
+    Borrowed references do not create a second set of readers or descriptors::
+
+        _PointsCacheReader._value_major_readers[level]
+            -> _CacheRootReader._value_major_readers[level]
+               The same _ValueMajorLevelReader instance; the root creates/closes it
+
+        _BucketReader._tile_descriptors (once validated and installed)
+            -> _PointsCacheReader._descriptors_by_bucket[(level, bucket_id)]
+               The same descriptor tuple; neither it nor its descriptors are copied
+
+    Loaded pointer data is separate from those reader and Zarr array references::
+
+        _PointsCacheReader._value_major_point_indptr[level]
+            Read-only NumPy vector loaded once via the level reader's load_point_indptr()
+            Retained/accounted by _PointsCacheReader, not also cached in the
+            value-major level readers
 
     - ``_descriptors`` retains one immutable ``_TileDescriptor`` per manifest row,
       in manifest order. ``_descriptors_by_bucket`` groups the same objects without
@@ -656,7 +679,7 @@ class _PointsCacheReader:
     def __init__(self, cache_root: str | Path) -> None:
         self._cache_root = Path(cache_root)
         self._stack: ExitStack | None = None
-        self._catalog: _CacheRootReader | None = None
+        self._cache_root_reader: _CacheRootReader | None = None
         self._bucket_cache: _BucketReaderCache | None = None
         self._attributes: _CacheAttributes | None = None
         self._dataset_info: _CacheDatasetInfo | None = None
@@ -669,7 +692,7 @@ class _PointsCacheReader:
         self._value_tiles_indptr: npt.NDArray[np.uint64] | None = None
         self._value_n_points: npt.NDArray[np.uint64] | None = None
         self._value_major_point_indptr: tuple[npt.NDArray[np.uint64], ...] = ()
-        self._value_major_readers: tuple[_ValueMajorLocationReader, ...] = ()
+        self._value_major_readers: tuple[_ValueMajorLevelReader, ...] = ()
         self._descriptors: tuple[_TileDescriptor, ...] = ()
         self._descriptors_by_bucket: dict[tuple[int, int], tuple[_TileDescriptor, ...]] = {}
         self._manifest_row_by_tile: dict[tuple[int, int, int], int] = {}
@@ -683,8 +706,8 @@ class _PointsCacheReader:
         self._entered = True
         stack = ExitStack()
         try:
-            catalog = stack.enter_context(_CacheRootReader(self._cache_root))
-            attributes = catalog.attributes
+            cache_root_reader = stack.enter_context(_CacheRootReader(self._cache_root))
+            attributes = cache_root_reader.attributes
             if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
                 raise ValueError("Cache root publication_state is not 'complete'.")
             # Retain bucket metadata after its first payload read. Entering this
@@ -695,7 +718,7 @@ class _PointsCacheReader:
                     max_open_readers=sum(level.bucket_count for level in attributes.levels),
                 )
             )
-            self._catalog = catalog
+            self._cache_root_reader = cache_root_reader
             self._attributes = attributes
             self._bucket_cache = bucket_cache
             self._dataset_info = _dataset_info_from_attributes(attributes)
@@ -893,9 +916,9 @@ class _PointsCacheReader:
                 f"exceeding `max_resident_bytes={max_resident_bytes}`."
             )
 
-        catalog = self._catalog_or_raise()
-        manifest_array = catalog.array(VALUE_TILES_MANIFEST_INDEX)
-        point_count_array = catalog.array(VALUE_TILES_N_POINTS)
+        cache_root_reader = self._cache_root_reader_or_raise()
+        manifest_array = cache_root_reader.array(VALUE_TILES_MANIFEST_INDEX)
+        point_count_array = cache_root_reader.array(VALUE_TILES_N_POINTS)
         levels = tuple(
             self._load_selected_value_level_index(
                 level,
@@ -1205,9 +1228,9 @@ class _PointsCacheReader:
         Point payloads and the potentially large value-tile record arrays
         remain on disk and are read only for requested tiles and values.
         """
-        catalog = self._catalog_or_raise()
+        cache_root_reader = self._cache_root_reader_or_raise()
         arrays = {
-            name: _read_only_array(catalog, name)
+            name: _read_only_array(cache_root_reader, name)
             for name in (
                 MANIFEST_LEVEL_INDPTR,
                 MANIFEST_BUCKET_ID,
@@ -1227,12 +1250,11 @@ class _PointsCacheReader:
         self._manifest_n_points = arrays[MANIFEST_N_POINTS]
         self._value_tiles_indptr = arrays[VALUE_TILES_INDPTR]
         self._value_n_points = arrays[VALUES_N_POINTS]
-        self._value_major_point_indptr = tuple(
-            _read_only_array(catalog, value_major_point_indptr(level), dtype=np.uint64)
-            for level in range(self.level_count)
-        )
         self._value_major_readers = tuple(
-            _ValueMajorLocationReader(catalog.array(value_major_location(level))) for level in range(self.level_count)
+            cache_root_reader.value_major_level(level) for level in range(self.level_count)
+        )
+        self._value_major_point_indptr = tuple(
+            value_major_reader.load_point_indptr() for value_major_reader in self._value_major_readers
         )
         for level, (metadata, pointer) in enumerate(
             zip(self._attributes_or_raise().levels, self._value_major_point_indptr, strict=True)
@@ -2039,11 +2061,11 @@ class _PointsCacheReader:
         _require_integer_in_range(level, "level", maximum=len(attributes.levels) - 1)
         return attributes.levels[level]
 
-    def _catalog_or_raise(self) -> _CacheRootReader:
+    def _cache_root_reader_or_raise(self) -> _CacheRootReader:
         self._require_open_or_initializing()
-        if self._catalog is None:
+        if self._cache_root_reader is None:
             raise RuntimeError("Cache-root reader is not open.")
-        return self._catalog
+        return self._cache_root_reader
 
     def _get_bucket_reader_for_complete_display(self, *, level: int, bucket_id: int) -> _BucketReader:
         """Get a cached bucket reader ready for complete-tile display reads.
@@ -2101,14 +2123,14 @@ class _PointsCacheReader:
             raise RuntimeError("Value-major point pointers are not loaded.")
         return self._value_major_point_indptr[level]
 
-    def _value_major_reader_or_raise(self, level: int) -> _ValueMajorLocationReader:
+    def _value_major_reader_or_raise(self, level: int) -> _ValueMajorLevelReader:
         self._require_level(level)
         if len(self._value_major_readers) != self.level_count:
-            raise RuntimeError("Value-major location readers are not ready.")
+            raise RuntimeError("Value-major level readers are not ready.")
         return self._value_major_readers[level]
 
     def _require_open_or_initializing(self) -> None:
-        if not self._open and self._catalog is None:
+        if not self._open and self._cache_root_reader is None:
             raise RuntimeError("Points cache reader is not open.")
 
     def _require_open(self) -> None:
@@ -2116,7 +2138,7 @@ class _PointsCacheReader:
             raise RuntimeError("Points cache reader is not open.")
 
     def _clear_open_state(self) -> None:
-        self._catalog = None
+        self._cache_root_reader = None
         self._bucket_cache = None
         self._attributes = None
         self._dataset_info = None
@@ -2144,8 +2166,8 @@ def _read_cache_dataset_info(cache_root: str | Path) -> _CacheDatasetInfo:
     catalog indexes, open bucket stores, or read point payloads. It is intended
     for application discovery before a long-lived worker-owned reader exists.
     """
-    with _CacheRootReader(Path(cache_root)) as catalog:
-        attributes = catalog.attributes
+    with _CacheRootReader(Path(cache_root)) as cache_root_reader:
+        attributes = cache_root_reader.attributes
         if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
             raise ValueError("Cache root publication_state is not 'complete'.")
         return _dataset_info_from_attributes(attributes)
@@ -2211,14 +2233,10 @@ def _require_requested_value_ids(value: object) -> None:
 
 
 def _read_only_array(
-    catalog: _CacheRootReader,
+    cache_root_reader: _CacheRootReader,
     name: str,
-    *,
-    dtype: npt.DTypeLike | None = None,
 ) -> np.ndarray:
-    array = np.ascontiguousarray(
-        np.asarray(catalog.array(name)[:], dtype=CATALOG_ARRAY_DTYPES[name] if dtype is None else dtype)
-    )
+    array = np.ascontiguousarray(cache_root_reader.array(name)[:], dtype=CATALOG_ARRAY_DTYPES[name])
     array.flags.writeable = False
     return array
 
