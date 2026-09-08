@@ -14,7 +14,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
     _write_bridge_level,
@@ -111,7 +111,7 @@ def test_normal_staged_validation_accepts_complete_multilevel_generation(
     )
 
     _validate_staged_cache(catalog_exact_fixture.staging_root)
-    with _CatalogReader(catalog_exact_fixture.staging_root) as reader:
+    with _CacheRootReader(catalog_exact_fixture.staging_root) as reader:
         for level, metadata in enumerate(reader.attributes.levels):
             assert reader.array(f"value_major/level_{level}/location").shape == (metadata.point_count, 2)
             pointer = reader.array(f"value_major/level_{level}/value_point_indptr")[:]

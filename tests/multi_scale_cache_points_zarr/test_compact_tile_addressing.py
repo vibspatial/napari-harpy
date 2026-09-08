@@ -20,7 +20,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import _read_manifest_inventory
 
 
@@ -36,10 +36,6 @@ def forbid_sparse_ranges(monkeypatch: pytest.MonkeyPatch) -> None:
             return reject()
         return original_array(self, name)
 
-    monkeypatch.setattr(_PointsCacheReader, "project_bucket_lookup_index_bytes", reject)
-    monkeypatch.setattr(_PointsCacheReader, "load_bucket_lookup_indexes", reject)
-    monkeypatch.setattr(_BucketReader, "load_lookup_index", reject)
-    monkeypatch.setattr(_BucketReader, "resolve_selected_tile_intervals", reject)
     monkeypatch.setattr(_BucketReader, "_array", guarded_array)
 
 
@@ -74,7 +70,6 @@ def test_repeated_level_and_selection_changes_never_load_sparse_ranges(reader_fi
                             tile.location, np.column_stack((reference.x_rel[mask], reference.y_rel[mask]))
                         )
                         np.testing.assert_array_equal(tile.value_id, reference.value_id[mask])
-                    assert reader.loaded_bucket_lookup_index_count == reader.resident_bucket_lookup_bytes == 0
 
 
 def test_complete_tile_descriptors_are_validated_once_reused_and_released(reader_fixture: Any, monkeypatch) -> None:
@@ -97,7 +92,6 @@ def test_complete_tile_descriptors_are_validated_once_reused_and_released(reader
         assert address_reads == [TILE_MAJOR_TILE_OFFSET, TILE_MAJOR_TILE_X, TILE_MAJOR_TILE_Y]
         bucket = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
         assert bucket._tile_descriptors is descriptors
-        assert reader.loaded_bucket_lookup_index_count == reader.resident_bucket_lookup_bytes == 0
     assert bucket._tile_descriptors is None
 
 
@@ -121,7 +115,7 @@ def test_bucket_address_mismatch_fails_before_payload_io_without_accepting_descr
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         with monkeypatch.context() as patches:
             patches.setattr(_BucketReader, "_array", corrupted_array)
-            patches.setattr(_BucketReader, "read_display_payloads", reject_payload)
+            patches.setattr(_BucketReader, "read_complete_display_payloads", reject_payload)
             with pytest.raises(ValueError, match="disagree with the bucket"):
                 reader.read_tile(0, 1, 0)
             bucket = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
@@ -204,7 +198,7 @@ def test_descriptor_installation_rejects_bad_tuple_shape_and_replacement(reader_
 @pytest.mark.parametrize("changes", [{"bucket_row_start": 4_999}, {"n_points": 1}, {"tile_x": 2}, {"bucket_id": 1}])
 def test_mismatched_request_cannot_borrow_accepted_descriptor_validation(reader_fixture: Any, monkeypatch, changes):
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        bucket = reader._complete_tile_reader(level=0, bucket_id=0)
+        bucket = reader._get_bucket_reader_for_complete_display(level=0, bucket_id=0)
         descriptor = reader._descriptors_by_bucket[(0, 0)][1]
 
         def reject_io(*args: object, **kwargs: object) -> None:
@@ -218,7 +212,10 @@ def test_mismatched_request_cannot_borrow_accepted_descriptor_validation(reader_
 
 
 def test_manifest_and_independent_bucket_validation_produce_identical_addresses(reader_fixture: Any) -> None:
-    with _PointsCacheReader(reader_fixture.cache_root) as reader, _CatalogReader(reader_fixture.cache_root) as catalog:
+    with (
+        _PointsCacheReader(reader_fixture.cache_root) as reader,
+        _CacheRootReader(reader_fixture.cache_root) as catalog,
+    ):
         inventory = _read_manifest_inventory(catalog)
         assert reader.open_bucket_reader_count == 0
         for level in inventory.levels:

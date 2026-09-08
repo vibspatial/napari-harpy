@@ -237,17 +237,17 @@ def test_exact_writer_builds_deterministic_validated_zarr_from_row_groups(
     for bucket in first.buckets:
         assert _validate_bucket(first_staging, level=0, bucket_id=bucket.bucket_id) == bucket
         with _BucketReader(first_staging, level=0, bucket_id=bucket.bucket_id) as reader:
-            reader.load_lookup_index()
+            reader.set_tile_descriptors(bucket.tile_descriptors)
             for descriptor in bucket.tile_descriptors:
                 complete = reader.read_construction_payload(descriptor)
                 order = np.lexsort((complete.point_id, complete.value_id))
                 np.testing.assert_array_equal(order, np.arange(complete.n_points))
-                selected = reader.read_display_payload(
-                    descriptor,
-                    np.array([expected_values["A"]], dtype=np.uint32),
+                displayed = reader.read_complete_display_payload(descriptor)
+                np.testing.assert_array_equal(displayed.value_id, complete.value_id)
+                np.testing.assert_array_equal(
+                    displayed.location,
+                    np.column_stack((complete.x_rel, complete.y_rel)),
                 )
-                if selected is not None:
-                    assert bool((selected.value_id == expected_values["A"]).all())
 
     expected_points = [
         {"point_id": 0, "value_id": expected_values["A"], "x": 1.0, "y": 1.0, "tile_x": 0, "tile_y": 0},

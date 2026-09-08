@@ -16,7 +16,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
-    _CatalogReader,
+    _CacheRootReader,
     _iter_bucket_range_batches,
     _RangeRecordBatch,
 )
@@ -69,7 +69,7 @@ def test_catalog_coordinator_writes_exact_zarr_hierarchy_and_inverted_index(
         temporary_directory_root=fixture.temporary_root,
     )
 
-    with _CatalogReader(fixture.staging_root) as reader:
+    with _CacheRootReader(fixture.staging_root) as reader:
         assert reader.attributes.cache_generation_id == _GENERATION_ID
         assert reader.attributes.publication_state == PUBLICATION_STATE_STAGING
         assert reader.attributes.value_names == ("A", "B")

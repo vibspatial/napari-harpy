@@ -12,7 +12,6 @@ import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_m
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _LevelSelection,
     _PlannedTileRead,
-    _PointsCacheReader,
     _SelectedValueLevelIndex,
     _TileReadResult,
     _ViewportReadPlan,
@@ -30,15 +29,17 @@ from napari_harpy.viewer.tiled_points.runtime.cache_session import (
 
 
 @pytest.fixture(autouse=True)
-def forbid_viewer_sparse_lookup_loading(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Guard the real reader as well as the controllable fake. These checks
-    # remain active through startup, selection changes, and viewport reads.
-    def reject(*args: object, **kwargs: object) -> object:
-        raise AssertionError("The viewer cache session accessed a bucket sparse lookup.")
+def forbid_viewer_sparse_range_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Guard physical range access whenever the worker uses a real bucket reader.
+    # This remains active through startup, selection changes, and viewport reads.
+    original_array = _BucketReader._array
 
-    monkeypatch.setattr(_PointsCacheReader, "project_bucket_lookup_index_bytes", reject)
-    monkeypatch.setattr(_PointsCacheReader, "load_bucket_lookup_indexes", reject)
-    monkeypatch.setattr(_BucketReader, "load_lookup_index", reject)
+    def guarded_array(self: _BucketReader, name: str):
+        if name.startswith("ranges/"):
+            raise AssertionError("The viewer cache session accessed bucket sparse ranges.")
+        return original_array(self, name)
+
+    monkeypatch.setattr(_BucketReader, "_array", guarded_array)
 
 
 @dataclass
@@ -104,15 +105,6 @@ class _ControllableReader:
         del exc_type, exc_value, traceback
         self._probe.record("exit")
         return False
-
-    def project_bucket_lookup_index_bytes(self) -> int:
-        raise AssertionError("Viewer startup projected sparse ranges.")
-
-    def load_bucket_lookup_indexes(
-        self,
-        **kwargs: object,
-    ) -> int:
-        raise AssertionError("Viewer startup loaded sparse ranges.")
 
     def load_selected_value_index(
         self,

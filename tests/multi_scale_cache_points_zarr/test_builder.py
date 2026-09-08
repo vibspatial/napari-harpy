@@ -25,7 +25,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     validate_parquet_points_source,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 
@@ -96,7 +96,7 @@ def _build(
 
 
 def _generation_id(cache_root: Path) -> str:
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         return reader.attributes.cache_generation_id
 
 
@@ -125,7 +125,7 @@ def test_builder_publishes_complete_exact_only_generation(tmp_path: Path) -> Non
 
     generation_id = _generation_id(output)
     assert output == tmp_path / "transcripts_vis_zarr"
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         reader.validate_contents()
         assert reader.attributes.cache_generation_id == generation_id
         assert reader.attributes.publication_state == PUBLICATION_STATE_COMPLETE
@@ -148,7 +148,7 @@ def test_builder_persists_and_validates_configured_bucket_target(tmp_path: Path)
         config=_config(overview_point_budget=10, target_points_per_bucket=2),
     )
 
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         reader.validate_contents()
         assert reader.attributes.build.target_points_per_bucket == 2
 
@@ -158,7 +158,7 @@ def test_builder_publishes_complete_multilevel_generation(tmp_path: Path) -> Non
 
     output = _build(validated, tmp_path, overview_point_budget=2)
 
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         reader.validate_contents()
         levels = reader.attributes.levels
         assert tuple(level.kind for level in levels[:2]) == ("exact", "bridge")

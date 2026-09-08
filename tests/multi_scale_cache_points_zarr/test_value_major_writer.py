@@ -20,7 +20,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     validate_parquet_points_source,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
@@ -176,7 +176,7 @@ def test_writer_persists_complete_multilevel_locations_and_empty_value_interval(
         ),
     )
     assert len(level_results) == len(expected)
-    with _CatalogReader(fixture.staging_root) as reader:
+    with _CacheRootReader(fixture.staging_root) as reader:
         for level, (expected_pointer, expected_locations) in enumerate(expected):
             assert reader.array(f"value_major/level_{level}/value_point_indptr")[:].tolist() == expected_pointer
             assert reader.array(f"value_major/level_{level}/location")[:].tolist() == expected_locations
@@ -267,7 +267,7 @@ def test_writer_preserves_output_while_bounded_bucket_readers_are_reopened(
         (0, first_bucket),
         (0, second_bucket),
     ]
-    with _CatalogReader(staging_root) as reader:
+    with _CacheRootReader(staging_root) as reader:
         assert reader.array("value_major/level_0/value_point_indptr")[:].tolist() == [0, 2, 4]
         assert reader.array("value_major/level_0/location")[:].tolist() == [
             [1, 1],

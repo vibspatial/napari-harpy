@@ -57,17 +57,6 @@ def _load_selected_value_index(
     return reader.load_selected_value_index(value_ids, max_resident_bytes=10_000_000)
 
 
-def _load_bucket_lookup_indexes(
-    reader: _PointsCacheReader,
-    *,
-    levels: tuple[int, ...] | None = None,
-) -> int:
-    return reader.load_bucket_lookup_indexes(
-        levels=levels,
-        max_resident_bytes=10_000_000,
-    )
-
-
 def test_reader_rejects_unpublished_staging_catalog(catalog_exact_fixture: CatalogExactFixture) -> None:
     _write_staged_cache_catalog(
         catalog_exact_fixture.validated,
@@ -91,8 +80,6 @@ def test_reader_reads_tiles_and_viewports_in_manifest_order(reader_fixture: Any)
     selected_a = np.array([0], dtype=np.uint32)
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        assert _load_bucket_lookup_indexes(reader) == reader.resident_bucket_lookup_bytes
-        assert reader.loaded_bucket_lookup_index_count == reader.open_bucket_reader_count > 0
         assert reader.value_names == ("A", "B", "C")
         exact = reader.read_tile(0, 0, 0)
         assert exact is not None
@@ -154,7 +141,7 @@ def test_reader_exposes_viewer_dataset_information_and_plans_without_bucket_io(
     def reject_payload_read(*args: object, **kwargs: object) -> object:
         raise AssertionError("Viewport planning attempted point-payload IO.")
 
-    monkeypatch.setattr(_BucketReader, "read_display_payloads", reject_payload_read)
+    monkeypatch.setattr(_BucketReader, "read_complete_display_payloads", reject_payload_read)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         info = reader.dataset_info
         assert info.cache_generation_id == reader.cache_generation_id
@@ -187,16 +174,16 @@ def test_planned_subset_reads_only_missing_tiles_and_preserves_plan_order(
 
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
-        original = bucket_reader.read_display_payloads
+        original = bucket_reader.read_complete_display_payloads
         calls: list[tuple[int, ...]] = []
 
         def tracked_batch(
-            requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
-        ) -> tuple[_PointDisplayPayload | None, ...]:
-            calls.append(tuple(descriptor.bucket_tile_index for descriptor, _ in requests))
+            requests: tuple[_TileDescriptor, ...],
+        ) -> tuple[_PointDisplayPayload, ...]:
+            calls.append(tuple(descriptor.bucket_tile_index for descriptor in requests))
             return original(requests)
 
-        monkeypatch.setattr(bucket_reader, "read_display_payloads", tracked_batch)
+        monkeypatch.setattr(bucket_reader, "read_complete_display_payloads", tracked_batch)
         first_plan = reader.plan_viewport(0, first_tile)
         first_result = reader.read_planned_tiles(first_plan, first_plan.tile_keys)
         assert [(tile.tile_x, tile.tile_y) for tile in first_result.tiles] == [(0, 0)]
@@ -225,16 +212,16 @@ def test_singleton_and_viewport_reads_share_the_plural_bucket_path(
     full = _IntrinsicViewport(0, 0, 12, 10)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
-        original = bucket_reader.read_display_payloads
+        original = bucket_reader.read_complete_display_payloads
         calls: list[tuple[int, ...]] = []
 
         def tracked_batch(
-            requests: tuple[tuple[_TileDescriptor, npt.NDArray[np.uint32] | None], ...],
-        ) -> tuple[_PointDisplayPayload | None, ...]:
-            calls.append(tuple(descriptor.bucket_tile_index for descriptor, _ in requests))
+            requests: tuple[_TileDescriptor, ...],
+        ) -> tuple[_PointDisplayPayload, ...]:
+            calls.append(tuple(descriptor.bucket_tile_index for descriptor in requests))
             return original(requests)
 
-        monkeypatch.setattr(bucket_reader, "read_display_payloads", tracked_batch)
+        monkeypatch.setattr(bucket_reader, "read_complete_display_payloads", tracked_batch)
         assert reader.read_tile(0, 0, 0) is not None
         assert calls == [(0,)]
 
@@ -259,187 +246,73 @@ def test_value_tile_index_prunes_gene_lost_during_sampling(reader_fixture: Any) 
 def test_reader_cache_retains_bucket_metadata_across_levels(reader_fixture: Any) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
         assert reader.resident_index_bytes > 0
-        assert reader.resident_bucket_lookup_bytes == 0
-        _load_bucket_lookup_indexes(reader, levels=(0,))
-        assert reader.loaded_bucket_lookup_index_count == 1
         assert reader.read_tile(0, 0, 0) is not None
         assert reader.open_bucket_reader_count == 1
 
         assert reader.read_tile(0, 0, 0) is not None
         assert reader.open_bucket_reader_count == 1
 
-        _load_bucket_lookup_indexes(reader, levels=(1, 2))
         assert reader.read_tile(1, 0, 0) is not None
         assert reader.read_tile(2, 0, 0) is not None
         assert reader.open_bucket_reader_count == 3
-        assert reader.loaded_bucket_lookup_index_count == 3
 
 
-def test_bucket_lookup_index_loading_is_explicit_immutable_and_byte_accounted(
-    reader_fixture: Any,
-) -> None:
-    progress: list[tuple[int, int]] = []
+def test_selected_value_index_load_accepts_no_configured_memory_limit(reader_fixture: Any) -> None:
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        projected = reader.project_bucket_lookup_index_bytes(bucket_keys=((0, 0),))
-        assert projected > 0
-        assert reader.open_bucket_reader_count == 1
-        assert reader.loaded_bucket_lookup_index_count == 0
-        with pytest.raises(RuntimeError, match="prime it before display reads"):
-            reader.read_tile(0, 0, 0, value_ids=np.array([0], dtype=np.uint32))
-
-        resident = reader.load_bucket_lookup_indexes(
-            bucket_keys=((0, 0),),
-            max_resident_bytes=projected,
-            progress=lambda completed, total: progress.append((completed, total)),
-        )
-        assert resident == projected == reader.resident_bucket_lookup_bytes
-        assert reader.loaded_bucket_lookup_index_count == 1
-        assert progress == [(1, 1)]
-
-        bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
-        lookup = bucket_reader._lookup_index_or_raise()
-        assert all(
-            array.flags.c_contiguous and not array.flags.writeable
-            for array in (
-                lookup.tile_offset,
-                lookup.tile_indptr,
-                lookup.range_value_id,
-                lookup.range_row_start,
-                lookup.range_row_count,
-            )
-        )
-        assert lookup.resident_bytes == projected
+        index = reader.load_selected_value_index(np.array([0], dtype=np.uint32), max_resident_bytes=None)
+        assert index.resident_bytes > 0
 
 
-def test_reader_loads_lookup_indexes_without_configured_memory_limits(
-    reader_fixture: Any,
-) -> None:
-    selected_a = np.array([0], dtype=np.uint32)
-    with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        resident_bytes = reader.load_bucket_lookup_indexes(
-            levels=(0,),
-            max_resident_bytes=None,
-        )
-        value_index = reader.load_selected_value_index(
-            selected_a,
-            max_resident_bytes=None,
-        )
-
-        assert resident_bytes == reader.project_bucket_lookup_index_bytes(levels=(0,))
-        assert value_index.resident_bytes > 0
-
-
-def test_bucket_lookup_budget_fails_before_lookup_arrays_are_loaded(
+@pytest.mark.parametrize("level", [0, 1, 2], ids=["exact", "bridge", "spatial"])
+@pytest.mark.parametrize("selected_ids", [(0,), (0, 1), (2,), (0, 1, 2)])
+def test_diagnostic_subset_filters_complete_point_arrays_without_sparse_ranges(
     reader_fixture: Any,
     monkeypatch: pytest.MonkeyPatch,
+    level: int,
+    selected_ids: tuple[int, ...],
 ) -> None:
-    load_calls = 0
-    original = _BucketReader.load_lookup_index
-
-    def counted_load(self: _BucketReader, *args: object, **kwargs: object) -> object:
-        nonlocal load_calls
-        load_calls += 1
-        return original(self, *args, **kwargs)  # type: ignore[arg-type]
-
+    selected = np.asarray(selected_ids, dtype=np.uint32)
     with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        projected = reader.project_bucket_lookup_index_bytes(levels=(0,))
-        monkeypatch.setattr(_BucketReader, "load_lookup_index", counted_load)
-        with pytest.raises(ValueError, match="resident bytes"):
-            reader.load_bucket_lookup_indexes(
-                levels=(0,),
-                max_resident_bytes=projected - 1,
-            )
-        assert load_calls == 0
-        assert reader.loaded_bucket_lookup_index_count == 0
-        assert reader.resident_bucket_lookup_bytes == 0
+        descriptor = reader._descriptors[reader._manifest_row_by_tile[(level, 0, 0)]]
+        bucket = reader._bucket_cache_or_raise().get(level=level, bucket_id=descriptor.bucket_id)
+        reference = bucket.read_construction_payload(descriptor)
+        matches = np.isin(reference.value_id, selected)
+        expected_locations = np.column_stack((reference.x_rel[matches], reference.y_rel[matches]))
+        original_array = bucket._array
+        payload_reads = []
 
+        class TrackedArray:
+            def __init__(self, name):
+                self.name = name
+                self.array = original_array(name)
 
-def test_bucket_lookup_index_loading_rolls_back_new_indexes_after_failure(
-    reader_fixture: Any,
-) -> None:
-    with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        projected = reader.project_bucket_lookup_index_bytes(levels=(0,))
+            def get_orthogonal_selection(self, selection):
+                result = self.array.get_orthogonal_selection(selection)
+                payload_reads.append((self.name, len(result)))
+                return result
 
-        def fail_progress(completed: int, total: int) -> None:
-            assert (completed, total) == (1, 1)
-            raise RuntimeError("injected progress failure")
+        def guarded_array(name):
+            if name.startswith("ranges/") or name == "point_id":
+                raise AssertionError("Diagnostic display read accessed sparse ranges or point IDs.")
+            return TrackedArray(name) if name in {"location", "value_id"} else original_array(name)
 
-        with pytest.raises(RuntimeError, match="injected progress failure"):
-            reader.load_bucket_lookup_indexes(
-                levels=(0,),
-                max_resident_bytes=projected,
-                progress=fail_progress,
-            )
-        assert reader.loaded_bucket_lookup_index_count == 0
-        assert reader.resident_bucket_lookup_bytes == 0
+        def reject_value_index(*args, **kwargs):
+            raise AssertionError("Diagnostic filtering must use point-level IDs, not selected-value metadata.")
 
-
-def test_primed_display_reads_do_not_reread_bucket_lookup_arrays(
-    reader_fixture: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    lookup_names = {
-        "tile_x",
-        "tile_y",
-        "tile_offset",
-        "ranges/tile_indptr",
-        "ranges/value_id",
-        "ranges/row_start",
-        "ranges/row_count",
-    }
-    with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        _load_bucket_lookup_indexes(reader, levels=(0,))
-        # Compact validation happens on the first complete read, not on warm
-        # reads. Diagnostic sparse priming remains independent of it.
-        assert reader.read_tile(0, 0, 0) is not None
-        bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
-        original_array = bucket_reader._array
-
-        def reject_lookup_array(name: str) -> object:
-            if name in lookup_names:
-                raise AssertionError(f"Display request reread resident lookup array: {name}.")
-            return original_array(name)
-
-        monkeypatch.setattr(bucket_reader, "_array", reject_lookup_array)
-        complete = reader.read_tile(0, 0, 0)
-        selected = reader.read_tile(0, 0, 0, value_ids=np.array([0], dtype=np.uint32))
-
-    assert complete is not None and len(complete.value_id) == 5_000
-    assert selected is not None and selected.value_id.tolist() == [0, 0]
-
-
-def test_bucket_lookup_index_loading_reads_only_resident_lookup_arrays(
-    reader_fixture: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expected_names = (
-        "tile_offset",
-        "ranges/tile_indptr",
-        "ranges/value_id",
-        "ranges/row_start",
-        "ranges/row_count",
-    )
-    with _PointsCacheReader(reader_fixture.cache_root) as reader:
-        projected = reader.project_bucket_lookup_index_bytes(levels=(0,))
-        bucket_reader = reader._bucket_cache_or_raise().get(level=0, bucket_id=0)
-        original_array = bucket_reader._array
-        observed_names: list[str] = []
-
-        def record_lookup_array(name: str) -> object:
-            observed_names.append(name)
-            if name not in expected_names:
-                raise AssertionError(f"Lookup-index loading read an unrelated array: {name}.")
-            return original_array(name)
-
-        monkeypatch.setattr(bucket_reader, "_array", record_lookup_array)
-        assert (
-            reader.load_bucket_lookup_indexes(
-                levels=(0,),
-                max_resident_bytes=projected,
-            )
-            == projected
-        )
-        assert tuple(observed_names) == expected_names
+        monkeypatch.setattr(bucket, "_array", guarded_array)
+        monkeypatch.setattr(reader, "load_selected_value_index", reject_value_index)
+        monkeypatch.setattr(reader, "_read_value_major_requests", reject_value_index)
+        result = reader.read_tile(level, 0, 0, value_ids=selected)
+        assert payload_reads == [("location", descriptor.n_points), ("value_id", descriptor.n_points)]
+        if not matches.any():
+            assert result is None
+        else:
+            assert result is not None
+            np.testing.assert_array_equal(result.location, expected_locations)
+            np.testing.assert_array_equal(result.value_id, reference.value_id[matches])
+            assert result.location.dtype == np.float32 and result.value_id.dtype == np.uint32
+            assert result.location.flags.c_contiguous and result.value_id.flags.c_contiguous
+            assert not result.location.flags.writeable and not result.value_id.flags.writeable
 
 
 def test_positive_tile_planning_does_not_access_selected_point_counts(
@@ -859,29 +732,15 @@ def test_reader_rejects_invalid_inputs_and_closed_use(reader_fixture: Any) -> No
         for invalid in (
             np.array([], dtype=np.uint32),
             np.array([0, 0], dtype=np.uint32),
+            np.array([1, 0], dtype=np.uint32),
+            np.array([[0]], dtype=np.uint32),
             np.array([3], dtype=np.uint32),
             np.array([0], dtype=np.uint64),
         ):
             with pytest.raises(ValueError, match="value_ids"):
                 reader.load_selected_value_index(invalid, max_resident_bytes=1_000_000)  # type: ignore[arg-type]
-        with pytest.raises(ValueError, match="max_resident_bytes"):
-            reader.load_bucket_lookup_indexes(max_resident_bytes=0)
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            reader.load_bucket_lookup_indexes(
-                levels=(0,),
-                bucket_keys=((0, 0),),
-                max_resident_bytes=1_000_000,
-            )
-        with pytest.raises(ValueError, match="sorted unique"):
-            reader.load_bucket_lookup_indexes(
-                levels=(1, 0),
-                max_resident_bytes=1_000_000,
-            )
-        with pytest.raises(ValueError, match="unknown bucket"):
-            reader.load_bucket_lookup_indexes(
-                bucket_keys=((0, 99),),
-                max_resident_bytes=1_000_000,
-            )
+            with pytest.raises(ValueError, match="value_ids"):
+                reader.read_tile(0, 0, 0, value_ids=invalid)
 
     with pytest.raises(RuntimeError, match="not open"):
         reader.read_tile(0, 0, 0)
