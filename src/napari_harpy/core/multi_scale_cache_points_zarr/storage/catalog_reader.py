@@ -122,8 +122,8 @@ class _RangeRecordBatch:
         return len(self.value_id)
 
 
-class _CatalogReader:
-    """Open a self-describing cache and validate its catalog and sidecar layouts."""
+class _CacheRootReader:
+    """Own the cache-root store and validate its catalog and value-major array layouts."""
 
     def __init__(self, cache_root: Path) -> None:
         self._cache_root = cache_root
@@ -135,12 +135,12 @@ class _CatalogReader:
     @property
     def attributes(self) -> _CacheAttributes:
         if self._attributes is None:
-            raise RuntimeError("Catalog reader is not open.")
+            raise RuntimeError("Cache-root reader is not open.")
         return self._attributes
 
-    def __enter__(self) -> _CatalogReader:
+    def __enter__(self) -> _CacheRootReader:
         if self._store is not None:
-            raise RuntimeError("A catalog reader can be entered only once.")
+            raise RuntimeError("A cache-root reader can be entered only once.")
         if not isinstance(self._cache_root, Path) or not self._cache_root.is_dir():
             raise FileNotFoundError("Cache root does not exist.")
         self._store = LocalStore(self._cache_root, read_only=True)
@@ -176,11 +176,11 @@ class _CatalogReader:
         return False
 
     def array(self, name: str) -> zarr.Array:
-        """Return one strict catalog array by its frozen cache-relative path."""
+        """Return a strict catalog or value-major Zarr array by its cache-relative path."""
         try:
             return self._arrays[name]
         except KeyError as error:
-            raise ValueError(f"Unknown or unopened catalog array: {name}.") from error
+            raise ValueError(f"Unknown or unopened cache-root array: {name}.") from error
 
     def validate_contents(self) -> None:
         """Validate the logical catalog without reading point payload arrays.
@@ -536,14 +536,14 @@ class _CatalogReader:
         root = self._root_or_raise()
         node = root[name]
         if not isinstance(node, zarr.Array):
-            raise ValueError(f"Required catalog node is not an array: {name}.")
+            raise ValueError(f"Required cache-root node is not an array: {name}.")
         if dict(node.attrs):
-            raise ValueError(f"Catalog arrays must not contain attributes: {name}.")
+            raise ValueError(f"Cache-root arrays must not contain attributes: {name}.")
         return node.with_config({"read_missing_chunks": ZARR_READ_MISSING_CHUNKS})
 
     def _root_or_raise(self) -> zarr.Group:
         if self._root is None:
-            raise RuntimeError("Catalog root is not open.")
+            raise RuntimeError("Cache root is not open.")
         return self._root
 
     def _close(self) -> None:
