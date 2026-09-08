@@ -674,7 +674,7 @@ The following constraints apply to every slice:
 | 8 | Initially route every proper-subset read through the selected level's sidecar | Slices 5 and 6 | Selected values gain locality at every LOD |
 | 9 | Remove duplicated per-tile selected-value membership from viewport plans | Slice 8 | One authoritative value-to-tile relation and a leaner semantic plan |
 | 10 | Remove bucket sparse-range indexes from the viewer runtime | Slices 8 and 9 | Startup time, lookup RSS, and fallback-cache complexity are removed |
-| 10b | Make complete-tile addressing self-contained in `_TileDescriptor` | Slice 10 | Required tile ordinal and point-row start replace the separate `_BucketTileIndex`, preserving first-use validation |
+| 10b | Make complete-tile addressing self-contained in `_TileDescriptor` | Slice 10 | Required tile index and point-row start replace the separate `_BucketTileIndex`, preserving first-use validation |
 | 11 | Add measured adaptive routing for proper subsets | Slices 9 and 10b | Dense subsets may use complete tile-major reads and in-memory filtering without restoring sparse indexes |
 | 12 | Add stable render coverage, LOD hysteresis, and bounded packed-batch reuse | Slices 2, 10, and 11 | Smooth interaction on both sides of the 100,000-point boundary without a special-case performance cliff |
 | 13 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6 and 8–12, including 10b; Slice 7 optional | Evidence-backed validation of storage routing, render coverage, and interaction latency |
@@ -1579,51 +1579,51 @@ Large sparse ranges are absent from normal viewer startup and reads; persisted r
 
 ### Slice 10b — Self-contained complete-tile addressing in `_TileDescriptor`
 
-**Status: Planned**
+**Status: Implemented**
 
 This is a contract-simplification follow-up to implemented Slice 10, scheduled before adaptive physical routing in Slice 11. It keeps the zero-sparse-index viewer architecture but moves each complete tile's point-row start into its immutable descriptor. The new field replaces the separate `_BucketTileIndex` representation; it must not create a second retained copy of the same derived addressing. Later slice numbers remain unchanged.
 
 **Motivation and descriptor contract**
 
-`_TileDescriptor` already identifies a finalized tile's physical bucket and its ordinal within that bucket. Currently, finding the tile's point-row interval additionally requires `_BucketTileIndex.tile_offset`. Make the descriptor self-contained instead:
+`_TileDescriptor` already identifies a finalized tile's physical bucket and its tile index within that bucket. Before this slice, finding the tile's point-row interval additionally required `_BucketTileIndex.tile_offset`. The descriptor is now self-contained:
 
 ```python
 @dataclass(frozen=True)
 class _TileDescriptor:
     level: int
     bucket_id: int
-    bucket_tile_ordinal: int
+    bucket_tile_index: int
     bucket_row_start: int
     tile_x: int
     tile_y: int
     n_points: int
 ```
 
-- Rename the Python field `bucket_tile_index` to `bucket_tile_ordinal`: the zero-based position among all nonempty tiles in this bucket, ordered by `(tile_y, tile_x)`. It still indexes persisted tile-coordinate arrays and sparse-range pointers where those remain in use.
+- Keep `bucket_tile_index` in Python and the persisted manifest: the zero-based index among all nonempty tiles in this bucket, ordered by `(tile_y, tile_x)`. It indexes persisted tile-coordinate arrays and sparse-range pointers where those remain in use. The separate `bucket_row_start` field makes the distinction from a point-row address explicit; no alternative field name or compatibility alias is needed.
 - Introduce required `bucket_row_start`: the zero-based point-row address in the tile-major bucket's aligned `location`, point-level `value_id`, and `point_id` arrays. Prefer this name over `bucket_tile_offset` to make the unit explicit. It is not a byte offset, spatial origin, or value-major row address.
 - Keep `n_points` as the complete tile's stored point count. The half-open interval is `[bucket_row_start, bucket_row_start + n_points)`; do not store a redundant stop field.
-- Require a valid nonnegative integer start and a positive count whose sum remains within the supported signed-64-bit row domain. The new field is never optional and has no placeholder default. Rename callers directly without a deprecated Python-field alias.
+- Require a valid nonnegative integer start and a positive count whose sum remains within the supported signed-64-bit row domain. The new field is never optional and has no placeholder default.
 
-For a bucket whose tiles contain `[3, 5, 2]` points, descriptors have ordinals `[0, 1, 2]` and row starts `[0, 3, 8]`. The second descriptor therefore directly describes rows `[3:8)`. These are complete-bucket addresses, independent of viewport, active values, LOD selection, and CPU-residency misses within that level.
+For a bucket whose tiles contain `[3, 5, 2]` points, descriptors have tile indexes `[0, 1, 2]` and row starts `[0, 3, 8]`. The second descriptor therefore directly describes rows `[3:8)`. These are complete-bucket addresses, independent of viewport, active values, LOD selection, and CPU-residency misses within that level.
 
 **Production changes**
 
-1. Update every descriptor producer, not only the viewer reader. `_BucketWriter._reconcile_result()` takes starts from its already available planned offsets; independent bucket validation obtains them from reopened stored offsets. `_PointsCacheReader._load_runtime_indexes()` and `_read_manifest_inventory()` derive starts from complete manifest counts, resetting running totals for each `(level, bucket_id)`. Compute the start before constructing each frozen descriptor, rather than creating incomplete descriptors and mutating or replacing them afterward. Preserve support for gaps in serialized bucket IDs and reject inconsistent bucket-local ordinal order.
+1. Update every descriptor producer, not only the viewer reader. `_BucketWriter._reconcile_result()` takes starts from its already available planned offsets; independent bucket validation obtains them from reopened stored offsets. `_PointsCacheReader._load_runtime_indexes()` and `_read_manifest_inventory()` derive starts from complete manifest counts, resetting running totals for each `(level, bucket_id)`. Compute the start before constructing each frozen descriptor, rather than creating incomplete descriptors and mutating or replacing them afterward. Preserve support for gaps in serialized bucket IDs and reject inconsistent bucket-local tile-index order.
 2. Retain `_descriptors` in manifest order and `_descriptors_by_bucket` as grouped references to those same objects. Remove `_BucketTileIndex`, `_bucket_tile_indexes`, and their installed offset-array state. Temporary arrays used for storage comparison are acceptable, but do not retain a parallel bucket offset array after validation. `_BucketReaderCache` remains a cache of opened reader objects and is not removed by this refactor.
-3. Replace `set_tile_index()` with validation and installation of the complete immutable descriptor tuple for that bucket. Before accepting it, check matching bucket identity, contiguous ordinals, tile coordinates, starts beginning at zero, adjacent intervals without gaps or overlaps, matching tile/point totals, and agreement with persisted `tile_offset`. Publish the accepted tuple only after all checks succeed. Subsequent reuse performs no pointer IO; failed validation leaves no accepted addressing, and reader closure releases the accepted state.
-4. Make `resolve_complete_tile_interval()` use `descriptor.bucket_row_start` and `descriptor.n_points` after checking that the requested descriptor belongs to the bucket's accepted descriptor set. Keep that check constant-time through its ordinal; do not scan the bucket or recompute prefixes per request. A boolean saying that some descriptors were validated must not authorize arbitrary replacement descriptors. Preserve `_read_complete_tile_major_requests()` batching, order, cancellation, and lazy bucket opening.
+3. Replace `set_tile_index()` with validation and installation of the complete immutable descriptor tuple for that bucket. Before accepting it, check matching bucket identity, contiguous tile indexes, tile coordinates, starts beginning at zero, adjacent intervals without gaps or overlaps, matching tile/point totals, and agreement with persisted `tile_offset`. Publish the accepted tuple only after all checks succeed. Subsequent reuse performs no pointer IO; failed validation leaves no accepted addressing, and reader closure releases the accepted state.
+4. Make `resolve_complete_tile_interval()` use `descriptor.bucket_row_start` and `descriptor.n_points` after checking that the requested descriptor belongs to the bucket's accepted descriptor set. Keep that check constant-time through its tile index; do not scan the bucket or recompute prefixes per request. A boolean saying that some descriptors were validated must not authorize arbitrary replacement descriptors. Preserve `_read_complete_tile_major_requests()` batching, order, cancellation, and lazy bucket opening.
 5. Keep construction, staged validation, exhaustive validation, and explicitly primed diagnostic/reference reads independent where they currently compare persisted structures. In particular, do not replace a stored-offset read with the same manifest-derived start on both sides of an equivalence check. Update these consumers and their test fixtures to the complete descriptor contract. `_BucketLookupIndex` and explicitly requested sparse subset reads remain available outside normal viewer sessions; their eventual removal belongs to Slice 17, not this cleanup.
 6. Update descriptor-related docstrings, examples, benchmarks, and `CACHE_FORMAT.md`. Distinguish retained NumPy-index bytes from Python descriptor storage: removing the NumPy offset array does not make row-address storage free. Remove obsolete array-specific accounting and report the remaining array bytes, descriptor count, and process RSS with their scopes stated clearly.
 
 **Persisted schema boundary**
 
-This slice changes Python objects, not the stored cache format. Keep the existing `manifest/bucket_tile_index` array and bucket `tile_offset` arrays unchanged. Map the persisted ordinal explicitly to the renamed Python field. Derive `bucket_row_start` when reopening the manifest; do not introduce a new manifest offset column or require a cache rebuild. A rename of the persisted ordinal array would be a separate schema decision, not an implicit consequence of the Python rename.
+This slice changes Python objects, not the stored cache format. Keep the existing `manifest/bucket_tile_index` array and bucket `tile_offset` arrays unchanged. The Python field and persisted column both use `bucket_tile_index`. Derive `bucket_row_start` when reopening the manifest; do not introduce a new manifest offset column or require a cache rebuild.
 
 **Focused tests**
 
-- Descriptors produced by construction, manifest reopening, and independent bucket validation agree on ordinal, row start, and complete point count.
+- Descriptors produced by construction, manifest reopening, and independent bucket validation agree on tile index, row start, and complete point count.
 - Starts reset independently across levels and buckets, including non-dense bucket IDs, and remain correct when reading only later or disjoint tiles. Valid manifest grouping needs no additional sort.
-- Invalid starts, overflow, duplicate or reversed ordinals, gaps/overlaps, incorrect coordinates/totals, and mismatches with stored offsets fail before payload IO. A mismatched request descriptor cannot borrow another descriptor's validation.
+- Invalid starts, overflow, duplicate or reversed tile indexes, gaps/overlaps, incorrect coordinates/totals, and mismatches with stored offsets fail before payload IO. A mismatched request descriptor cannot borrow another descriptor's validation.
 - First-use validation is atomic and runs once for the accepted tuple; warm reads do not reload tile pointers, and failure/closure retain no accepted stale addressing.
 - All-values reads and value-major subset reads preserve ordered logical payloads across Exact, Bridge, and Spatial levels. Patch sparse-index projection/loading to fail in normal viewer tests; keep independently primed reference readers separate.
 - Construction and both validation modes still exercise the persisted arrays. Complete-tile batching, cancellation, startup readiness, and deterministic cleanup remain unchanged.
@@ -1642,9 +1642,31 @@ These are **prototype measurements, not end-to-end acceptance results**. They su
 
 After implementation, compare complete metadata startup, first-use bucket validation, first complete-tile read, warm reads, and repeated viewport request latency with Slice 10. Verify unchanged output and zero sparse-index residency. Check RSS and startup cost, including how the descriptor overhead scales with stored tile count, without adding a new memory-budget mechanism or changing LOD, CPU residency, packing, or GPU resources. This remains a clarity improvement, not an assumed memory or rendering optimization. No cache reconstruction benchmark is required because the persisted schema is unchanged.
 
+**Implementation and verification — 7 September 2026**
+
+All descriptor producers now supply the required row start, and the Python field uses `bucket_tile_index`, matching the stored column. The viewer no longer retains `_BucketTileIndex` or a parallel derived offset array. Each lazily opened bucket accepts its complete descriptor tuple only after checking tile indexes, coordinates, contiguous point intervals, totals, and persisted offsets. Warm requests use the tile index to verify the requested descriptor against that accepted tuple, then read its start and count directly. Construction and explicitly primed diagnostic/reference reads still compare against independently read stored offsets. The persisted schema is unchanged; the existing cache was used without rebuilding.
+
+A read-only before/after comparison used 17,149 descriptors across 108 buckets, seven fresh reader sessions per version, and a full-extent all-values request selecting Spatial level 8 with 100,000 points. Operating-system caches were not flushed. Bucket setup includes lazy store opening and the first descriptor/address validation; physical reads below bypass CPU tile residency. Medians:
+
+| Measurement | Before | After |
+|---|---:|---:|
+| Complete metadata startup | 73.18 ms | 74.81 ms |
+| First-use bucket setup/validation | 10.36 ms | 9.59 ms |
+| First complete-tile read, including that setup | 20.30 ms | 19.25 ms |
+| Repeated physical complete-tile read | 9.45 ms | 9.17 ms |
+| Repeated worker request with full CPU residency | 0.955 ms | 0.936 ms |
+
+Retained NumPy-index bytes changed from **1,328,400 to 1,190,344**, removing the **138,056-byte** derived offset arrays. These numbers exclude Python descriptors and containers. Median process RSS after startup was **323.0 → 325.9 MiB**, while whole-process peak RSS was **328.6 → 325.9 MiB** in the separate runs. RSS includes allocator and process variability; it does not isolate descriptor overhead or establish a memory saving. The prototype above remains a separate estimate of per-tile allocation cost.
+
+The selected-value trace covered one/two selected values, full/20%-extent viewports, and empty/partial/full CPU residency, with three repeats per case. **All 36 packed-batch hashes matched the baseline**; all-values payload and packed-batch hashes also matched. Full-extent cold-worker medians were **107.14 → 97.11 ms** and **152.79 → 145.62 ms**; full-residency medians were **41.07 → 40.55 ms** and **56.75 → 56.33 ms**. No measured read-path slowdown was observed, but these runs do not establish a speedup attributable to the descriptor refactor. Sparse-index bytes/count remained zero; startup and selected-value traces opened no tile-major bucket readers.
+
+The final focused run passed **307 tests**, covering descriptor bounds, writer/manifest/independent-validator agreement, non-dense bucket IDs, rejection of invalid addressing, one-time atomic validation, mismatched request descriptors, cleanup, all-level logical equivalence, construction, staged/exhaustive validation, batching, cancellation, and worker integration. Ruff lint and formatting checks pass. The full test suite and physical OpenGL drawing were not rerun; point payloads, packing, and GPU code are unchanged.
+
+Evidence: `/private/tmp/napari_harpy_complete_address_benchmark.py`, `/private/tmp/napari-harpy-slice10b-before.json`, `/private/tmp/napari-harpy-slice10b-after.json`, `/private/tmp/napari-harpy-slice10b-planning-before.json`, and `/private/tmp/napari-harpy-slice10b-planning-after.json`. The selected-value trace uses `scripts/benchmark_tiled_points_viewport_planning.py`.
+
 **Exit condition**
 
-Every finalized `_TileDescriptor` carries an explicit tile ordinal and complete point-row start. Normal complete-tile reads use that descriptor after one-time bucket validation, with no separate `_BucketTileIndex` or retained derived offset array. Existing caches, independent validation, diagnostic reference reads, physical batching, and the viewer's zero-sparse-index contract remain intact.
+Every finalized `_TileDescriptor` carries an explicit tile index and complete point-row start. Normal complete-tile reads use that descriptor after one-time bucket validation, with no separate `_BucketTileIndex` or retained derived offset array. Existing caches, independent validation, diagnostic reference reads, physical batching, and the viewer's zero-sparse-index contract remain intact.
 
 ### Slice 11 — Measured adaptive proper-subset physical routing
 
