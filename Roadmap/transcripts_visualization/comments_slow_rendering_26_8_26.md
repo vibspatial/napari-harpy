@@ -1869,6 +1869,16 @@ proper subset
 
 “Proper subset” remains a semantic classification, not a cost heuristic. The complete canonical vocabulary is normalized to `requested_value_ids=None` and is therefore all-values; any normalized non-`None` selection containing fewer than `value_count` IDs is a proper subset. That classification determines which routes are eligible. The physical cost comparison then determines which eligible proper-subset route to use for this LOD, viewport, and set of CPU-residency misses.
 
+**CPU residency is independent of the physical route**
+
+Keep `TileResidencyKey` unchanged: cache generation, requested value IDs, level, and logical tile coordinates. It identifies a decoded, selection-specific `TiledPointsRenderTile`, not a Zarr chunk or a physical read route. Do not add route identity to this key, maintain separate CPU caches per route, or require acquisition history to reuse a tile.
+
+Both readers must normalize their output before the viewer retains it. Value-major reads synthesize IDs and scatter locations into logical tile order; tile-major-filter reads discard unselected rows before returning the logical tile payload. Both therefore supply the same tile-relative locations and aligned value IDs for the same key. Extra complete-tile rows read for filtering are transient; they are not retained as an all-values tile under a selected-value key.
+
+For example, with the same cache generation, selection, and level, tiles 10 and 20 may already be resident after a value-major read. A new viewport requesting tiles 10, 20, and 30 may choose tile-major-filter for missing tile 30. Reuse tiles 10 and 20 unchanged, then assemble all three payloads in logical order. This is compatible with one physical route per missing-tile request: the restriction applies to new reads, not to the acquisition history of resident tiles. The route may change on a later request without invalidating equivalent resident payloads.
+
+A changed selection has a different residency key. This slice does not introduce cross-selection reuse or retain the unselected points from a complete-tile read for a future selection. Route diagnostics belong to the physical request, not the cache-hit correctness contract.
+
 **Decision boundary**
 
 Do not choose the route from `len(requested_value_ids)` or the selected-value fraction alone. Those values do not express viewport size, value distribution, compressed layout, or CPU-resident tiles. Final physical routing happens only after:
@@ -1882,14 +1892,22 @@ semantic LOD selection
         -> choose one route for the complete missing-tile request
 ```
 
-All-values requests remain unconditionally tile-major. A proper-subset request with no missing tiles performs no physical read. For a proper subset with missing tiles, compare estimates derived from the selected level's actual metadata:
+All-values requests remain unconditionally tile-major. A request with no missing tiles performs neither cost estimation nor physical reading. For a proper subset with missing tiles, compare estimates derived from the selected level's actual metadata:
 
 | Candidate | Estimate from |
 |---|---|
-| `value_major_subset` | selected values' `value_point_indptr` intervals intersected with the missing manifest rows; unique location chunks or shards, decoded rows or bytes, disjoint runs, and read operations |
-| `tile_major_filter` | compact complete-tile intervals for the missing manifest rows; unique tile-major `location` and `value_id` chunks or shards, decoded rows or bytes, bucket operations, and bounded transient rows |
+| `value_major_subset` | selected values' `value_point_indptr` intervals intersected with the missing manifest rows; unique location chunks or shards, decoded rows or bytes, disjoint runs, read operations, and blocks/rows to scatter |
+| `tile_major_filter` | compact complete-tile intervals for the missing manifest rows; unique tile-major `location` and `value_id` chunks or shards, decoded rows or bytes, bucket operations, rows to filter, and bounded transient allocations |
 
-The estimator must account for deduplicated physical chunks or shards rather than summing each logical interval independently. Use schema metadata and integer arithmetic only; route selection must not perform speculative payload reads. The same immutable plan inputs must produce the same decision. Prefer `value_major_subset` on an exact tie, and introduce a margin in favour of switching only if benchmark evidence shows that small estimate differences are noisy. Do not add timing history, adaptive state, or hardware-dependent feedback to the correctness contract.
+The estimator must account for deduplicated physical chunks or shards rather than summing each logical interval independently. Count them separately per physical array and bucket; the same chunk number in different arrays or buckets is not shared work. Use schema metadata and integer arithmetic to derive work estimates; route selection must not perform speculative payload reads or expand intervals into one selector integer per point merely to estimate costs. Chunk count alone is insufficient because tile-major reads both `location` and `value_id`, while value-major reads only `location`. Read-operation estimates must follow actual batching, not assume one operation per interval or shard.
+
+**Concrete estimation and dispatch**
+
+1. Resolve the requested missing manifest rows in `read_planned_tiles()`. Return immediately if none remain; dispatch all-values requests directly to the existing complete tile-major reader without a cost comparison.
+2. For a proper subset, describe the tile-major candidate from each `_TileDescriptor`'s `bucket_id`, `bucket_row_start`, and `n_points`. Those fields give complete point intervals without sparse-range lookup. Account for complete input payloads, row selectors, filtering masks, and filtered outputs when predicting temporary allocations; the selected-point budget alone is not a worker read bound. If this candidate exceeds the explicit bound, make it ineligible and use value-major without running a two-route comparison.
+3. When both routes are eligible, resolve the value-major candidate from the selected level index, complete value/tile counts, and retained `value_point_indptr`. Extract the existing physical block resolution from `_read_value_major_requests()` into a shared helper. Resolve these blocks once for estimation and reuse the same resolved blocks if value-major is chosen; execution must not repeat their intersection and prefix-sum work.
+4. Derive each candidate's physical-work and postprocessing estimates from its intervals and the stored layouts. Start with a small fixed cost model combining estimated read/decode work with route-specific filtering or scattering work. Determine the useful terms, coefficients, and units from paired forced-route benchmarks, not a selected-value threshold. The exact formula and coefficients are not yet fixed by this specification and must be recorded with calibration evidence before automatic routing is accepted. Resolution work paid by both candidates must not be charged as though it were unique to executing value-major; measure the total estimator overhead separately.
+5. Execute the lower-cost eligible candidate, preferring `value_major_subset` on an exact tie. Introduce a switching margin only if benchmarks show that small estimate differences are noisy. The same immutable inputs and fixed estimator configuration must produce the same decision. Do not add timing history, per-tile acquisition provenance, adaptive state, or hardware-dependent feedback to the correctness contract. The score predicts relative work/latency; it is not a guarantee of actual wall time or a model of filesystem/codec cache residency.
 
 Choose one route for the complete missing-tile batch initially. A per-tile or per-bucket hybrid could reduce physical work in a mixed case, but it would complicate ordering, cancellation, metrics, and testing; it requires separate evidence after this slice. The point budget still bounds returned points, not the number of complete tile-major rows decoded before filtering, so reject or avoid `tile_major_filter` when its predicted transient allocation exceeds the explicit worker read bound.
 
@@ -1897,8 +1915,8 @@ Choose one route for the complete missing-tile batch initially. A per-tile or pe
 
 1. Preserve `_ViewportReadPlan` as the generation-bound semantic plan. Refactor the fixed proper-subset route introduced by Slice 8 into a worker-local physical read plan resolved from the missing tile keys; do not move this decision to the coordinator, GUI, or renderer.
 2. Add the `tile_major_filter` reader path using only compact complete-tile addressing, tile-major point arrays, and the immutable plan-wide `requested_value_ids` membership set. Read complete tile payloads through the same narrowed manifest reader used by the all-values route, then filter their point-level `value_id` rows in memory. Do not reconstruct `_PlannedTileRead.applicable_value_ids`, introduce another per-tile selected-value projection, or restore the sparse-range bucket path removed in Slice 10c. This route must never instantiate or load a bucket sparse lookup index.
-3. Add deterministic cost-estimation helpers for both eligible proper-subset routes. Keep their units and assumptions explicit in diagnostics rather than hiding the decision behind a selected-gene threshold.
-4. Preserve canonical output ordering and value IDs. A request forced through either route must produce byte-equivalent logical tile keys, locations, and aligned `uint32` value IDs before CPU residency insertion.
+3. Add deterministic cost-estimation helpers and reusable physical block resolution following the sequence above. Keep their units, assumptions, and estimation overhead explicit in diagnostics rather than hiding the decision behind a selected-value threshold. Do not duplicate block resolution between estimation and execution.
+4. Preserve canonical output ordering, value IDs, and the existing route-independent CPU-residency contract. A request forced through either route must produce byte-equivalent logical tile keys, locations, and aligned `uint32` value IDs before CPU residency insertion. Filtering must finish before retention; no route-dependent cache keys or duplicate resident representations are introduced.
 5. Apply cancellation checks while reading and filtering complete tiles, and retain the existing all-or-nothing publication behavior for a candidate snapshot.
 6. Record the chosen route, both estimated costs, decoded-row and byte estimates, unique chunk or shard estimates, operation estimates, reason for an ineligible route, actual physical counters, and filter input/output row counts.
 7. Keep an explicit force-route hook limited to tests and benchmarks so the two implementations and the automatic choice can be compared on identical requests. Do not expose it as a user-facing rendering preference.
@@ -1908,23 +1926,26 @@ Choose one route for the complete missing-tile batch initially. A per-tile or pe
 
 - All-values plans always use `tile_major_all_values`; they never enter the adaptive proper-subset comparison.
 - A sparse value across a broad viewport selects `value_major_subset`, while a dense near-all-values selection in a small viewport can select `tile_major_filter` under controlled metadata.
-- CPU-resident tiles are excluded before estimating either route, and an entirely resident request performs neither physical read.
+- CPU-resident tiles are excluded before estimating either route, and an entirely resident request performs neither cost estimation nor physical reading.
+- Verify mixed-acquisition reuse across successive requests with unchanged cache generation, selection, and level: retain tiles 10 and 20 from value-major, then request tiles 10, 20, and 30 while forcing tile-major-filter for missing tile 30. Assert that only tile 30 is read, the existing resident entries remain reusable, and the assembled logical payload matches the single-route reference. Also cover the reverse acquisition order. No physical-route field is needed in the residency key.
+- Verify that tile-major-filter retains only selected rows under the selected-value key. A changed selection must not reuse that entry as though it contained all values read transiently from the tile-major arrays.
 - Forced value-major and forced tile-major-filter reads return identical ordered logical payloads for Exact, Bridge, and representative Spatial levels.
 - Forced tile-major-filter reads use only the plan-wide `requested_value_ids` membership set; patch any attempted per-tile selected-value reconstruction or non-`None` sparse-range bucket request to fail.
 - The automatic route is deterministic at the crossover and exact-tie boundaries, including the documented tie preference or switching margin.
+- Verify deduplicated interval-based work estimates, including shared chunks and distinct arrays/buckets, without speculative point reads or point-sized selector allocations. When value-major wins, verify that its resolved blocks are reused instead of performing physical block resolution a second time.
 - Patch every sparse-range load and resolver to fail and prove that both physical routes still work.
 - Predicted tile-major transient memory above the worker bound makes that route ineligible.
 - Cancellation, stale generations, read failures, and empty filtered results preserve existing snapshot publication and rollback semantics.
 
 **Benchmark and calibration evidence**
 
-Force each eligible route, then run automatic routing for the same selections and viewports. Cover a sparse one-value request, several sparse values, a dense value, near-all-values subsets, small and full viewports, and Exact, Bridge, and representative Spatial levels. Report estimates beside actual physical calls, unique chunks and shards, decoded rows and bytes, filter rows, wall time, transient memory, and chosen route.
+Force each eligible route, then run automatic routing for the same selections, viewports, and CPU-residency misses. Cover a sparse one-value request, several sparse values, a dense value, near-all-values subsets, small and full viewports, and Exact, Bridge, and representative Spatial levels. Report estimates beside actual physical calls, unique chunks and shards, decoded rows and bytes, filter/scatter work, estimation time, total worker wall time, transient memory, and chosen route. Include empty, partial, and full CPU residency so estimator overhead is assessed against the actual remaining read work.
 
-Calibrate the estimator and any switching margin from these paired measurements. Acceptance requires that automatic routing avoids clear regressions around the crossover and improves at least one demonstrated dense-subset case. A fixed number-of-values threshold is not acceptable evidence because the same selection can favour different layouts at different viewports or LODs.
+Calibrate the estimator and any switching margin from these paired measurements. Record the adopted formula, coefficients, units, and limitations; the existing equivalent-output tests establish the payload contract, not the performance crossover. Acceptance requires that automatic routing, including its estimation overhead, avoids clear regressions around the crossover and improves at least one demonstrated dense-subset case. A fixed number-of-values threshold is not acceptable evidence because the same selection can favour different layouts at different viewports or LODs.
 
 **Exit condition**
 
-Every all-values request remains tile-major. Every proper-subset physical read is selected once, after LOD and CPU-residency lookup, between the mandatory value-major sidecar and complete tile-major reads plus in-memory filtering. The choice is deterministic, measurable, bounded, produces the same logical payload, and never loads a sparse bucket range index.
+Every all-values request remains tile-major. Every proper-subset physical read is selected once, after LOD and CPU-residency lookup, between the mandatory value-major sidecar and complete tile-major reads plus in-memory filtering. The choice is deterministic, measurable, bounded, produces the same logical payload, and never loads a sparse bucket range index. Existing CPU entries remain reusable regardless of which route originally supplied them; route changes do not invalidate residency or retain extra unselected points.
 
 ### Slice 12 — Stable render coverage and bounded packed-batch reuse
 
