@@ -653,7 +653,7 @@ The following constraints apply to every slice:
 1. The in-memory backend remains the default and must not construct or bind a cache controller, open cache metadata, or change behavior because a tiled slice landed.
 2. Cache failures in opt-in mode remain visible. Do not silently switch an active tiled widget to the in-memory backend.
 3. The backend remains fixed for a widget lifetime. Live backend switching is outside this plan.
-4. Keep the current 100,000-point hard render budget throughout these slices. A larger budget has a separate evidence gate.
+4. Keep the current 100,000-point hard render budget as the default and benchmark baseline throughout these slices. Slice 18 reorganizes the existing user-adjustable point limit without increasing that default; adopting a larger default has a separate evidence gate.
 5. Preserve generation checks, latest-only activation, cancellation, exact point-budget enforcement, palette semantics, transforms, and deterministic cleanup.
 6. Keep VisPy and VBO mutation on the GUI thread. Zarr access, logical tile assembly, and final NumPy snapshot packing belong to the worker.
 7. Do not combine a cache-schema change with a renderer-ownership change in one review slice.
@@ -687,6 +687,7 @@ Slice identifiers describe independently reviewable work, not a requirement to i
 | 15 | Evaluate optional ping-pong storage and a larger point budget | Slice 13 | Conditional hardening/scaling work, not part of the initial solution |
 | 16 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
 | 17 | Evaluate optional removal of persisted bucket sparse ranges | Slice 13 | Conditional schema cleanup with construction-only range records and adapted validation/reference consumers |
+| 18 | Group tiled point-count and density controls in Advanced rendering | Existing tiled settings and soft-density LOD policy | Two explicit per-layer controls, unchanged defaults and internal vertex-byte protection; independent UI follow-up |
 
 Slices 1 and 2 form one renderer milestone. Slice 1 may be reviewed and measured independently, but Slice 2 is required before the renderer work is considered complete. Slices 6 and 8 form one cache-locality milestone: publishing all-level sidecars that no read path consumes is useful only as a short-lived, testable construction boundary. Slice 7 is an optional developer-validation layer between those production slices and is not a prerequisite for publication or runtime routing. Slice 9 removes the duplicate per-tile projection introduced by the first sidecar reader. Slices 8 through 10 establish the simple sidecar-first runtime without sparse indexes; Slices 10b through 10d simplify its reader contracts.
 
@@ -697,6 +698,8 @@ Conditional Slice 12b separates the decision to change LOD policy from the decis
 Slice 16 is an independent lifecycle cleanup that can follow the initial Slice 13 baseline; rerun the affected interaction/lifecycle checks after it lands. Evaluate Slice 14 only for remaining obsolete dispatch churn, and Slice 15 only for demonstrated GPU-update hardening or scaling needs. Optional Slice 17 separately evaluates persisted-range removal after the baseline and is lower priority for stutter because the viewer no longer loads those indexes. Slices 14, 15, and 17 may be rejected or deferred at their evidence gates; implementing all three is not required to complete the interaction milestone or to revisit Slice 11.
 
 Revisit Slice 11 in the later loading-optimization phase using the remaining replacement-read workload established by Slices 12a and 13. The existing `read_planned_tiles(plan, tile_keys_to_read)` boundary already accepts explicit CPU-residency misses. Active-batch reuse bypasses that boundary entirely; normal replacements send only their missing tiles. Preserve route-independent batch and tile identity and defer the estimator, production `tile_major_filter`, and forced-route acceptance checks together.
+
+Slice 18 is an independent UI follow-up, not a prerequisite for the interaction milestone or adaptive routing. It exposes the existing point-density policy and reorganizes the existing point-count control without changing the rendering defaults, cache format, or internal vertex-byte limit.
 
 ### Slice 0 — Preserve the opt-in boundary and freeze the baseline
 
@@ -1964,7 +1967,9 @@ Every all-values request remains tile-major. Every proper-subset physical read i
 
 ### Slice 12a — Retain the current render batch within its original viewport
 
-**Scheduling: Next implementation slice; independent of deferred Slice 11 and conditional Slice 12b.**
+**Status: Implemented**
+
+Implemented independently of deferred Slice 11 and conditional Slice 12b.
 
 This replaces the earlier coverage-expansion proposal. Keep the already prepared and uploaded payload while the requested viewport remains inside the original viewport for that payload, with unchanged cache generation, selection, required LOD, and valid budgets. Otherwise, prepare a replacement for the new viewport through the existing pipeline.
 
@@ -2082,6 +2087,38 @@ Initial loading and a genuinely new viewport may still take bounded asynchronous
 **Exit condition**
 
 A successfully rendered viewport remains reusable without changing its batch, original bounds, or VBO while subsequent requests remain contained at the required same LOD with the same selection and valid budgets. Moving outside or changing LOD prepares a normal replacement. One reusable packed entry and one GPU VBO suffice; no separate coverage planner, speculative expansion, or viewport-history cache is implemented. The current LOD policy is preserved, logical metadata stays current, and residual replacement and switching costs remain explicit.
+
+**Implementation and qualification (2026-09-11)**
+
+- The worker owns one accepted `_RetainedViewport` and, during replacement/activation, one transient candidate. Renderer feedback travels through the runtime, coordinator, and session back to the worker before the next viewport dispatch. Stale, failed, over-budget, and unacknowledged candidates do not replace the accepted entry. Selection changes and closure release unrelated retained state.
+- The containment shortcut runs after normal LOD selection. It preserves the original intrinsic requested bounds and returns fresh snapshot metadata around the identical `TiledPointsRenderBatch`. Full retained point/byte limits remain separate from the current visible estimate; sampled-omission and empty-view status use the latter.
+- The renderer skips staging only for its known-active batch identity, after validation and capacity checks. That identity is invalidated before a different batch mutates the single VBO. If staging subsequently fails, retrying the old worker-retained batch uploads it again rather than assuming physical rollback.
+- Focused tests cover worker/session and coordinator lifecycle, real queued delivery and activation feedback, all three level kinds and both selection routes, nested and disjoint views, visible/payload count differences, reduced budgets, omission status, failed preparation, and failed VBO binding. The real-OpenGL reference test also exercises identical-batch reuse under large cache origins and affine transforms.
+
+The new `scripts/benchmark_tiled_points_retained_viewport.py` runs paired traces through the actual Qt runtime. Its reference mode disables only the retained-entry shortcut at the worker snapshot boundary; both modes retain the existing CPU tile cache, LOD policy, readers, and renderer. Three repetitions alternate mode order. Automatic garbage collection remains enabled and its overlap with worker timings is recorded; previous cases are collected outside timed navigation. Filesystem caches are not flushed.
+
+Representative median worker preparation times from the real-canvas run:
+
+| Selection / transition | Required level | Replacement reference | Retained-batch implementation |
+|---|---|---:|---:|
+| AAMP, return to original full viewport | Exact, 60,512 retained points | 45.69 ms | 1.41 ms |
+| AAMP + SEC16A, return to original full viewport | Exact, 99,998 retained points | 53.35 ms | 0.99 ms |
+| AAMP + CRYZ, tiny contained zoom preserving LOD | Bridge, 12,755 retained points | 49.51 ms | 1.23 ms |
+| AAMP + CRYZ + SEC16A, tiny contained zoom preserving LOD | Bridge, 19,171 retained points | 57.77 ms | 1.32 ms |
+| All values, contained inner viewport | Spatial level 8, 100,000 retained points | 3.94 ms | 1.27 ms |
+
+All 72 accepted reuse hits preserved the same allocation through Qt and performed zero full tile plans, CPU tile lookups, physical payload reads, packs, and VBO uploads. Median GUI activation across these hits was 0.028 ms. Median Qt delivery was 1.23 ms in this polling/real-canvas harness; it includes GUI scheduling and is not the isolated queued-signal microbenchmark. Retained-mode warm draw medians for the table's cases were approximately 3.8–4.2 ms. Camera transforms and drawing still run on hits.
+
+Cold full-viewport worker medians remained comparable: AAMP 102.38 → 103.39 ms; AAMP + SEC16A 143.81 → 142.07 ms; AAMP + CRYZ 117.94 → 117.69 ms; the three-value selection 145.42 → 145.46 ms; all values 25.97 → 25.37 ms. These are descriptive comparisons, not a claim that every individual timing is unchanged. The already-cheap one-tile Spatial path remains susceptible to scheduling noise: its return-to-full worker median was 2.04 → 2.82 ms despite eliminating preparation and uploading, while its equal-full request was 2.18 → 0.68 ms. The invariant is avoided work, not a promise that every individual hit has lower wall time.
+
+The important remaining limits were also observed:
+
+- For AAMP + CRYZ, a quarter-width view chooses Exact. Returning to full extent therefore changes back to Bridge and still replaces the batch: 48.73 → 49.58 ms. Only the subsequent same-LOD request reuses it (48.63 → 0.82 ms). There is no LOD lock or earlier-LOD history.
+- Disjoint-region revisits still repack/upload, although CPU residency can avoid physical reads. Tiny outside-bounds changes can also rebuild despite touching the same logical tiles; containment is intentionally conservative.
+- Fast-pan traces still produced obsolete dispatched work (211 reference / 213 retained-mode completions across the repeated cases). Maximum measured Qt timer gaps were 117.6 / 44.9 ms. These intervals include the harness's explicit draw/readback work and are not hardware presentation timings or a guarantee of stutter-free navigation. Obsolete-work cancellation and remaining replacement costs remain follow-up work.
+- The largest single retained packed allocation in this matrix was 1,200,000 bytes (about 1.14 MiB), separately from CPU tiles and the VBO. A distinct candidate may temporarily coexist with the accepted allocation; queued references and VisPy staging may extend allocation lifetimes. Whole-process peak RSS was 1,354.4 MiB across 30 real-canvas cases, not the size of retained-batch storage. macOS also emitted CoreAnalytics context diagnostics during repeated canvas creation; this aggregate RSS is not a single-viewer memory-leak qualification.
+
+Detailed per-request bounds, visible/retained counts, byte accounting, LOD changes, read/packing timings, activation, draws, and coalesced/obsolete requests are recorded in [the repeated real-canvas report](/private/tmp/napari-harpy-slice12a-retained-viewports-real-repeated.json). The older planning and cache-to-canvas scripts explicitly retain their replacement-path role; the renderer-only identical-batch measurement now correctly reports zero staging rather than the previous upload's duration.
 
 ### Slice 12b — Conditional LOD hysteresis
 
@@ -2334,6 +2371,51 @@ The current `_validate_bucket_ranges_against_catalog()` independently reads buck
 Compare compressed cache bytes by array/group, construction wall time, peak RSS, temporary-disk peak, routine validation time, and optional exhaustive-validation time. Verify unchanged viewer payloads, startup behavior, and representative cold/warm reads against the accepted runtime baseline. Measure the retained diagnostic/reference path separately, since complete-tile filtering can read more point rows than its former sparse-range path.
 
 Accept full removal only when all published-range consumers have replacements, the new validation guarantees are explicit, no normal viewer path regains sparse lookup residency, and the measured storage/maintenance benefit justifies the cost. Otherwise retain the ranges or pursue the explicitly narrower `row_start` alternative. This optional decision is not a prerequisite for completing the visualization plan.
+
+### Slice 18 — Advanced point-count and screen-density controls
+
+**Status: Planned**
+
+**Purpose and scope**
+
+Keep the ordinary points-selection interface compact while making the tiled renderer's density preference and hard point limit explicit. This is a UI and settings-propagation slice, not a new LOD policy or a larger-default-budget experiment. The vertex-byte limit remains an internal safeguard and is not exposed as a configurable UI setting.
+
+**UI contract**
+
+For the tiled-cache backend, add an **Advanced rendering** section to the existing points panel, collapsed by default, containing:
+
+| Control | Default | Meaning |
+|---|---|---|
+| Maximum rendered points | `100_000` | Hard point-count limit, mapped to `hard_render_point_budget` |
+| Target pixel area per point | `9.0` logical px²/point | Soft screen-density preference, mapped to `target_pixels_per_point`; lower values request denser rendering |
+
+Move and relabel the existing **Render budget** field as **Maximum rendered points** rather than adding a second point-limit control. Add the density field beside it in the advanced section. Do not duplicate these editable settings in the napari layer-controls dock. Keep value selection and **Add / Update in viewer** outside the collapsed section.
+
+Use concise tooltips to explain that `9.0` targets approximately one point per `3 × 3` logical canvas-pixel area, not a point diameter or a guaranteed final density. A coarsest-level view may exceed that soft target when both hard limits permit rendering. Increasing the point limit does not bypass the internal vertex-byte limit, and requesting denser rendering can increase preparation and draw costs. Labels, tooltips, and status wrapping must not recreate the wide-dock layout problem.
+
+Provide **Reset to defaults** for these two fields only, using the existing constants rather than duplicated numeric defaults. Preserve the in-memory backend's existing **Render budget** control and behavior; do not expose the tiled density setting there or initialize a cache runtime merely to display settings.
+
+**Implementation contract**
+
+1. Start at `widgets/viewer/points_widget.py`, where the existing budget is parsed and included in the explicit Add/Update request. Thread the density setting through the tiled controller and adapter alongside the hard point budget, for both newly created layers and updates to an existing compatible layer. Keep the legacy controller path unchanged in behavior.
+2. Treat edits and Reset as pending form changes, applied together through **Add / Update in viewer**. Editing a field, expanding the section, or resetting defaults must not create a layer, arm an unconfigured selection, or launch payload work. Validate both fields before changing an active layer or its selection; invalid input leaves the accepted settings and rendered view intact.
+3. Require a positive integer point limit within the supported input range and a finite, strictly positive density value. Reuse the existing layer/runtime validation contracts. Display actionable validation messages without silently clamping invalid input.
+4. Apply accepted values to the existing layer properties, not to `DEFAULT_HARD_RENDER_POINT_BUDGET` or `DEFAULT_TARGET_PIXELS_PER_POINT`. Keep the form and targeted layer consistent when revisiting an existing binding, and preserve accepted values across selection updates and pan/zoom requests. Do not silently restore defaults during an unrelated update. Coordinate application of both settings so one Add/Update does not dispatch redundant requests with partially updated settings.
+5. Preserve soft-density LOD selection, the coarsest-level fallback, and hard point/vertex-byte enforcement. A changed setting must trigger the existing viewport-budget reevaluation; retained-batch reuse must still check the entire retained payload against the hard limits. Preserve informative density status and warnings identifying the actual hard limit that prevents activation.
+6. Leave `max_vertex_payload_bytes`, its application/session ownership, validation, and renderer enforcement unchanged. Do not add a vertex-limit editor, mutable byte-budget plumbing, cache-schema changes, automatic cache rebuilding, or persistent application preferences in this slice.
+
+**Focused tests and acceptance**
+
+- The tiled advanced section starts collapsed, contains exactly one editable control for each setting, and uses the existing `100_000` / `9.0` defaults. Reset affects only these fields and remains pending until Add/Update.
+- Explicit Add/Update propagates both settings correctly to new and existing tiled layers. Subsequent selection changes and viewport requests preserve the accepted settings, without redundant intermediate payload dispatch.
+- Invalid point limits and zero, negative, non-finite, or malformed density values do not modify the active settings, selection, or render batch. Merely editing/resetting controls does not create a layer or start a read.
+- Lower density-target values increase the preferred point count for a fixed canvas, subject to both hard limits. Coarsest-level density relaxation and hard-limit rejection retain their existing behavior, including when a previously accepted batch is larger than the new hard limit.
+- The in-memory backend retains its existing point-budget behavior and does not show cache-only density controls or initialize cache infrastructure.
+- A focused Qt layout check or manual dock-size check confirms that the collapsed/expanded section and long status messages do not force an excessively wide dock. Run only tests directly affected by UI/settings propagation and the relevant existing budget/reuse tests.
+
+**Exit condition**
+
+Users can explicitly configure maximum rendered points and target pixel area per point from one advanced section in the tiled points panel. Defaults remain `100_000` and `9.0`, the vertex-byte limit remains internal, the in-memory backend is unchanged, and no cache rebuild or change to the existing LOD and retention policies is required. Benchmark comparisons continue to record the applied settings and use the unchanged defaults for baseline runs; raising the default point limit remains a separate scaling decision.
 
 ### Definition of done — interaction milestone and deferred routing
 
