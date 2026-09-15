@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal
@@ -17,11 +17,14 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import _expected_lev
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
     _IntrinsicViewport,
+    _LevelSelection,
     _PointsCacheReader,
     _SelectedValueIndex,
 )
 from napari_harpy.viewer.tiled_points.contracts import (
+    TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderBatch,
+    TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TileResidencyKey,
@@ -49,7 +52,7 @@ class _CacheSessionState(StrEnum):
 
 @dataclass(frozen=True)
 class _CacheSessionSettings:
-    """Bound metadata and decoded tile payloads retained by one cache session.
+    """Bound metadata, decoded tiles, and packed batches in one cache session.
 
     Parameters
     ----------
@@ -59,7 +62,11 @@ class _CacheSessionSettings:
     max_cpu_tile_bytes
         Positive byte limit for the evicting decoded point-payload LRU.
     max_vertex_payload_bytes
-        Positive byte limit for one worker-prepared renderer vertex payload.
+        Byte limit for each worker-prepared renderer vertex payload, large
+        enough to hold at least one vertex, including the payload retained after
+        activation. A pending replacement may temporarily coexist with the
+        accepted batch. These allocations are accounted separately from
+        ``max_cpu_tile_bytes`` and the single VBO.
     """
 
     max_selected_value_index_bytes: int | None
@@ -70,10 +77,24 @@ class _CacheSessionSettings:
         value = self.max_selected_value_index_bytes
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
             raise ValueError("`max_selected_value_index_bytes` must be a positive integer or None.")
-        for name in ("max_cpu_tile_bytes", "max_vertex_payload_bytes"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"`{name}` must be a positive integer.")
+        value = self.max_cpu_tile_bytes
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError("`max_cpu_tile_bytes` must be a positive integer.")
+        _vertex_point_capacity(self.max_vertex_payload_bytes)
+
+
+def _vertex_point_capacity(max_vertex_payload_bytes: int) -> int:
+    """Validate the byte limit and return a capacity of at least one vertex."""
+    vertex_bytes = TILED_POINTS_VERTEX_DTYPE.itemsize
+    if (
+        not isinstance(max_vertex_payload_bytes, int)
+        or isinstance(max_vertex_payload_bytes, bool)
+        or max_vertex_payload_bytes < vertex_bytes
+    ):
+        raise ValueError(
+            f"`max_vertex_payload_bytes` must be an integer of at least {vertex_bytes} bytes to hold one vertex."
+        )
+    return max_vertex_payload_bytes // vertex_bytes
 
 
 @dataclass(frozen=True)
@@ -102,6 +123,68 @@ class _SessionCancelled(RuntimeError):
     """Stop active worker work without reporting cancellation as a failure."""
 
 
+@dataclass(frozen=True)
+class _RetainedViewport:
+    """Pair a render snapshot with the original viewport requested for its batch.
+
+    Parameters
+    ----------
+    bounds
+        Rectangle in intrinsic coordinates taken from ``_ViewportRequest.viewport``
+        when the render batch was first prepared. It includes empty space within
+        that requested viewport; it is not a bounding box calculated from tiles
+        or point positions. Reusing the batch for a contained viewport preserves
+        this original rectangle rather than replacing it with the smaller view.
+    snapshot
+        Render snapshot containing the packed ``render_batch``, cache and selection
+        identity, LOD, and request/status metadata. On contained-view reuse, a new
+        snapshot carries the incoming request's generations, visible estimate and
+        diagnostics while sharing the original batch. Its request metadata may
+        therefore describe a smaller viewport than ``bounds``.
+
+    Notes
+    -----
+    The worker stores one accepted entry in ``_retained_viewport``. A candidate
+    in ``_pending_viewport`` may temporarily coexist with it until the GUI accepts
+    or rejects that candidate. These entries are not a viewport-history cache.
+    """
+
+    bounds: _IntrinsicViewport
+    snapshot: TiledPointsRenderSnapshot
+
+    def rejection_reason(
+        self,
+        request: _ViewportRequest,
+        *,
+        cache_generation_id: str,
+        level: int,
+        max_vertex_payload_bytes: int,
+    ) -> str | None:
+        """Check identity, full allocation budgets, and rectangle containment."""
+        snapshot = self.snapshot
+        if snapshot.cache_generation_id != cache_generation_id:
+            return "cache_generation"
+        if (
+            snapshot.selection_generation != request.selection_generation
+            or snapshot.requested_value_ids != request.requested_value_ids
+        ):
+            return "selection"
+        if snapshot.level != level:
+            return "lod"
+        if snapshot.rendered_point_count > request.viewport.hard_render_point_budget:
+            return "point_capacity"
+        if snapshot.render_batch.nbytes > max_vertex_payload_bytes:
+            return "vertex_capacity"
+        view = request.viewport
+        bounds = self.bounds
+        if not (
+            bounds.x_min <= view.x_min <= view.x_max <= bounds.x_max
+            and bounds.y_min <= view.y_min <= view.y_max <= bounds.y_max
+        ):
+            return "outside_original_viewport"
+        return None
+
+
 class _TiledPointsCacheWorker(QObject):
     """Own cache IO and reader state on one dedicated Qt worker thread.
 
@@ -118,6 +201,7 @@ class _TiledPointsCacheWorker(QObject):
         session.start()       --------------->  start()
         selection requested  --------------->  update_selected_value_index()
         viewport requested   --------------->  read_viewport_snapshot()
+        renderer result      --------------->  acknowledge_render_result()
         close requested      --------------->  close()
 
         session handlers     <---------------  state/progress/result signals
@@ -181,7 +265,26 @@ class _TiledPointsCacheWorker(QObject):
         self._selected_value_ids: tuple[int, ...] | None = None
         self._selected_value_index: _SelectedValueIndex | None = None
         self._cpu_tile_residency = _CpuTileResidency(settings.max_cpu_tile_bytes)
+        self._retained_viewport: _RetainedViewport | None = None
+        self._pending_viewport: _RetainedViewport | None = None
         self._finished = False
+
+    @property
+    def retained_render_batch_bytes(self) -> int:
+        """Account the accepted packed allocation separately from CPU tile LRU bytes."""
+        retained = self._retained_viewport
+        return 0 if retained is None else retained.snapshot.render_batch.nbytes
+
+    @property
+    def pending_render_batch_bytes(self) -> int:
+        """Account a transient candidate allocation, excluding an alias of the retained batch."""
+        pending = self._pending_viewport
+        retained = self._retained_viewport
+        if pending is None or (
+            retained is not None and pending.snapshot.render_batch is retained.snapshot.render_batch
+        ):
+            return 0
+        return pending.snapshot.render_batch.nbytes
 
     @Slot()
     def start(self) -> None:
@@ -271,6 +374,8 @@ class _TiledPointsCacheWorker(QObject):
             # a proper subset.
             self._selected_value_ids = requested_value_ids
             self._selected_value_index = value_index
+            self._retained_viewport = None
+            self._pending_viewport = None
             resident_bytes = 0 if value_index is None else value_index.resident_bytes
             self.state_changed.emit(_CacheSessionState.READY)
             self.value_selection_ready.emit(requested_value_ids, resident_bytes)
@@ -287,7 +392,78 @@ class _TiledPointsCacheWorker(QObject):
 
     @Slot(object)
     def read_viewport_snapshot(self, request: _ViewportRequest) -> None:
-        """Build one generation-bound snapshot with resident or newly read tiles."""
+        """Evaluate one viewport, reuse or prepare its batch, and publish a candidate.
+
+        Budget policy and LOD selection
+        -------------------------------
+        The three limits have different roles::
+
+            hard_render_point_budget   hard limit on the number of points
+            max_vertex_payload_bytes   hard byte limit per packed vertex payload
+            screen_density_budget      soft preferred point count for the canvas
+
+        ``hard_point_capacity`` is the smaller of the hard point limit and the
+        number of vertices that fit the byte limit. ``preferred_point_budget``
+        additionally caps that capacity by the screen-density target. Estimates
+        count selected points in complete intersecting tiles, not individually
+        clipped points.
+
+        Select the finest LOD meeting the preferred target. If none fits, the reader
+        returns the coarsest level; accept it only if it satisfies the hard limits.
+        For example, with a preferred target of 50,000 points and a hard capacity of
+        100,000, a coarsest level containing 80,000 points is allowed, with an
+        informational density message. A hard-limit rejection instead publishes a
+        metadata-only snapshot explaining the limit, without reading point payloads.
+
+        Accordingly, ``level_selection.within_budget`` describes the reader's fit
+        against the preferred target, whereas the published snapshot's
+        ``within_budget`` describes whether the hard limits permit rendering.
+
+        Retained render-batch reuse
+        --------------------------
+        LOD selection and the hard-limit decision happen before considering reuse::
+
+            current LOD and hard-limit checks
+                            |
+                 compatible accepted batch?
+                            |
+                            +-- yes: reuse packed batch with fresh metadata
+                            |
+                            +-- no: plan tiles, reuse CPU-resident tiles,
+                                    read misses, pack a new batch
+
+        Reuse requires the same cache generation, value selection and selected LOD,
+        with the requested rectangle contained in the original accepted viewport.
+        The entire retained batch must still fit both hard limits, including its
+        off-screen points. Reuse skips tile planning, CPU tile lookups, payload IO
+        and packing; request generations, visible estimates and diagnostics refresh.
+
+        For example, with the same cache, selection and LOD, and valid hard limits::
+
+            A: original retained viewport          C: disjoint viewport
+            +---------------------------+          +------------------+
+            |                           |          |                  |
+            |     +---------------+     |          |                  |
+            |     | B: zoomed-in   |     |          |                  |
+            |     | viewport      |     |          |                  |
+            |     +---------------+     |          |                  |
+            |                           |          |                  |
+            +---------------------------+          +------------------+
+
+            A -> B -> A: reuse A's packed batch throughout;
+                         its original bounds stay unchanged.
+
+            A -> C -> A: accepting C replaces A's retained entry;
+                         returning to A requires a new packed batch.
+
+        This is one retained batch, not a viewport-history cache. Returning to A
+        may still reuse decoded CPU tiles even though its packed batch was replaced.
+
+        This worker method owns the reuse decision and pending entry. Only the
+        replacement branch calls ``_read_viewport_snapshot()``, which receives the
+        already selected LOD and knows nothing about retained viewports.
+        ``acknowledge_render_result()`` promotes a candidate only after acceptance.
+        """
         if self._finished:
             return
         reader = self._reader
@@ -296,25 +472,162 @@ class _TiledPointsCacheWorker(QObject):
             return
         try:
             self._require_not_cancelled()
+            # Production acknowledges every completion before dispatching the
+            # next request. Never promote an unacknowledged candidate implicitly.
+            self._pending_viewport = None
             if not isinstance(request, _ViewportRequest):
                 raise ValueError("`request` must be _ViewportRequest.")
             if request.requested_value_ids != self._selected_value_ids:
                 raise ValueError("Viewport request value IDs do not match the worker's committed selection.")
-            snapshot = _read_viewport_snapshot(
-                reader,
-                self._selected_value_index,
-                self._cpu_tile_residency,
-                request,
-                max_vertex_payload_bytes=self._settings.max_vertex_payload_bytes,
-                raise_if_cancelled=self._require_not_cancelled,
+            max_vertex_payload_bytes = self._settings.max_vertex_payload_bytes
+            # 1. Evaluate the current viewport's LOD and rendering limits once.
+            viewport = _IntrinsicViewport(
+                request.viewport.x_min,
+                request.viewport.y_min,
+                request.viewport.x_max,
+                request.viewport.y_max,
+            )
+            hard_point_capacity = min(
+                request.viewport.hard_render_point_budget,
+                _vertex_point_capacity(max_vertex_payload_bytes),
+            )
+            preferred_point_budget = min(request.viewport.effective_point_budget, hard_point_capacity)
+            level_selection = reader.select_level(
+                viewport,
+                preferred_point_budget,
+                value_index=self._selected_value_index,
             )
             self._require_not_cancelled()
+            # If no level meets the preferred target, `level_selection` already
+            # describes the coarsest level. Reuse that level's estimate from
+            # `level_selection.estimated_point_count` to check the hard limits
+            # without another level scan or IO.
+            point_count = level_selection.estimated_point_count
+            within_budget = point_count <= hard_point_capacity
+            budget_message = None
+            # A hard-limit violation produces a metadata-only TiledPointsRenderSnapshot
+            # below, with within_budget=False and an empty render batch. No point
+            # payloads are read; the GUI retains the previous view rather than clearing it.
+            if not within_budget:
+                limits = []
+                if point_count > request.viewport.hard_render_point_budget:
+                    limits.append(
+                        f"{point_count:,} points required, render limit {request.viewport.hard_render_point_budget:,} points"
+                    )
+                required_bytes = point_count * TILED_POINTS_VERTEX_DTYPE.itemsize
+                if required_bytes > max_vertex_payload_bytes:
+                    limits.append(f"{required_bytes:,} vertex bytes required, limit {max_vertex_payload_bytes:,} bytes")
+                budget_message = "View exceeds hard rendering limits: " + "; ".join(limits)
+            elif point_count > request.viewport.screen_density_budget:
+                budget_message = (
+                    "Coarsest level; above preferred screen density "
+                    f"({point_count:,} points; target {request.viewport.screen_density_budget:,})"
+                )
+            dataset_info = reader.dataset_info
+            level_kind = _expected_level_kind(level_selection.level)
+            if dataset_info.levels[level_selection.level].kind != level_kind:
+                raise RuntimeError("Serialized cache level kind is inconsistent with its level index.")
+            omitted_value_ids = (
+                ()
+                if level_selection.omitted_value_ids is None
+                else tuple(int(value_id) for value_id in level_selection.omitted_value_ids)
+            )
+
+            # 2. Reject, reuse the accepted batch, or prepare a replacement.
+            if not within_budget:
+                # i) Reject: the requested view exceeds the hard rendering limits.
+                snapshot = TiledPointsRenderSnapshot(
+                    cache_generation_id=dataset_info.cache_generation_id,
+                    request_generation=request.request_generation,
+                    selection_generation=request.selection_generation,
+                    requested_value_ids=request.requested_value_ids,
+                    level=level_selection.level,
+                    level_kind=level_kind,
+                    within_budget=False,
+                    estimated_point_count=level_selection.estimated_point_count,
+                    omitted_value_ids=omitted_value_ids,
+                    rendered_tile_count=0,
+                    render_batch=TiledPointsRenderBatch.empty(),
+                    budget_message=budget_message,
+                )
+                candidate = None
+            else:
+                retained = self._retained_viewport
+                if (
+                    retained is not None
+                    and retained.rejection_reason(
+                        request,
+                        cache_generation_id=dataset_info.cache_generation_id,
+                        level=level_selection.level,
+                        max_vertex_payload_bytes=max_vertex_payload_bytes,
+                    )
+                    is None
+                ):
+                    # ii) Reuse: keep the compatible accepted batch and its original bounds.
+                    # Refresh request metadata, but preserve the original rectangle
+                    # associated with this batch, even after repeated inner views.
+                    snapshot = replace(
+                        retained.snapshot,
+                        request_generation=request.request_generation,
+                        selection_generation=request.selection_generation,
+                        estimated_point_count=level_selection.estimated_point_count,
+                        omitted_value_ids=omitted_value_ids,
+                        budget_message=budget_message,
+                    )
+                    candidate = _RetainedViewport(retained.bounds, snapshot)
+                else:
+                    # iii) Prepare a replacement: build a batch for the requested viewport.
+                    snapshot = _read_viewport_snapshot(
+                        reader,
+                        self._selected_value_index,
+                        self._cpu_tile_residency,
+                        request,
+                        viewport=viewport,
+                        level_selection=level_selection,
+                        budget_message=budget_message,
+                        max_vertex_payload_bytes=max_vertex_payload_bytes,
+                        raise_if_cancelled=self._require_not_cancelled,
+                    )
+                    candidate = _RetainedViewport(viewport, snapshot)
+            self._require_not_cancelled()
+            # Await GUI acceptance: acknowledge_render_result() promotes this
+            # candidate only when result.applied is True. Rejection preserves
+            # the previous retained viewport; over-budget results have no candidate.
+            self._pending_viewport = candidate
             self.viewport_ready.emit(snapshot)
         except _SessionCancelled:
             self._shutdown(emit_closing=True)
         except Exception as error:  # noqa: BLE001
             logger.exception("Tiled-points cache session failed while reading a viewport snapshot.")
+            self._pending_viewport = None
             self._report_viewport_failure(request, error)
+
+    @Slot(object)
+    def acknowledge_render_result(self, result: TiledPointsRenderResult) -> None:
+        """Resolve the pending viewport candidate using GUI activation feedback.
+
+        Preparing a snapshot does not establish that the GUI accepted it, so
+        ``read_viewport_snapshot()`` keeps it in ``_pending_viewport`` until this reply.
+
+        For a matching request and selection generation, clear the pending entry.
+        If ``result.applied`` is True, promote it to ``_retained_viewport``; otherwise
+        preserve the previous retained entry. Unmatched replies are ignored.
+
+        This retains the last accepted CPU batch, not necessarily drawable GPU
+        contents. After a staging failure, the renderer may need to upload the
+        retained batch again.
+        """
+        if self._finished or self._cancellation.is_set():
+            return
+        pending = self._pending_viewport
+        if pending is None or (
+            result.request_generation != pending.snapshot.request_generation
+            or result.selection_generation != pending.snapshot.selection_generation
+        ):
+            return
+        self._pending_viewport = None
+        if result.applied:
+            self._retained_viewport = pending
 
     def _require_not_cancelled(self) -> None:
         """Stop active work when the GUI has requested session closure.
@@ -347,6 +660,8 @@ class _TiledPointsCacheWorker(QObject):
         self._selected_value_ids = None
         self._selected_value_index = None
         self._cpu_tile_residency.clear()
+        self._retained_viewport = None
+        self._pending_viewport = None
         try:
             if reader is not None:
                 reader.__exit__(None, None, None)
@@ -379,6 +694,7 @@ class _TiledPointsCacheSession(QObject):
     # announces the committed result back to the GUI thread.
     _value_selection_change_requested = Signal(object)
     _viewport_requested = Signal(object)
+    _render_result_received = Signal(object)
     _close_requested = Signal()
 
     def __init__(
@@ -441,6 +757,7 @@ class _TiledPointsCacheSession(QObject):
         thread.started.connect(worker.start)
         self._value_selection_change_requested.connect(worker.update_selected_value_index)
         self._viewport_requested.connect(worker.read_viewport_snapshot)
+        self._render_result_received.connect(worker.acknowledge_render_result)
         self._close_requested.connect(worker.close)
         worker.state_changed.connect(self._on_worker_state_changed)
         worker.dataset_available.connect(self._on_dataset_available)
@@ -473,7 +790,7 @@ class _TiledPointsCacheSession(QObject):
         return True
 
     def request_viewport(self, request: _ViewportRequest) -> None:
-        """Queue one coordinator-stamped viewport request on the reader worker."""
+        """Queue one scheduler-stamped viewport request on the reader worker."""
         if self._state is not _CacheSessionState.READY:
             raise RuntimeError("A viewport can be requested only while the cache session is READY.")
         if not isinstance(request, _ViewportRequest):
@@ -498,6 +815,20 @@ class _TiledPointsCacheSession(QObject):
         self._set_state(_CacheSessionState.CLOSING)
         self._close_requested.emit()
         return True
+
+    def acknowledge_render_result(self, result: TiledPointsRenderResult) -> None:
+        """Queue a viewport candidate's activation outcome for the worker.
+
+        The scheduler reports whether the candidate was accepted, including
+        rejection of stale snapshots that never reached the renderer. This method
+        queues feedback; it does not modify the worker's retained viewport directly.
+
+        Feedback must be queued before the next viewport request so the worker
+        resolves its pending candidate before evaluating subsequent batch reuse.
+        """
+        if self._state in (_CacheSessionState.CLOSING, _CacheSessionState.CLOSED):
+            return
+        self._render_result_received.emit(result)
 
     @Slot(object)
     def _on_worker_state_changed(self, state: _CacheSessionState) -> None:
@@ -570,28 +901,24 @@ def _read_viewport_snapshot(
     residency: _CpuTileResidency,
     request: _ViewportRequest,
     *,
+    viewport: _IntrinsicViewport,
+    level_selection: _LevelSelection,
+    budget_message: str | None,
     max_vertex_payload_bytes: int,
     raise_if_cancelled: Callable[[], None],
 ) -> TiledPointsRenderSnapshot:
-    """Plan one viewport and assemble its complete immutable render snapshot.
+    """Prepare a replacement snapshot at the worker's already selected LOD.
 
-    Reuse CPU-resident tiles, read only residency misses, and restore the
-    complete tile plan's spatial order before returning. If no serialized level
-    satisfies the runtime budget, return a metadata-only over-budget snapshot
-    without reading point payloads.
+    The caller has checked the hard rendering limits and decided that a
+    replacement is needed. This helper plans logical tiles,
+    reuses decoded CPU tiles, reads missing payloads and packs a new batch.
+    It neither selects a level nor inspects or updates retained viewport state.
+
+    ``level_selection`` supplies the selected level and its visible count and
+    omission metadata. Its ``within_budget`` flag concerns the preferred density
+    target, not hard eligibility: a permitted coarsest-level fallback may have
+    this flag set to False. ``budget_message`` carries the worker's diagnostic.
     """
-    viewport = _IntrinsicViewport(
-        request.viewport.x_min,
-        request.viewport.y_min,
-        request.viewport.x_max,
-        request.viewport.y_max,
-    )
-    level_selection = reader.select_level(
-        viewport,
-        request.viewport.effective_point_budget,
-        value_index=selected_value_index,
-    )
-    raise_if_cancelled()
     dataset_info = reader.dataset_info
     level_kind = _expected_level_kind(level_selection.level)
     if dataset_info.levels[level_selection.level].kind != level_kind:
@@ -601,21 +928,6 @@ def _read_viewport_snapshot(
         if level_selection.omitted_value_ids is None
         else tuple(int(value_id) for value_id in level_selection.omitted_value_ids)
     )
-    if not level_selection.within_budget:
-        return TiledPointsRenderSnapshot(
-            cache_generation_id=dataset_info.cache_generation_id,
-            request_generation=request.request_generation,
-            selection_generation=request.selection_generation,
-            requested_value_ids=request.requested_value_ids,
-            level=level_selection.level,
-            level_kind=level_kind,
-            within_budget=False,
-            estimated_point_count=level_selection.estimated_point_count,
-            omitted_value_ids=omitted_value_ids,
-            rendered_tile_count=0,
-            render_batch=TiledPointsRenderBatch.empty(),
-        )
-
     plan = reader.plan_viewport(level_selection.level, viewport, value_index=selected_value_index)
     raise_if_cancelled()
     if plan.requested_value_ids != request.requested_value_ids:
@@ -694,6 +1006,7 @@ def _read_viewport_snapshot(
         omitted_value_ids=omitted_value_ids,
         rendered_tile_count=len(ordered_tiles),
         render_batch=render_batch,
+        budget_message=budget_message,
     )
 
 
