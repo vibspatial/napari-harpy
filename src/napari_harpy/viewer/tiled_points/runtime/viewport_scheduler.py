@@ -1,11 +1,72 @@
-"""Coordinate latest-only tiled-points viewport work on the GUI thread.
+"""Schedule latest-only tiled-points viewport work on the GUI thread.
 
-The runtime ownership and thread boundary are::
+Participants and responsibilities
+--------------------------------
+The diagram uses short class names for these implementations:
 
-    napari integration
+``_TiledPointsLayerRuntime``
+    GUI-side integration that submits viewports and supplies the synchronous
+    ``activate_snapshot`` callback, including renderer events and status updates.
+
+    Module: ``napari_harpy.viewer.tiled_points.runtime.layer_runtime``
+
+``_TiledPointsViewportScheduler``
+    GUI-side scheduling with one active request and one latest pending submission;
+    rejects stale results and forwards activation feedback before the next request.
+
+    Module: ``napari_harpy.viewer.tiled_points.runtime.viewport_scheduler``
+
+``_TiledPointsCacheSession``
+    GUI-side interface that transports requests and results across the worker-thread
+    boundary and manages the worker lifecycle.
+
+    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+
+``_TiledPointsCacheWorker``
+    Worker-thread owner of the reader and cached data; evaluates LOD and rendering
+    limits, reuses the accepted batch when possible, or prepares a replacement.
+
+    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+
+``_PointsCacheReader``
+    Cache metadata, viewport tile planning, and physical Zarr payload reads.
+
+    Module: ``napari_harpy.core.multi_scale_cache_points_zarr.reader``
+
+A render batch (``TiledPointsRenderBatch``) holds one immutable NumPy point array
+prepared for rendering from the required tiles. Each row contains a cache-relative
+position and a value ID. This is CPU-side data, not the renderer's GPU VBO.
+A snapshot (``TiledPointsRenderSnapshot``) references this batch alongside request
+identity, LOD, and status metadata. These types and ``TiledPointsRenderResult``
+live in ``napari_harpy.viewer.tiled_points.contracts``.
+
+Worker-owned cached data
+-----------------------
+``_RetainedViewport``
+    Original viewport bounds paired with a snapshot and its packed render batch.
+    The worker keeps one accepted ``_retained_viewport`` and may also hold a
+    ``_pending_viewport`` awaiting GUI acceptance, not a history of past viewports.
+
+    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+
+``_CpuTileResidency``
+    Byte-bounded LRU of decoded tile locations and value IDs, reusable when a
+    replacement batch must be packed. This is separate from the retained batch.
+
+    Module: ``napari_harpy.viewer.tiled_points.runtime.residency``
+
+Neither cache is owned by the viewport_scheduler. Its ``_pending_submission`` is a
+viewport request waiting to be dispatched, not the worker's prepared candidate
+in ``_pending_viewport``.
+
+Request flow and thread boundary
+--------------------------------
+The worker evaluates LOD before deciding whether a batch can be reused::
+
+    _TiledPointsLayerRuntime
             |
             v
-    _TiledPointsViewportCoordinator
+    _TiledPointsViewportScheduler
             |
             v
     _TiledPointsCacheSession
@@ -13,22 +74,37 @@ The runtime ownership and thread boundary are::
             | Qt queued signals cross the thread boundary
             v
     _TiledPointsCacheWorker
-            |
-            v
-    _PointsCacheReader / Zarr
+        |-- hard-limit rejection: metadata-only snapshot
+        |-- retained viewport reusable:
+        |     create a snapshot with updated request metadata
+        |     reuse the same TiledPointsRenderBatch and its point array
+        |     (no point-array copying or repacking)
+        `-- replacement: reuse decoded CPU tiles
+                         read only missing payloads via _PointsCacheReader / Zarr
+                         pack a new batch
 
-Napari-facing code submits work to the coordinator. The coordinator and
+Napari-facing code submits work to the viewport_scheduler. The scheduler and
 session remain on the GUI thread; only the worker owns and accesses the cache
-reader and its Zarr resources.
+reader and its Zarr resources. A retained-batch hit performs no tile planning,
+payload reads, or packing. A replacement whose tiles are all CPU-resident still
+requires packing, but no payload reads.
+
+Results return through the session to ``_on_viewport_ready()``. The scheduler
+activates only current results and sends acceptance back through
+``session.acknowledge_render_result()``. The worker promotes a matching pending
+candidate only for ``applied=True``; rejection preserves its previous retained
+viewport. This feedback reports renderer acceptance, not GPU draw completion.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from qtpy.QtCore import QObject, Signal, Slot
 
 from napari_harpy.viewer.tiled_points.contracts import (
+    TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsViewportState,
     _ViewportRequest,
@@ -49,15 +125,23 @@ class _ViewportSubmission:
     viewport: TiledPointsViewportState
 
 
-class _TiledPointsViewportCoordinator(QObject):
+class _TiledPointsViewportScheduler(QObject):
     """Own request generations and a one-active/one-latest-pending mailbox.
 
-    The coordinator runs on the GUI thread and never performs cache IO. A new
+    The scheduler runs on the GUI thread and never performs cache IO. A new
     viewport synchronously advances ``request_generation`` and replaces the
     pending submission. At most one request is dispatched to the serial cache
-    worker. A completion may warm worker-owned CPU residency, but it is emitted
-    as an active snapshot only when both its request and selection generations
-    remain current.
+    worker. A completion may warm worker-owned CPU residency, but it is passed
+    to ``activate_snapshot`` only when both its request and selection
+    generations remain current.
+
+    The required ``activate_snapshot`` callback runs synchronously on the GUI
+    thread and returns a matching ``TiledPointsRenderResult``. The integration
+    owns renderer events and status updates; this scheduler only validates
+    and queues the returned acceptance before the next viewport dispatch.
+    Only an accepted candidate can replace the worker's retained batch and
+    original viewport bounds; rejected completions may still warm the decoded
+    CPU tile cache. No vertex arrays are inspected on this viewport_scheduler.
 
     Selection changes use the same stale-result boundary. Accepting a change
     advances ``selection_generation`` immediately, invalidates old viewport
@@ -81,23 +165,24 @@ class _TiledPointsViewportCoordinator(QObject):
     If integration profiling shows that reads frequently finish between rapid
     camera events, a short GUI-side debounce before submission may be evaluated
     as an additional optimization. It is deliberately not part of this
-    coordinator policy: any debounce should be justified by measured dispatch
+    scheduler policy: any debounce should be justified by measured dispatch
     churn and must not delay ordinary isolated viewport updates.
     """
 
-    snapshot_ready = Signal(object)
     viewport_failed = Signal(int, object)
 
     def __init__(
         self,
         session: _TiledPointsCacheSession,
         *,
+        activate_snapshot: Callable[[TiledPointsRenderSnapshot], TiledPointsRenderResult],
         initial_requested_value_ids: tuple[int, ...] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         _require_requested_value_ids(initial_requested_value_ids)
         self._session = session
+        self._activate_snapshot = activate_snapshot
         self._request_generation = 0
         self._selection_generation = int(initial_requested_value_ids is not None)
         self._desired_value_ids = initial_requested_value_ids
@@ -154,14 +239,14 @@ class _TiledPointsViewportCoordinator(QObject):
             napari GUI thread
                     |
                     v
-            coordinator.submit_viewport()
+            viewport_scheduler.submit_viewport()
                     |
                     v
             one-active/one-latest-pending mailbox
                     |
                     | only when dispatch is permitted
                     v
-            coordinator._dispatch_pending()
+            viewport_scheduler._dispatch_pending()
                     |
                     v
             session.request_viewport()
@@ -191,12 +276,12 @@ class _TiledPointsViewportCoordinator(QObject):
         """Request a selected-value index change and invalidate old viewport work.
 
         Value-index loading runs on the reader worker. Once the worker commits
-        the selection, the coordinator may dispatch its latest viewport::
+        the selection, the scheduler may dispatch its latest viewport::
 
             napari GUI thread
                     |
                     v
-            coordinator.set_selected_value_ids()
+            viewport_scheduler.set_selected_value_ids()
                     |
                     v
             session.set_selected_value_ids()
@@ -212,7 +297,7 @@ class _TiledPointsViewportCoordinator(QObject):
             worker reports committed selection
                     |
                     v
-            coordinator dispatches latest retained viewport
+            scheduler dispatches latest retained viewport
         """
         self._require_open()
         _require_requested_value_ids(requested_value_ids)
@@ -290,15 +375,40 @@ class _TiledPointsViewportCoordinator(QObject):
         active = self._active_request
         if active is None or snapshot.request_generation != active.request_generation:
             return
-        self._active_request = None
         latest = self._latest_submission
-        if (
-            latest is not None
-            and snapshot.request_generation == latest.request_generation
-            and snapshot.selection_generation == self._selection_generation
-        ):
-            self.snapshot_ready.emit(snapshot)
-        self._dispatch_pending()
+        # Stale snapshots and failed activation calls must release the worker's
+        # pending candidate without replacing its last accepted retained batch.
+        result = TiledPointsRenderResult(snapshot.request_generation, snapshot.selection_generation, applied=False)
+        try:
+            if (
+                latest is not None
+                and snapshot.request_generation == latest.request_generation
+                and snapshot.selection_generation == self._selection_generation
+            ):
+                # The runtime callback (self._activate_snapshot) submits the snapshot
+                # through layer events and collects the renderer's synchronous reply
+                # before returning. The result reports acceptance, not completion
+                # of the GPU draw.
+                activation_result = self._activate_snapshot(snapshot)
+                if self._closed:
+                    return
+                if not isinstance(activation_result, TiledPointsRenderResult):
+                    raise ValueError("Snapshot activation must return TiledPointsRenderResult.")
+                if (
+                    activation_result.request_generation != active.request_generation
+                    or activation_result.selection_generation != active.selection_generation
+                ):
+                    raise ValueError("Snapshot activation result does not match the active viewport request.")
+                result = activation_result
+        finally:
+            # Keep _active_request set until activation feedback has been queued
+            # (via self._session.acknowledge_render_result()).
+            # Any viewport submitted during activation waits in _pending_submission.
+            # This lets the worker accept or discard the current pending candidate
+            # before processing the next queued viewport request.
+            self._session.acknowledge_render_result(result)
+            self._active_request = None
+            self._dispatch_pending()
 
     @Slot(int, object)
     def _on_viewport_failed(self, request_generation: int, failure: _CacheSessionFailure) -> None:
@@ -355,7 +465,7 @@ class _TiledPointsViewportCoordinator(QObject):
 
     def _require_open(self) -> None:
         if self._closed:
-            raise RuntimeError("The tiled-points viewport coordinator is closed.")
+            raise RuntimeError("The tiled-points viewport scheduler is closed.")
 
 
 def _require_requested_value_ids(value: object) -> None:
