@@ -23,8 +23,9 @@ class TiledPointsApplicationSettings:
     """Define napari-harpy's injectable points-cache resource policy.
 
     ``max_vertex_payload_bytes`` bounds one complete worker-prepared packed
-    candidate and its corresponding VBO payload. It is independent of decoded
-    CPU tile residency and total driver/GPU memory.
+    candidate and its corresponding VBO payload, and must allow at least one
+    vertex. It is independent of decoded CPU tile residency and total
+    driver/GPU memory.
     """
 
     max_selected_value_index_bytes: int | None = None
