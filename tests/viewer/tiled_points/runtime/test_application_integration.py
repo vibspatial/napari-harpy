@@ -18,6 +18,7 @@ from napari_harpy.viewer.tiled_points.application import (
     TiledPointsCacheDescriptor,
     canonical_value_palette,
 )
+from napari_harpy.viewer.tiled_points.contracts import TILED_POINTS_VERTEX_DTYPE
 from napari_harpy.widgets.viewer.tiled_points_controller import _CacheDescriptorJob, _load_cache_descriptor
 
 
@@ -46,6 +47,17 @@ def test_application_settings_freeze_product_residency_defaults() -> None:
     assert settings.max_cpu_tile_bytes == DEFAULT_MAX_CPU_TILE_BYTES
     assert settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
     assert settings.cache_session_settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
+
+
+@pytest.mark.parametrize("byte_limit", [1, TILED_POINTS_VERTEX_DTYPE.itemsize - 1])
+def test_application_settings_reject_byte_limit_below_one_vertex(byte_limit: int) -> None:
+    with pytest.raises(ValueError, match="max_vertex_payload_bytes.*one vertex"):
+        TiledPointsApplicationSettings(max_vertex_payload_bytes=byte_limit)
+
+
+def test_application_settings_accept_byte_limit_of_exactly_one_vertex() -> None:
+    settings = TiledPointsApplicationSettings(max_vertex_payload_bytes=TILED_POINTS_VERTEX_DTYPE.itemsize)
+    assert settings.cache_session_settings.max_vertex_payload_bytes == TILED_POINTS_VERTEX_DTYPE.itemsize
 
 
 def test_canonical_value_mapping_and_palette_ignore_selection_order(real_cache_root: Path) -> None:
