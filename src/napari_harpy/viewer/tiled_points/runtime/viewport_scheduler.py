@@ -443,6 +443,13 @@ class _TiledPointsViewportScheduler(QObject):
             self._dispatch_pending()
 
     def _dispatch_pending(self) -> None:
+        """Dispatch the latest pending viewport when scheduling permits.
+
+        Wait while another request is active or the session/selection is not ready.
+        On dispatch, clear ``_pending_submission``, set ``_active_request``, and
+        queue its worker read. ``_latest_submission`` remains available for
+        freshness checks when the result arrives.
+        """
         if (
             self._closed
             or self._active_request is not None
