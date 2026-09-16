@@ -424,7 +424,7 @@ The current path is:
 ```text
 cache_session._read_viewport_snapshot()
         -> TiledPointsRenderSnapshot(tiles=...)
-        -> composition._on_snapshot_ready()
+        -> layer_runtime._on_snapshot_ready()
         -> VispyTiledPointsLayer.apply_snapshot()
         -> one _VispyTileResource / _TiledPointsTileVisual / VBO per tile
 ```
@@ -434,7 +434,7 @@ The first renderer slice may temporarily use this instrumented scaffold:
 ```text
 cache_session._read_viewport_snapshot()
         -> TiledPointsRenderSnapshot(tiles=...)
-        -> composition._on_snapshot_ready()
+        -> layer_runtime._on_snapshot_ready()
         -> VispyTiledPointsLayer.apply_snapshot()
         -> pack all snapshot tiles into one bounded vertex array on the GUI thread
         -> replace the one snapshot VBO payload
@@ -449,7 +449,7 @@ cache_session._read_viewport_snapshot()
         -> pack one immutable, bounded render batch on the worker
         -> discard transient decoded-tile references not retained by CPU residency
         -> TiledPointsRenderSnapshot(rendered_tile_count=..., render_batch=...)
-        -> composition._on_snapshot_ready()
+        -> layer_runtime._on_snapshot_ready()
         -> VispyTiledPointsLayer.apply_snapshot()
         -> replace the one snapshot VBO payload on the GUI thread
         -> draw the updated snapshot visual
@@ -464,7 +464,7 @@ The affected responsibilities are:
 | `vispy/residency.py` | `_GpuTileResidency` tracks thousands of tile-keyed GPU resources and performs retention/eviction bookkeeping. | Its tile-resource role disappears. Single-buffer byte accounting can be kept directly in the layer or in a small snapshot-buffer helper. |
 | `contracts.py` | Carries a tuple of logical render tiles in `TiledPointsRenderSnapshot`. | Defines and validates an immutable, C-contiguous packed render batch and carries it with the generation-bound snapshot. The snapshot retains only the O(1) logical-tile count; decoded tiles remain worker-local. |
 | `runtime/cache_session.py` | Assembles the ordered logical tile tuple. | Validates and packs the render batch after final ordered tile assembly, records `rendered_tile_count`, and returns no decoded tile arrays across the GUI boundary. |
-| `runtime/composition.py` | Delivers the snapshot to the layer event. | Forwards the snapshot and packed batch unchanged; it remains unaware of VisPy and VBO ownership. |
+| `runtime/layer_runtime.py` | Delivers the snapshot to the layer event. | Forwards the snapshot and packed batch unchanged; it remains unaware of VisPy and VBO ownership. |
 
 #### Snapshot packing
 
@@ -529,7 +529,7 @@ packing work = per-point memory work + per-tile dispatch work
 
 One million points alone does not make packing problematic. With the current cache geometry, the literal worker implementation remains approximately 12–16 milliseconds and the whole-snapshot variant approximately 6–8 milliseconds. Extreme tile fragmentation is the important risk: a point-count budget alone does not fully bound snapshot-preparation work.
 
-The runtime should therefore record both point count and tile count for every packed snapshot. A hard tile-count limit should not be introduced from this synthetic result alone because sparse selected values may legitimately span many tiles. Instrumentation should first establish a point-plus-tile work model that can inform LOD planning or a future preparation-work budget. Slice 2 keeps packing cooperatively cancellable through the cache session's existing terminal-close event. It does not add a second request-specific cancellation protocol: the existing one-active/one-latest-pending coordinator may let an active obsolete request finish, rejects its completed generation before renderer submission, and then dispatches the latest request. Add per-request packing cancellation only if profiling shows that obsolete, highly fragmented packs materially delay the latest request; that follow-up requires an explicit thread-safe request-cancellation token and tests distinct from session closure.
+The runtime should therefore record both point count and tile count for every packed snapshot. A hard tile-count limit should not be introduced from this synthetic result alone because sparse selected values may legitimately span many tiles. Instrumentation should first establish a point-plus-tile work model that can inform LOD planning or a future preparation-work budget. Slice 2 keeps packing cooperatively cancellable through the cache session's existing terminal-close event. It does not add a second request-specific cancellation protocol: the existing one-active/one-latest-pending scheduler may let an active obsolete request finish, rejects its completed generation before renderer submission, and then dispatches the latest request. Add per-request packing cancellation only if profiling shows that obsolete, highly fragmented packs materially delay the latest request; that follow-up requires an explicit thread-safe request-cancellation token and tests distinct from session closure.
 
 #### Snapshot visual and VBO ownership
 
@@ -641,7 +641,7 @@ This section translates the preceding findings into ordered, reviewable implemen
 The current working tree has the following starting architecture:
 
 - `ViewerWidget` uses the original in-memory points backend by default. The tiled-cache backend is selected for the lifetime of a new widget only when `experimental_tiled_points=True` is passed directly or `NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS=1` is set before the Viewer widget is constructed.
-- The cache-backed path is wired end to end through `TiledPointsController`, the adapter, the napari layer, the viewport coordinator, the worker-owned cache session, and the VisPy renderer.
+- The cache-backed path is wired end to end through `TiledPointsController`, the adapter, the napari layer, the viewport scheduler, the worker-owned cache session, and the VisPy renderer.
 - Logical storage tiles and decoded CPU tile residency are useful and remain part of the design.
 - The renderer still owns one VisPy visual and VBO per logical tile.
 - Cache startup still loads every bucket sparse-range lookup index across every level.
@@ -685,7 +685,7 @@ Slice identifiers describe independently reviewable work, not a requirement to i
 | 13 | Run the integrated all-level acceptance and tuning matrix | Slices 1–6, 8–10, 10b, 10c, 10d, and 12a; Slice 7 optional; not Slices 11 or 12b | Evidence-backed interaction baseline with fixed routing and current LOD policy; conditional hysteresis and adaptive routing evaluated separately |
 | 14 | Add viewport debounce only if dispatch churn remains material | Slice 13 | Conditional reduction of obsolete work after current-batch reuse |
 | 15 | Evaluate optional ping-pong storage and a larger point budget | Slice 13 | Conditional hardening/scaling work, not part of the initial solution |
-| 16 | Replace implicit initial selection with explicit coordinator arming | Slice 0 | No unconfigured or accidental all-values first viewport |
+| 16 | Replace implicit initial selection with explicit scheduler arming | Slice 0 | No unconfigured or accidental all-values first viewport |
 | 17 | Evaluate optional removal of persisted bucket sparse ranges | Slice 13 | Conditional schema cleanup with construction-only range records and adapted validation/reference consumers |
 | 18 | Group tiled point-count and density controls in Advanced rendering | Existing tiled settings and soft-density LOD policy | Two explicit per-layer controls, unchanged defaults and internal vertex-byte protection; independent UI follow-up |
 
@@ -783,7 +783,7 @@ Introduce the canonical vertex dtype and one pure helper in a new GUI-neutral `v
 
 - Rewrite `tests/viewer/tiled_points/vispy/test_layer.py` around one stable visual and VBO identity across changing snapshots.
 - Assert one payload replacement for a nonempty accepted snapshot and no replacement for over-budget, invalid, or capacity-rejected snapshots.
-- Preserve stale request/selection rejection at the coordinator/layer integration boundary and prove that a stale result never calls VisPy `apply_snapshot()`.
+- Preserve stale request/selection rejection at the scheduler/layer integration boundary and prove that a stale result never calls VisPy `apply_snapshot()`.
 - Assert that palette, opacity, and point-diameter changes do not replace vertex data.
 - Assert that an empty accepted snapshot suppresses drawing without allocating another resource.
 - Inject a synchronous `set_data()` exception and assert render-error emission and no logical candidate commit. Do not claim that the previous GPU payload remains drawable after mutation starts.
@@ -830,9 +830,9 @@ This slice completes the renderer milestone by removing the tile loop from GUI a
 2. In `viewer/tiled_points/contracts.py`, move the canonical `TILED_POINTS_VERTEX_DTYPE` beside a new immutable `TiledPointsRenderBatch` contract so both validation and packing depend on one definition without making `contracts.py` import `render_batch.py`. Carry the batch on `TiledPointsRenderSnapshot`. Validate dtype, one-dimensional shape, ownership, C contiguity, read-only state, and byte count. Expose O(1) batch `point_count` and `nbytes` properties. Replace the decoded `tiles` tuple on the GUI-bound snapshot with a validated nonnegative `rendered_tile_count`. For a within-budget snapshot, require that the batch count equals `estimated_point_count` and that the tile count is possible for the nonempty logical-tile contract; an over-budget metadata-only snapshot carries zero rendered tiles and an owning read-only empty batch even when its estimate is nonzero.
 3. Make `TiledPointsRenderSnapshot.rendered_point_count` return the validated render-batch point count in O(1). GUI-side status preparation, renderer activation, and diagnostics obtain both point count and logical-tile count without inspecting decoded tiles.
 4. In `runtime/cache_session.py`, first restore `ordered_tiles = tuple(payloads_by_key[key] for key in keys)` in final plan order. Validate tile-key uniqueness, spatial order, cache generation, selection and level while the tuple is still worker-local; validate the declared point count and byte capacity while packing; check cancellation again; and only then construct the final snapshot from `len(ordered_tiles)` and the immutable batch. For an over-budget result, construct the metadata-only snapshot with zero rendered tiles and the canonical empty batch, and perform no point-payload allocation.
-5. The cancellation callback used by Slice 2 is the existing cache-session terminal-close check. Check it before packing, between fragmented tile groups, and after packing so layer/session closure cannot publish a late batch. Do not add request-specific cancellation in this slice. Obsolete request generations may finish packing but must continue to be rejected by the coordinator before renderer submission.
+5. The cancellation callback used by Slice 2 is the existing cache-session terminal-close check. Check it before packing, between fragmented tile groups, and after packing so layer/session closure cannot publish a late batch. Do not add request-specific cancellation in this slice. Obsolete request generations may finish packing but must continue to be rejected by the scheduler before renderer submission.
 6. Keep decoded logical tiles only in worker-local assembly and `_CpuTileResidency`. Do not transport their coordinate/value arrays in `TiledPointsRenderSnapshot`: after packing, release transient tiles that were not retained by the byte-bounded residency. Carry only `rendered_tile_count` for status and diagnostics. The renderer consumes only `render_batch`.
-7. Keep `runtime/composition.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership. Its status path consumes only O(1) snapshot counts.
+7. Keep `runtime/layer_runtime.py` transport-only: it forwards the generation-bound snapshot and batch without knowing the vertex format or VisPy ownership. Its status path consumes only O(1) snapshot counts.
 8. In `vispy/layer.py`, remove the scaffold packing call and renderer-owned pack timing. GUI activation validates the already prepared batch, independently preflights its point and byte capacity, stages exactly that one VBO payload, acknowledges the result, and updates the scene. It performs no logical-tile iteration or NumPy coordinate packing.
 9. Initially use the copy-safe `VertexBuffer.set_data()` lifetime behavior already relied on by the renderer and report any CPU staging copy separately. A later zero-copy change requires explicit lifetime and deferred-upload evidence.
 10. Rename `max_gpu_tile_bytes` to `max_vertex_payload_bytes` throughout `TiledPointsApplicationSettings`, `TiledPointsLayerModel`, application-adapter construction, renderer capacity validation, diagnostics, benchmarks, and tests. Remove the old name outright: do not add a deprecated constructor keyword, property, configuration alias, or fallback. Add `max_vertex_payload_bytes` to `_CacheSessionSettings` and pass it to the worker because the primary allocation now happens there. The worker preflights the declared batch size before allocation, and the renderer repeats the validation defensively before VBO staging. Continue to enforce the renamed setting against the logical byte size of one complete packed vertex payload, separately from the hard point-count budget and from measured transient memory.
@@ -1929,7 +1929,7 @@ Choose one route for the complete missing-tile batch initially. A per-tile or pe
 
 **Production changes**
 
-1. Preserve `_ViewportReadPlan` as the generation-bound semantic plan. Refactor the fixed proper-subset route introduced by Slice 8 into a worker-local physical read plan resolved from the missing tile keys; do not move this decision to the coordinator, GUI, or renderer.
+1. Preserve `_ViewportReadPlan` as the generation-bound semantic plan. Refactor the fixed proper-subset route introduced by Slice 8 into a worker-local physical read plan resolved from the missing tile keys; do not move this decision to the scheduler, GUI, or renderer.
 2. Add the `tile_major_filter` reader path using only compact complete-tile addressing, tile-major point arrays, and the immutable plan-wide `requested_value_ids` membership set. Read complete tile payloads through the same narrowed manifest reader used by the all-values route, then filter their point-level `value_id` rows in memory. Do not reconstruct `_PlannedTileRead.applicable_value_ids`, introduce another per-tile selected-value projection, or restore the sparse-range bucket path removed in Slice 10c. This route must never instantiate or load a bucket sparse lookup index.
 3. Add deterministic cost-estimation helpers and reusable physical block resolution following the sequence above. Keep their units, assumptions, and estimation overhead explicit in diagnostics rather than hiding the decision behind a selected-value threshold. Do not duplicate block resolution between estimation and execution.
 4. Preserve canonical output ordering, value IDs, and the existing route-independent CPU-residency contract. A request forced through either route must produce byte-equivalent logical tile keys, locations, and aligned `uint32` value IDs before CPU residency insertion. Filtering must finish before retention; no route-dependent cache keys or duplicate resident representations are introduced.
@@ -2090,10 +2090,10 @@ A successfully rendered viewport remains reusable without changing its batch, or
 
 **Implementation and qualification (2026-09-11)**
 
-- The worker owns one accepted `_RetainedViewport` and, during replacement/activation, one transient candidate. Renderer feedback travels through the runtime, coordinator, and session back to the worker before the next viewport dispatch. Stale, failed, over-budget, and unacknowledged candidates do not replace the accepted entry. Selection changes and closure release unrelated retained state.
+- The worker owns one accepted `_RetainedViewport` and, during replacement/activation, one transient candidate. Renderer feedback travels through the runtime, scheduler, and session back to the worker before the next viewport dispatch. Stale, failed, over-budget, and unacknowledged candidates do not replace the accepted entry. Selection changes and closure release unrelated retained state.
 - The containment shortcut runs after normal LOD selection. It preserves the original intrinsic requested bounds and returns fresh snapshot metadata around the identical `TiledPointsRenderBatch`. Full retained point/byte limits remain separate from the current visible estimate; sampled-omission and empty-view status use the latter.
 - The renderer skips staging only for its known-active batch identity, after validation and capacity checks. That identity is invalidated before a different batch mutates the single VBO. If staging subsequently fails, retrying the old worker-retained batch uploads it again rather than assuming physical rollback.
-- Focused tests cover worker/session and coordinator lifecycle, real queued delivery and activation feedback, all three level kinds and both selection routes, nested and disjoint views, visible/payload count differences, reduced budgets, omission status, failed preparation, and failed VBO binding. The real-OpenGL reference test also exercises identical-batch reuse under large cache origins and affine transforms.
+- Focused tests cover worker/session and scheduler lifecycle, real queued delivery and activation feedback, all three level kinds and both selection routes, nested and disjoint views, visible/payload count differences, reduced budgets, omission status, failed preparation, and failed VBO binding. The real-OpenGL reference test also exercises identical-batch reuse under large cache origins and affine transforms.
 
 The new `scripts/benchmark_tiled_points_retained_viewport.py` runs paired traces through the actual Qt runtime. Its reference mode disables only the retained-entry shortcut at the worker snapshot boundary; both modes retain the existing CPU tile cache, LOD policy, readers, and renderer. Three repetitions alternate mode order. Automatic garbage collection remains enabled and its overlap with worker timings is recorded; previous cases are collected outside timed navigation. Filesystem caches are not flushed.
 
@@ -2228,7 +2228,7 @@ Proceed only if Slice 13 instrumentation shows that rapid camera gestures still 
 
 **Production changes if justified**
 
-1. Add a short configurable GUI-thread single-shot timer at the coordinator submission boundary. Do not place timers or sleeps on the cache worker.
+1. Add a short configurable GUI-thread single-shot timer at the scheduler submission boundary. Do not place timers or sleeps on the cache worker.
 2. Advance request generation immediately when a viewport event arrives so older results become stale immediately, but delay physical dispatch until the debounce settles.
 3. Do not debounce value-selection changes, startup readiness, explicit refresh, or an already completed isolated request unless measurements justify that latency.
 4. Preserve one-active/one-latest-pending behavior, selection-generation rules, close behavior, and failure recovery.
@@ -2261,7 +2261,7 @@ Do not raise the budget until end-to-end tests cover worker packing, Qt delivery
 
 Persisted bucket sparse-range removal, including the smaller `ranges/row_start`-only alternative, is evaluated separately in optional Slice 17. Quantizing coordinates, adding lazy per-value sidecars, using an uncompressed memory-mapped payload, or offering a value-major-only cache profile each changes another contract. Evaluate them only after the mandatory dual-ordering implementation has measured results, and keep each in its own schema/benchmark slice.
 
-### Slice 16 — Explicit coordinator selection arming
+### Slice 16 — Explicit scheduler selection arming
 
 This slice is a lifecycle and API cleanup rather than a rendering optimization. It makes the product rule explicit: selecting or inspecting a points element may load metadata and available values, but a regular or tiled napari points layer is created only after an explicit Add/Update action.
 
@@ -2275,26 +2275,26 @@ The behavior is necessary, but the API is ambiguous:
 initial_requested_value_ids: tuple[int, ...] | None = None
 ```
 
-Here `None` is both the constructor default and the valid semantic representation of an explicit all-values selection. The coordinator therefore cannot distinguish “the application has not configured a selection” from “the user explicitly selected all values.” The constructor also needs special initial-subset flags and failure branches that partly duplicate `set_selected_value_ids()`.
+Here `None` is both the constructor default and the valid semantic representation of an explicit all-values selection. The scheduler therefore cannot distinguish “the application has not configured a selection” from “the user explicitly selected all values.” The constructor also needs special initial-subset flags and failure branches that partly duplicate `set_selected_value_ids()`.
 
 **Production changes**
 
-1. Remove `initial_requested_value_ids` from `_TiledPointsViewportCoordinator.__init__()`.
-2. Start the coordinator in an explicit internal `SELECTION_NOT_CONFIGURED` state. Use a private sentinel or selection-state enum; do not use `None` for this state because `None` remains the valid explicit all-values selection.
+1. Remove `initial_requested_value_ids` from `_TiledPointsViewportScheduler.__init__()`.
+2. Start the scheduler in an explicit internal `SELECTION_NOT_CONFIGURED` state. Use a private sentinel or selection-state enum; do not use `None` for this state because `None` remains the valid explicit all-values selection.
 3. A viewport submitted while selection is not configured may be generation-stamped and retained as the latest desired viewport, but it must not cross into `_TiledPointsCacheSession` or trigger cache reads.
 4. Route both first and subsequent selections through one `set_selected_value_ids()` state transition:
-   - `None` explicitly arms the coordinator for all values;
+   - `None` explicitly arms the scheduler for all values;
    - a nonempty sorted tuple explicitly arms it for a proper subset; and
    - omission is no longer a valid way to select all values.
-5. Rename `_TiledPointsLayerRuntime`'s input to required `requested_value_ids` and remove its `= None` default. After constructing the coordinator and connecting listeners, the runtime must explicitly call `set_selected_value_ids(requested_value_ids)` before starting the cache session.
+5. Rename `_TiledPointsLayerRuntime`'s input to required `requested_value_ids` and remove its `= None` default. After constructing the scheduler and connecting listeners, the runtime must explicitly call `set_selected_value_ids(requested_value_ids)` before starting the cache session.
 6. Keep `ViewerAdapter.ensure_tiled_points_layer()`'s `requested_value_ids` argument required. It already receives this value only from the explicit controller Add/Update path.
 7. Preserve the safe first-subset ordering:
    - retain the latest viewport while the worker commits the selected-value index;
    - dispatch the first viewport only after that commit succeeds; and
    - if the first subset commit fails, report the failure and do not fall back to the session's internal all-values default.
 8. Preserve later-update rollback behavior. If a changed selection fails after an earlier explicit selection was committed, keep the earlier committed selection and replan only according to the existing failure policy.
-9. Replace the constructor-specific flags such as `_initial_subset_uncommitted` with state derived from explicit desired and committed selections. The coordinator should be able to answer separately whether a selection has been configured, is pending, has been committed, or failed before any commit.
-10. Keep layer creation policy outside the coordinator. The coordinator schedules an already explicitly created layer; the controller and adapter remain responsible for deciding whether that layer should exist.
+9. Replace the constructor-specific flags such as `_initial_subset_uncommitted` with state derived from explicit desired and committed selections. The scheduler should be able to answer separately whether a selection has been configured, is pending, has been committed, or failed before any commit.
+10. Keep layer creation policy outside the scheduler. The scheduler schedules an already explicitly created layer; the controller and adapter remain responsible for deciding whether that layer should exist.
 
 The intended lifecycle becomes:
 
@@ -2306,8 +2306,8 @@ user selects points element
 user clicks Add / Update
         -> controller resolves requested_value_ids
         -> adapter constructs layer/runtime
-        -> runtime constructs unconfigured coordinator
-        -> runtime explicitly arms coordinator with requested_value_ids
+        -> runtime constructs unconfigured scheduler
+        -> runtime explicitly arms scheduler with requested_value_ids
         -> cache session starts
         -> first viewport waits for an explicit subset commit when required
 ```
@@ -2316,7 +2316,7 @@ user clicks Add / Update
 
 - Selecting/binding a points element and completing descriptor loading does not call `ensure_tiled_points_layer()` or add a napari layer.
 - Clicking Add/Update creates or updates exactly one layer through the requested backend.
-- A newly constructed, unconfigured coordinator never dispatches a retained viewport when the session becomes ready.
+- A newly constructed, unconfigured scheduler never dispatches a retained viewport when the session becomes ready.
 - Explicit pre-start `None` permits the first all-values viewport after readiness.
 - Explicit pre-start subset IDs block the first viewport until the selected-value index is committed.
 - Initial subset failure never dispatches an all-values viewport.
@@ -2433,7 +2433,7 @@ The current interaction milestone, including explicit selection arming, is compl
 10. after Slice 10c, the resident bucket lookup and diagnostic sparse-subset reader are removed, while persisted bucket sparse ranges remain available for cache construction, catalog generation, and independent validation; diagnostic/reference subset reads independently filter complete tile-major point arrays. Optional Slice 17 may change the persisted contract only after adapting its remaining consumers and validation, and neither choice permits a viewer sparse-index fallback;
 11. a retained batch and its VBO remain unchanged for same-LOD requests contained within its original viewport, with compatible cache generation, selection, and budgets. Such requests avoid full tile planning, per-tile CPU lookup, reads, packing, and staging while acknowledging fresh logical metadata. Outside views and level changes use normal replacement, without expanded coverage or historical batch retention. Current visible estimates remain distinct from full retained-payload counts and hard limits remain enforced;
 12. benchmark reports demonstrate improved cold reads, warm activation, active-batch reuse, first draw, warm draw, startup RSS, and steady memory, with the same containment rule below and above the 100,000-point full-selection Exact boundary. Genuine viewport replacements, LOD-switching costs, obsolete work, and residual stutter are reported separately; the finest-valid LOD policy remains unchanged unless conditional Slice 12b is separately accepted;
-13. the tiled coordinator distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
+13. the tiled scheduler distinguishes selection-not-configured from an explicit all-values selection, and its first cache read is armed only by the explicit Add/Update path; and
 14. LOD hysteresis, debounce, ping-pong storage, alternative sidecar encodings, a larger point budget, and optional persisted sparse-range removal are accepted only when their own evidence gates are met.
 
 The initial Slice 13 baseline can be published before the independent Slice 16 cleanup; finish its lifecycle acceptance checks before declaring the milestone above complete. Conditional Slices 12b, 14, 15, and 17 may be declined or deferred without blocking completion. Their eventual implementations require their own regression checks and do not redefine the original LOD-policy and fixed-route baseline retroactively.

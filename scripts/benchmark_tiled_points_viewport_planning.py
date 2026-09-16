@@ -8,6 +8,10 @@ Example::
 
 Cold means no CPU-resident tiles, not a flushed filesystem cache. Startup and
 index loading are measured separately. No GUI or physical draw is performed.
+These are replacement-path measurements: no accepted packed batch is supplied
+to the snapshot helper, even for fully CPU-resident tiles. Use
+``benchmark_tiled_points_retained_viewport.py`` for active-batch reuse and queued
+renderer-acceptance traces, where a hit deliberately creates no viewport plan.
 """
 
 from __future__ import annotations
@@ -28,6 +32,8 @@ from benchmark_tiled_points_cache_to_canvas import (
     _elapsed_ms,
     _git_state,
     _install_reader_timers,
+    _make_snapshot_worker,
+    _read_worker_snapshot,
     _TemporaryPatches,
     _TimingLog,
 )
@@ -39,7 +45,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
 from napari_harpy.viewer.tiled_points.contracts import _ViewportRequest
-from napari_harpy.viewer.tiled_points.runtime.cache_session import _read_viewport_snapshot
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 
@@ -76,6 +81,7 @@ def _measure_worker(
     request: _ViewportRequest,
 ) -> dict[str, Any]:
     timings = _TimingLog()
+    worker = _make_snapshot_worker(reader, index, residency, max_vertex_payload_bytes=512 << 20)
     plans = []
     missing_counts = []
     block_resolution_ms = []
@@ -116,14 +122,7 @@ def _measure_worker(
         patches.patch(_PointsCacheReader, "_read_value_major_requests", value_read)
         patches.patch(_ValueMajorLevelReader, "read_intervals", read_intervals)
         started = time.perf_counter()
-        snapshot = _read_viewport_snapshot(
-            reader,
-            index,
-            residency,
-            request,
-            max_vertex_payload_bytes=512 << 20,
-            raise_if_cancelled=lambda: None,
-        )
+        snapshot = _read_worker_snapshot(worker, request)
         worker_ms = _elapsed_ms(started)
 
     if not snapshot.within_budget or len(plans) != 1:
@@ -144,6 +143,7 @@ def _measure_worker(
         "level": snapshot.level,
         "level_kind": snapshot.level_kind,
         "point_count": snapshot.estimated_point_count,
+        "retained_payload_points": snapshot.rendered_point_count,
         "omitted_value_ids": snapshot.omitted_value_ids,
         "render_batch_sha256": hashlib.sha256(snapshot.render_batch.vertices.tobytes()).hexdigest(),
         "breakdown": timings.summary(),

@@ -4,6 +4,10 @@ The default run measures compact-metadata startup, lazy complete-tile addressing
 selected-value-index loading, cold and warm worker snapshots, Zarr selection
 amplification, CPU residency, and steady Qt delivery. Add ``--real-canvas`` to
 also measure VisPy resource creation/residency and synchronous physical draws.
+Cold and warm worker snapshots here measure the replacement path without a
+retained packed entry. The renderer-only repeat uses the same batch and should
+skip VBO staging. Use ``benchmark_tiled_points_retained_viewport.py`` to measure
+the complete retained-view worker/Qt/renderer path during navigation.
 
 For example, on macOS::
 
@@ -30,6 +34,7 @@ import platform
 import resource
 import statistics
 import subprocess
+import threading
 import time
 from collections import defaultdict
 from contextlib import AbstractContextManager
@@ -60,7 +65,7 @@ from napari_harpy.viewer.tiled_points.contracts import (
 )
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.runtime.cache_session import _read_viewport_snapshot
+from napari_harpy.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings, _TiledPointsCacheWorker
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
@@ -68,6 +73,51 @@ _MIB = 1 << 20
 _DEFAULT_CPU_TILE_BYTES = 1 << 30
 _DEFAULT_MAX_VERTEX_PAYLOAD_BYTES = 512 << 20
 _DEFAULT_POINT_BUDGET = 100_000
+
+
+def _make_snapshot_worker(reader, selected_value_index, residency, *, max_vertex_payload_bytes):
+    """Borrow already opened state for synchronous worker-policy measurements.
+
+    Startup and selection loading are measured separately. Do not start or
+    close this worker: the caller owns the reader and residency. No QThread is
+    created, and no activation acknowledgement promotes a retained batch, so
+    successive requests measure replacement work with warm decoded tiles.
+    """
+    worker = _TiledPointsCacheWorker(
+        Path("."),
+        _CacheSessionSettings(None, residency.max_resident_bytes, max_vertex_payload_bytes),
+        threading.Event(),
+        lambda _path: reader,
+    )
+    worker._reader = reader
+    worker._selected_value_index = selected_value_index
+    worker._selected_value_ids = (
+        None if selected_value_index is None else tuple(int(value_id) for value_id in selected_value_index.value_ids)
+    )
+    worker._cpu_tile_residency = residency
+    return worker
+
+
+def _read_worker_snapshot(worker, request):
+    """Capture one synchronous preparation, including LOD and budget policy."""
+    snapshots = []
+    failures = []
+
+    def failed(_generation, failure):
+        failures.append(failure)
+
+    worker.viewport_ready.connect(snapshots.append)
+    worker.viewport_failed.connect(failed)
+    try:
+        worker.read_viewport_snapshot(request)
+        if failures:
+            raise RuntimeError(f"Worker preparation failed: {failures[0].message}")
+        if len(snapshots) != 1:
+            raise RuntimeError("Worker preparation did not return exactly one snapshot.")
+        return snapshots[0]
+    finally:
+        worker.viewport_ready.disconnect(snapshots.append)
+        worker.viewport_failed.disconnect(failed)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -546,10 +596,13 @@ def _renderer_report(
         report["warm_draw_median_ms"] = statistics.median(warm_draws) if warm_draws else None
 
         warm_snapshot = _snapshot_with_generation(snapshot, snapshot.request_generation + 1)
+        replacements_before = visual.payload_replacement_count
         started = time.perf_counter()
         report["warm_full_apply_applied"] = visual.apply_snapshot(warm_snapshot)
         report["warm_full_apply_ms"] = _elapsed_ms(started)
-        report["warm_full_vertex_staging_ms"] = visual.last_vertex_staging_ms
+        replacements = visual.payload_replacement_count - replacements_before
+        report["warm_full_vertex_staging_ms"] = visual.last_vertex_staging_ms if replacements else 0.0
+        report["warm_full_vbo_uploads"] = replacements
         report["warm_full_payload_replacement_count"] = visual.payload_replacement_count
         started = time.perf_counter()
         canvas.render()
@@ -793,18 +846,14 @@ def main() -> None:
             viewport=viewport,
         )
         residency = _CpuTileResidency(args.cpu_tile_cache_bytes)
+        worker = _make_snapshot_worker(
+            reader, selected_value_index, residency, max_vertex_payload_bytes=args.max_vertex_payload_bytes
+        )
         timings = _TimingLog()
         with _TemporaryPatches() as patches:
             _install_reader_timers(timings, patches)
             started = time.perf_counter()
-            snapshot = _read_viewport_snapshot(
-                reader,
-                selected_value_index,
-                residency,
-                request,
-                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                raise_if_cancelled=lambda: None,
-            )
+            snapshot = _read_worker_snapshot(worker, request)
             cold_snapshot_ms = _elapsed_ms(started)
             cold_breakdown = timings.summary()
             rss_after_cold_snapshot_mib = _rss_mib()
@@ -821,14 +870,7 @@ def main() -> None:
                 viewport=viewport,
             )
             started = time.perf_counter()
-            warm_snapshot = _read_viewport_snapshot(
-                reader,
-                selected_value_index,
-                residency,
-                warm_request,
-                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                raise_if_cancelled=lambda: None,
-            )
+            warm_snapshot = _read_worker_snapshot(worker, warm_request)
             warm_snapshot_ms = _elapsed_ms(started)
             warm_breakdown = timings.summary()
 
@@ -885,18 +927,14 @@ def main() -> None:
                 args.canvas_width,
                 args.canvas_height,
             )
-            subset_snapshot = _read_viewport_snapshot(
-                reader,
-                selected_value_index,
-                residency,
+            subset_snapshot = _read_worker_snapshot(
+                worker,
                 _ViewportRequest(
                     request_generation=3,
                     selection_generation=1,
                     requested_value_ids=requested_value_ids,
                     viewport=subset_viewport,
                 ),
-                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                raise_if_cancelled=lambda: None,
             )
             if not subset_snapshot.within_budget:
                 raise RuntimeError("The centered renderer subset unexpectedly exceeds the point budget.")

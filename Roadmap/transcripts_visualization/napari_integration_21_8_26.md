@@ -227,7 +227,7 @@ src/napari_harpy/
       runtime/
         __init__.py
         cache_session.py                # worker-owned reader lifecycle
-        coordinator.py                  # generations and latest-request policy
+        viewport_scheduler.py           # generations and latest-request policy
         residency.py                    # decoded CPU tile LRU
       napari/
         __init__.py
@@ -493,7 +493,7 @@ signal bridge is acceptable if tests prove:
 ### Latest-request mailbox
 
 Camera interaction must not enqueue an unbounded FIFO of obsolete viewports.
-The coordinator owns:
+The scheduler owns:
 
 ```text
 at most one active worker request
@@ -830,7 +830,7 @@ TiledPointsLayerModel._update_draw()
         ↓ normalize and deduplicate
 TiledPointsLayerModel.events.viewport(state)
         ↓ GUI listener submits or replaces the pending request; no cache IO
-latest-request coordinator
+latest-request scheduler
         ↓ assign request generation
 reader worker: select_level()
         ↓
@@ -1213,8 +1213,8 @@ rounds it to integer array coordinates; I3 must independently preserve the
 floating-point bounds required by point data.
 
 I3 only defines and emits `TiledPointsLayerModel.events.viewport`; it does not
-install a production listener. I5 implements the latest-request coordinator,
-and I7 connects this event to that coordinator during session composition. The
+install a production listener. I5 implements the latest-request scheduler,
+and I7 connects this event to that scheduler during session composition. The
 event is emitted synchronously on the GUI thread, so its listener may only
 submit or replace pending work. It must never perform Zarr or codec work
 directly.
@@ -1458,7 +1458,7 @@ Non-goals for I4:
 
 I5 adds viewport scheduling, payload reads, and CPU tile residency on top of
 this already-open, already-primed worker session. I7 later connects the layer's
-viewport event to the composed coordinator.
+viewport event to the composed scheduler.
 
 Shutdown is cooperative rather than falsely instantaneous. `close()` sets a
 thread-safe cancellation flag and schedules reader closure on the owner
@@ -1512,7 +1512,7 @@ these seams; it does not replace any of them.
 
 #### Submission and worker request flow
 
-The GUI-side coordinator assigns the request generation synchronously when a
+The GUI-side scheduler assigns the request generation synchronously when a
 viewport is submitted, before the request can wait behind active worker work.
 This lets a newer camera event make an older completion stale immediately even
 while the reader thread is busy. The accepted request then executes on the
@@ -1565,7 +1565,7 @@ not reread points and does not create renderer upload work.
 
 #### Latest-request mailbox
 
-Camera events must not form an unbounded FIFO. The coordinator owns at most one
+Camera events must not form an unbounded FIFO. The scheduler owns at most one
 active worker request and one pending request; every newer submission replaces
 the previous pending request:
 
@@ -1595,7 +1595,7 @@ remains visible while a replacement is assembled.
 
 #### Selection changes during viewport work
 
-The coordinator also owns one monotonically increasing selection-request
+The scheduler also owns one monotonically increasing selection-request
 generation. Accepting a value-selection change increments that generation and
 immediately invalidates activation of active or pending viewport work for the
 previous generation; it does not attempt to interrupt a synchronous Zarr read.
@@ -1616,7 +1616,7 @@ latest viewport is replanned for S2
 
 The committed S1 selection and its previous valid snapshot remain active until
 S2 index loading and replacement snapshot assembly succeed. If S2 index loading
-fails, the worker retains S1 as already required by I4; the coordinator retains
+fails, the worker retains S1 as already required by I4; the scheduler retains
 the old snapshot and later viewport requests continue from that committed
 selection.
 
@@ -1767,7 +1767,7 @@ generations, value selections, or levels.
 I5 stops at this renderer-independent boundary. It does not create VisPy nodes,
 GPU buffers, or OpenGL resources; I6 consumes the snapshot contract in the
 tile-retaining renderer. I5 also does not yet connect the real
-`TiledPointsLayerModel.events.viewport` signal to the coordinator; I7 composes
+`TiledPointsLayerModel.events.viewport` signal to the scheduler; I7 composes
 that GUI binding and teardown. Focused I5 tests therefore drive the submission
 boundary directly and use a fake snapshot consumer without an OpenGL context.
 
@@ -1999,7 +1999,7 @@ residency: a GPU-evicted tile present in an I5 snapshot can be reuploaded from
 its immutable CPU arrays without a Zarr read.
 
 Do not retain separate active or pending snapshot-identity objects in the
-renderer. The coordinator owns stale request/selection rejection, while
+renderer. The scheduler owns stale request/selection rejection, while
 `TileResidencyKey` and the active/pending membership already provide the cache,
 selection, level, and logical-tile identity needed for GPU reuse and atomic
 activation.
@@ -2066,8 +2066,8 @@ Exit criteria:
 - repeated add/remove releases scene nodes, callbacks, and GPU references.
 
 I6 stops at a renderer that can be driven by synthetic snapshot events. It does
-not connect `TiledPointsLayerModel.events.viewport` to the coordinator, deliver
-real coordinator results to `events.render_snapshot`, update product status, or
+not connect `TiledPointsLayerModel.events.viewport` to the scheduler, deliver
+real scheduler results to `events.render_snapshot`, update product status, or
 own the cache session. I7 performs that composition and guarantees all VisPy
 mutation occurs on the GUI thread.
 
@@ -2118,7 +2118,7 @@ headless runs and enabled explicitly for renderer qualification.
 ### Slice I7: compose the real cache-to-canvas session — resolved
 
 I7 is a composition and lifecycle slice. The expensive pieces already exist
-independently: the layer emits intrinsic viewports, the coordinator owns the
+independently: the layer emits intrinsic viewports, the scheduler owns the
 latest-request mailbox, the worker session owns the cache reader and CPU tile
 residency, and the VisPy layer consumes complete immutable snapshots. Introduce
 one dedicated GUI-thread composition owner for one already-created
@@ -2127,7 +2127,7 @@ one dedicated GUI-thread composition owner for one already-created
 ```text
 TiledPointsLayerModel
 _TiledPointsCacheSession
-_TiledPointsViewportCoordinator
+_TiledPointsViewportScheduler
 their signal connections and terminal teardown
 ```
 
@@ -2138,8 +2138,8 @@ runtime composition when the napari-harpy points workflow is replaced.
 
 #### Compose the request and result paths
 
-Connect `TiledPointsLayerModel.events.viewport` to the GUI-side coordinator and
-connect accepted coordinator snapshots back to
+Connect `TiledPointsLayerModel.events.viewport` to the GUI-side scheduler and
+connect accepted scheduler snapshots back to
 `TiledPointsLayerModel.events.render_snapshot`:
 
       TiledPointsLayerModel.events.viewport
@@ -2148,7 +2148,7 @@ connect accepted coordinator snapshots back to
       composition/listener
               |
               v
-      _TiledPointsViewportCoordinator.submit_viewport()
+      _TiledPointsViewportScheduler.submit_viewport()
               |
               v
       _TiledPointsCacheSession.request_viewport()
@@ -2165,7 +2165,7 @@ connect accepted coordinator snapshots back to
       _TiledPointsCacheSession.viewport_ready
               |
               v
-      _TiledPointsViewportCoordinator.snapshot_ready
+      _TiledPointsViewportScheduler.snapshot_ready
               |
               v
       composition/listener
@@ -2185,12 +2185,12 @@ connect accepted coordinator snapshots back to
 
 The outbound viewport callback runs on the GUI thread and must remain
 non-blocking. It only calls
-`_TiledPointsViewportCoordinator.submit_viewport()`, which either dispatches
+`_TiledPointsViewportScheduler.submit_viewport()`, which either dispatches
 the request or replaces the one pending request. It performs no cache IO and
 does not wait for the worker. The existing one-active/one-latest-pending policy
 remains the sole camera-request coalescing boundary.
 
-The worker result crosses back through Qt queued signals. The coordinator first
+The worker result crosses back through Qt queued signals. The scheduler first
 rejects obsolete request or selection generations and emits only an accepted
 complete `TiledPointsRenderSnapshot`. The composition owner then emits that
 snapshot through the model's `render_snapshot` event. The registered
@@ -2250,7 +2250,7 @@ session opens only the published Zarr cache and its resident lookup indexes; it
 does not inspect or scan the original points dataframe.
 
 Closure is terminal and idempotent. Disconnect the layer viewport listener and
-all result/status listeners first, close the coordinator so it discards active
+all result/status listeners first, close the scheduler so it discards active
 and pending GUI requests, and then request cache-session closure. Reader cleanup
 continues on the reader's worker thread. A queued or already-running result may
 finish warming worker-owned residency, but after disconnection and generation
@@ -2270,7 +2270,7 @@ VisPy mutation stays on the GUI thread.
 The adopted `_TiledPointsLayerRuntime` is the dedicated GUI-thread composition
 owner. It receives an already-created `TiledPointsLayerModel`, the published
 cache root, and explicit `_CacheSessionSettings`; constructs the session and
-coordinator; validates the worker-reported cache identity against the layer's
+scheduler; validates the worker-reported cache identity against the layer's
 complete `TiledPointsDatasetReference`; installs the request, result, status,
 error, and teardown listeners; and starts the worker session. It exposes the
 selected-value change boundary needed by the later application binding and an
@@ -2536,10 +2536,10 @@ Construct one model from:
 Install the runtime's model listeners before inserting the model into napari.
 Layer insertion then constructs the registered VisPy layer and Qt controls;
 the first normalized viewport is retained or dispatched through the existing
-coordinator/session boundary. Do not perform cache IO from insertion callbacks.
+scheduler/session boundary. Do not perform cache IO from insertion callbacks.
 
 The first Add / Update action may request a proper value subset before the new
-cache session reaches `READY`. Extend the runtime/coordinator startup contract
+cache session reaches `READY`. Extend the runtime/scheduler startup contract
 to retain one latest desired selection while the worker opens the cache and
 loads bucket indexes. Do not call the session's ready-only selection API early,
 and do not dispatch an all-values viewport for a requested proper subset:
@@ -2651,7 +2651,7 @@ to `_TiledPointsLayerRuntime.set_selected_value_ids()`. The effective viewport
 budget remains the minimum of that hard limit and the screen-density budget
 implemented in I3. The preceding accepted visual remains visible while the
 worker prepares a changed selected-value index; when it commits, the
-coordinator dispatches the latest retained viewport.
+scheduler dispatches the latest retained viewport.
 
 Camera updates continue through `TiledPointsLayerModel.events.viewport`; they
 must not call the points controller, execute Dask, or reconstruct the layer.
