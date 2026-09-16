@@ -10,6 +10,7 @@ from vispy.scene.visuals import Compound
 
 from napari_harpy.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
+    TiledPointsRenderBatch,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
 )
@@ -75,7 +76,7 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         max_vertex_payload_bytes   --->  candidate vertex-payload byte bound
         point_diameter event       --->  point-size uniforms
         value_palette event        --->  palette-texture update
-        render_snapshot event      --->  one packed payload replacement
+        render_snapshot event      --->  retain identical batch or replace payload
         render_snapshot_result     <---  generation-bound applied acknowledgement
         base layer events          --->  visibility, opacity, blending,
                                           ordering, and layer transform
@@ -97,6 +98,12 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         root = Compound([])
         super().__init__(layer, root, font_info=font_info)
         self._closed = False
+        # Identify the batch known to be successfully staged for rendering.
+        # Retained-viewport snapshots can reuse this same object, allowing
+        # apply_snapshot() to skip restaging and an extra redraw request.
+        # This shares the CPU batch without copying its vertices; the worker
+        # owns viewport retention itself.
+        self._active_render_batch: TiledPointsRenderBatch | None = None
         self._palette = _ValuePaletteTexture(
             layer.value_palette,
             maximum_texture_size=self.MAX_TEXTURE_SIZE_2D,
@@ -161,6 +168,19 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
     def apply_snapshot(self, snapshot: TiledPointsRenderSnapshot) -> bool:
         """Prepare and atomically activate one complete within-budget snapshot.
 
+        Retained-viewport reuse can produce a new snapshot with updated metadata
+        but the same immutable ``render_batch`` object. When
+        ``snapshot.render_batch is self._active_render_batch``, its vertices
+        are already staged, so this method returns acceptance without replacing
+        the VBO or requesting another redraw. Camera and visual-property changes
+        request their own redraws. A different batch, including an empty one,
+        updates the visual and requests a redraw.
+
+        Before taking this shortcut, the full batch's point count and byte size
+        must satisfy the current hard limits, including points outside the
+        current viewport. A smaller ``snapshot.estimated_point_count`` does
+        not reduce the retained batch's allocation.
+
         An over-budget snapshot performs no renderer work and leaves the active
         visual unchanged. Batch validation and capacity failures happen before
         VBO mutation. A staging failure declines the candidate activation,
@@ -198,7 +218,21 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
                 )
             vertices = render_batch.vertices
             self._validate_vertex_payload(vertices, point_count=point_count, required_bytes=required_bytes)
+            # Retained-viewport reuse can deliver a new snapshot with the same
+            # immutable batch. Accept the new metadata without restaging or an
+            # extra redraw request; camera changes already request their own draw.
+            if render_batch is self._active_render_batch:
+                return True
+
+            # A is the previously staged batch; B is the incoming render_batch.
+            # We are about to change the buffer; stop claiming A is safe to reuse.
+            self._active_render_batch = None
+
+            # Try to stage B. This operation might fail partway through.
             self._snapshot_visual.replace_vertices(vertices)
+
+            # Staging succeeded: B can now be reused without restaging.
+            self._active_render_batch = render_batch
         except Exception as error:  # noqa: BLE001
             self.layer.events.render_error(value=error)
             return False
@@ -211,6 +245,7 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
         if self._closed:
             return
         self._closed = True
+        self._active_render_batch = None
         self.node.remove_subvisual(self._snapshot_visual)
         self._snapshot_visual.close()
         self._palette.close()
