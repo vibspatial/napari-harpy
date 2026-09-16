@@ -139,7 +139,7 @@ def test_identical_draw_is_deduplicated_but_canvas_resize_emits() -> None:
 
 
 def test_stationary_viewport_recomputes_budget_without_point_diameter_coupling() -> None:
-    layer = _layer()
+    layer = _layer(target_pixels_per_point=9.0)
     observed = _record_viewports(layer)
 
     layer.hard_render_point_budget = 500
