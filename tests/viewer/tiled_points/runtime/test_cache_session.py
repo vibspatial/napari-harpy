@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +18,12 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _ViewportReadResult,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.viewer.tiled_points.contracts import TiledPointsViewportState, _ViewportRequest
+from napari_harpy.viewer.tiled_points.contracts import (
+    TILED_POINTS_VERTEX_DTYPE,
+    TiledPointsRenderResult,
+    TiledPointsViewportState,
+    _ViewportRequest,
+)
 from napari_harpy.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
@@ -60,7 +65,6 @@ class _ReaderProbe:
     construction_paused: threading.Event = field(default_factory=threading.Event)
     resume_construction: threading.Event = field(default_factory=threading.Event)
     planned_tile_x: tuple[int, ...] = (0, 1)
-    over_budget: bool = False
     viewport_reads: list[tuple[tuple[int, int, int], ...]] = field(default_factory=list)
     last_location_batch: np.ndarray | None = None
     last_value_id_batch: np.ndarray | None = None
@@ -132,13 +136,13 @@ class _ControllableReader:
         )
 
     def select_level(self, viewport: object, point_budget: int, *, value_index: object) -> _LevelSelection:
-        del viewport, point_budget, value_index
+        del viewport, value_index
         point_count = len(self._probe.planned_tile_x)
         return _LevelSelection(
             level=0,
             estimated_point_count=point_count,
             positive_visible_tile_count=point_count,
-            within_budget=not self._probe.over_budget,
+            within_budget=point_count <= point_budget,
             omitted_value_ids=None,
         )
 
@@ -267,9 +271,11 @@ def _viewport_request(request_generation: int) -> _ViewportRequest:
         ("max_vertex_payload_bytes", True),
         ("max_vertex_payload_bytes", 0),
         ("max_vertex_payload_bytes", -1),
+        ("max_vertex_payload_bytes", 1),
+        ("max_vertex_payload_bytes", TILED_POINTS_VERTEX_DTYPE.itemsize - 1),
     ],
 )
-def test_session_settings_require_positive_worker_allocation_limits(name: str, value: object) -> None:
+def test_session_settings_reject_invalid_worker_allocation_limits(name: str, value: object) -> None:
     values = {"max_cpu_tile_bytes": 1_000, "max_vertex_payload_bytes": 1_000}
     values[name] = value
     with pytest.raises(ValueError, match=name):
@@ -277,6 +283,311 @@ def test_session_settings_require_positive_worker_allocation_limits(name: str, v
             max_selected_value_index_bytes=None,
             **values,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("level", [0, 1, 2], ids=["exact", "bridge", "spatial"])
+@pytest.mark.parametrize("selection", [None, (0,)], ids=["all-values", "subset"])
+def test_retained_batch_skips_tile_work_after_current_lod_selection(level, selection, monkeypatch) -> None:
+    """All physical routes/levels use one contained-view reuse contract."""
+    probe = _ReaderProbe()
+    worker = _TiledPointsCacheWorker(
+        Path("unused"),
+        _CacheSessionSettings(None, 1000, 1000),
+        threading.Event(),
+        lambda path: _ControllableReader(path, probe),
+    )
+    snapshots = []
+    worker.viewport_ready.connect(snapshots.append)
+    worker.start()
+    worker.update_selected_value_index(selection)
+    reader = worker._reader
+    reader.dataset_info = replace(
+        reader.dataset_info, levels=tuple(_FakeLevelInfo(kind) for kind in ("exact", "bridge", "spatial"))
+    )
+    if selection is not None:
+        worker._selected_value_index = replace(
+            worker._selected_value_index, levels=worker._selected_value_index.levels * 3
+        )
+    original_select = reader.select_level
+    lod_calls = []
+
+    def select(viewport, point_budget, **kwargs):
+        lod_calls.append(viewport)
+        return replace(original_select(viewport, point_budget, **kwargs), level=level)
+
+    monkeypatch.setattr(reader, "select_level", select)
+    request = replace(_viewport_request(1), requested_value_ids=selection)
+    try:
+        worker.read_viewport_snapshot(request)
+        first = snapshots[-1]
+        assert first.level == level
+        assert worker.retained_render_batch_bytes == 0
+        assert worker.pending_render_batch_bytes == 24
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        assert worker.retained_render_batch_bytes == 24
+        assert worker.pending_render_batch_bytes == 0
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Contained reuse performed tile planning, lookup, IO, or packing")
+
+        monkeypatch.setattr(cache_session_module, "_read_viewport_snapshot", forbidden)
+        monkeypatch.setattr(reader, "plan_viewport", forbidden)
+        monkeypatch.setattr(reader, "read_planned_tiles", forbidden)
+        monkeypatch.setattr(worker._cpu_tile_residency, "get", forbidden)
+        monkeypatch.setattr(cache_session_module, "pack_render_tiles", forbidden)
+        # Include an empty visible estimate: empty space still belongs to the
+        # original rectangle and does not discard its off-screen vertices.
+        probe.planned_tile_x = ()
+        for generation, bounds in enumerate(((5.0, 10.0), (15.0, 20.0), (0.0, 30.0)), start=2):
+            if generation == 4:
+                probe.planned_tile_x = (0, 1)
+            current = replace(
+                request,
+                request_generation=generation,
+                viewport=replace(request.viewport, x_min=bounds[0], x_max=bounds[1]),
+            )
+            worker.read_viewport_snapshot(current)
+            snapshot = snapshots[-1]
+            assert snapshot.request_generation == generation
+            assert snapshot.render_batch is first.render_batch
+            assert snapshot.estimated_point_count == len(probe.planned_tile_x)
+            worker.acknowledge_render_result(TiledPointsRenderResult(generation, 0, True))
+            assert worker._retained_viewport.bounds.x_min == 0.0
+            assert worker._retained_viewport.bounds.x_max == 30.0
+        assert len(lod_calls) == 4
+    finally:
+        worker.close()
+    assert worker.retained_render_batch_bytes == worker.pending_render_batch_bytes == 0
+
+
+def test_rejected_replacement_preserves_accepted_bounds_and_has_no_viewport_history() -> None:
+    """Retain the last accepted viewport, not a history of packed batches.
+
+    1. Rejecting B preserves A: after accepting viewport A, preparing and
+       rejecting a disjoint viewport B must leave A available for reuse,
+       with its original bounds and render batch.
+
+    2. Accepting B replaces A: once B is accepted, returning to A requires
+       a newly packed batch. Decoded CPU tiles may still be reused, but A's
+       previous packed batch is no longer retained.
+    """
+    probe = _ReaderProbe()
+    worker = _TiledPointsCacheWorker(
+        Path("unused"),
+        _CacheSessionSettings(None, 1000, 1000),
+        threading.Event(),
+        lambda path: _ControllableReader(path, probe),
+    )
+    snapshots = []
+    worker.viewport_ready.connect(snapshots.append)
+    worker.start()
+    first_request = _viewport_request(1)
+    outside = replace(
+        first_request, request_generation=2, viewport=replace(first_request.viewport, x_min=40.0, x_max=70.0)
+    )
+    try:
+        worker.read_viewport_snapshot(first_request)
+        first = snapshots[-1]
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        worker.read_viewport_snapshot(outside)
+        assert snapshots[-1].render_batch is not first.render_batch
+        assert worker.pending_render_batch_bytes == worker.retained_render_batch_bytes == 24
+        worker.acknowledge_render_result(TiledPointsRenderResult(2, 0, False))
+        assert worker.pending_render_batch_bytes == 0
+        worker.read_viewport_snapshot(replace(first_request, request_generation=3))
+        assert snapshots[-1].render_batch is first.render_batch
+        worker.acknowledge_render_result(TiledPointsRenderResult(3, 0, True))
+        worker.read_viewport_snapshot(replace(outside, request_generation=4))
+        worker.acknowledge_render_result(TiledPointsRenderResult(4, 0, True))
+        worker.read_viewport_snapshot(replace(first_request, request_generation=5))
+        assert snapshots[-1].render_batch is not first.render_batch
+        # Decoded tiles can avoid IO on a real replacement; packed batches are
+        # not a history cache. This fake uses identical tiles for both rectangles.
+        assert len(probe.viewport_reads) == 1
+        worker.acknowledge_render_result(TiledPointsRenderResult(5, 0, True))
+        worker.read_viewport_snapshot(
+            replace(
+                first_request,
+                request_generation=6,
+                viewport=replace(first_request.viewport, hard_render_point_budget=1),
+            )
+        )
+        assert not snapshots[-1].within_budget
+        assert snapshots[-1].rendered_point_count == 0
+        worker.acknowledge_render_result(TiledPointsRenderResult(6, 0, True))
+        assert worker._retained_viewport.snapshot.request_generation == 5
+        worker.update_selected_value_index((0,))
+        assert worker.retained_render_batch_bytes == worker.pending_render_batch_bytes == 0
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize(
+    "invalidates",
+    ["lod", "point_capacity", "vertex_capacity", "cache_generation", "selection", "outside_original_viewport"],
+)
+def test_retained_viewport_reports_reuse_rejection_reason(invalidates) -> None:
+    probe = _ReaderProbe()
+    reader = _ControllableReader(Path("unused"), probe)
+    request = _viewport_request(1)
+    snapshot = cache_session_module._read_viewport_snapshot(
+        reader,
+        None,
+        cache_session_module._CpuTileResidency(1000),
+        request,
+        viewport=cache_session_module._IntrinsicViewport(0, 0, 30, 10),
+        level_selection=reader.select_level(request.viewport, 100, value_index=None),
+        budget_message=None,
+        max_vertex_payload_bytes=1000,
+        raise_if_cancelled=lambda: None,
+    )
+    retained = cache_session_module._RetainedViewport(cache_session_module._IntrinsicViewport(0, 0, 30, 10), snapshot)
+    kwargs = {"cache_generation_id": snapshot.cache_generation_id, "level": 0, "max_vertex_payload_bytes": 1000}
+    inner = replace(request, request_generation=2, viewport=replace(request.viewport, x_max=10.0))
+    if invalidates == "lod":
+        kwargs["level"] = 1
+    elif invalidates == "point_capacity":
+        inner = replace(inner, viewport=replace(inner.viewport, hard_render_point_budget=1))
+    elif invalidates == "vertex_capacity":
+        kwargs["max_vertex_payload_bytes"] = 12
+    elif invalidates == "cache_generation":
+        kwargs["cache_generation_id"] = "87654321-4321-6789-a234-678943216789"
+    elif invalidates == "selection":
+        inner = replace(inner, selection_generation=1, requested_value_ids=(0,))
+    else:
+        inner = replace(inner, viewport=replace(inner.viewport, x_min=-0.01))
+    assert retained.rejection_reason(inner, **kwargs) == invalidates
+
+
+@pytest.mark.parametrize("phase", ["packing", "selection"])
+def test_failed_preparation_does_not_discard_the_accepted_batch(phase, monkeypatch) -> None:
+    probe = _ReaderProbe()
+    worker = _TiledPointsCacheWorker(
+        Path("unused"),
+        _CacheSessionSettings(None, 1000, 1000),
+        threading.Event(),
+        lambda path: _ControllableReader(path, probe),
+    )
+    snapshots = []
+    failures = []
+    worker.viewport_ready.connect(snapshots.append)
+    worker.viewport_failed.connect(lambda _generation, failure: failures.append(failure))
+    worker.failed.connect(failures.append)
+    worker.start()
+    first_request = _viewport_request(1)
+    try:
+        worker.read_viewport_snapshot(first_request)
+        first = snapshots[-1]
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        if phase == "packing":
+
+            def fail_pack(*args, **kwargs):
+                raise RuntimeError("packing failed")
+
+            monkeypatch.setattr(cache_session_module, "pack_render_tiles", fail_pack)
+            worker.read_viewport_snapshot(
+                replace(first_request, request_generation=2, viewport=replace(first_request.viewport, x_max=40.0))
+            )
+        else:
+            probe.fail_selection = True
+            worker.update_selected_value_index((0,))
+        assert len(failures) == 1
+        assert worker.pending_render_batch_bytes == 0
+        worker.read_viewport_snapshot(replace(first_request, request_generation=3))
+        assert snapshots[-1].request_generation == 3
+        assert snapshots[-1].render_batch is first.render_batch
+        assert worker.retained_render_batch_bytes == 24
+    finally:
+        worker.close()
+
+
+def test_smaller_contained_payload_is_repacked_after_point_budget_reduction() -> None:
+    probe = _ReaderProbe()
+    worker = _TiledPointsCacheWorker(
+        Path("unused"),
+        _CacheSessionSettings(None, 1000, 1000),
+        threading.Event(),
+        lambda path: _ControllableReader(path, probe),
+    )
+    snapshots = []
+    worker.viewport_ready.connect(snapshots.append)
+    worker.start()
+    request = _viewport_request(1)
+    try:
+        worker.read_viewport_snapshot(request)
+        first = snapshots[-1]
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        probe.planned_tile_x = (0,)
+        inner = replace(
+            request,
+            request_generation=2,
+            viewport=replace(
+                request.viewport,
+                x_max=10.0,
+                hard_render_point_budget=1,
+            ),
+        )
+        worker.read_viewport_snapshot(inner)
+        result = snapshots[-1]
+        assert result.request_generation == 2
+        assert result.render_batch is not first.render_batch
+        assert result.rendered_point_count == result.estimated_point_count == 1
+        assert len(probe.viewport_reads) == 1  # replacement can still reuse decoded tiles
+        worker.acknowledge_render_result(TiledPointsRenderResult(2, 0, True))
+        assert worker._retained_viewport.bounds.x_max == inner.viewport.x_max
+    finally:
+        worker.close()
+
+
+def test_contained_viewport_rebuilds_when_selected_lod_changes(monkeypatch) -> None:
+    """Rebuild a contained viewport when its selected LOD changes.
+
+    Accept viewport A at Bridge level, then request a smaller viewport B
+    inside A at Exact level. B must receive a new batch: containment alone
+    does not permit reuse of points from a different LOD.
+
+    LOD selection is controlled by the test; this checks the worker's
+    response to a level change, not the LOD-selection algorithm.
+    """
+    probe = _ReaderProbe()
+    worker = _TiledPointsCacheWorker(
+        Path("unused"),
+        _CacheSessionSettings(None, 1000, 1000),
+        threading.Event(),
+        lambda path: _ControllableReader(path, probe),
+    )
+    snapshots = []
+    worker.viewport_ready.connect(snapshots.append)
+    worker.start()
+    reader = worker._reader
+    reader.dataset_info = replace(reader.dataset_info, levels=(_FakeLevelInfo(), _FakeLevelInfo("bridge")))
+    original_select = reader.select_level
+    levels = iter((1, 0))
+    lod_calls = []
+
+    def select(viewport, point_budget, **kwargs):
+        lod_calls.append(viewport)
+        return replace(original_select(viewport, point_budget, **kwargs), level=next(levels))
+
+    monkeypatch.setattr(reader, "select_level", select)
+    request = _viewport_request(1)
+    try:
+        worker.read_viewport_snapshot(request)
+        first = snapshots[-1]
+        assert first.level == 1
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        inner = replace(request, request_generation=2, viewport=replace(request.viewport, x_max=10.0))
+        worker.read_viewport_snapshot(inner)
+        replacement = snapshots[-1]
+        assert replacement.request_generation == 2
+        assert replacement.level == 0
+        assert replacement.render_batch is not first.render_batch
+        assert len(lod_calls) == 2
+        assert len(probe.viewport_reads) == 2
+        worker.acknowledge_render_result(TiledPointsRenderResult(2, 0, True))
+        assert worker._retained_viewport.bounds.x_max == inner.viewport.x_max
+    finally:
+        worker.close()
 
 
 def test_session_owns_reader_on_one_worker_thread_and_reuses_selection(qtbot) -> None:
@@ -534,7 +845,7 @@ def test_session_residency_detaches_tiles_from_shared_reader_batches(qtbot) -> N
 
 
 def test_session_rejects_over_budget_viewport_before_point_io(qtbot) -> None:
-    probe = _ReaderProbe(over_budget=True)
+    probe = _ReaderProbe()
     session = _session(probe)
     snapshots: list[object] = []
     session.viewport_ready.connect(snapshots.append)
@@ -542,7 +853,8 @@ def test_session_rejects_over_budget_viewport_before_point_io(qtbot) -> None:
     try:
         _start_ready(session, qtbot)
         with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
-            session.request_viewport(_viewport_request(1))
+            request = _viewport_request(1)
+            session.request_viewport(replace(request, viewport=replace(request.viewport, hard_render_point_budget=1)))
 
         assert not snapshots[-1].within_budget
         assert snapshots[-1].rendered_tile_count == 0
@@ -571,7 +883,7 @@ def test_oversized_tile_is_returned_transiently_but_not_retained(qtbot) -> None:
         _close(session, qtbot)
 
 
-def test_worker_rejects_vertex_payload_capacity_before_batch_allocation(qtbot) -> None:
+def test_worker_reports_vertex_payload_limit_before_point_io(qtbot) -> None:
     probe = _ReaderProbe(planned_tile_x=(0, 1))
     session = _session(probe, max_vertex_payload_bytes=12)
     failures: list[_CacheSessionFailure] = []
@@ -581,13 +893,15 @@ def test_worker_rejects_vertex_payload_capacity_before_batch_allocation(qtbot) -
 
     try:
         _start_ready(session, qtbot)
-        with qtbot.waitSignal(session.viewport_failed, timeout=5_000):
+        with qtbot.waitSignal(session.viewport_ready, timeout=5_000):
             session.request_viewport(_viewport_request(1))
 
-        assert snapshots == []
-        assert len(failures) == 1
-        assert failures[0].phase == "viewport"
-        assert "max_vertex_payload_bytes=12" in failures[0].message
+        assert failures == []
+        assert len(snapshots) == 1
+        assert not snapshots[0].within_budget
+        assert snapshots[0].rendered_point_count == 0
+        assert "24 vertex bytes required, limit 12 bytes" in snapshots[0].budget_message
+        assert probe.viewport_reads == []
     finally:
         _close(session, qtbot)
 
@@ -678,7 +992,8 @@ def test_terminal_close_cancels_worker_render_batch_packing(
     snapshots: list[object] = []
     session.viewport_ready.connect(snapshots.append)
     _start_ready(session, qtbot)
-    session.request_viewport(_viewport_request(1))
+    request = _viewport_request(1)
+    session.request_viewport(replace(request, viewport=replace(request.viewport, hard_render_point_budget=129)))
     qtbot.waitUntil(pack_paused.is_set, timeout=5_000)
     assert session.close()
     with qtbot.waitSignal(session.closed, timeout=5_000):
