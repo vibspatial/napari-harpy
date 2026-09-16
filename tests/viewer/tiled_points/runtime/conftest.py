@@ -20,7 +20,16 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _Zarr
 @pytest.fixture(scope="session")
 def real_cache_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the shared tiny cache used by real runtime integration tests."""
-    root = tmp_path_factory.mktemp("tiled-points-runtime")
+    return _build_runtime_cache(tmp_path_factory.mktemp("tiled-points-runtime"), overview_point_budget=10)
+
+
+@pytest.fixture(scope="session")
+def sampled_cache_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Keep four Exact points but only two points in the coarsest level."""
+    return _build_runtime_cache(tmp_path_factory.mktemp("tiled-points-sampled"), overview_point_budget=2)
+
+
+def _build_runtime_cache(root: Path, *, overview_point_budget: int) -> Path:
     source = ParquetPointsSource(
         spatialdata_path=root / "source.zarr",
         points_name="transcripts",
@@ -47,7 +56,7 @@ def real_cache_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
         temporary_directory_root=temporary_root,
         config=_PointsCacheBuilderConfig(
             leaf_tile_size=10,
-            overview_point_budget=10,
+            overview_point_budget=overview_point_budget,
             dask_worker_count=2,
             zarr_settings=_ZarrWriteSettings(2, 4, 2, 4, "zstd-v1"),
             catalog_settings=_CatalogWriteSettings(
