@@ -2124,7 +2124,23 @@ Detailed per-request bounds, visible/retained counts, byte accounting, LOD chang
 
 **Status: Conditional — evaluate after Slice 12a.**
 
-This slice changes when the viewer switches LOD, not which previous viewports it caches. First implement Slice 12a's single-batch retention with the existing finest-valid level choice and measure remaining transitions. Once another level replaces the batch, returning to the earlier level may require assembly, packing, and upload again; Slice 12a does not retain a previous-level batch.
+This slice changes when the viewer switches LOD, not which previous viewports it caches. With Slice 12a implemented, use its single-batch retention and existing finest-valid level choice as the baseline for measuring remaining transitions. Once another level replaces the batch, returning to the earlier level may require assembly, packing, and upload again; Slice 12a does not retain a previous-level batch.
+
+**Current behavior and intended change**
+
+`_TiledPointsCacheWorker.read_viewport_snapshot()` currently calls `_PointsCacheReader.select_level()` before considering retained-batch reuse. The reader scans from Exact toward coarser levels and returns the first level whose estimated point count fits the supplied budget, without considering the previously accepted LOD. Estimates count selected points in complete logical tiles intersecting the current viewport, not individually clipped points or the entire retained allocation. This decision uses resident lookup metadata, not point-payload reads.
+
+Consequently, small camera movements can repeatedly switch Exact → Bridge → Exact around a budget boundary. Each accepted level change invalidates Slice 12a's same-LOD reuse and requires a replacement batch, including packing and VBO staging even when CPU-resident tiles avoid storage reads.
+
+Hysteresis would introduce different thresholds for coarsening and refinement. For illustration, assume an applicable preferred budget of 100,000 points, Bridge fits, and refinement requires an Exact estimate below 80,000:
+
+1. Exact is active with an estimate of 99,000 points.
+2. The estimate rises to 101,000: immediately switch to Bridge.
+3. It falls to 99,000: remain at Bridge rather than immediately switching back.
+4. It falls to 90,000: still remain at Bridge.
+5. It falls below 80,000: switch back to Exact.
+
+The 80% watermark is an explanatory example, not an agreed threshold or new default. The actual watermark and equality rule require calibration and tests. This policy deliberately delays finer detail even when it would already fit under the current first-fit rule; it does not delay coarsening to keep an over-budget finer level active.
 
 **Entry condition**
 
@@ -2132,19 +2148,23 @@ Proceed only if camera traces after Slice 12a show repeated level reversals that
 
 **Production changes if justified**
 
-1. Add a history-dependent level-transition policy alongside the worker's visible LOD/count decision. Use the latest viewport and selection, not off-screen retained rows, to evaluate eligibility. Keep physical routing and the single retained-batch contract unchanged.
-2. Coarsen immediately when the current finer level exceeds the applicable effective visible-point budget. Never relax that budget, the 100,000-point hard render limit, or `max_vertex_payload_bytes`; the complete retained payload must independently remain valid.
-3. Refine only when the finer visible estimate crosses a calibrated lower watermark. Explicitly document that this can temporarily retain a coarser representation even when the finer level would fit under the original first-fit rule. Choose thresholds from paired traces and report the quality/refinement-delay trade-off.
-4. Initial requests and changed value selections still choose the finest valid level. Reset unrelated hysteresis history on selection/cache changes and close. Stale, cancelled, or failed candidates must not advance accepted level history.
-5. After selecting the level, apply Slice 12a's original-bounds containment rule. An unchanged compatible level may reuse the active batch; a changed level follows normal replacement. Preserve status, omission reporting, generation checks, cancellation, and one-VBO activation. Do not add viewport history, debounce, sleeps, prefetching, extra GPU buffers, or a larger point budget.
+1. Add a history-dependent level-transition policy in `_TiledPointsCacheWorker.read_viewport_snapshot()`, at the existing LOD/count decision and before `_RetainedViewport.rejection_reason()`. Use the latest viewport and selection to evaluate eligibility, with the previously accepted LOD as the history input; do not use off-screen retained rows as the visible estimate. The accepted snapshot already records its level, so this does not require a history of previous packed batches. Keep physical routing and the single retained-batch contract unchanged.
+2. Adapt the reader's metadata-only level evaluation to supply consistent evidence for the level actually chosen. The current `select_level()` stops at the first fitting level, which may be finer than the level hysteresis retains. Return the chosen level's current estimate, positive-tile count, and omitted-value IDs together in `_LevelSelection`; simply changing its `level` field would leave incorrect metadata. Reuse the existing resident-index calculations rather than reading point payloads to decide the LOD.
+3. Coarsen immediately when the current finer level exceeds the applicable preferred visible-point budget. Preserve the worker's distinction between soft screen density and hard capacity: if no level meets the preferred target, the existing coarsest-level fallback remains allowed only when it fits both hard limits. Hysteresis must not turn screen density back into a hard rendering limit or introduce another exception allowing an over-target finer level to remain active. Never relax the configured hard render-point limit (currently 100,000 by default) or `max_vertex_payload_bytes`; the complete retained payload must independently remain valid.
+4. Refine only when the finer visible estimate crosses a calibrated lower watermark. Explicitly document that this can temporarily retain a coarser representation even when the finer level would fit under the original first-fit rule. Choose thresholds from paired traces and report the quality/refinement-delay trade-off.
+5. Initial requests and changed value selections still choose the finest valid level, preserving the existing coarsest fallback if necessary. Reset unrelated hysteresis history on selection/cache changes and close. Commit accepted level history only through the existing `acknowledge_render_result()` boundary: preparing or choosing a candidate is not acceptance. Stale, cancelled, or failed candidates must not advance that history.
+6. After selecting the level, apply Slice 12a's original-bounds containment rule. An unchanged compatible level may reuse the active batch; a changed level follows normal replacement. A same-LOD viewport outside the original bounds still needs a replacement, so hysteresis does not eliminate ordinary panning replacement costs. Preserve status, omission reporting, generation checks, cancellation, and one-VBO activation. Do not add viewport history, debounce, sleeps, prefetching, extra GPU buffers, or a larger point budget.
+
+Slice 12a makes compatible same-LOD movement cheaper; Slice 12b would make avoidable LOD reversals less frequent. Neither mechanism promises that every camera movement is a retained-batch hit.
 
 **Focused tests if implemented**
 
 - Budget crossings coarsen immediately; visible and complete retained payloads respect their separate applicable bounds.
+- Preserve the soft-density coarsest fallback when it fits the hard limits, and reject it when either hard limit is exceeded.
 - Controlled counts around a boundary cause fewer avoidable reversals, and refinement resumes at the documented lower watermark, including equality cases and representative Spatial transitions.
 - Initial requests and selection/cache changes use the finest valid level without unrelated history. Stale results, failures, cancellation, and close preserve correct committed state.
 - An active-batch hit still requires matching selected LOD, identity, containment, and budgets. A real level change replaces the payload; no previous-level cache is assumed.
-- Status and omitted-value reporting describe the level actually chosen, including deliberately delayed refinement.
+- Estimates, positive-tile counts, status, and omitted-value reporting describe the level actually chosen, including deliberately delayed refinement when the original first-fit policy would choose a finer level. Level decisions do not read point payloads.
 
 **Benchmark evidence and exit condition**
 
