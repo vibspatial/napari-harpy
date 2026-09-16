@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -112,8 +114,12 @@ def test_render_snapshot_reconciles_complete_active_payload() -> None:
 
     assert snapshot.rendered_tile_count == 2
     assert snapshot.rendered_point_count == 3
+    inner = replace(snapshot, request_generation=5, estimated_point_count=1)
+    assert inner.render_batch is snapshot.render_batch
+    assert inner.rendered_point_count == 3
+    assert inner.estimated_point_count == 1
 
-    with pytest.raises(ValueError, match="reconcile"):
+    with pytest.raises(ValueError, match="cover the visible estimate"):
         TiledPointsRenderSnapshot(
             cache_generation_id=_GENERATION_ID,
             request_generation=4,
@@ -164,9 +170,29 @@ def test_render_snapshot_rejects_payload_metadata_for_over_budget_result() -> No
         )
 
 
+def test_over_budget_snapshot_requires_a_nonempty_budget_explanation() -> None:
+    snapshot = TiledPointsRenderSnapshot(
+        cache_generation_id=_GENERATION_ID,
+        request_generation=1,
+        selection_generation=0,
+        requested_value_ids=None,
+        level=0,
+        level_kind="exact",
+        within_budget=False,
+        estimated_point_count=100,
+        omitted_value_ids=(),
+        rendered_tile_count=0,
+        render_batch=TiledPointsRenderBatch.empty(),
+        budget_message="View exceeds hard rendering limits: 100 points required, render limit 50 points",
+    )
+    for message in (None, "", " ", 1):
+        with pytest.raises(ValueError, match="budget_message"):
+            replace(snapshot, budget_message=message)
+
+
 def test_render_snapshot_rejects_impossible_tile_count_for_batch() -> None:
     tile = _tile(point_count=2)
-    with pytest.raises(ValueError, match="reconcile"):
+    with pytest.raises(ValueError, match="tile count must describe the batch"):
         TiledPointsRenderSnapshot(
             cache_generation_id=_GENERATION_ID,
             request_generation=4,
@@ -213,6 +239,10 @@ def test_render_snapshot_identifies_complete_sampled_omission() -> None:
 
     assert omitted.all_exact_present_values_omitted
     assert not partial.all_exact_present_values_omitted
+    # Off-screen retained vertices do not imply representation in the new view.
+    offscreen = replace(partial, estimated_point_count=0, omitted_value_ids=(1, 2))
+    assert offscreen.rendered_point_count == 1
+    assert offscreen.all_exact_present_values_omitted
 
 
 def test_render_snapshot_rejects_omissions_outside_selected_values() -> None:
