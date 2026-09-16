@@ -329,7 +329,7 @@ def test_renderer_revalidates_mutated_batch_before_accepting_snapshot(
         visual.close()
 
 
-def test_renderer_upload_failure_does_not_count_candidate_replacement(
+def test_renderer_staging_failure_does_not_count_candidate_replacement(
     maximum_texture_size: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -341,17 +341,17 @@ def test_renderer_upload_failure_does_not_count_candidate_replacement(
     try:
         assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
 
-        def _fail_upload(_vertices: np.ndarray, *, copy: bool) -> None:
+        def _fail_staging(_vertices: np.ndarray, *, copy: bool) -> None:
             del copy
-            raise RuntimeError("synthetic upload failure")
+            raise RuntimeError("synthetic staging failure")
 
-        monkeypatch.setattr(visual._snapshot_visual.vertex_buffer, "set_data", _fail_upload)
+        monkeypatch.setattr(visual._snapshot_visual.vertex_buffer, "set_data", _fail_staging)
         assert not visual.apply_snapshot(_snapshot(layer, (second,), generation=2))
 
         assert visual.active_point_count == first.point_count
         assert visual.payload_replacement_count == 1
         assert len(errors) == 1
-        assert str(errors[0]) == "synthetic upload failure"
+        assert str(errors[0]) == "synthetic staging failure"
     finally:
         visual.close()
 

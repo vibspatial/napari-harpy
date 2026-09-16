@@ -234,6 +234,9 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
             # Staging succeeded: B can now be reused without restaging.
             self._active_render_batch = render_batch
         except Exception as error:  # noqa: BLE001
+            # Catch synchronous validation/staging failures, including those raised
+            # by VisPy inside replace_vertices(). The queued GPU upload and drawing
+            # happen later; failures there do not propagate back to this handler.
             self.layer.events.render_error(value=error)
             return False
 
