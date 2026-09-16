@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from uuid import uuid4
 
 import numpy as np
@@ -93,6 +94,8 @@ def _apply_two_point_snapshot(
         ),
     )
     assert visual.apply_snapshot(snapshot)
+    assert visual.apply_snapshot(replace(snapshot, request_generation=2, estimated_point_count=1))
+    assert visual.payload_replacement_count == 1
     assert visual.visual_count == 1
     assert visual.vbo_count == 1
     assert visual.point_draw_submission_count == 1
