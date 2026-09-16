@@ -152,9 +152,11 @@ limits. Reducing the visible estimate alone does not make an oversized retained
 allocation eligible.
 
 The renderer separately checks whether the batch is its known-active batch.
-In the normal reuse case it skips VBO staging, but rendering still draws the
-points using the current view transform. Reuse does not mean the frame is no
-longer drawn. After a staging failure, an old CPU batch may need staging again.
+In the normal reuse case it skips VBO staging and does not request another
+redraw. Camera and visual-property changes request their own redraws, which
+draw the existing points using the current view transform. A different batch,
+including an empty one, updates the visual and requests a redraw. After a
+staging failure, an old CPU batch may need staging again.
 
 Implementation: [worker evaluation and reuse](cache_session.py#L394),
 [replacement preparation](cache_session.py#L898),
