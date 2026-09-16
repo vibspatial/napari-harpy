@@ -134,6 +134,18 @@ def test_viewport_scheduler_keeps_one_active_and_only_the_latest_pending_request
 
 @pytest.mark.parametrize("applied", [True, False], ids=["accepted", "rejected"])
 def test_renderer_feedback_precedes_reentrant_viewport_dispatch(applied: bool) -> None:
+    """Report A's activation result before dispatching viewport B.
+
+    In ``_on_viewport_ready()``, the scheduler synchronously calls
+    ``activation_result = self._activate_snapshot(snapshot)``.
+    This test supplies an activation callback that submits B while handling
+    A's snapshot, before returning A's acceptance or rejection.
+
+    B must remain pending until the callback returns and the scheduler reports
+    A's result to the session. Only then may B be dispatched.
+
+    Exercise this ordering for both accepted and rejected activation results.
+    """
     session = _ControllableSession()
 
     def activate(snapshot: TiledPointsRenderSnapshot) -> TiledPointsRenderResult:
@@ -156,6 +168,17 @@ def test_renderer_feedback_precedes_reentrant_viewport_dispatch(applied: bool) -
 
 
 def test_activation_exception_rejects_candidate_before_dispatching_next_viewport() -> None:
+    """Reject request 1 before dispatching request 2 when activation raises.
+
+    In ``_on_viewport_ready()``, the scheduler calls
+    ``activation_result = self._activate_snapshot(snapshot)`` for request 1
+    (viewport A). The test callback submits request 2 (viewport B), then
+    raises an exception instead of returning an activation result.
+
+    Verify that the scheduler's finally block reports request 1 as rejected
+    before dispatching request 2, while allowing the exception to propagate.
+    Request 2 must subsequently complete successfully, leaving no active request.
+    """
     session = _ControllableSession()
 
     def activate(snapshot: TiledPointsRenderSnapshot) -> TiledPointsRenderResult:
@@ -191,6 +214,16 @@ def test_activation_exception_rejects_candidate_before_dispatching_next_viewport
     ids=["missing-result", "wrong-request", "wrong-selection"],
 )
 def test_invalid_activation_result_cannot_promote_a_retained_candidate(invalid_result: object) -> None:
+    """Reject activation replies that violate the callback contract.
+
+    Normal activation returns a TiledPointsRenderResult matching the active
+    request and selection generations, whether accepted or rejected.
+    This test deliberately returns None or mismatched generations: these are
+    contract violations, not normal renderer rejection.
+
+    Verify that the scheduler raises ValueError, reports the active candidate
+    as rejected, releases its request slot, and can process a subsequent request.
+    """
     session = _ControllableSession()
 
     def activate(snapshot: TiledPointsRenderSnapshot) -> TiledPointsRenderResult:
