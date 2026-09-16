@@ -208,8 +208,14 @@ class TiledPointsLayerModel(Layer):
             |   |   |   |
             +---+---+---+
 
+        Lower values increase the preferred density: ``1.0`` aims for one
+        point per logical canvas pixel.
+
         This is a display-density heuristic, not the marker diameter or a
-        guarantee that rendered points will be spatially separated.
+        guarantee that rendered points will be spatially separated. If no
+        cached level meets this preference, the coarsest level may render more
+        densely, provided it still satisfies the hard point and vertex-byte
+        limits.
         """
         return self._target_pixels_per_point
 
