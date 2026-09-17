@@ -2136,15 +2136,40 @@ Consequently, small camera movements can repeatedly switch Exact → Bridge → 
 
 Evaluate a substantial hysteresis band biased toward retaining finer detail. The earlier proposal of coarsening immediately at the preferred target and refining only well below it favours staying coarse. Instead, allow an already accepted finer level to exceed the soft density target within a bounded upper tolerance, while keeping refinement reasonably responsive. Be generous with the density preference, never with the hard point or vertex-byte limits.
 
-For illustration, assume a preferred target of 50,000 points, hard capacity of 100,000 points, and Bridge remains eligible:
+**Worked example: constant-zoom panning**
 
-1. Initially choose Exact when its estimate fits the normal 50,000-point target.
-2. Once Exact is accepted, retain that LOD as its estimate rises through 60,000 or 70,000 points.
-3. If the estimate exceeds an illustrative 75,000-point upper threshold, switch to Bridge.
-4. While Bridge is accepted and the Exact estimate remains above 50,000 and at most 75,000, stay at Bridge rather than immediately switching back.
-5. When the Exact estimate falls to or below the illustrative 50,000-point refinement threshold, switch back to Exact.
+Assume a preferred target `P = 500,000` points and a combined hard point/vertex-byte capacity `H = 2,000,000` points. These are hypothetical limits for explaining the policy, not changes to application defaults or performance qualification of a two-million-point payload. With the initial coefficients specified below:
 
-Between the two thresholds for this level boundary, keep the previously accepted LOD when otherwise eligible. The 50,000/75,000 thresholds illustrate the initial policy specified below, not a benchmark-qualified production default. Do not widen the band merely by pushing refinement farther below the preferred target. Keep initial and changed-selection choices on the existing policy so the comparison isolates hysteresis rather than a general increase in preferred density.
+```text
+upper_threshold      = min(1.5 × 500,000, 2,000,000) = 750,000
+refinement_threshold = min(500,000, 0.8 × 750,000)   = 500,000
+```
+
+The hysteresis band is 500,000–750,000 points; hard capacity does not clip it. Start at Exact with 400,000 estimated points in the initial viewport. Exact fits the preferred target and is selected normally. Now pan at a constant zoom, with unchanged selection and budgets, accepting each result in sequence:
+
+| Viewport during the pan | Exact estimate | Bridge estimate | Selected LOD |
+|---|---:|---:|---|
+| Initial view | 400,000 | 50,000 | Exact |
+| A denser region | 600,000 | 75,000 | Exact |
+| At the upper boundary | 750,000 | 93,750 | Exact |
+| Beyond the upper boundary | 800,000 | 100,000 | Bridge |
+| Moving back into a less dense region | 700,000 | 87,500 | Bridge |
+| Almost at the refinement boundary | 510,000 | 63,750 | Bridge |
+| At the refinement boundary | 500,000 | 62,500 | Exact |
+
+These are hypothetical per-level estimates for each incoming viewport, not measurements or full retained-batch counts. The Bridge counts are illustrative, not a guaranteed one-eighth sampling ratio; the reader obtains each level's actual estimate from cache metadata. Bridge remains eligible throughout this example.
+
+The important decisions are:
+
+- At an Exact estimate of 600,000 while Exact is accepted, keep Exact: it exceeds the preferred target but remains within the 750,000 upper tolerance. Equality at 750,000 is also allowed.
+- At an Exact estimate of 800,000, switch to Bridge. The selected representation now uses Bridge's estimated 100,000 points, not the 800,000 Exact points.
+- At an Exact estimate of 700,000 while Bridge is accepted, keep Bridge. Its own low count does not trigger refinement: compare the **candidate Exact estimate** with the 500,000 refinement threshold. Return to Exact only when that estimate reaches 500,000 or below.
+
+The same Exact estimate can therefore yield different choices depending on history: at 600,000, an accepted Exact level stays Exact, while an accepted Bridge level stays Bridge. This is the intended hysteresis, not an inconsistency in the estimate.
+
+`H` is a safety ceiling, not a target to fill. We still leave Exact above 750,000 even though hard capacity could permit more points. In this example, the policy means: prefer approximately 500,000 points, tolerate up to 750,000 at an already accepted finer level, and never accept a payload exceeding 2,000,000. Hysteresis reduces how often the representation changes; it does not make the eventual Exact-to-Bridge transition gradual.
+
+The thresholds illustrate the initial policy, not benchmark-qualified production defaults. Constant-zoom pan comparisons must establish whether the 50% upper tolerance is generous enough without unacceptable drawing costs. Do not widen the band merely by pushing refinement farther below the preferred target. Keep initial and changed-selection choices on the existing policy so the comparison isolates hysteresis rather than a general increase in preferred density.
 
 The available tolerance is limited by `hard_point_capacity`, the smaller of the configured hard point limit and the number of vertices fitting `max_vertex_payload_bytes`. When the preferred target approaches or equals that capacity, the upper tolerance is clipped. A meaningful hysteresis gap must then extend below the hard ceiling by lowering the refinement threshold. Immediate refinement arbitrarily close to that ceiling, a substantial switching gap, and strict hard-limit enforcement cannot all be guaranteed simultaneously. An over-capacity level cannot be accepted; use the ordered transition policy below to find an eligible alternative or follow the existing hard-limit rejection path.
 
@@ -2161,12 +2186,13 @@ upper_threshold      = min(3 * P // 2, H)
 refinement_threshold = min(P, 4 * upper_threshold // 5)
 ```
 
+The refinement threshold normally equals `P`. The `0.8 × upper_threshold` term preserves a minimum 20% switching gap when hard capacity clips the upper threshold. Without it, `P == H` would make the coarsening and refinement thresholds identical, eliminating hysteresis. When sufficient headroom exists—for example, `upper_threshold = 1.5 × P`—this guard has no effect and refinement remains at `P`. The 20% margin is an initial tuning choice, not a hardware requirement; the one-point bypass described below is handled separately.
+
 `P` is the worker's existing preferred point budget; `H` is its hard point capacity. The upper threshold applies to the current accepted level's estimate for the new viewport, while the refinement threshold applies to a candidate finer level's estimate for that same viewport. Neither threshold uses the full retained allocation as a visible-point estimate; that allocation still has its independent hard-capacity check.
 
-Use inclusive eligibility checks: the current level may stay at or below the upper threshold, and a finer level may be selected at or below the refinement threshold. A count strictly above the upper threshold cannot use the ordinary stay rule; a count strictly above `H` cannot be accepted by any rule. For example:
+Use inclusive eligibility checks: the current level may stay at or below the upper threshold, and a finer level may be selected at or below the refinement threshold. A count strictly above the upper threshold cannot use the ordinary stay rule; a count strictly above `H` cannot be accepted by any rule.
 
-- `P = 50,000`, `H = 100,000`: upper threshold `75,000`, refinement threshold `50,000`.
-- `P = 100,000`, `H = 100,000`: upper threshold `100,000`, refinement threshold `80,000`. There is no permission to render beyond `100,000`; the switching gap lies below the hard ceiling.
+For contrast with the worked example, if `P = H = 500,000`, the upper threshold is clipped to 500,000 and the refinement threshold becomes 400,000. There is no permission to render beyond 500,000; the switching gap lies below the hard ceiling.
 
 For `upper_threshold == 1`, bypass hysteresis and use ordinary level selection. There is no useful gap between positive integer counts at that scale; a rounded refinement threshold of zero must not prevent returning to a finer one-point level indefinitely. Invalid hard capacities below one point retain the existing configuration rejection. Zero-point viewport estimates remain valid.
 
