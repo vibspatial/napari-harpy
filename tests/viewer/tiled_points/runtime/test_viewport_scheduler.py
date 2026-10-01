@@ -73,7 +73,7 @@ def _snapshot(request: _ViewportRequest, *, level: int = 0) -> TiledPointsRender
         requested_value_ids=request.requested_value_ids,
         level=level,
         level_kind="exact" if level == 0 else "bridge" if level == 1 else "spatial",
-        within_budget=True,
+        within_hard_limits=True,
         estimated_point_count=0,
         omitted_value_ids=(),
         rendered_tile_count=0,

@@ -82,7 +82,7 @@ def _apply_two_point_snapshot(
         requested_value_ids=None,
         level=0,
         level_kind="exact",
-        within_budget=True,
+        within_hard_limits=True,
         estimated_point_count=2,
         omitted_value_ids=(),
         rendered_tile_count=len(tiles),

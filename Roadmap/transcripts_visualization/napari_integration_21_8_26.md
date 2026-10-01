@@ -345,7 +345,7 @@ calibrated together with the adopted point diameter and HiDPI behavior in the
 real-canvas gate. It is viewer configuration, not a cache schema value.
 
 Do not assume that the terminal 100,000-point construction overview fits this
-runtime budget. When `_LevelSelection.within_budget` is false:
+runtime budget. When `_LevelSelection.fits_point_budget` is false:
 
 - do not call a point-payload read;
 - retain the last valid snapshot if one exists;
@@ -834,7 +834,7 @@ latest-request scheduler
         ↓ assign request generation
 reader worker: select_level()
         ↓
-within_budget=False ──→ warning result; no payload read
+fits_point_budget=False ──→ warning result; no payload read
         ↓ true
 reader worker: plan_viewport()
         ↓
@@ -1527,7 +1527,7 @@ GUI: install as active request or replace latest pending request
         ↓
 worker: select_level(viewport, effective_point_budget, selected_value_index)
         ↓
-worker: within_budget is false?
+worker: fits_point_budget is false?
     yes → warning snapshot; no plan payload read
     no
         ↓
@@ -1801,7 +1801,7 @@ Exit criteria:
 - active/pending assembly is not broken by LRU eviction;
 - every active snapshot tile has an aligned immutable payload reference,
   including CPU-resident tiles that required no physical read;
-- `within_budget=False` produces zero point-array calls;
+- `within_hard_limits=False` produces zero point-array calls;
 - the complete scheduler is testable with a fake renderer and no OpenGL.
 
 ### Slice I6: implement and qualify the tile-retaining VisPy renderer — resolved
@@ -1963,7 +1963,7 @@ visible until the complete replacement can activate.
 
 A within-budget zero-tile snapshot is a real atomic replacement and clears the
 old visual; this is required for complete sampled omission. I7 owns the
-distinct product policy for `within_budget=False`: perform no upload and retain
+distinct product policy for `within_hard_limits=False`: perform no upload and retain
 the previous valid view or keep an initially empty one while reporting the
 over-budget condition.
 
@@ -3021,7 +3021,7 @@ evaluation. Record one coherent run covering:
   evictions, packing, and coordinate uploads;
 - GUI callback duration and visible frame behavior;
 - full-extent common-value rendering with approximately 127 positive tiles;
-- small-canvas screen-density budget and `within_budget=False` behavior;
+- small-canvas screen-density budget and `fits_point_budget=False` behavior;
 - repeated layer add/remove and viewer shutdown.
 
 The evaluation is an engineering review, not an exhaustive parameter sweep or
@@ -3228,7 +3228,7 @@ effective runtime budget = 100,000
 Exact:  101,000 Gene A points → does not fit
 Bridge:       0 Gene A points → fits, but Gene A was omitted by sampling
                                   ↓
-within_budget = True
+within_hard_limits = True
 omitted_value_ids = (Gene A,)
 tiles = ()
 ```
@@ -3280,12 +3280,12 @@ enough to justify the additional reader and residency complexity.
 
 ### Runtime budget below terminal overview
 
-The reader truthfully returns `within_budget=False`. Do not read automatically.
+The reader truthfully returns `fits_point_budget=False`. Do not read automatically.
 Retain the old view or show an empty one and provide an actionable status. This
 case occurs only when every serialized level, including the terminal overview,
 still exceeds the supplied runtime budget.
 
-| Situation | `within_budget` | Point tiles | Viewer behavior |
+| Situation | `within_hard_limits` | Point tiles | Viewer behavior |
 |---|---:|---:|---|
 | Requested values omitted at a fitting sampled LOD | `True` | Possibly zero | Apply the new snapshot, clear stale points, and report omitted values |
 | Every serialized level exceeds the runtime budget | `False` | Zero | Perform no payload read; retain the last valid view or show an empty initial view |
@@ -3312,7 +3312,7 @@ quiesce the reader before rebuild publication in the initial workflow.
 - Requests sharing a bucket remain one coordinated bucket batch.
 - No visualization read accesses `point_id`.
 - No active snapshot mixes cache generations, selections, or levels.
-- `within_budget=False` never triggers an automatic payload read.
+- `within_hard_limits=False` never triggers an automatic payload read.
 - Style and transform changes never reupload coordinate buffers.
 - Renderer-buffer preparation remains explicitly bounded and atomically
   activated independently of the number of resident logical CPU tiles.

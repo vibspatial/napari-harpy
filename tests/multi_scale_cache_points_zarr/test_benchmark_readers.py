@@ -92,7 +92,7 @@ def test_cache_to_canvas_worker_measurements_include_lod_and_warm_replacements(
         with benchmark._TemporaryPatches() as patches:
             benchmark._install_reader_timers(timings, patches)
             first = benchmark._read_worker_snapshot(worker, request)
-            assert first.within_budget
+            assert first.within_hard_limits
             timings.clear()
             second = benchmark._read_worker_snapshot(worker, replace(request, request_generation=2))
         assert second.render_batch is not first.render_batch
@@ -100,6 +100,66 @@ def test_cache_to_canvas_worker_measurements_include_lod_and_warm_replacements(
         assert len(timings.calls["level_selection"]) == 1
         assert len(timings.calls["render_batch_packing"]) == 1
         assert not timings.calls["bucket_batch"]
+
+
+def test_worker_lod_timer_includes_lazy_candidate_evaluation(reader_fixture, monkeypatch):
+    """Work performed on iterator consumption must stay inside the LOD timer."""
+    from types import SimpleNamespace
+
+    benchmark = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(benchmark, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        original = reader.iter_level_candidates
+
+        def candidates(*args, **kwargs):
+            for candidate in original(*args, **kwargs):
+                clock[0] += 0.010  # Simulate ten milliseconds inside each lazy evaluation.
+                yield candidate
+
+        monkeypatch.setattr(reader, "iter_level_candidates", candidates)
+        worker = benchmark._make_snapshot_worker(
+            reader, None, benchmark._CpuTileResidency(1_000_000), max_vertex_payload_bytes=1_000_000
+        )
+        viewport = benchmark._centered_viewport(reader.dataset_info, 1.0, 100_000, 1000, 1000)
+        request = benchmark._ViewportRequest(1, 0, None, viewport)
+        timings = benchmark._TimingLog()
+        with benchmark._TemporaryPatches() as patches:
+            benchmark._install_reader_timers(timings, patches)
+            benchmark._read_worker_snapshot(worker, request)
+            reader.select_level(_IntrinsicViewport(0, 0, 12, 10), 100_000)
+        assert timings.calls["level_selection"] == pytest.approx([10.0])
+        assert timings.calls["ordinary_level_selection"] == pytest.approx([10.0])
+
+
+@pytest.mark.parametrize("hysteresis", [False, True], ids=["ordinary", "hysteresis"])
+def test_paired_lod_benchmark_changes_policy_without_disabling_retention(
+    reader_fixture, monkeypatch, qtbot, hysteresis
+):
+    base = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    benchmark = _load_benchmark_module("benchmark_tiled_points_retained_viewport", monkeypatch)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        info = reader.dataset_info
+    initial = base._centered_viewport(info, 1.0, 6000, 1000, 1000)
+    denser = replace(initial, screen_density_budget=4100)
+    report = benchmark._run_case(
+        benchmark.QApplication.instance(),
+        reader_fixture.cache_root,
+        info,
+        None,
+        retain=True,
+        real_canvas=False,
+        point_budget=6000,
+        trace=[("initial", initial), ("denser", denser), ("same", denser)],
+        hysteresis=hysteresis,
+    )
+    first, changed, same = report["requests"]
+    assert first["level"] == 0
+    assert changed["level"] == (0 if hysteresis else 1)
+    assert changed["lod_reason"] == ("hysteresis_stay" if hysteresis else "ordinary")
+    assert changed["worker_reused_batch"] is hysteresis
+    assert same["worker_reused_batch"]  # Both comparisons retain accepted batches.
+    assert all(row["breakdown"]["level_selection"]["calls"] == 1 for row in report["requests"])
 
 
 def test_viewport_planning_benchmark_keeps_worker_policy_in_timed_path(

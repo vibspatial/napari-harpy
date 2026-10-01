@@ -396,41 +396,41 @@ def test_level_selection_uses_budget_even_when_values_disappear(reader_fixture: 
         value_index_b = _load_selected_value_index(reader, selected_b)
         value_index_both = _load_selected_value_index(reader, selected_both)
         exact = reader.select_level(full, 6_000)
-        assert (exact.level, exact.estimated_point_count, exact.within_budget) == (0, 5_002, True)
+        assert (exact.level, exact.estimated_point_count, exact.fits_point_budget) == (0, 5_002, True)
         assert exact.omitted_value_ids is None
 
         overview = reader.select_level(full, 100)
-        assert (overview.level, overview.estimated_point_count, overview.within_budget) == (2, 100, True)
+        assert (overview.level, overview.estimated_point_count, overview.fits_point_budget) == (2, 100, True)
         over_budget_overview = reader.select_level(full, 50)
         assert (over_budget_overview.level, over_budget_overview.estimated_point_count) == (2, 100)
-        assert not over_budget_overview.within_budget
+        assert not over_budget_overview.fits_point_budget
 
         exact_a = reader.select_level(full, 2, value_index=value_index_a)
-        assert (exact_a.level, exact_a.estimated_point_count, exact_a.within_budget) == (0, 2, True)
+        assert (exact_a.level, exact_a.estimated_point_count, exact_a.fits_point_budget) == (0, 2, True)
         assert exact_a.omitted_value_ids is not None
         assert exact_a.omitted_value_ids.tolist() == []
         assert not exact_a.omitted_value_ids.flags.writeable
         empty_sampled_a = reader.select_level(full, 1, value_index=value_index_a)
         assert (empty_sampled_a.level, empty_sampled_a.estimated_point_count) == (1, 0)
-        assert empty_sampled_a.within_budget
+        assert empty_sampled_a.fits_point_budget
         assert empty_sampled_a.omitted_value_ids is not None
         assert empty_sampled_a.omitted_value_ids.tolist() == [0]
 
         lost_one_of_two = reader.select_level(full, 4_100, value_index=value_index_both)
         assert (lost_one_of_two.level, lost_one_of_two.estimated_point_count) == (1, 4_097)
-        assert lost_one_of_two.within_budget
+        assert lost_one_of_two.fits_point_budget
         assert lost_one_of_two.omitted_value_ids is not None
         assert lost_one_of_two.omitted_value_ids.tolist() == [0]
 
         sampled_b = reader.select_level(full, 100, value_index=value_index_b)
-        assert (sampled_b.level, sampled_b.estimated_point_count, sampled_b.within_budget) == (2, 100, True)
+        assert (sampled_b.level, sampled_b.estimated_point_count, sampled_b.fits_point_budget) == (2, 100, True)
         sampled_b_over_budget = reader.select_level(full, 50, value_index=value_index_b)
         assert (sampled_b_over_budget.level, sampled_b_over_budget.estimated_point_count) == (2, 100)
-        assert not sampled_b_over_budget.within_budget
+        assert not sampled_b_over_budget.fits_point_budget
 
         absent_at_exact = reader.select_level(second_exact_tile, 1, value_index=value_index_a)
         assert (absent_at_exact.level, absent_at_exact.estimated_point_count) == (0, 0)
-        assert absent_at_exact.within_budget
+        assert absent_at_exact.fits_point_budget
         assert absent_at_exact.omitted_value_ids is not None
         assert absent_at_exact.omitted_value_ids.tolist() == []
 
@@ -452,8 +452,38 @@ def test_selected_level_selection_stops_after_first_valid_fit(reader_fixture: An
 
         reader.value_filtered_levels.clear()
         empty_sampled = reader.select_level(full, 1, value_index=value_index_a)
-        assert (empty_sampled.level, empty_sampled.within_budget) == (1, True)
+        assert (empty_sampled.level, empty_sampled.fits_point_budget) == (1, True)
         assert reader.value_filtered_levels == [0, 1]
+
+
+@pytest.mark.parametrize("selection", [None, (0, 1)], ids=["all-values", "subset"])
+def test_level_candidates_continue_past_preferred_fit_with_aligned_evidence(reader_fixture, selection, monkeypatch):
+    """A hysteresis caller can request coarser evidence without reading payloads."""
+    with _TrackingPointsCacheReader(reader_fixture.cache_root) as reader:
+        value_index = (
+            None if selection is None else _load_selected_value_index(reader, np.asarray(selection, dtype=np.uint32))
+        )
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Level evaluation must use already resident metadata.")
+
+        monkeypatch.setattr(reader, "read_planned_tiles", forbidden)
+        monkeypatch.setattr(reader._cache_root_reader, "array", forbidden)
+        candidates = reader.iter_level_candidates(_IntrinsicViewport(0, 0, 12, 10), 6000, value_index=value_index)
+        assert reader.value_filtered_levels == []
+        exact = next(candidates)
+        assert exact.fits_point_budget
+        remaining = list(candidates)
+        assert [item.level for item in remaining] == [1, 2]
+        assert [item.estimated_point_count for item in (exact, *remaining)] == (
+            [5002, 4098, 100] if selection is None else [5001, 4097, 100]
+        )
+        assert [item.positive_visible_tile_count for item in (exact, *remaining)] == [2, 2, 1]
+        if selection is not None:
+            assert reader.value_filtered_levels == [0, 1, 2]
+            assert exact.omitted_value_ids.tolist() == []
+            assert [item.omitted_value_ids.tolist() for item in remaining] == [[0], [0]]
+            assert all(not item.omitted_value_ids.flags.writeable for item in (exact, *remaining))
 
 
 def test_exact_value_tile_row_selection_uses_slice_only_for_touching_intervals() -> None:

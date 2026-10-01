@@ -82,7 +82,7 @@ def _snapshot(
     tiles: tuple[TiledPointsRenderTile, ...],
     *,
     generation: int,
-    within_budget: bool = True,
+    within_hard_limits: bool = True,
 ) -> TiledPointsRenderSnapshot:
     point_count = sum(tile.point_count for tile in tiles)
     render_batch = pack_render_tiles(
@@ -98,12 +98,14 @@ def _snapshot(
         requested_value_ids=None,
         level=0,
         level_kind="exact",
-        within_budget=within_budget,
-        estimated_point_count=point_count if within_budget else 100,
+        within_hard_limits=within_hard_limits,
+        estimated_point_count=point_count if within_hard_limits else 100,
         omitted_value_ids=(),
         rendered_tile_count=len(tiles),
         render_batch=render_batch,
-        budget_message=None if within_budget else "View exceeds hard rendering limits: 100 points required, limit 1",
+        budget_message=None
+        if within_hard_limits
+        else "View exceeds hard rendering limits: 100 points required, limit 1",
     )
 
 
@@ -461,7 +463,7 @@ def test_empty_snapshot_suppresses_one_visual_without_replacing_its_vbo(
     vertex_buffer = visual._snapshot_visual.vertex_buffer
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
-        assert not visual.apply_snapshot(_snapshot(layer, (), generation=2, within_budget=False))
+        assert not visual.apply_snapshot(_snapshot(layer, (), generation=2, within_hard_limits=False))
         assert visual.active_point_count == tile.point_count
         assert visual.payload_replacement_count == 1
 

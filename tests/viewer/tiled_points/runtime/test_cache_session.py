@@ -142,9 +142,16 @@ class _ControllableReader:
             level=0,
             estimated_point_count=point_count,
             positive_visible_tile_count=point_count,
-            within_budget=point_count <= point_budget,
+            fits_point_budget=point_count <= point_budget,
             omitted_value_ids=None,
         )
+
+    def iter_level_candidates(self, viewport, point_budget, *, value_index):
+        # The worker requests LOD candidates through this iterator.
+        # These tests exercise lifecycle and batch reuse, not LOD-selection
+        # rules, so yield one controlled candidate. Delegating to this fake's
+        # select_level() lets individual tests override which level it supplies.
+        yield self.select_level(viewport, point_budget, value_index=value_index)
 
     def plan_viewport(self, level: int, viewport: object, *, value_index: object) -> _ViewportReadPlan:
         del viewport
@@ -412,7 +419,7 @@ def test_rejected_replacement_preserves_accepted_bounds_and_has_no_viewport_hist
                 viewport=replace(first_request.viewport, hard_render_point_budget=1),
             )
         )
-        assert not snapshots[-1].within_budget
+        assert not snapshots[-1].within_hard_limits
         assert snapshots[-1].rendered_point_count == 0
         worker.acknowledge_render_result(TiledPointsRenderResult(6, 0, True))
         assert worker._retained_viewport.snapshot.request_generation == 5
@@ -856,7 +863,7 @@ def test_session_rejects_over_budget_viewport_before_point_io(qtbot) -> None:
             request = _viewport_request(1)
             session.request_viewport(replace(request, viewport=replace(request.viewport, hard_render_point_budget=1)))
 
-        assert not snapshots[-1].within_budget
+        assert not snapshots[-1].within_hard_limits
         assert snapshots[-1].rendered_tile_count == 0
         assert snapshots[-1].render_batch.point_count == 0
         assert probe.viewport_reads == []
@@ -898,7 +905,7 @@ def test_worker_reports_vertex_payload_limit_before_point_io(qtbot) -> None:
 
         assert failures == []
         assert len(snapshots) == 1
-        assert not snapshots[0].within_budget
+        assert not snapshots[0].within_hard_limits
         assert snapshots[0].rendered_point_count == 0
         assert "24 vertex bytes required, limit 12 bytes" in snapshots[0].budget_message
         assert probe.viewport_reads == []
@@ -1060,7 +1067,7 @@ def test_real_cache_session_builds_generation_bound_viewport_snapshot(real_cache
 
         snapshot = snapshots[-1]
         assert snapshot.request_generation == 1
-        assert snapshot.within_budget
+        assert snapshot.within_hard_limits
         assert snapshot.rendered_point_count == 4
         assert snapshot.rendered_tile_count == 2
     finally:

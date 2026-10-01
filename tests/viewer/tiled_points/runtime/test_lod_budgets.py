@@ -2,7 +2,7 @@
 
 Screen density is a soft preference; point and vertex-byte limits are
 hard constraints. Cover coarsest-level fallback, budget-driven LOD choice,
-and hard-limit rejection before point-payload work.
+accepted-level hysteresis, and hard-limit rejection before point-payload work.
 
 Also verify that changing the preferred density updates the status message
 without repacking when the retained batch remains reusable, and that byte
@@ -96,7 +96,7 @@ def test_coarsest_density_fallback_accepts_payload_at_both_hard_limits(real_cach
     with _worker(real_cache_root, max_bytes=point_count * _VERTEX_BYTES, selection=selection) as worker:
         snapshot = _read_snapshot(worker, request)
         assert snapshot.level == worker._reader.level_count - 1
-    assert snapshot.within_budget
+    assert snapshot.within_hard_limits
     assert snapshot.rendered_point_count == snapshot.estimated_point_count == point_count
     assert snapshot.render_batch.nbytes == point_count * _VERTEX_BYTES
     assert "above preferred screen density" in snapshot.budget_message
@@ -127,7 +127,7 @@ def test_hard_budget_rejection_reports_actual_limits_before_tile_work(
         monkeypatch.setattr(cache_session_module, "pack_render_tiles", forbidden)
         snapshot = _read_snapshot(worker, request)
         assert worker._pending_viewport is None
-    assert not snapshot.within_budget
+    assert not snapshot.within_hard_limits
     assert snapshot.rendered_point_count == snapshot.rendered_tile_count == 0
     assert snapshot.estimated_point_count == point_count
     if point_count > hard_points:
@@ -149,7 +149,7 @@ def test_lod_choice_obeys_density_preference_and_vertex_capacity(
     with _worker(sampled_cache_root, max_bytes=max_bytes) as worker:
         snapshot = _read_snapshot(worker, _request(density=density))
         assert snapshot.level == (worker._reader.level_count - 1 if expected_level == -1 else expected_level)
-    assert snapshot.within_budget
+    assert snapshot.within_hard_limits
     assert snapshot.rendered_point_count == (4 if expected_level == 0 else 2)
     assert snapshot.render_batch.nbytes <= max_bytes
     assert snapshot.budget_message is None
@@ -192,3 +192,133 @@ def test_worker_rejects_byte_limit_below_one_vertex_before_opening_reader(
     with pytest.raises(ValueError, match=rf"max_vertex_payload_bytes.*at least {_VERTEX_BYTES} bytes"):
         with _worker(real_cache_root, max_bytes=byte_limit):
             pytest.fail("An invalid byte limit must not allow the worker to start.")
+
+
+@pytest.mark.parametrize("max_points_in_bytes", [4, 6], ids=["byte-clipped", "point-clipped"])
+def test_hysteresis_reuses_accepted_exact_above_preference_then_coarsens_and_refines(
+    sampled_cache_root, max_points_in_bytes
+):
+    """Density/viewport changes use accepted history without weakening hard limits."""
+    with _worker(sampled_cache_root, max_bytes=max_points_in_bytes * _VERTEX_BYTES) as worker:
+        first = None
+        for generation, density in enumerate((4, 3, 2, 3, 4), start=1):
+            request = replace(_request(hard_points=6, density=density), request_generation=generation)
+            if generation == 5 and max_points_in_bytes == 4:
+                # At H=4 the lower threshold is 3, not 4. Refinement needs a
+                # smaller Exact estimate, even after restoring the preference.
+                request = replace(request, viewport=replace(request.viewport, x_max=10.0))
+            snapshot = _read_snapshot(worker, request)
+            if first is None:
+                first = snapshot
+            assert snapshot.within_hard_limits
+            assert snapshot.render_batch.nbytes <= max_points_in_bytes * _VERTEX_BYTES
+            if generation <= 2:
+                assert snapshot.level == 0
+                assert snapshot.render_batch is first.render_batch
+            elif generation <= 4:
+                assert snapshot.level == worker._reader.level_count - 1
+                assert snapshot.render_batch is not first.render_batch
+            else:
+                assert snapshot.level == 0
+                assert snapshot.render_batch is not first.render_batch
+            if generation == 2:
+                assert "LOD hysteresis tolerance" in snapshot.budget_message
+                assert "4 points; target 3" in snapshot.budget_message
+            else:
+                assert snapshot.budget_message is None
+            worker.acknowledge_render_result(TiledPointsRenderResult(generation, 0, True))
+
+
+def test_hysteresis_history_survives_outside_bounds_and_rejected_replacement(sampled_cache_root):
+    """Rejecting a new coarser candidate must not erase accepted Exact history."""
+    with _worker(sampled_cache_root, max_bytes=6 * _VERTEX_BYTES) as worker:
+        first = _read_snapshot(worker, _request(hard_points=6, density=4))
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        coarse = _read_snapshot(worker, replace(_request(hard_points=6, density=2), request_generation=2))
+        assert coarse.level > 0
+        worker.acknowledge_render_result(TiledPointsRenderResult(2, 0, False))
+        request = replace(
+            _request(hard_points=6, density=3),
+            request_generation=3,
+            viewport=replace(_request(hard_points=6, density=3).viewport, x_max=21.0),
+        )
+        outside = _read_snapshot(worker, request)
+        assert outside.level == 0  # Ordinary selection would choose a coarser level.
+        assert outside.estimated_point_count == 4
+        assert outside.render_batch is not first.render_batch  # Bounds still forbid reuse.
+        assert "hysteresis" in outside.budget_message
+        assert worker._retained_viewport.snapshot is first  # Preparation is not acceptance.
+        worker.acknowledge_render_result(TiledPointsRenderResult(3, 0, True))
+        assert worker._retained_viewport.snapshot is outside
+
+
+def test_lod_history_does_not_require_old_allocation_to_fit_lowered_point_limit(sampled_cache_root):
+    """A smaller replacement uses compatible LOD history but never the oversized batch."""
+    with _worker(sampled_cache_root, max_bytes=6 * _VERTEX_BYTES) as worker:
+        first = _read_snapshot(worker, _request(hard_points=6, density=4))
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        inner = replace(
+            _request(hard_points=3, density=2),
+            request_generation=2,
+            viewport=replace(_request(hard_points=3, density=2).viewport, x_max=10.0),
+        )
+        replacement = _read_snapshot(worker, inner)
+        assert first.rendered_point_count == 4
+        assert replacement.level == 0
+        assert replacement.within_hard_limits and replacement.rendered_point_count == 3
+        assert replacement.render_batch is not first.render_batch
+        assert "hysteresis" in replacement.budget_message
+
+
+@pytest.mark.parametrize("mismatch", ["cache_generation", "selection_generation", "value_ids"])
+def test_incompatible_accepted_identity_cannot_influence_lod(sampled_cache_root, mismatch):
+    with _worker(sampled_cache_root, max_bytes=6 * _VERTEX_BYTES) as worker:
+        first = _read_snapshot(worker, _request(hard_points=6, density=4))
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        changes = {
+            "cache_generation": {"cache_generation_id": "22345678-1234-5678-9234-567812345678"},
+            "selection_generation": {"selection_generation": 10},
+            "value_ids": {"requested_value_ids": (0,)},
+        }[mismatch]
+        worker._retained_viewport = replace(worker._retained_viewport, snapshot=replace(first, **changes))
+        snapshot = _read_snapshot(worker, replace(_request(hard_points=6, density=3), request_generation=2))
+        assert snapshot.level > 0
+        assert snapshot.budget_message is None
+
+
+def test_changed_selection_starts_with_ordinary_lod(sampled_cache_root):
+    with _worker(sampled_cache_root, max_bytes=6 * _VERTEX_BYTES) as worker:
+        _read_snapshot(worker, _request(hard_points=6, density=4))
+        worker.acknowledge_render_result(TiledPointsRenderResult(1, 0, True))
+        worker.update_selected_value_index((0,))
+        assert worker._retained_viewport is None
+        subset = _read_snapshot(
+            worker,
+            replace(
+                _request(hard_points=6, density=2),
+                request_generation=2,
+                selection_generation=1,
+                requested_value_ids=(0,),
+            ),
+        )
+        assert subset.level == 0 and subset.estimated_point_count == 2
+        assert subset.budget_message is None
+
+
+def test_close_during_lazy_lod_evaluation_publishes_no_candidate(sampled_cache_root, monkeypatch):
+    with _worker(sampled_cache_root, max_bytes=6 * _VERTEX_BYTES) as worker:
+        original = worker._reader.iter_level_candidates
+        snapshots = []
+        worker.viewport_ready.connect(snapshots.append)
+
+        def cancel_after_evaluation(*args, **kwargs):
+            for candidate in original(*args, **kwargs):
+                worker._cancellation.set()
+                yield candidate
+                pytest.fail("A cancelled worker evaluated another level.")
+
+        monkeypatch.setattr(worker._reader, "iter_level_candidates", cancel_after_evaluation)
+        worker.read_viewport_snapshot(_request(hard_points=6, density=2))
+        assert snapshots == []
+        assert worker._reader is None
+        assert worker._pending_viewport is None
