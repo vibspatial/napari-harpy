@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from napari.layers import Labels
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QCheckBox, QComboBox, QLineEdit, QScrollArea
+from qtpy.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QScrollArea
 from spatialdata import SpatialData
 
 import napari_harpy.widgets.feature_extraction.widget as feature_extraction_widget_module
@@ -145,7 +145,7 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     qtbot.addWidget(widget)
 
     assert widget is not None
-    assert widget._logo_path.is_file()
+    assert widget.findChild(QLabel, "feature_extraction_header_logo") is not None
     assert widget.selected_segmentation_name is None
     assert widget.selected_spatialdata is None
     assert widget.selected_image_name is None

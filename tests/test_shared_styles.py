@@ -1,10 +1,14 @@
 import pytest
 from qtpy.QtWidgets import QSizePolicy
 
+from napari_harpy._resources import get_logo_path
 from napari_harpy.widgets.shared_styles import (
+    HEADER_LOGO_WIDTH,
+    LOGO_NAVY_COLOR,
     CompactComboBox,
     CompleterPopupLineEdit,
     build_input_control_stylesheet,
+    create_header_logo,
     format_feedback_identifier,
     format_tooltip,
 )
@@ -26,6 +30,23 @@ def test_compact_combo_box_uses_compact_width_policy(qtbot) -> None:
     assert combo.sizeAdjustPolicy() == CompactComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
     assert combo.minimumContentsLength() == 12
     assert combo.sizePolicy().horizontalPolicy() == QSizePolicy.Policy.Expanding
+
+
+def test_create_header_logo_shows_packaged_logo_at_header_width(qtbot) -> None:
+    assert get_logo_path().is_file()
+
+    logo_label = create_header_logo("test_header_logo")
+    qtbot.addWidget(logo_label)
+
+    pixmap = logo_label.pixmap()
+    assert logo_label.objectName() == "test_header_logo"
+    assert pixmap is not None and not pixmap.isNull()
+    assert round(pixmap.width() / pixmap.devicePixelRatio()) == HEADER_LOGO_WIDTH
+
+
+def test_logo_svg_uses_navy_that_header_logo_recolors() -> None:
+    # If the logo's navy changes, the header would silently draw it unreadable on the dark widget surface.
+    assert LOGO_NAVY_COLOR in get_logo_path().read_text(encoding="utf-8")
 
 
 def test_compact_combo_box_elides_long_current_text_and_sets_tooltip(qtbot) -> None:

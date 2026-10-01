@@ -4,8 +4,9 @@ import re
 from html import escape
 from typing import Literal, cast
 
-from qtpy.QtCore import QPointF, QSize, Qt, QTimer
+from qtpy.QtCore import QByteArray, QPointF, QRectF, QSize, Qt, QTimer
 from qtpy.QtGui import QColor, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap
+from qtpy.QtSvg import QSvgRenderer
 from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
@@ -16,6 +17,8 @@ from qtpy.QtWidgets import (
     QStylePainter,
     QWidget,
 )
+
+from napari_harpy._resources import get_logo_path
 
 WIDGET_SURFACE_COLOR = "#25272c"
 WIDGET_SURFACE_STYLESHEET = f"background-color: {WIDGET_SURFACE_COLOR};"
@@ -45,6 +48,9 @@ WIDGET_WARNING_HOVER_COLOR = "#4f402c"
 TOOLTIP_TEXT_COLOR = WIDGET_TEXT_COLOR
 DISCLOSURE_CHEVRON_SIZE = 14
 VISIBILITY_EYE_ICON_SIZE = 16
+HEADER_LOGO_WIDTH = 220
+LOGO_NAVY_COLOR = "#10244B"
+LOGO_DARK_SURFACE_COLOR = WIDGET_TEXT_COLOR
 FORM_LABEL_STYLESHEET = (
     f"color: {WIDGET_TEXT_SECONDARY_COLOR}; font-weight: 600; padding-top: 6px; background: transparent;"
 )
@@ -217,6 +223,49 @@ def create_visibility_eye_icon(*, visible: bool, color: str = WIDGET_TEXT_COLOR)
 
     painter.end()
     return QIcon(pixmap)
+
+
+def _render_header_logo_pixmap(device_pixel_ratio: float) -> QPixmap | None:
+    try:
+        svg = get_logo_path().read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    # The brand navy is unreadable on the dark widget surface, so draw it in a light color instead.
+    renderer = QSvgRenderer(QByteArray(svg.replace(LOGO_NAVY_COLOR, LOGO_DARK_SURFACE_COLOR).encode("utf-8")))
+    if not renderer.isValid():
+        return None
+
+    # Render at physical pixels so the logo stays sharp on high-DPI screens.
+    default_size = renderer.defaultSize()
+    width = round(HEADER_LOGO_WIDTH * device_pixel_ratio)
+    height = round(default_size.height() * width / default_size.width())
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    renderer.render(painter, QRectF(0, 0, width, height))
+    painter.end()
+
+    pixmap.setDevicePixelRatio(device_pixel_ratio)
+    return pixmap
+
+
+def create_header_logo(object_name: str) -> QLabel:
+    """Return the centered widget header logo, falling back to a text title."""
+    logo_label = QLabel()
+    logo_label.setObjectName(object_name)
+    logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    logo_pixmap = _render_header_logo_pixmap(logo_label.devicePixelRatioF())
+    if logo_pixmap is not None:
+        logo_label.setPixmap(logo_pixmap)
+        return logo_label
+
+    logo_label.setText("napari-harpy")
+    logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
+    return logo_label
 
 
 def build_input_control_stylesheet(control_selector: str) -> str:

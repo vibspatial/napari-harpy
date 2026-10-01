@@ -15,7 +15,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Labels
 from napari.utils.colormaps import DirectLabelColormap
 from qtpy.QtCore import QObject, Signal
-from qtpy.QtWidgets import QCheckBox, QComboBox, QScrollArea
+from qtpy.QtWidgets import QCheckBox, QComboBox, QLabel, QScrollArea
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
@@ -413,7 +413,7 @@ def test_widget_can_be_instantiated(qtbot) -> None:
     assert scroll_area is not None
     assert scroll_area.widgetResizable()
     assert widget is not None
-    assert widget._logo_path.is_file()
+    assert widget.findChild(QLabel, "object_classification_header_logo") is not None
     assert widget.selected_segmentation_name is None
     assert widget.selected_table_name is None
     assert widget.selected_feature_key is None

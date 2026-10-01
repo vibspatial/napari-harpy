@@ -6,8 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from qtpy.QtCore import QSignalBlocker, Qt, Signal
-from qtpy.QtGui import QPixmap
-from qtpy.QtWidgets import QFormLayout, QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget
+from qtpy.QtWidgets import QFormLayout, QFrame, QScrollArea, QVBoxLayout, QWidget
 from spatialdata.transformations import get_transformation
 
 from napari_harpy._app_state import (
@@ -16,7 +15,6 @@ from napari_harpy._app_state import (
     HarpyAppState,
     get_or_create_app_state,
 )
-from napari_harpy._resources import get_logo_path
 from napari_harpy.core.shapes_annotation import validate_existing_shapes_source_geodataframe
 from napari_harpy.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
@@ -26,12 +24,12 @@ from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnno
 from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
 from napari_harpy.widgets.shared_styles import (
     WIDGET_MIN_WIDTH,
-    WIDGET_TEXT_COLOR,
     CompactComboBox,
     apply_scroll_content_surface,
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    create_header_logo,
     format_feedback_identifier,
     format_tooltip,
 )
@@ -147,7 +145,7 @@ class AnnotationWidget(QWidget):
         self.content_layout.setContentsMargins(12, 12, 12, 12)
         self.content_layout.setSpacing(10)
 
-        self.content_layout.addWidget(self._create_header_logo())
+        self.content_layout.addWidget(create_header_logo("annotation_header_logo"))
 
         selector_layout = QFormLayout()
         selector_layout.setContentsMargins(0, 0, 0, 0)
@@ -464,18 +462,3 @@ class AnnotationWidget(QWidget):
             self.shapes_combo.setToolTip(format_tooltip(target.existing_shapes_name))
             return
         self.shapes_combo.setToolTip("")
-
-    def _create_header_logo(self) -> QLabel:
-        logo_label = QLabel()
-        logo_label.setObjectName("annotation_header_logo")
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        logo_path = get_logo_path()
-        logo_pixmap = QPixmap(str(logo_path))
-        if not logo_pixmap.isNull():
-            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
-            return logo_label
-
-        logo_label.setText("napari-harpy")
-        logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
-        return logo_label
