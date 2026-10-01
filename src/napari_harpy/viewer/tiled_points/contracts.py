@@ -15,8 +15,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _SerializedLevelKind,
 )
 
-DEFAULT_HARD_RENDER_POINT_BUDGET = 100_000
-DEFAULT_TARGET_PIXELS_PER_POINT = 9.0
+DEFAULT_HARD_RENDER_POINT_BUDGET = 2_000_000
+DEFAULT_TARGET_PIXELS_PER_POINT = 0.25
 TILED_POINTS_VERTEX_DTYPE: Final = np.dtype([("a_position", np.float32, (2,)), ("a_value_id", np.float32)])
 _UINT32_MAX = np.iinfo(np.uint32).max
 
@@ -151,10 +151,11 @@ class TiledPointsViewportState:
 
     ``effective_point_budget`` is the initial LOD target: the minimum of the
     hard point limit and the preferred screen-density budget. The worker also
-    caps this target by vertex-byte capacity. If no level meets the target,
-    the coarsest level may exceed the density preference, but never either
-    hard limit. Retained-batch reuse checks the entire packed allocation:
-    a small inner view must not conceal an oversized off-screen payload.
+    caps this target by vertex-byte capacity. History-dependent LOD hysteresis
+    may tolerate a bounded density overrun; if no preferred or hysteresis choice
+    is available, the coarsest fallback may also exceed that preference. Neither
+    path may exceed a hard limit. Retained-batch reuse checks the entire packed
+    allocation: a small inner view must not conceal an oversized off-screen payload.
     """
 
     displayed_axes: tuple[int, int]
@@ -437,9 +438,10 @@ class TiledPointsRenderSnapshot:
         Serialized cache level chosen for the viewport.
     level_kind
         Semantic kind of ``level``: Exact, Bridge, or spatial.
-    within_budget
+    within_hard_limits
         Whether the payload satisfies the hard point and vertex-byte limits.
-        The preferred screen density may be exceeded at the coarsest level.
+        The preferred density may be exceeded within hysteresis tolerance or
+        by the coarsest-level density fallback, never beyond the hard limits.
     estimated_point_count
         Current visible-view estimate: selected points in complete logical
         tiles intersecting the latest viewport, not point-level clipping.
@@ -450,7 +452,7 @@ class TiledPointsRenderSnapshot:
         biological absence.
     rendered_tile_count
         Number of logical tiles packed into the render batch. This is zero when
-        ``within_budget`` is false.
+        ``within_hard_limits`` is false.
     render_batch
         Worker-prepared renderer payload, possibly retained from a larger
         original viewport at the same LOD and selection. Inner requests update
@@ -459,7 +461,8 @@ class TiledPointsRenderSnapshot:
         is nonzero.
     budget_message
         Request-bound explanation of a hard-limit rejection (including the
-        required amount and actual limit), or an informational density fallback.
+        required amount and actual limit), or an informational density overrun
+        distinguishing hysteresis tolerance from the coarsest-level fallback.
         ``None`` means the preferred target was met. The worker refreshes this
         message even when reusing a batch; the GUI must not reinterpret a result
         using newer budget settings. Required for an over-budget snapshot.
@@ -471,7 +474,7 @@ class TiledPointsRenderSnapshot:
     requested_value_ids: tuple[int, ...] | None
     level: int
     level_kind: _SerializedLevelKind
-    within_budget: bool
+    within_hard_limits: bool
     estimated_point_count: int
     omitted_value_ids: tuple[int, ...]
     rendered_tile_count: int
@@ -487,8 +490,8 @@ class TiledPointsRenderSnapshot:
         expected_kind = _expected_level_kind(self.level)
         if self.level_kind != expected_kind:
             raise ValueError("`level_kind` does not match `level`.")
-        if not isinstance(self.within_budget, bool):
-            raise ValueError("`within_budget` must be bool.")
+        if not isinstance(self.within_hard_limits, bool):
+            raise ValueError("`within_hard_limits` must be bool.")
         _require_nonnegative_integer(self.estimated_point_count, "estimated_point_count")
         _require_value_ids(self.omitted_value_ids, "omitted_value_ids", allow_none=False, allow_empty=True)
         if self.requested_value_ids is None:
@@ -503,7 +506,7 @@ class TiledPointsRenderSnapshot:
             not isinstance(self.budget_message, str) or not self.budget_message.strip()
         ):
             raise ValueError("`budget_message` must be a nonempty string or None.")
-        if not self.within_budget:
+        if not self.within_hard_limits:
             if self.rendered_tile_count or self.render_batch.point_count:
                 raise ValueError("An over-budget snapshot must not contain point payloads.")
             if self.budget_message is None:
@@ -532,7 +535,7 @@ class TiledPointsRenderSnapshot:
         omission case that needs an explicit viewer status.
         """
         return (
-            self.within_budget
+            self.within_hard_limits
             and self.requested_value_ids is not None
             and self.estimated_point_count == 0
             and bool(self.omitted_value_ids)

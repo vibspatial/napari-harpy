@@ -317,7 +317,7 @@ class _ViewportReadResult:
 
 @dataclass(frozen=True)
 class _LevelSelection:
-    """Return one catalog-only LOD decision together with its evidence.
+    """Describe a metadata-only LOD candidate or decision with its evidence.
 
     Parameters
     ----------
@@ -327,8 +327,10 @@ class _LevelSelection:
         Complete positive-tile rows estimated for the request at ``level``.
     positive_visible_tile_count
         Intersecting manifest tiles contributing at least one estimated row.
-    within_budget
-        Whether ``estimated_point_count`` satisfies the runtime point budget.
+    fits_point_budget
+        Whether ``estimated_point_count`` satisfies the supplied point budget.
+        In the viewer this is the preferred budget, not hard rendering
+        permission: hysteresis may choose a candidate above that preference.
     omitted_value_ids
         For a value-filtered request, sorted IDs that had a positive Exact
         visible count but zero visible count at ``level``. An empty array means
@@ -339,7 +341,7 @@ class _LevelSelection:
     level: int
     estimated_point_count: int
     positive_visible_tile_count: int
-    within_budget: bool
+    fits_point_budget: bool
     omitted_value_ids: npt.NDArray[np.uint32] | None
 
     def __post_init__(self) -> None:
@@ -356,8 +358,8 @@ class _LevelSelection:
         )
         if (self.estimated_point_count == 0) != (self.positive_visible_tile_count == 0):
             raise ValueError("Estimated points and positive tiles must be empty together.")
-        if not isinstance(self.within_budget, bool):
-            raise ValueError("`within_budget` must be bool.")
+        if not isinstance(self.fits_point_budget, bool):
+            raise ValueError("`fits_point_budget` must be bool.")
         if self.omitted_value_ids is None:
             return
         if (
@@ -1119,7 +1121,7 @@ class _PointsCacheReader:
         budget ineffective and could require reading millions of points merely
         to retain one rare value. The selected level therefore follows the budget,
         while ``omitted_value_ids`` reports the values sacrificed at that LOD. If
-        no level fits, return the coarsest level with ``within_budget=False``.
+        no level fits, return the coarsest level with ``fits_point_budget=False``.
 
         **Why a value count can reappear at a coarser level.** Level estimates
         count complete logical tiles that intersect the viewport; they do not
@@ -1159,31 +1161,57 @@ class _PointsCacheReader:
         and, when filtered, the selected-value index. It does not read catalog
         Zarr payloads, open bucket stores, or read point payloads.
         """
+        fallback = None
+        for candidate in self.iter_level_candidates(viewport, point_budget, value_index=value_index):
+            if candidate.fits_point_budget:
+                return candidate
+            fallback = candidate
+        if fallback is None:
+            raise RuntimeError("Cache has no serialized levels.")
+        return fallback
+
+    def iter_level_candidates(
+        self,
+        viewport: _IntrinsicViewport,
+        point_budget: int,
+        *,
+        value_index: _SelectedValueIndex | None = None,
+    ) -> Iterator[_LevelSelection]:
+        """Lazily evaluate levels from Exact to coarsest using resident metadata.
+
+        Each yielded candidate includes its own complete-tile point count,
+        positive-tile count, and Exact-relative sampled omissions. Its
+        ``fits_point_budget`` reports fit against the supplied ``point_budget``;
+        yielding a candidate neither chooses it nor authorizes rendering.
+
+        Ordinary ``select_level()`` stops at the first level that fits the supplied
+        budget. A caller applying hysteresis keeps requesting level estimates
+        until it can choose a level using the hysteresis rules and the previously
+        accepted LOD, without restarting evaluation. Counts need not decrease at
+        coarser levels because their tile footprints grow.
+
+        Evaluation, including validation, occurs during iteration. Each consumed
+        level is summarized once, the Exact-visible value mask stays local to
+        this iterator, and unconsumed levels do no work. No Zarr payload is read.
+        """
         _require_integer_in_range(point_budget, "point_budget", minimum=1, maximum=_INT64_MAX)
         value_index = self._require_selected_value_index(value_index)
         attributes = self._attributes_or_raise()
 
         if value_index is None:
-            candidates: list[_LevelSelection] = []
             for metadata in attributes.levels:
                 rows = self._visible_manifest_rows(metadata.level, viewport)
                 point_count = int(self._manifest_n_points_or_raise()[rows].sum(dtype=np.uint64))
-                candidate = _LevelSelection(
+                yield _LevelSelection(
                     level=metadata.level,
                     estimated_point_count=point_count,
                     positive_visible_tile_count=len(rows),
-                    within_budget=point_count <= point_budget,
+                    fits_point_budget=point_count <= point_budget,
                     omitted_value_ids=None,
                 )
-                candidates.append(candidate)
-                if candidate.within_budget:
-                    return candidate
-            return candidates[-1]
+            return
 
         exact_present_values: npt.NDArray[np.bool_] | None = None
-        # Retain the most recently evaluated candidate. If no level fits, the
-        # completed loop leaves this pointing to the coarsest serialized level.
-        fallback: _LevelSelection | None = None
         for metadata in attributes.levels:
             rows = self._visible_manifest_rows(metadata.level, viewport)
             point_count_by_value, positive_visible_tile_count = self._selected_value_manifest_summary(
@@ -1197,22 +1225,13 @@ class _PointsCacheReader:
             omitted_value_ids = np.ascontiguousarray(
                 value_index.value_ids[exact_present_values & (point_count_by_value == 0)]
             )
-            candidate = _LevelSelection(
+            yield _LevelSelection(
                 level=metadata.level,
                 estimated_point_count=point_count,
                 positive_visible_tile_count=positive_visible_tile_count,
-                within_budget=point_count <= point_budget,
+                fits_point_budget=point_count <= point_budget,
                 omitted_value_ids=omitted_value_ids,
             )
-            fallback = candidate
-            if candidate.within_budget:
-                # Avoid intersecting selected-value records for coarser levels once
-                # the finest valid fit is known.
-                return candidate
-
-        if fallback is None:
-            raise RuntimeError("Cache has no serialized levels.")
-        return fallback
 
     def _load_runtime_indexes(self) -> None:
         """Materialize the compact catalog state needed for runtime planning.
