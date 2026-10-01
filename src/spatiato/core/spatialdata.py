@@ -12,7 +12,7 @@ from spatialdata.models import TableModel, get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray
 
-from napari_harpy.core._color_source import (
+from spatiato.core._color_source import (
     ShapeColorValueKind,
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
@@ -444,7 +444,7 @@ def get_image_channel_names_from_sdata(sdata: SpatialData, image_name: str) -> l
         duplicate_names = ", ".join(f"`{channel_name}`" for channel_name in duplicates)
         raise ValueError(
             f"Image element `{image_name}` exposes duplicate channel names ({duplicate_names}), "
-            "which napari-harpy does not support. "
+            "which spatiato does not support. "
             "Update the channel names in the SpatialData object with "
             "`sdata.set_channel_names(...)`."
         )

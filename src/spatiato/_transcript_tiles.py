@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pandas.api.types import is_numeric_dtype
 
-TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION = "harpy-transcripts-vis-0.1"
+TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION = "spatiato-transcripts-vis-0.1"
 _INTERNAL_X_COLUMN = "x"
 _INTERNAL_Y_COLUMN = "y"
 _GENE_ID_COLUMN = "gene_id"

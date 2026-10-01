@@ -28,12 +28,12 @@ These are useful lower bounds rather than final build predictions.
 
 ## The current pipeline is doing too many source scans
 
-The existing validation performs a full compute for row counts and value checks ([`_validate_points_element`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:188)). On this dataset it took about 22.6 seconds.
+The existing validation performs a full compute for row counts and value checks ([`_validate_points_element`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:188)). On this dataset it took about 22.6 seconds.
 
 After that:
 
-- Bounds computation performs another scan and took approximately 8.8 seconds ([metadata calculation](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:312)).
-- Gene dictionary construction performs another scan and took approximately 32.9 seconds ([gene-table construction](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:380)).
+- Bounds computation performs another scan and took approximately 8.8 seconds ([metadata calculation](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:312)).
+- Gene dictionary construction performs another scan and took approximately 32.9 seconds ([gene-table construction](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:380)).
 - Encoding, tiling, and writing would then scan the source again.
 
 That is already roughly 64 seconds of warm-cache preprocessing before writing the first cache row. Coarse levels could add further reevaluation unless the intermediate dataflow is carefully controlled.
@@ -64,7 +64,7 @@ The public API can still accept the Dask dataframe, but the fast path should rec
 | Staged replacement and rollback | Keep and strengthen |
 | Existing 103 tests | Preserve and adapt |
 
-The tile-local conversion is implemented cleanly in [`_annotate_tile_partition()`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:506), while the row-group invariant and manifest collection are sound ideas in [`_write_level_dataset()`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:549) and [`_write_level_partition()`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:597).
+The tile-local conversion is implemented cleanly in [`_annotate_tile_partition()`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:506), while the row-group invariant and manifest collection are sound ideas in [`_write_level_dataset()`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:549) and [`_write_level_partition()`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:597).
 
 The focused suite remains healthy: **103 tests passed**.
 
@@ -72,7 +72,7 @@ The focused suite remains healthy: **103 tests passed**.
 
 ### 1. Level discovery
 
-The current implementation derives every level from spatial extent and doubles tile size between levels ([current formula](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:345)). This conflicts with the roadmap’s separation of tile geometry and sampling density.
+The current implementation derives every level from spatial extent and doubles tile size between levels ([current formula](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:345)). This conflicts with the roadmap’s separation of tile geometry and sampling density.
 
 Levels must consider both point count and extent, and multiple density levels may share the same tile geometry.
 
@@ -94,7 +94,7 @@ My initial preference is 512 for lower manifest/row-group overhead, unless viewp
 
 The current annotator creates a Python string for every row:
 
-[`tile_id` list construction](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:525)
+[`tile_id` list construction](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:525)
 
 For a 1.145M-row source partition, the annotated dataframe occupied approximately 90.6 MiB; the `tile_id` column alone consumed 68.8 MiB.
 
@@ -116,7 +116,7 @@ Fragment ordering must be deterministic and included in the source signature. Th
 
 ### 5. Staging and completion
 
-The current first build writes directly into the final directory ([current behavior](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:290)). The new builder must always use a sibling staging directory, including the first build, and publish only after metadata, manifest, validation, and `COMPLETED` are present.
+The current first build writes directly into the final directory ([current behavior](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:290)). The new builder must always use a sibling staging directory, including the first build, and publish only after metadata, manifest, validation, and `COMPLETED` are present.
 
 ## Keep the no-shuffle layout initially
 

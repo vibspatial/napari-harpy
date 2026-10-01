@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
-from napari_harpy.core.feature_extraction import (
+from spatiato.core.feature_extraction import (
     FeatureExtractionTriplet,
     _normalize_triplets,
     _requires_image,
@@ -15,22 +15,22 @@ from napari_harpy.core.feature_extraction import (
     _resolve_harpy_image_name_parameter,
     _resolve_harpy_labels_name_parameter,
 )
-from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND
-from napari_harpy.core.object_classification.annotation import USER_CLASS_COLORS_KEY
-from napari_harpy.core.object_classification.classifier import (
+from spatiato.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND
+from spatiato.core.object_classification.annotation import USER_CLASS_COLORS_KEY
+from spatiato.core.object_classification.classifier import (
     CLASSIFIER_APPLY_CONFIG_KEY,
     CLASSIFIER_CONFIG_KEY,
     ClassifierApplyResult,
     _validate_feature_matrix_compatible_with_bundle,
 )
-from napari_harpy.core.object_classification.classifier import apply_classifier as _apply_classifier
-from napari_harpy.core.object_classification.classifier_export import (
+from spatiato.core.object_classification.classifier import apply_classifier as _apply_classifier
+from spatiato.core.object_classification.classifier_export import (
     ClassifierExportBundle,
     read_classifier_export_bundle,
 )
-from napari_harpy.core.persistence import write_table_prediction_state
-from napari_harpy.core.spatialdata import _get_element_coordinate_systems, get_table
-from napari_harpy.core.validation import normalize_spatialdata_name
+from spatiato.core.persistence import write_table_prediction_state
+from spatiato.core.spatialdata import _get_element_coordinate_systems, get_table
+from spatiato.core.validation import normalize_spatialdata_name
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
@@ -67,7 +67,7 @@ def compute_features_for_classifier(
             "Custom `.obsm` classifier bundles cannot recompute features with "
             "`headless.compute_features_for_classifier(...)`. Use `headless.apply_classifier(...)` "
             "on a table that already contains a compatible feature matrix registered with "
-            "`napari_harpy.core.feature_matrix_metadata.register_feature_matrix_metadata(...)`."
+            "`spatiato.core.feature_matrix_metadata.register_feature_matrix_metadata(...)`."
         )
 
     resolved_target = _normalize_headless_feature_target(target)
@@ -298,7 +298,7 @@ def apply_classifier_with_feature_extraction_from_path(
         SpatialData object containing the target table, labels, and optional
         image elements.
     path
-        Path to a trusted `.harpy-classifier.joblib` classifier artifact.
+        Path to a trusted `.spatiato-classifier.joblib` classifier artifact.
     table_name
         Name of the target annotation table in `sdata`.
     labels_name
@@ -409,7 +409,7 @@ def _resolve_classifier_source_channels(classifier: ClassifierExportBundle) -> t
     if source_channels is None:
         raise ValueError(
             "Classifier uses intensity-derived features but its feature metadata does not contain "
-            "`source_channels`. Re-export the classifier with a newer Harpy/napari-harpy version."
+            "`source_channels`. Re-export the classifier with a newer spatiato version."
         )
     return source_channels
 

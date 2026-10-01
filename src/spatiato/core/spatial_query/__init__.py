@@ -1,6 +1,6 @@
 """Canonical spatial-query metadata and cache lifecycle."""
 
-from napari_harpy.core.spatial_query.annotation import (
+from spatiato.core.spatial_query.annotation import (
     SpatialAnnotationApplyResult,
     SpatialAnnotationColumnChangedError,
     SpatialAnnotationColumnMode,
@@ -16,7 +16,7 @@ from napari_harpy.core.spatial_query.annotation import (
     summarize_spatial_annotation,
     validate_and_resolve_spatial_annotation_value_kind,
 )
-from napari_harpy.core.spatial_query.canonical import (
+from spatiato.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
     CANONICAL_AXES,
     CANONICAL_CACHE_PATHS,
@@ -32,7 +32,7 @@ from napari_harpy.core.spatial_query.canonical import (
     inspect_canonical_cache,
     parse_canonical_metadata,
 )
-from napari_harpy.core.spatial_query.canonical_models import (
+from spatiato.core.spatial_query.canonical_models import (
     CanonicalCacheMismatch,
     CanonicalCacheReport,
     CanonicalCacheState,
@@ -48,16 +48,16 @@ from napari_harpy.core.spatial_query.canonical_models import (
     SpatialDimension,
     build_instance_set_digest,
 )
-from napari_harpy.core.spatial_query.centroids import (
+from spatiato.core.spatial_query.centroids import (
     calculate_canonical_centers,
     ensure_canonical_centers,
     read_canonical_centers_from_cache,
 )
-from napari_harpy.core.spatial_query.query import (
+from spatiato.core.spatial_query.query import (
     build_canonical_center_query_request,
     evaluate_canonical_center_query,
 )
-from napari_harpy.core.spatial_query.query_models import (
+from spatiato.core.spatial_query.query_models import (
     CanonicalCenterQueryRequest,
     CanonicalCenterQueryResult,
 )

@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 
 import dask.dataframe as dd
 
-from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import PointsSourceResolutionError
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ParquetPointsSource, PointColumnSelection
+from spatiato.core.multi_scale_cache_points_zarr.source.errors import PointsSourceResolutionError
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ParquetPointsSource, PointColumnSelection
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData

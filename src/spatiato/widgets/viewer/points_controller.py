@@ -6,7 +6,7 @@ from enum import Enum
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from napari_harpy._points_value_index import (
+from spatiato._points_value_index import (
     DEFAULT_RANDOM_STATE,
     DEFAULT_RENDER_POINT_BUDGET,
     DEFAULT_X,
@@ -18,9 +18,9 @@ from napari_harpy._points_value_index import (
     load_points,
     validate_points_element_for_value_selection,
 )
-from napari_harpy.core.class_palette import default_labeled_class_color
-from napari_harpy.viewer.adapter import PointsLayerIdentity
-from napari_harpy.viewer.points_styling import POINTS_SELECTION_MAX_CATEGORICAL_COLORS
+from spatiato.core.class_palette import default_labeled_class_color
+from spatiato.viewer.adapter import PointsLayerIdentity
+from spatiato.viewer.points_styling import POINTS_SELECTION_MAX_CATEGORICAL_COLORS
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData

@@ -8,8 +8,8 @@ from dask.callbacks import Callback
 from spatialdata import SpatialData
 from xarray import DataArray, Dataset, DataTree
 
-import napari_harpy.core.histogram as histogram_module
-from napari_harpy.core.histogram import (
+import spatiato.core.histogram as histogram_module
+from spatiato.core.histogram import (
     HistogramSettings,
     HistogramTarget,
     calculate_histogram,

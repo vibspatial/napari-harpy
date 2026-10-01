@@ -3,7 +3,7 @@ from __future__ import annotations
 from qtpy.QtCore import QSignalBlocker, QSize, Qt, Signal
 from qtpy.QtWidgets import QFrame, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     DISCLOSURE_CHEVRON_SIZE,
     WIDGET_ACCENT_BORDER_COLOR,
     WIDGET_ACCENT_SOFT_COLOR,
@@ -17,7 +17,7 @@ from napari_harpy.widgets.shared_styles import (
 )
 
 _SECTION_GROUP_STYLESHEET = (
-    "QFrame[harpyViewerDisclosureSection='true'] {"
+    "QFrame[spatiatoViewerDisclosureSection='true'] {"
     f"background-color: {WIDGET_PANEL_MUTED_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 12px;}"
@@ -36,7 +36,7 @@ _DISCLOSURE_BUTTON_STYLESHEET = (
     f"QToolButton:hover {{ background-color: {WIDGET_PANEL_MUTED_COLOR}; border-color: {WIDGET_BORDER_STRONG_COLOR}; }}"
     f"QToolButton:checked {{ background-color: {WIDGET_ACCENT_SOFT_COLOR}; border-color: {WIDGET_ACCENT_BORDER_COLOR}; }}"
 )
-_ELEMENT_DISCLOSURE_STYLESHEET = "QFrame[harpyViewerDisclosureRow='true'] {background: transparent; border: 0px;}"
+_ELEMENT_DISCLOSURE_STYLESHEET = "QFrame[spatiatoViewerDisclosureRow='true'] {background: transparent; border: 0px;}"
 _DISCLOSURE_CONTENT_STYLESHEET = "QWidget { background: transparent; }"
 
 
@@ -116,7 +116,7 @@ class _CollapsibleSectionWidget(QFrame):
         super().__init__()
         self._title = title
         self.setObjectName(object_name)
-        self.setProperty("harpyViewerDisclosureSection", True)
+        self.setProperty("spatiatoViewerDisclosureSection", True)
         self.setStyleSheet(_SECTION_GROUP_STYLESHEET)
 
         layout = QVBoxLayout(self)
@@ -187,7 +187,7 @@ class _DisclosureElementWidget(QFrame):
         self.title = title
         self.detail_widget = detail_widget
         self.setObjectName(object_name)
-        self.setProperty("harpyViewerDisclosureRow", True)
+        self.setProperty("spatiatoViewerDisclosureRow", True)
         self.setStyleSheet(_ELEMENT_DISCLOSURE_STYLESHEET)
 
         layout = QVBoxLayout(self)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _LevelSelection
+from spatiato.core.multi_scale_cache_points_zarr.reader import _LevelSelection
 
 _LodDecisionReason = Literal[
     "ordinary",

@@ -2,13 +2,13 @@
 
 Investigation date: 2026-06-18
 
-Scope: investigate how the current napari-harpy shapes annotation widget could
+Scope: investigate how the current spatiato shapes annotation widget could
 create and save annotations with holes. No implementation changes are included
 in this document.
 
 ## Summary
 
-napari-harpy already has the important half of hole support: visualization.
+spatiato already has the important half of hole support: visualization.
 When a SpatialData shapes row is a Shapely `Polygon` with interior rings, the
 viewer adapter encodes the exterior and interior rings into one napari Shapes
 row so napari can render the hole.
@@ -36,7 +36,7 @@ Implementation slices overview:
 3. Slice 3: broaden complex geometry support only after the basic
    polygon-with-holes path is stable.
 
-## Current napari-harpy State
+## Current spatiato State
 
 The shapes annotation widget has three entry paths, but they all converge on
 the same save converter:
@@ -49,26 +49,26 @@ the same save converter:
   imported outside the widget.
 
 The save boundary is
-[`napari_shapes_layer_to_geodataframe`](../../src/napari_harpy/core/shapes_annotation.py#L236-L305).
+[`napari_shapes_layer_to_geodataframe`](../../src/spatiato/core/shapes_annotation.py#L236-L305).
 It walks each napari row, accepts `polygon`, `rectangle`, and `ellipse`, and
 produces one Shapely `Polygon` per napari row.
 
 The current geometry choke point is
-[`_napari_polygon_vertices_to_shapely_polygon`](../../src/napari_harpy/core/shapes_annotation.py#L626-L630),
+[`_napari_polygon_vertices_to_shapely_polygon`](../../src/spatiato/core/shapes_annotation.py#L626-L630),
 which converts the whole vertex array into one exterior ring. Validation then
 uses
-[`_make_valid_polygon`](../../src/napari_harpy/core/shapes_annotation.py#L666-L670).
+[`_make_valid_polygon`](../../src/spatiato/core/shapes_annotation.py#L666-L670).
 That is correct for simple polygons, but not for the hole path produced by the
 viewer adapter.
 
 Visualization is implemented in the opposite direction in
-[`_shapely_polygon_to_napari_polygon_vertices`](../../src/napari_harpy/viewer/adapter.py#L2247-L2261).
+[`_shapely_polygon_to_napari_polygon_vertices`](../../src/spatiato/viewer/adapter.py#L2247-L2261).
 The adapter orients the polygon, appends the exterior ring, then appends each
 interior ring followed by the shell anchor. The comments there explicitly
 describe this as the napari path encoding used to preserve holes.
 
 The edit-existing validator currently accepts only Shapely `Polygon` rows:
-[`_validate_existing_shapes_source_geodataframe`](../../src/napari_harpy/core/shapes_annotation.py#L416-L439).
+[`_validate_existing_shapes_source_geodataframe`](../../src/spatiato/core/shapes_annotation.py#L416-L439).
 That does not reject holes, because a polygon with interiors is still a
 `Polygon`. It does reject `MultiPolygon`, and the widget has a test for this
 guardrail in
@@ -76,14 +76,14 @@ guardrail in
 
 The widget also requires a one-to-one source-row to napari-row mapping before
 opening an existing shapes element for editing:
-[`_validate_opened_existing_shapes_layer`](../../src/napari_harpy/widgets/shapes_annotation/widget.py#L725-L770).
+[`_validate_opened_existing_shapes_layer`](../../src/spatiato/widgets/shapes_annotation/widget.py#L725-L770).
 This works for a single `Polygon` with holes because it renders as one napari
 row. It does not work for `MultiPolygon`, where one source row can expand into
 multiple rendered rows.
 
 After a successful save, the widget refreshes the source snapshot and binding
 as if each saved GeoDataFrame row maps to one napari row:
-[`_update_annotation_session_after_successful_save`](../../src/napari_harpy/widgets/shapes_annotation/widget.py#L850-L891).
+[`_update_annotation_session_after_successful_save`](../../src/spatiato/widgets/shapes_annotation/widget.py#L850-L891).
 That is fine for Slice 1 if we stay with one `Polygon` row per
 annotation.
 
@@ -135,7 +135,7 @@ Relevant source references:
   rings and unions the result when needed:
   <https://github.com/qupath/qupath/blob/bb65edf0e7c5ebf28076662cf320ba9a4078d0bb/qupath-core/src/main/java/qupath/lib/roi/GeometryTools.java#L817-L833>
 
-Lessons for napari-harpy:
+Lessons for spatiato:
 
 - Holes should be real geometry, not a styling convention.
 - The user-facing operation can be simple: subtract selected region(s) from a
@@ -143,7 +143,7 @@ Lessons for napari-harpy:
 - The persistence model should store the result as one polygon with interiors
   when the result is one connected polygon.
 - More complex boolean results, especially `MultiPolygon`, need a separate
-  design because napari-harpy currently assumes one editable source row maps to
+  design because spatiato currently assumes one editable source row maps to
   one napari row.
 
 ## Recommended Geometry Contract
@@ -319,9 +319,9 @@ unchanged. Creating new holes with a widget action is Slice 2.
 
 Primary code areas:
 
-- `src/napari_harpy/viewer/adapter.py`
-- `src/napari_harpy/core/shapes_annotation.py`
-- a possible shared helper such as `src/napari_harpy/core/shapes_geometry.py`
+- `src/spatiato/viewer/adapter.py`
+- `src/spatiato/core/shapes_annotation.py`
+- a possible shared helper such as `src/spatiato/core/shapes_geometry.py`
 - `tests/test_shapes_annotation.py`
 - `tests/test_shapes_annotation_widget.py`
 
@@ -340,7 +340,7 @@ Slice 1 implementation breakdown:
 
 Status: implemented.
 
-Implemented in `src/napari_harpy/core/shapes_geometry.py` with
+Implemented in `src/spatiato/core/shapes_geometry.py` with
 `shapely_polygon_to_napari_polygon_vertices(...)` and `napari_polygon_vertices_to_shapely_polygon(...)`. The viewer
 adapter now delegates its polygon path encoding to the shared helper, and
 `tests/test_shapes_geometry.py` covers the helper contract without touching the
@@ -352,7 +352,7 @@ the annotation widget, SpatialData writes, or save behavior yet.
 Suggested work:
 
 1. Add a small helper module, for example
-   `src/napari_harpy/core/shapes_geometry.py`.
+   `src/spatiato/core/shapes_geometry.py`.
 2. Move or mirror the existing adapter encoder into that helper so loading and
    saving share one documented napari path contract.
 3. Implement `napari_polygon_vertices_to_shapely_polygon(vertices) -> Polygon`, or a similarly
@@ -409,11 +409,11 @@ row-aware wrapper around `napari_polygon_vertices_to_shapely_polygon(...)`.
 
 Layering contract:
 
-- `src/napari_harpy/core/shapes_geometry.py` owns pure geometry/path
+- `src/spatiato/core/shapes_geometry.py` owns pure geometry/path
   interpretation. It knows about napari `(y, x)` path arrays and Shapely
   `Polygon`s, but it does not know about napari `Shapes` layers, row indexes,
   `layer.features`, SpatialData, or widgets.
-- `src/napari_harpy/core/shapes_annotation.py` owns annotation save conversion.
+- `src/spatiato/core/shapes_annotation.py` owns annotation save conversion.
   `_napari_polygon_vertices_to_shapely_polygon(...)` should keep existing row-aware error context
   and converter structure, but should stop duplicating polygon path parsing.
 - `napari_polygon_vertices_to_shapely_polygon(...)` becomes the source of truth for interpreting one
@@ -425,7 +425,7 @@ Layering contract:
 Suggested work:
 
 1. Import `napari_polygon_vertices_to_shapely_polygon(...)` in
-   `src/napari_harpy/core/shapes_annotation.py`.
+   `src/spatiato/core/shapes_annotation.py`.
 2. Update `_napari_polygon_vertices_to_shapely_polygon(...)` to call the helper.
 3. Wrap helper `ValueError`s with the napari shape row index while preserving
    the detailed helper message.
@@ -767,7 +767,7 @@ second hole group:     [9, 11]
 ```
 
 This is the core Slice 1E contract: napari may report that one raw vertex moved,
-but napari-harpy must treat some raw vertices as aliases of the same logical
+but spatiato must treat some raw vertices as aliases of the same logical
 topology vertex and keep those aliases identical.
 
 Current napari edit-path finding:

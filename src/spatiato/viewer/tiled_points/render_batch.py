@@ -8,7 +8,7 @@ from typing import Final
 
 import numpy as np
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderBatch,
     TiledPointsRenderTile,

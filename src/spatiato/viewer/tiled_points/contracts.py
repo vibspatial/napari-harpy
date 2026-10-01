@@ -10,7 +10,7 @@ from uuid import UUID
 import numpy as np
 import numpy.typing as npt
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _expected_level_kind,
     _SerializedLevelKind,
 )

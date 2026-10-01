@@ -1,4 +1,4 @@
-"""Cache-backed points controller used by the napari-harpy Viewer panel."""
+"""Cache-backed points controller used by the spatiato Viewer panel."""
 
 from __future__ import annotations
 
@@ -11,17 +11,17 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from napari.utils.events import Event
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_location import (
     points_cache_path,
     points_element_path,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
-from napari_harpy.viewer.adapter import TiledPointsLayerBinding, ViewerAdapter
-from napari_harpy.viewer.tiled_points.application import (
+from spatiato.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
+from spatiato.viewer.adapter import TiledPointsLayerBinding, ViewerAdapter
+from spatiato.viewer.tiled_points.application import (
     TiledPointsApplicationSettings,
     TiledPointsCacheDescriptor,
 )
-from napari_harpy.viewer.tiled_points.runtime.cache_session import _CacheSessionState
+from spatiato.viewer.tiled_points.runtime.cache_session import _CacheSessionState
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData

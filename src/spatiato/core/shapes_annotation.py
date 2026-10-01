@@ -17,15 +17,15 @@ from spatialdata.transformations import (
     get_transformation_between_coordinate_systems,
 )
 
-from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
-from napari_harpy.core.spatialdata import (
+from spatiato.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
+from spatiato.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_table,
     get_table_metadata,
 )
-from napari_harpy.core.spatialdata_io import write_shapes_element
-from napari_harpy.core.validation import (
+from spatiato.core.spatialdata_io import write_shapes_element
+from spatiato.core.validation import (
     normalize_spatialdata_dataframe_column_name,
     normalize_spatialdata_name,
     validate_new_spatialdata_element_name,
@@ -160,7 +160,7 @@ def edit_shapes_element_from_napari_shapes_layer(
     """Overwrite an existing SpatialData shapes element from an edited napari layer.
 
     The napari layer is assumed to contain coordinates already transformed into
-    ``request.coordinate_system``. The Harpy viewer widget/adapter does this
+    ``request.coordinate_system``. The Spatiato viewer widget/adapter does this
     when loading vector shapes into napari. Saving therefore stores those
     transformed coordinates directly with ``Identity()`` for that coordinate
     system, while preserving the target element's other original coordinate
@@ -507,7 +507,7 @@ def _build_features_with_instance_ids(
     """Return row-aligned features with stable IDs for every napari shape row.
 
     Napari stores per-shape metadata in a features DataFrame rather than in a
-    semantic row index. Harpy keeps the future GeoDataFrame index values in a
+    semantic row index. Spatiato keeps the future GeoDataFrame index values in a
     named features column, usually ``instance_id``. Existing values are
     preserved for repeated saves, missing values from newly drawn rows are
     filled with unique generated IDs such as ``__annotation_0``, and duplicate

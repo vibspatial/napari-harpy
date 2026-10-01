@@ -14,33 +14,33 @@ import zarr
 from zarr.errors import ChunkNotFoundError
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
+from spatiato.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_STAGING,
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.writer.staging_validation import (
     _validate_complete_cache,
     _validate_staged_cache,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major import _RangeFragmentBatch
+from spatiato.core.multi_scale_cache_points_zarr.writer.value_major import _RangeFragmentBatch
 
 
 def _load_exhaustive_module() -> ModuleType:
     script_path = Path(__file__).parents[2] / "scripts/validate_multi_scale_cache_points_zarr_exhaustive.py"
-    spec = spec_from_file_location("napari_harpy_exhaustive_validation_script", script_path)
+    spec = spec_from_file_location("spatiato_exhaustive_validation_script", script_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("Could not load the exhaustive-validation developer script.")
     module = module_from_spec(spec)

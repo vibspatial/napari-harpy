@@ -13,15 +13,15 @@ import numpy as np
 from loguru import logger
 from qtpy.QtCore import QObject, QThread, Signal, Slot
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _expected_level_kind
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _expected_level_kind
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
     _IntrinsicViewport,
     _LevelSelection,
     _PointsCacheReader,
     _SelectedValueIndex,
 )
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderBatch,
     TiledPointsRenderResult,
@@ -30,9 +30,9 @@ from napari_harpy.viewer.tiled_points.contracts import (
     TileResidencyKey,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.runtime.lod import _LodDecisionReason, _select_lod
-from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.runtime.lod import _LodDecisionReason, _select_lod
+from spatiato.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 _UINT32_MAX = np.iinfo(np.uint32).max
 _FailurePhase = Literal["startup", "selection", "viewport", "shutdown"]

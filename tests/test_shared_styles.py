@@ -1,8 +1,8 @@
 import pytest
 from qtpy.QtWidgets import QSizePolicy
 
-from napari_harpy._resources import get_logo_path
-from napari_harpy.widgets.shared_styles import (
+from spatiato._resources import get_logo_path
+from spatiato.widgets.shared_styles import (
     HEADER_LOGO_WIDTH,
     LOGO_NAVY_COLOR,
     CompactComboBox,

@@ -6,7 +6,7 @@ Specification draft.
 
 This note proposes a magic-wand-style refinement feature for the Shapes
 Annotation workflow. The feature is inspired by QuPath's wand/brush annotation
-tools, but should be adapted to napari-harpy's current lasso-based shape editing
+tools, but should be adapted to spatiato's current lasso-based shape editing
 model rather than copied directly.
 
 References:
@@ -507,7 +507,7 @@ Apply should reuse the same safe row-mutation pattern used by create-holes:
 - mark the annotation layer dirty through the existing snapshot comparison.
 
 The create-holes helper already shows the right pattern in
-`src/napari_harpy/widgets/shapes_annotation/_create_holes.py`.
+`src/spatiato/widgets/shapes_annotation/_create_holes.py`.
 
 Consider extracting a shared helper such as:
 
@@ -552,8 +552,8 @@ That keeps ordinary napari row selection and direct editing behavior intact.
 Possible new files:
 
 ```text
-src/napari_harpy/widgets/shapes_annotation/_magic_wand.py
-src/napari_harpy/core/magic_wand.py
+src/spatiato/widgets/shapes_annotation/_magic_wand.py
+src/spatiato/core/magic_wand.py
 tests/test_shapes_annotation_magic_wand.py
 ```
 

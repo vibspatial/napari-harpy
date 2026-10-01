@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
+from spatiato.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 _STATUS_IDENTIFIER_MAX_LENGTH = 32
 _ANNOTATION_SPACE_PAN_TIP = (
@@ -11,7 +11,7 @@ _ANNOTATION_SPACE_PAN_TIP = (
 )
 
 if TYPE_CHECKING:
-    from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
+    from spatiato.core.shapes_annotation import AnnotateShapesElementResult
 
 
 @dataclass(frozen=True)

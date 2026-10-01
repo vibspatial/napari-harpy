@@ -37,7 +37,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from napari_harpy.viewer.tiled_points.contracts import TiledPointsViewportState
+from spatiato.viewer.tiled_points.contracts import TiledPointsViewportState
 
 
 def _viewport_state_from_draw(

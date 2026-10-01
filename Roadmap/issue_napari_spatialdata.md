@@ -1,7 +1,7 @@
-Roadmap: Remove napari-spatialdata Runtime Dependency in napari-harpy
+Roadmap: Remove napari-spatialdata Runtime Dependency in spatiato
 Goal
 
-Make napari-harpy independently capable of:
+Make spatiato independently capable of:
 
 visualizing SpatialData images,
 visualizing SpatialData labels,
@@ -11,7 +11,7 @@ without depending on the napari-spatialdata plugin at runtime.
 
 Why
 
-napari-harpy only needs a focused subset of the functionality currently provided by napari-spatialdata:
+spatiato only needs a focused subset of the functionality currently provided by napari-spatialdata:
 
 render raster images,
 render segmentation labels,
@@ -30,7 +30,7 @@ spatialdata for transformations and table semantics,
 napari for rendering,
 anndata for table data,
 
-and own the visualization logic directly inside napari-harpy.
+and own the visualization logic directly inside spatiato.
 
 Scope
 In scope
@@ -56,14 +56,14 @@ Instead:
 read transformations from spatialdata,
 convert them to a napari-compatible affine,
 pass the affine directly to napari.layers.Image or napari.layers.Labels,
-manage labels-to-table coloring within napari-harpy.
+manage labels-to-table coloring within spatiato.
 
 This keeps the implementation small, explicit, and testable.
 
 Architecture
 1. SpatialData raster rendering module
 
-Create a thin rendering layer inside napari-harpy responsible for adding images and labels from SpatialData.
+Create a thin rendering layer inside spatiato responsible for adding images and labels from SpatialData.
 
 Suggested API:
 
@@ -234,7 +234,7 @@ Fallback behavior:
 For labels that do not end up in the direct mapping, napari’s `DirectLabelColormap` renders them
 as transparent unless an explicit default color is provided.
 
-napari-harpy labels coloring
+spatiato labels coloring
 
 Current Harpy behavior is already much closer to the desired standalone design.
 
@@ -483,7 +483,7 @@ This is the smallest meaningful step that restores the user-facing workflow of c
 
 Definition of done
 
-napari-harpy can:
+spatiato can:
 
 render SpatialData images independently,
 render SpatialData labels independently,
@@ -497,7 +497,7 @@ Summary
 
 The path forward is not to replicate napari-spatialdata wholesale.
 
-The path forward is to extract and own a narrow, well-defined visualization stack inside napari-harpy:
+The path forward is to extract and own a narrow, well-defined visualization stack inside spatiato:
 
 SpatialData for transformations and table semantics,
 napari for rendering,

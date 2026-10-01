@@ -1,6 +1,6 @@
 """Cache-backed tiled-points visualization for napari."""
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
     TiledPointsLayerStatus,
     TiledPointsRenderBatch,
@@ -10,8 +10,8 @@ from napari_harpy.viewer.tiled_points.contracts import (
     TiledPointsViewportState,
     TileResidencyKey,
 )
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
-from napari_harpy.viewer.tiled_points.napari.registration import (
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.napari.registration import (
     TiledPointsLayerCompatibilityError,
     register_tiled_points_layer,
 )

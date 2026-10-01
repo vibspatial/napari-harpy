@@ -3,19 +3,19 @@ from pathlib import Path
 
 import pyarrow as pa
 
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import (
+from spatiato.core.multi_scale_cache_points_zarr.source.models import (
     ParquetPointsSource,
     ParquetSourceFile,
     ParquetSourceRowGroup,
     PointColumnSelection,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import (
+from spatiato.core.multi_scale_cache_points_zarr.source.signature import (
     POINT_ID_POLICY,
     SOURCE_SIGNATURE_METHOD,
     _canonical_source_signature_bytes,
     build_source_signature,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _ParquetSourceInventory
+from spatiato.core.multi_scale_cache_points_zarr.source.validation import _ParquetSourceInventory
 
 _EXPECTED_CANONICAL_BYTES = (
     b'{"columns":[{"name":"x","nullable":false,"role":"x","type":{"bit_width":64,"kind":"float"}},'
@@ -24,9 +24,9 @@ _EXPECTED_CANONICAL_BYTES = (
     b'"signed":true},"kind":"dictionary","ordered":false,"value":{"kind":"string","offset_width":32}}}],'
     b'"element_path":"points/transcripts","files":[{"modified_time_ns":null,"path":"nested/part.0.parquet",'
     b'"row_count":3,"row_groups":[{"compressed_size_bytes":100,"row_count":2},{"compressed_size_bytes":50,'
-    b'"row_count":1}],"size_bytes":123}],"method":"harpy-parquet-source-inventory-sha256-v1","row_count":3}'
+    b'"row_count":1}],"size_bytes":123}],"method":"spatiato-parquet-source-inventory-sha256-v1","row_count":3}'
 )
-_EXPECTED_DIGEST = "eda799d9710e3bf18c37dfb2b543b6a1e19cf00d0a0bd62567495b6cee433117"
+_EXPECTED_DIGEST = "0936c3ee74410d0f4965b7815733c5a014436c249aa12166e602fc0dbe8eaca8"
 
 
 def _inventory(*, spatialdata_path: Path = Path("/source/example.zarr")) -> _ParquetSourceInventory:
@@ -67,8 +67,8 @@ def test_source_signature_has_frozen_canonical_bytes_digest_and_methods() -> Non
 
     assert _canonical_source_signature_bytes(inventory) == _EXPECTED_CANONICAL_BYTES
     assert build_source_signature(inventory) == _EXPECTED_DIGEST
-    assert SOURCE_SIGNATURE_METHOD == "harpy-parquet-source-inventory-sha256-v1"
-    assert POINT_ID_POLICY == "harpy-source-file-row-offset-uint64-v1"
+    assert SOURCE_SIGNATURE_METHOD == "spatiato-parquet-source-inventory-sha256-v1"
+    assert POINT_ID_POLICY == "spatiato-source-file-row-offset-uint64-v1"
 
 
 def test_source_signature_excludes_absolute_host_path() -> None:

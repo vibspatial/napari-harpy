@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from qtpy.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     SECONDARY_BUTTON_STYLESHEET,
     WARNING_BUTTON_STYLESHEET,
     set_status_card,

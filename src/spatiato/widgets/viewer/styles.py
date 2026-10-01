@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     WIDGET_ACCENT_BORDER_COLOR,
     WIDGET_ACCENT_SOFT_COLOR,
     WIDGET_BORDER_COLOR,
@@ -12,7 +12,7 @@ from napari_harpy.widgets.shared_styles import (
 
 INPUT_CONTROL_STYLESHEET = build_input_control_stylesheet("QComboBox")
 DETAIL_PANEL_STYLESHEET = (
-    "QFrame[harpyViewerDetailPanel='true'] {"
+    "QFrame[spatiatoViewerDetailPanel='true'] {"
     f"background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px;}"

@@ -17,15 +17,15 @@ For the first production feature extractor, use one **small convolutional featur
 
 Reason: for MACSima / PhenoCycler-style multiplex data, we care a lot about local marker intensity, membrane/nuclear texture, boundaries, and neighborhood context across many channels. A ViT/foundation model like DINOv2 is attractive, but it is RGB-oriented, patch-based, heavier, and awkward for 20-50 fluorescence channels. Convpaint itself recommends VGG/Ilastik-like local features for “what does it look like here?” tasks, and DINO/JAFAR for contextual/semantic tasks. For multiplex pixel classification, I think local, dense, tile-friendly CNN features are the better first bet.
 
-**What napari-harpy Already Has**
-napari-harpy currently has:
+**What spatiato Already Has**
+spatiato currently has:
 
 - object-level feature extraction via `harpy.tb.add_feature_matrix(...)`, writing into `AnnData.obsm`
-  - [feature_extraction/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/feature_extraction/controller.py:191)
+  - [feature_extraction/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/feature_extraction/controller.py:191)
 - object classification using `RandomForestClassifier`, reading `.obsm[feature_key]`, then writing `pred_class` / `pred_confidence`
-  - [object_classification/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/object_classification/controller.py:186)
+  - [object_classification/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/object_classification/controller.py:186)
 - a shared `HarpyAppState` event pattern for cross-widget updates
-  - [\_app_state.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_app_state.py:86)
+  - [\_app_state.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_app_state.py:86)
 
 Pixel classification should not be forced into `.obsm`, because dense per-pixel features are image-like, not table-row-like.
 
@@ -282,7 +282,7 @@ Better:
   - PCA/projection settings
   - output shape, axes, dtype, cache schema version
 
-Convpaint’s memory mode is useful inspiration for avoiding repeated annotation-feature extraction, but napari-harpy should use a persistent feature-image cache because whole-image prediction and re-use across sessions matter here.
+Convpaint’s memory mode is useful inspiration for avoiding repeated annotation-feature extraction, but spatiato should use a persistent feature-image cache because whole-image prediction and re-use across sessions matter here.
 
 **Model Choice**
 Initial production choice: **ConvNeXt-Tiny early convolutional layers**, tile-friendly, modern, finite receptive field, and faster than transformer/foundation options.
@@ -293,7 +293,7 @@ I would not start with DINOv2/JAFAR for multiplex. Convpaint documents DINOv2/JA
 
 **Model Download and Loading**
 Use TorchVision pretrained weights. TorchVision downloads the weight file automatically on the first call
-and then reuses the local PyTorch cache on later runs. For napari-harpy this should probably live behind
+and then reuses the local PyTorch cache on later runs. For spatiato this should probably live behind
 an optional dependency group, because `torch` / `torchvision` are large dependencies.
 
 Initial production backend:

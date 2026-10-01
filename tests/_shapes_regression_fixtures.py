@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from shapely.geometry import Polygon
 
-from napari_harpy.core.shapes_geometry import (
+from spatiato.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,

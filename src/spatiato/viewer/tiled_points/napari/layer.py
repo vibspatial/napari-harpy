@@ -13,14 +13,14 @@ from napari.layers.base import _LayerSlicingState
 from napari.types import LayerDataType
 from napari.utils.events import Event
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     DEFAULT_HARD_RENDER_POINT_BUDGET,
     DEFAULT_TARGET_PIXELS_PER_POINT,
     TiledPointsDatasetReference,
     TiledPointsLayerStatus,
     TiledPointsViewportState,
 )
-from napari_harpy.viewer.tiled_points.napari.viewport import (
+from spatiato.viewer.tiled_points.napari.viewport import (
     _viewport_state_from_draw,
     _viewport_state_with_budget,
 )
@@ -42,7 +42,7 @@ class TiledPointsLayerModel(Layer):
     new layer and cache runtime.
 
     Before the first instance is added to napari, integration code calls
-    ``napari_harpy.viewer.tiled_points.napari.register_tiled_points_layer()``.
+    ``spatiato.viewer.tiled_points.napari.register_tiled_points_layer()``.
     That function installs napari's private
     ``TiledPointsLayerModel -> VispyTiledPointsLayer`` mapping. Constructing this
     model alone does not construct a renderer. When the instance is later

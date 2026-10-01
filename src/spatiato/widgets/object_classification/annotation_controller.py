@@ -9,18 +9,18 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
-from napari_harpy.core.object_classification.annotation import (
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLUMN,
     UserClassStateChange,
     _to_user_class_values,
     set_user_class_for_rows,
 )
-from napari_harpy.core.spatialdata import (
+from spatiato.core.spatialdata import (
     SpatialDataTableMetadata,
     get_table,
     get_table_metadata,
 )
-from napari_harpy.viewer.adapter import ViewerAdapter
+from spatiato.viewer.adapter import ViewerAdapter
 
 if TYPE_CHECKING:
     from anndata import AnnData

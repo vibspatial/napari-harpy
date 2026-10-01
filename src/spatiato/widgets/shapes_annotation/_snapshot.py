@@ -66,7 +66,7 @@ def _annotation_layer_snapshots_equal(
 
 def _geometry_hash(data: list[np.ndarray], shape_types: tuple[str, ...]) -> str:
     hasher = hashlib.sha256()
-    hasher.update(b"napari-harpy-shapes-annotation-geometry-v1\0")
+    hasher.update(b"spatiato-shapes-annotation-geometry-v1\0")
     for vertices, shape_type in zip(data, shape_types, strict=True):
         hasher.update(b"row\0shape:")
         hasher.update(shape_type.encode("utf-8"))

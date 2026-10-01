@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING
 
 import pyarrow as pa
 
-from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import ParquetMetadataValidationError
+from spatiato.core.multi_scale_cache_points_zarr.source.errors import ParquetMetadataValidationError
 
 if TYPE_CHECKING:
-    from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _ParquetSourceInventory
+    from spatiato.core.multi_scale_cache_points_zarr.source.validation import _ParquetSourceInventory
 
 
-SOURCE_SIGNATURE_METHOD = "harpy-parquet-source-inventory-sha256-v1"
-POINT_ID_POLICY = "harpy-source-file-row-offset-uint64-v1"
+SOURCE_SIGNATURE_METHOD = "spatiato-parquet-source-inventory-sha256-v1"
+POINT_ID_POLICY = "spatiato-source-file-row-offset-uint64-v1"
 
 
 def build_source_signature(inventory: _ParquetSourceInventory) -> str:

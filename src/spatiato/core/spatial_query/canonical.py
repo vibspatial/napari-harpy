@@ -8,8 +8,8 @@ import numpy as np
 from scipy.sparse import issparse
 from xarray import DataArray
 
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatial_query.canonical_models import (
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatial_query.canonical_models import (
     CanonicalCacheMismatch,
     CanonicalCacheReport,
     CanonicalCacheState,
@@ -22,7 +22,7 @@ from napari_harpy.core.spatial_query.canonical_models import (
     CanonicalRegionMetadata,
     CanonicalSourceSignature,
 )
-from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table_metadata
+from spatiato.core.spatialdata import SpatialDataTableMetadata, get_table_metadata
 
 if TYPE_CHECKING:
     from anndata import AnnData

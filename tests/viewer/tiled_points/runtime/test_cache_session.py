@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+import spatiato.viewer.tiled_points.runtime.cache_session as cache_session_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _LevelSelection,
     _PlannedTileRead,
     _SelectedValueLevelIndex,
@@ -17,14 +17,14 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _ViewportReadPlan,
     _ViewportReadResult,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderResult,
     TiledPointsViewportState,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.runtime.cache_session import (
+from spatiato.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
     _CacheSessionState,

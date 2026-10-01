@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _LevelBuildPlan
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _LevelBuildPlan
 
-BUCKET_HASH_METHOD = "harpy-zarr-tile-splitmix64-v1"
+BUCKET_HASH_METHOD = "spatiato-zarr-tile-splitmix64-v1"
 TARGET_POINTS_PER_BUCKET = 2_000_000
 
 _MAX_BUCKET_COUNT = 2**32

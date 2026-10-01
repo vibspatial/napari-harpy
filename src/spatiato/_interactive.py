@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import napari
 
-from napari_harpy._app_state import HarpyAppState, get_or_create_app_state
-from napari_harpy._shapes_triangulation import (
+from spatiato._app_state import SpatiatoAppState, get_or_create_app_state
+from spatiato._shapes_triangulation import (
     ShapesTriangulationBackend,
     configure_shapes_triangulation_backend,
 )
@@ -14,18 +14,20 @@ from napari_harpy._shapes_triangulation import (
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-type HarpyWidgetId = Literal["viewer", "feature_extraction", "histogram", "object_classification", "shapes_annotation"]
-type HarpyWidgetSelection = Literal["all"] | HarpyWidgetId | Sequence[HarpyWidgetId]
+type SpatiatoWidgetId = Literal[
+    "viewer", "feature_extraction", "histogram", "object_classification", "shapes_annotation"
+]
+type SpatiatoWidgetSelection = Literal["all"] | SpatiatoWidgetId | Sequence[SpatiatoWidgetId]
 
 
 class Interactive:
     """
-    Thin programmatic launcher for napari-harpy.
+    Thin programmatic launcher for spatiato.
 
     Parameters
     ----------
     sdata
-        SpatialData object that Harpy widgets should use as their shared active
+        SpatialData object that Spatiato widgets should use as their shared active
         data source.
     viewer
         Existing napari viewer to reuse. If omitted, the current viewer is used
@@ -34,11 +36,11 @@ class Interactive:
         If True, initialize state and dock widgets without starting the napari
         event loop.
     widgets
-        Which Harpy dock widgets to open. Defaults to ``"all"``. Possible
+        Which Spatiato dock widgets to open. Defaults to ``"all"``. Possible
         values are ``"all"``, ``"viewer"``, ``"feature_extraction"``,
         ``"histogram"``, ``"object_classification"``, and
         ``"shapes_annotation"``. Pass a tuple of widget ids to open a subset.
-        ``"all"`` opens every Harpy widget.
+        ``"all"`` opens every Spatiato widget.
     async_slicing
         If ``True`` or ``False``, explicitly enable or disable napari's
         experimental async slicing for this session. If ``None``, leave napari's
@@ -48,7 +50,7 @@ class Interactive:
         values are ``"bermuda"`` and ``"numba"``. Defaults to ``"bermuda"``.
     """
 
-    _PLUGIN_NAME = "napari-harpy"
+    _PLUGIN_NAME = "spatiato"
     _WIDGET_NAMES: dict[str, str] = {
         "viewer": "Viewer",
         "feature_extraction": "Feature Extraction",
@@ -56,7 +58,7 @@ class Interactive:
         "object_classification": "Object Classification",
         "shapes_annotation": "Annotation",
     }
-    _ALL_WIDGET_IDS: tuple[HarpyWidgetId, ...] = (
+    _ALL_WIDGET_IDS: tuple[SpatiatoWidgetId, ...] = (
         "viewer",
         "feature_extraction",
         "histogram",
@@ -69,7 +71,7 @@ class Interactive:
         sdata: SpatialData,
         viewer: napari.Viewer | None = None,
         headless: bool = False,
-        widgets: HarpyWidgetSelection = "all",
+        widgets: SpatiatoWidgetSelection = "all",
         async_slicing: bool | None = False,
         triangulation_backend: ShapesTriangulationBackend = "bermuda",
     ) -> None:
@@ -87,7 +89,7 @@ class Interactive:
         # programmatic authorization to replace that viewer's current session.
         # Never open a confirmation dialog here, including in headless mode.
         self._app_state.set_sdata(sdata, discard_current=True)
-        self._ensure_harpy_widgets(widget_ids)
+        self._ensure_spatiato_widgets(widget_ids)
 
         if not headless:
             self.run()
@@ -98,15 +100,15 @@ class Interactive:
         return self._viewer
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared Harpy app state for the active viewer."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared Spatiato app state for the active viewer."""
         return self._app_state
 
     def run(self) -> None:
         """Run the napari application."""
         napari.run()
 
-    def _ensure_harpy_widgets(self, widget_ids: Sequence[HarpyWidgetId]) -> None:
+    def _ensure_spatiato_widgets(self, widget_ids: Sequence[SpatiatoWidgetId]) -> None:
         for widget_id in widget_ids:
             widget_name = self._WIDGET_NAMES[widget_id]
             self._dock_widgets[widget_name] = self._viewer.window.add_plugin_dock_widget(
@@ -116,7 +118,7 @@ class Interactive:
             )
 
     @classmethod
-    def _normalize_widget_selection(cls, widgets: HarpyWidgetSelection) -> tuple[HarpyWidgetId, ...]:
+    def _normalize_widget_selection(cls, widgets: SpatiatoWidgetSelection) -> tuple[SpatiatoWidgetId, ...]:
         if widgets == "all":
             return cls._ALL_WIDGET_IDS
 
@@ -125,10 +127,10 @@ class Interactive:
             return (widgets,)
 
         if not isinstance(widgets, Sequence):
-            raise ValueError("`widgets` must be 'all', one Harpy widget id, or a sequence of Harpy widget ids.")
+            raise ValueError("`widgets` must be 'all', one Spatiato widget id, or a sequence of Spatiato widget ids.")
 
-        widget_ids: list[HarpyWidgetId] = []
-        seen_widget_ids: set[HarpyWidgetId] = set()
+        widget_ids: list[SpatiatoWidgetId] = []
+        seen_widget_ids: set[SpatiatoWidgetId] = set()
         for widget_id in widgets:
             cls._validate_widget_id(widget_id)
             if widget_id not in seen_widget_ids:
@@ -141,7 +143,7 @@ class Interactive:
     def _validate_widget_id(cls, widget_id: object) -> None:
         if widget_id not in cls._WIDGET_NAMES:
             valid_widget_ids = ", ".join(("all", *cls._WIDGET_NAMES))
-            raise ValueError(f"Unknown Harpy widget selection {widget_id!r}. Valid options are: {valid_widget_ids}.")
+            raise ValueError(f"Unknown Spatiato widget selection {widget_id!r}. Valid options are: {valid_widget_ids}.")
 
 
 def _set_napari_async_slicing(enabled: bool) -> None:

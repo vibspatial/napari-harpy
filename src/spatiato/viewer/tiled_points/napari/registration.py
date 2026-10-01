@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 
 # This custom layer relies on private napari registration and rendering APIs.
 # Admit only the version pair evaluated by this integration until another pair
@@ -35,13 +35,13 @@ def register_tiled_points_layer() -> None:
     This extends the same private ``layer_to_visual`` and
     ``layer_to_controls`` registries that napari uses to dispatch its built-in
     layer models to VisPy layers and Qt controls. Napari populates its built-in
-    entries statically; this function adds the Harpy-owned mappings at runtime.
+    entries statically; this function adds the Spatiato-owned mappings at runtime.
     This is not a public napari custom-layer registration API, which is why the
     integration is explicitly version- and contract-checked.
 
     Registration is explicit, version-checked, idempotent for the desired
     mappings, and atomic across the two private registries. Importing
-    ``napari_harpy`` does not invoke this function. Registration installs
+    ``spatiato`` does not invoke this function. Registration installs
     factories only; it does not construct a model, controls, or visual::
 
         register_tiled_points_layer()
@@ -70,8 +70,8 @@ def register_tiled_points_layer() -> None:
     compatibility = _load_napari_compatibility()
     _require_supported_versions(compatibility)
 
-    from napari_harpy.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
-    from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+    from spatiato.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
+    from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
     desired = (
         (compatibility.visual_registry, VispyTiledPointsLayer, "visual"),
@@ -144,11 +144,11 @@ def _require_supported_versions(compatibility: _NapariCompatibility) -> None:
 
 
 def _unregister_tiled_points_layer_for_testing() -> None:
-    """Remove only Harpy-owned mappings to isolate registration tests."""
+    """Remove only Spatiato-owned mappings to isolate registration tests."""
     compatibility = _load_napari_compatibility()
 
-    from napari_harpy.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
-    from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+    from spatiato.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
+    from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
     for registry, expected in (
         (compatibility.visual_registry, VispyTiledPointsLayer),

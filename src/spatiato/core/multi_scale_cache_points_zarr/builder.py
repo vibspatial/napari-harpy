@@ -14,39 +14,39 @@ import zarr
 from filelock import FileLock, Timeout
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_COMPLETE,
     PUBLICATION_STATE_STAGING,
     _CatalogWriteSettings,
     _parse_cache_attributes,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _require_parquet_source_unchanged
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
+from spatiato.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from spatiato.core.multi_scale_cache_points_zarr.source.validation import _require_parquet_source_unchanged
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     _ZSTD_CODEC_ID,
     ZARR_FORMAT_VERSION,
     ZARR_USE_CONSOLIDATED,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
     _write_bridge_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _ExactWriterConfig,
     _write_exact_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.spatial import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.spatial import (
     _SpatialWriterConfig,
     _write_spatial_levels,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import _validate_staged_cache
+from spatiato.core.multi_scale_cache_points_zarr.writer.staging_validation import _validate_staged_cache
 
 _LOCK_SUFFIX = ".build-lock"
 

@@ -12,19 +12,19 @@ from matplotlib.colors import to_rgba
 from napari.layers import Points, Shapes
 from napari.utils.colormaps import label_colormap
 
-from napari_harpy.core._color_source import (
+from spatiato.core._color_source import (
     ShapeColorValueKind,
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
     validate_shape_color_value_kind,
 )
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     CategoricalPaletteSource,
     resolve_table_categorical_palette,
     validate_categorical_palette_source,
 )
-from napari_harpy.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
-from napari_harpy.viewer._styling import (
+from spatiato.core.spatialdata import SpatialDataTableMetadata, get_table, get_table_metadata
+from spatiato.viewer._styling import (
     build_string_categorical_values,
     categorical_rgba_for_values,
     continuous_rgba_for_values,
@@ -44,9 +44,9 @@ PRIMARY_SHAPES_EDGE_COLOR = "#00FFFF"
 PRIMARY_SHAPES_FACE_COLOR = "#00FFFF20"
 PRIMARY_SHAPES_EDGE_WIDTH = 1
 PRIMARY_SHAPES_OPACITY = 0.8
-_SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_width_sync_callback"
-_SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_edge_color_sync_callback"
-_SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_shapes_face_color_sync_callback"
+_SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR = "_spatiato_shapes_edge_width_sync_callback"
+_SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR = "_spatiato_shapes_edge_color_sync_callback"
+_SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR = "_spatiato_shapes_face_color_sync_callback"
 ShapesStyleValueKind = ShapeColorValueKind | Literal["instance"]
 ShapesRenderingMode = Literal["shapes", "points"]
 
@@ -112,7 +112,7 @@ class _ShapeTableRowAlignment:
 
 
 def apply_primary_shapes_layer_style(layer: Shapes, *, sync_current_colors: bool = True) -> None:
-    """Apply Harpy's primary polygon-shapes style to an existing napari layer."""
+    """Apply Spatiato's primary polygon-shapes style to an existing napari layer."""
     layer.current_edge_color = PRIMARY_SHAPES_EDGE_COLOR
     layer.current_face_color = PRIMARY_SHAPES_FACE_COLOR
     layer.current_edge_width = PRIMARY_SHAPES_EDGE_WIDTH
@@ -624,7 +624,7 @@ def disambiguate_shape_style_feature_name(style_column_name: str, source_shapes_
 
     GeoPandas and SpatialData allow a shapes GeoDataFrame to have both an
     index named, for example, ``cell_id`` and a normal column named
-    ``cell_id``. Harpy stores the source GeoDataFrame index in
+    ``cell_id``. Spatiato stores the source GeoDataFrame index in
     ``layer.features`` under the index name for status display, while styled
     shapes also store the selected style column in ``layer.features`` for
     inspection. Coloring by the normal ``cell_id`` column would otherwise

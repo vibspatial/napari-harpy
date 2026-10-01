@@ -6,7 +6,7 @@ import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QCompleter
 
-from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
+from spatiato.widgets.viewer.points_widget import PointsValueWidget
 
 
 def _fake_controller(

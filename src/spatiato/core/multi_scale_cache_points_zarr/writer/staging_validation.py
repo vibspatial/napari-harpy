@@ -26,24 +26,24 @@ from typing import Literal
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import BRIDGE_MAX_POINTS_PER_TILE
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import BRIDGE_MAX_POINTS_PER_TILE
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_COMPLETE,
     PUBLICATION_STATE_STAGING,
     _CacheAttributes,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import _tile_bucket_ids
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import _tile_bucket_ids
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _UINT32_MAX,
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._paths import (
     CACHE_ROOT_GROUPS,
     ZARR_METADATA_FILENAME,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_LEVEL_INDPTR,
@@ -54,7 +54,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CacheRootReader,
     _iter_compact_bucket_range_batches,
 )

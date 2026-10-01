@@ -7,10 +7,10 @@ import shapely
 from shapely import affinity
 from spatialdata.transformations import get_transformation_between_coordinate_systems
 
-from napari_harpy.core.shapes_annotation import validate_existing_shapes_source_geodataframe
-from napari_harpy.core.spatial_query.canonical import build_canonical_source_signature
-from napari_harpy.core.spatial_query.canonical_models import CanonicalCentersResult
-from napari_harpy.core.spatial_query.query_models import CanonicalCenterQueryRequest, CanonicalCenterQueryResult
+from spatiato.core.shapes_annotation import validate_existing_shapes_source_geodataframe
+from spatiato.core.spatial_query.canonical import build_canonical_source_signature
+from spatiato.core.spatial_query.canonical_models import CanonicalCentersResult
+from spatiato.core.spatial_query.query_models import CanonicalCenterQueryRequest, CanonicalCenterQueryResult
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData

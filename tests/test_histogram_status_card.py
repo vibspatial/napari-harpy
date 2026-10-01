@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from napari_harpy.widgets.histogram.status_card import (
+from spatiato.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
     build_histogram_calculated_card_spec,
     build_histogram_error_card_spec,

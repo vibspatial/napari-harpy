@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from napari_harpy._app_state import (
-    HarpyAppState,
+from spatiato._app_state import (
+    SpatiatoAppState,
     TableReloadRequest,
     TableStateChangedEvent,
 )
-from napari_harpy.core.persistence import (
+from spatiato.core.persistence import (
     TableComponentPath,
     TableComponentReloadResult,
     build_full_table_reload_paths,
@@ -18,7 +18,7 @@ from napari_harpy.core.persistence import (
     resolve_table_path,
     write_table_components,
 )
-from napari_harpy.core.spatialdata import get_table, get_table_metadata
+from spatiato.core.spatialdata import get_table, get_table_metadata
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 class PersistenceController:
     """Persist and reload explicit components of one selected SpatialData table."""
 
-    def __init__(self, app_state: HarpyAppState | None = None) -> None:
-        self._app_state = HarpyAppState() if app_state is None else app_state
+    def __init__(self, app_state: SpatiatoAppState | None = None) -> None:
+        self._app_state = SpatiatoAppState() if app_state is None else app_state
         self._selected_spatialdata: SpatialData | None = None
         self._selected_region_name: str | None = None
         self._selected_table_name: str | None = None

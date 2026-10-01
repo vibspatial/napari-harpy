@@ -5,24 +5,24 @@ from types import SimpleNamespace
 
 import pytest
 
-import napari_harpy._app_state as app_state_module
-import napari_harpy._interactive as interactive_module
-import napari_harpy.widgets.object_classification.widget as object_widget_module
-import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import (
+import spatiato._app_state as app_state_module
+import spatiato._interactive as interactive_module
+import spatiato.widgets.object_classification.widget as object_widget_module
+import spatiato.widgets.viewer.widget as viewer_widget_module
+from spatiato._app_state import (
     CoordinateSystemChangedEvent,
     CoordinateSystemChangeRequest,
-    HarpyAppState,
     ShapesElementWrittenEvent,
+    SpatiatoAppState,
     TableDirtyStateChangedEvent,
     TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
-from napari_harpy.widgets.object_classification.widget import ObjectClassificationWidget
-from napari_harpy.widgets.viewer.widget import ViewerWidget
+from spatiato.core.persistence import TableComponentPath
+from spatiato.widgets.feature_extraction.widget import FeatureExtractionWidget
+from spatiato.widgets.object_classification.widget import ObjectClassificationWidget
+from spatiato.widgets.viewer.widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -118,8 +118,8 @@ def test_get_or_create_app_state_returns_same_state_for_same_viewer() -> None:
     assert other is not first
 
 
-def test_harpy_app_state_emits_sdata_changed(qtbot, sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_emits_sdata_changed(qtbot, sdata_blobs) -> None:
+    state = SpatiatoAppState()
 
     with qtbot.waitSignal(state.sdata_changed) as blocker:
         state.set_sdata(sdata_blobs)
@@ -134,9 +134,9 @@ def test_harpy_app_state_emits_sdata_changed(qtbot, sdata_blobs) -> None:
     assert state.sdata is None
 
 
-def test_harpy_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
+def test_spatiato_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
     sdata = object()
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     removed_sdata_calls: list[object] = []
 
     monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda sdata: ["global"])
@@ -156,10 +156,10 @@ def test_harpy_app_state_set_same_sdata_preserves_layers(monkeypatch) -> None:
     assert removed_sdata_calls == []
 
 
-def test_harpy_app_state_replacement_requires_explicit_discard(monkeypatch) -> None:
+def test_spatiato_app_state_replacement_requires_explicit_discard(monkeypatch) -> None:
     first_sdata = object()
     second_sdata = object()
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: [])
 
     state.set_sdata(first_sdata)
@@ -170,11 +170,11 @@ def test_harpy_app_state_replacement_requires_explicit_discard(monkeypatch) -> N
     assert state.sdata is first_sdata
 
 
-def test_harpy_app_state_authorized_replacement_discards_old_dirty_manifests(monkeypatch) -> None:
+def test_spatiato_app_state_authorized_replacement_discards_old_dirty_manifests(monkeypatch) -> None:
     """Accepted replacement removes all obsolete dirty-table tracking for the old SpatialData."""
     first_sdata = object()
     second_sdata = object()
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     monkeypatch.setattr(app_state_module, "get_coordinate_system_names_from_sdata", lambda _sdata: [])
     state.set_sdata(first_sdata)
     state.record_table_mutation(
@@ -205,8 +205,8 @@ def test_harpy_app_state_authorized_replacement_discards_old_dirty_manifests(mon
     assert state.is_table_dirty(first_sdata, "second_table") is False
 
 
-def test_harpy_app_state_records_component_tokens_and_emits_one_event(qtbot, sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_records_component_tokens_and_emits_one_event(qtbot, sdata_blobs) -> None:
+    state = SpatiatoAppState()
     paths = frozenset(
         {
             TableComponentPath("obsm", ("features_new",)),
@@ -239,8 +239,8 @@ def test_harpy_app_state_records_component_tokens_and_emits_one_event(qtbot, sda
     assert state.is_table_dirty(sdata_blobs, "table") is False
 
 
-def test_harpy_app_state_emits_table_wide_dirty_transitions(sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_emits_table_wide_dirty_transitions(sdata_blobs) -> None:
+    state = SpatiatoAppState()
     path = TableComponentPath("obs", ("user_class",))
     event = TableStateChangedEvent(
         sdata=sdata_blobs,
@@ -284,8 +284,8 @@ def test_harpy_app_state_emits_table_wide_dirty_transitions(sdata_blobs) -> None
     ]
 
 
-def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> None:
+    state = SpatiatoAppState()
     event = ShapesElementWrittenEvent(
         sdata=sdata_blobs,
         shapes_name="new_regions",
@@ -298,8 +298,8 @@ def test_harpy_app_state_emits_shapes_element_written(qtbot, sdata_blobs) -> Non
     assert blocker.args == [event]
 
 
-def test_harpy_app_state_does_not_clear_a_newer_same_path_token(sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_does_not_clear_a_newer_same_path_token(sdata_blobs) -> None:
+    state = SpatiatoAppState()
     event = TableStateChangedEvent(
         sdata=sdata_blobs,
         table_name="table",
@@ -317,8 +317,8 @@ def test_harpy_app_state_does_not_clear_a_newer_same_path_token(sdata_blobs) -> 
     assert state.is_table_dirty(sdata_blobs, "table") is True
 
 
-def test_harpy_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
+    state = SpatiatoAppState()
     obs_path = TableComponentPath("obs", ("user_class",))
     feature_metadata_path = TableComponentPath("uns", ("feature_matrices", "features_1"))
     state.record_table_mutation(
@@ -347,10 +347,10 @@ def test_harpy_app_state_reload_clears_only_covered_paths(sdata_blobs) -> None:
     assert state.snapshot_table_dirty_state(sdata_blobs, "table").paths == frozenset({obs_path})
 
 
-def test_harpy_app_state_prepares_registered_table_reload_participants_by_identity(
+def test_spatiato_app_state_prepares_registered_table_reload_participants_by_identity(
     sdata_blobs,
 ) -> None:
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     calls: list[tuple[str, TableReloadRequest]] = []
 
     class Participant:
@@ -385,8 +385,10 @@ def test_harpy_app_state_prepares_registered_table_reload_participants_by_identi
     assert calls == [("second", request)]
 
 
-def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtbot, monkeypatch, sdata_blobs) -> None:
-    state = HarpyAppState()
+def test_spatiato_app_state_set_coordinate_system_emits_event_and_prunes_layers(
+    qtbot, monkeypatch, sdata_blobs
+) -> None:
+    state = SpatiatoAppState()
     state.sdata = sdata_blobs
     removed_calls: list[dict[str, object | None]] = []
 
@@ -418,11 +420,11 @@ def test_harpy_app_state_set_coordinate_system_emits_event_and_prunes_layers(qtb
     assert removed_calls == [{"sdata": sdata_blobs, "coordinate_system": "global"}]
 
 
-def test_harpy_app_state_coordinate_participant_rejects_before_event_or_layer_removal(
+def test_spatiato_app_state_coordinate_participant_rejects_before_event_or_layer_removal(
     monkeypatch,
     sdata_blobs,
 ) -> None:
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     state.sdata = sdata_blobs
     state.coordinate_system = "global"
     requests: list[CoordinateSystemChangeRequest] = []
@@ -454,11 +456,11 @@ def test_harpy_app_state_coordinate_participant_rejects_before_event_or_layer_re
     assert removed_calls == []
 
 
-def test_harpy_app_state_coordinate_participant_runs_once_before_commit_and_supports_identity_safe_teardown(
+def test_spatiato_app_state_coordinate_participant_runs_once_before_commit_and_supports_identity_safe_teardown(
     monkeypatch,
     sdata_blobs,
 ) -> None:
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     state.sdata = sdata_blobs
     state.coordinate_system = "global"
     timeline: list[str] = []
@@ -494,10 +496,10 @@ def test_harpy_app_state_coordinate_participant_runs_once_before_commit_and_supp
     state.register_coordinate_system_change_participant(other_participant)
 
 
-def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_valid(monkeypatch) -> None:
+def test_spatiato_app_state_set_sdata_keeps_previous_coordinate_system_when_still_valid(monkeypatch) -> None:
     first_sdata = object()
     second_sdata = object()
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     removed_sdata_calls: list[object] = []
     coordinate_events: list[CoordinateSystemChangedEvent] = []
 
@@ -534,10 +536,12 @@ def test_harpy_app_state_set_sdata_keeps_previous_coordinate_system_when_still_v
     assert coordinate_events == []
 
 
-def test_harpy_app_state_set_sdata_selects_first_sorted_coordinate_system_when_previous_is_invalid(monkeypatch) -> None:
+def test_spatiato_app_state_set_sdata_selects_first_sorted_coordinate_system_when_previous_is_invalid(
+    monkeypatch,
+) -> None:
     first_sdata = object()
     second_sdata = object()
-    state = HarpyAppState()
+    state = SpatiatoAppState()
     removed_sdata_calls: list[object] = []
     coordinate_events: list[CoordinateSystemChangedEvent] = []
 
@@ -741,11 +745,11 @@ def test_interactive_headless_sets_sdata_without_running_event_loop(monkeypatch,
     assert interactive.app_state.sdata is sdata_blobs
     assert run_calls == []
     assert viewer.window.calls == [
-        ("napari-harpy", "Viewer", True),
-        ("napari-harpy", "Feature Extraction", True),
-        ("napari-harpy", "Image Histogram", True),
-        ("napari-harpy", "Object Classification", True),
-        ("napari-harpy", "Annotation", True),
+        ("spatiato", "Viewer", True),
+        ("spatiato", "Feature Extraction", True),
+        ("spatiato", "Image Histogram", True),
+        ("spatiato", "Object Classification", True),
+        ("spatiato", "Annotation", True),
     ]
 
 
@@ -825,7 +829,7 @@ def test_interactive_can_dock_a_single_widget(monkeypatch, sdata_blobs) -> None:
 
     assert interactive.app_state.sdata is sdata_blobs
     assert run_calls == []
-    assert viewer.window.calls == [("napari-harpy", "Viewer", True)]
+    assert viewer.window.calls == [("spatiato", "Viewer", True)]
 
 
 def test_interactive_can_dock_shapes_annotation_widget(monkeypatch, sdata_blobs) -> None:
@@ -840,7 +844,7 @@ def test_interactive_can_dock_shapes_annotation_widget(monkeypatch, sdata_blobs)
         widgets="shapes_annotation",
     )
 
-    assert viewer.window.calls == [("napari-harpy", "Annotation", True)]
+    assert viewer.window.calls == [("spatiato", "Annotation", True)]
 
 
 def test_interactive_can_dock_a_widget_subset(monkeypatch, sdata_blobs) -> None:
@@ -856,12 +860,12 @@ def test_interactive_can_dock_a_widget_subset(monkeypatch, sdata_blobs) -> None:
     )
 
     assert viewer.window.calls == [
-        ("napari-harpy", "Viewer", True),
-        ("napari-harpy", "Annotation", True),
+        ("spatiato", "Viewer", True),
+        ("spatiato", "Annotation", True),
     ]
 
 
-def test_interactive_all_docks_every_harpy_widget(monkeypatch, sdata_blobs) -> None:
+def test_interactive_all_docks_every_spatiato_widget(monkeypatch, sdata_blobs) -> None:
     viewer = DummyViewer()
 
     monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
@@ -874,11 +878,11 @@ def test_interactive_all_docks_every_harpy_widget(monkeypatch, sdata_blobs) -> N
     )
 
     assert viewer.window.calls == [
-        ("napari-harpy", "Viewer", True),
-        ("napari-harpy", "Feature Extraction", True),
-        ("napari-harpy", "Image Histogram", True),
-        ("napari-harpy", "Object Classification", True),
-        ("napari-harpy", "Annotation", True),
+        ("spatiato", "Viewer", True),
+        ("spatiato", "Feature Extraction", True),
+        ("spatiato", "Image Histogram", True),
+        ("spatiato", "Object Classification", True),
+        ("spatiato", "Annotation", True),
     ]
 
 
@@ -903,7 +907,7 @@ def test_interactive_rejects_unknown_widget_selection(monkeypatch, sdata_blobs) 
 
     monkeypatch.setattr(interactive_module.napari, "run", lambda: None)
 
-    with pytest.raises(ValueError, match=r"Unknown Harpy widget selection 'features'.*shapes_annotation"):
+    with pytest.raises(ValueError, match=r"Unknown Spatiato widget selection 'features'.*shapes_annotation"):
         interactive_module.Interactive(
             sdata_blobs,
             viewer=viewer,
@@ -926,9 +930,9 @@ def test_interactive_auto_runs_and_reuses_existing_plugin_widgets(monkeypatch, s
 
     assert run_calls == ["run", "run"]
     assert viewer.window.calls == [
-        ("napari-harpy", "Viewer", True),
-        ("napari-harpy", "Feature Extraction", True),
-        ("napari-harpy", "Image Histogram", True),
-        ("napari-harpy", "Object Classification", True),
-        ("napari-harpy", "Annotation", True),
+        ("spatiato", "Viewer", True),
+        ("spatiato", "Feature Extraction", True),
+        ("spatiato", "Image Histogram", True),
+        ("spatiato", "Object Classification", True),
+        ("spatiato", "Annotation", True),
     ]

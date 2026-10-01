@@ -10,8 +10,8 @@ from napari.utils.events import Event
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDoubleSpinBox, QLabel, QSizePolicy
 
-from napari_harpy.viewer.tiled_points.contracts import TiledPointsLayerStatus
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.contracts import TiledPointsLayerStatus
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 
 
 class QtTiledPointsLayerControls(QtLayerControls):

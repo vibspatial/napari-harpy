@@ -1,4 +1,4 @@
-"""Widget exports for napari-harpy."""
+"""Widget exports for spatiato."""
 
 from typing import TYPE_CHECKING
 

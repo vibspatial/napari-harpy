@@ -9,7 +9,7 @@ Roadmap date: 2026-08-13
 Implement the Zarr-backed cache as a new package:
 
 ```text
-src/napari_harpy/core/
+src/spatiato/core/
   multi_scale_cache_points/          # existing tiled-Parquet implementation
   multi_scale_cache_points_zarr/     # new isolated Zarr implementation
 ```
@@ -1062,7 +1062,7 @@ file, imports no Zarr module, creates no Dask graph, and writes no cache object.
 Create:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/
+src/spatiato/core/multi_scale_cache_points_zarr/
   __init__.py
   models.py
   build_plan.py
@@ -1097,8 +1097,8 @@ sampling, writer, or writer-support implementation. In particular, imports
 whose module path begins with either of the following fail the boundary test:
 
 ```text
-napari_harpy.core.multi_scale_cache_points.build_plan
-napari_harpy.core.multi_scale_cache_points.writer
+spatiato.core.multi_scale_cache_points.build_plan
+spatiato.core.multi_scale_cache_points.writer
 ```
 
 The test scans imports in the new package rather than relying only on which
@@ -1881,7 +1881,7 @@ publication, or the final cross-index validator.
 Create:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/
+src/spatiato/core/multi_scale_cache_points_zarr/
   writer/
     __init__.py
     exact.py
@@ -2318,7 +2318,7 @@ Parquet-backed writer or sampler.
 Create:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/
+src/spatiato/core/multi_scale_cache_points_zarr/
   sampling.py
   storage/
     reader_cache.py
@@ -2768,7 +2768,7 @@ canonical source or introducing a second overview backend.
 The implementation is fresh and isolated under:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/writer/spatial.py
+src/spatiato/core/multi_scale_cache_points_zarr/writer/spatial.py
 tests/multi_scale_cache_points_zarr/test_spatial_writer.py
 ```
 
@@ -3160,7 +3160,7 @@ policy; those remain Z7 through Z9 responsibilities.
 The implementation remains isolated under:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/
+src/spatiato/core/multi_scale_cache_points_zarr/
   cache_format.py
   storage/catalog_writer.py
   storage/catalog_reader.py
@@ -3261,7 +3261,7 @@ The nested value types and structure are:
   "cache_generation_id": "00000000-0000-0000-0000-000000000000",
   "publication_state": "staging",
   "created_by": {
-    "package": "napari-harpy",
+    "package": "spatiato",
     "version": "0.0.0"
   },
   "backend": {
@@ -3826,7 +3826,7 @@ developer tooling:
 
 The tiers share low-level parsers and structural checks where useful, but they
 have distinct ownership: only the compact validator is installed with
-`napari_harpy`, so the exhaustive path cannot accidentally become a normal
+`spatiato`, so the exhaustive path cannot accidentally become a normal
 publication cost or production maintenance contract.
 
 #### Entry points and ownership
@@ -4032,7 +4032,7 @@ canonical-source scan.
 
 #### Exhaustive acceptance/diagnostic flow
 
-This is an engineering-script contract, not an installed `napari_harpy` API.
+This is an engineering-script contract, not an installed `spatiato` API.
 After normal validation succeeds, the opt-in script may reuse
 `_validate_bucket` to decode and validate every complete bucket payload. Its
 additional checks are separate phases with explicit scratch ownership:
@@ -4166,7 +4166,7 @@ Keep the builder private until Z15 decides whether to adopt this architecture.
 Add:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/
+src/spatiato/core/multi_scale_cache_points_zarr/
   builder.py
 
 tests/multi_scale_cache_points_zarr/
@@ -4528,7 +4528,7 @@ evaluation. Do not introduce a public backend selector or a Parquet fallback.
 Create:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points_zarr/reader.py
+src/spatiato/core/multi_scale_cache_points_zarr/reader.py
 tests/multi_scale_cache_points_zarr/test_reader.py
 scripts/benchmark_multi_scale_cache_points_zarr_acceptance.py
 ```

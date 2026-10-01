@@ -6,7 +6,7 @@ from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import QColorDialog, QPushButton, QWidget
 
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     WIDGET_ACCENT_BORDER_COLOR,
     WIDGET_BORDER_STRONG_COLOR,
     format_tooltip,

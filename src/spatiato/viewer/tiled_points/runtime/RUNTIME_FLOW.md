@@ -286,14 +286,14 @@ reuse. Containment by itself is not sufficient.
 
 GUI-side event wiring and synchronous renderer acceptance.
 
-Module: `napari_harpy.viewer.tiled_points.runtime.layer_runtime`.
+Module: `spatiato.viewer.tiled_points.runtime.layer_runtime`.
 Source: [layer_runtime.py](layer_runtime.py).
 
 **Scheduler — `_TiledPointsViewportScheduler`**
 
 Request generations, one active/latest-pending mailbox, and activation feedback.
 
-Module: `napari_harpy.viewer.tiled_points.runtime.viewport_scheduler`.
+Module: `spatiato.viewer.tiled_points.runtime.viewport_scheduler`.
 Source: [viewport_scheduler.py](viewport_scheduler.py).
 
 **Session — `_TiledPointsCacheSession`; cache worker — `_TiledPointsCacheWorker`**
@@ -301,12 +301,12 @@ Source: [viewport_scheduler.py](viewport_scheduler.py).
 The session lives on the GUI thread; the worker owns reader access and reuse
 state on its dedicated thread. `_RetainedViewport` is also defined here.
 
-Module: `napari_harpy.viewer.tiled_points.runtime.cache_session`.
+Module: `spatiato.viewer.tiled_points.runtime.cache_session`.
 Source: [cache_session.py](cache_session.py).
 
 **Decoded CPU tile cache — `_CpuTileResidency`**
 
-Module: `napari_harpy.viewer.tiled_points.runtime.residency`.
+Module: `spatiato.viewer.tiled_points.runtime.residency`.
 Source: [residency.py](residency.py).
 
 **Cache reader — `_PointsCacheReader`**
@@ -314,7 +314,7 @@ Source: [residency.py](residency.py).
 Resident lookup metadata, tile planning, and tile-major/value-major payload reads.
 It is a storage-access object used by the worker, not a separate thread.
 
-Module: `napari_harpy.core.multi_scale_cache_points_zarr.reader`.
+Module: `spatiato.core.multi_scale_cache_points_zarr.reader`.
 Source: [reader.py](../../../core/multi_scale_cache_points_zarr/reader.py).
 Persisted layout: [CACHE_FORMAT.md](../../../core/multi_scale_cache_points_zarr/CACHE_FORMAT.md).
 
@@ -322,11 +322,11 @@ Persisted layout: [CACHE_FORMAT.md](../../../core/multi_scale_cache_points_zarr/
 
 The model exposes the events; the renderer consumes snapshots and owns the VBO.
 
-Modules: `napari_harpy.viewer.tiled_points.napari.layer` and
-`napari_harpy.viewer.tiled_points.vispy.layer`.
+Modules: `spatiato.viewer.tiled_points.napari.layer` and
+`spatiato.viewer.tiled_points.vispy.layer`.
 Sources: [napari/layer.py](../napari/layer.py) and [vispy/layer.py](../vispy/layer.py).
 
 **Render contracts — `TiledPointsRenderBatch`, `TiledPointsRenderSnapshot`, `TiledPointsRenderResult`**
 
-Module: `napari_harpy.viewer.tiled_points.contracts`.
+Module: `spatiato.viewer.tiled_points.contracts`.
 Source: [contracts.py](../contracts.py).

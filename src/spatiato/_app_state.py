@@ -1,12 +1,12 @@
-"""Shared Harpy app state bound to one napari viewer.
+"""Shared Spatiato app state bound to one napari viewer.
 
-This module defines the per-viewer state object used across Harpy widgets.
+This module defines the per-viewer state object used across Spatiato widgets.
 
 At the top level, ``_VIEWER_APP_STATES`` is a registry that maps one napari
-viewer to one ``HarpyAppState`` instance. That is how multiple widgets opened
-on the same viewer end up sharing the same Harpy state.
+viewer to one ``SpatiatoAppState`` instance. That is how multiple widgets opened
+on the same viewer end up sharing the same Spatiato state.
 
-Each ``HarpyAppState`` then holds the shared state and services for that
+Each ``SpatiatoAppState`` then holds the shared state and services for that
 viewer:
 
 - ``viewer``: the napari viewer this state belongs to
@@ -14,11 +14,11 @@ viewer:
 - ``layer_bindings``: the in-memory registry that records which napari layers
   correspond to which ``SpatialData`` elements
 - ``viewer_adapter``: the viewer-facing service that uses the shared registry
-  to look up, activate, and later load Harpy-managed layers
+  to look up, activate, and later load Spatiato-managed layers
 
 So the relationship is:
 
-- global registry: viewer -> ``HarpyAppState``
+- global registry: viewer -> ``SpatiatoAppState``
 - per-viewer state: ``viewer``, ``sdata``, ``layer_bindings``,
   ``viewer_adapter``
 """
@@ -31,15 +31,15 @@ from weakref import WeakKeyDictionary
 
 from qtpy.QtCore import QObject, Signal
 
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatialdata import get_coordinate_system_names_from_sdata
-from napari_harpy.viewer.adapter import LayerBindingRegistry, ViewerAdapter
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatialdata import get_coordinate_system_names_from_sdata
+from spatiato.viewer.adapter import LayerBindingRegistry, ViewerAdapter
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
 
-_VIEWER_APP_STATES: WeakKeyDictionary[object, HarpyAppState] = WeakKeyDictionary()
+_VIEWER_APP_STATES: WeakKeyDictionary[object, SpatiatoAppState] = WeakKeyDictionary()
 TableChangeKind = Literal["created", "updated", "removed", "rebuilt", "reloaded"]
 
 
@@ -88,7 +88,7 @@ class TableDirtyStateChangedEvent:
     controls use it to update Write-button readiness and the Reload tooltip
     warning about unsynced changes. It does not describe an AnnData mutation
     and is not a second source of dirty truth; consumers that bind later must
-    read the current state from ``HarpyAppState``.
+    read the current state from ``SpatiatoAppState``.
     """
 
     sdata: SpatialData
@@ -259,7 +259,7 @@ class CoordinateSystemChangeRequest:
 class CoordinateSystemChangeParticipant(Protocol):
     """Let Annotation participate in a shared coordinate-system transition.
 
-    ``HarpyAppState`` cannot safely commit every coordinate-system change on
+    ``SpatiatoAppState`` cannot safely commit every coordinate-system change on
     its own. The Annotation widget may own an editable Shapes layer whose
     unsaved geometry would be lost when layers from the old coordinate system
     are removed. Annotation therefore registers itself as the one optional
@@ -270,20 +270,20 @@ class CoordinateSystemChangeParticipant(Protocol):
     This is a structural ``Protocol`` rather than a required base class. A
     class does not need to inherit from ``CoordinateSystemChangeParticipant``;
     it satisfies the contract by providing the method declared below. This
-    lets ``HarpyAppState`` call the participant without importing or depending
+    lets ``SpatiatoAppState`` call the participant without importing or depending
     directly on ``AnnotationWidget``.
 
     The runtime flow is::
 
-        AnnotationWidget registers itself with HarpyAppState
+        AnnotationWidget registers itself with SpatiatoAppState
             ↓
         a widget requests a shared coordinate-system change
             ↓
-        HarpyAppState calls prepare_coordinate_system_change(request)
+        SpatiatoAppState calls prepare_coordinate_system_change(request)
             ↓
         AnnotationWidget asks its Shapes child to close the edit session
-            ├── True  → HarpyAppState commits the change
-            └── False → HarpyAppState preserves the old state and layers
+            ├── True  → SpatiatoAppState commits the change
+            └── False → SpatiatoAppState preserves the old state and layers
     """
 
     def prepare_coordinate_system_change(self, request: CoordinateSystemChangeRequest) -> bool:
@@ -326,10 +326,10 @@ def _path_covers(parent: TableComponentPath, child: TableComponentPath) -> bool:
     raise AssertionError(f"Unsupported table component: {parent.component!r}.")
 
 
-class HarpyAppState(QObject):
-    """Shared Harpy state bound to a napari viewer.
+class SpatiatoAppState(QObject):
+    """Shared Spatiato state bound to a napari viewer.
 
-    This object is the per-viewer event and state hub that Harpy widgets use
+    This object is the per-viewer event and state hub that Spatiato widgets use
     to stay synchronized without depending on each other directly.
 
     Cross-widget table updates are published through ``table_state_changed``
@@ -337,7 +337,7 @@ class HarpyAppState(QObject):
     event because they do not mutate an AnnData table. Producing widgets do not
     need to know which other widgets consume either update.
 
-    ``HarpyAppState`` also owns shared session-level dirty-table tracking, so
+    ``SpatiatoAppState`` also owns shared session-level dirty-table tracking, so
     in-memory table divergence from disk is modeled as shared viewer state
     rather than as widget-local state. ``table_dirty_state_changed`` reports
     only table-wide dirty-boolean transitions so already-bound persistence
@@ -796,29 +796,29 @@ class HarpyAppState(QObject):
         return None
 
 
-def get_or_create_app_state(napari_viewer: object | None) -> HarpyAppState:
-    """Return the shared Harpy state for a napari viewer.
+def get_or_create_app_state(napari_viewer: object | None) -> SpatiatoAppState:
+    """Return the shared Spatiato state for a napari viewer.
 
-    When a real viewer is provided, the same ``HarpyAppState`` instance is
+    When a real viewer is provided, the same ``SpatiatoAppState`` instance is
     returned for repeated calls with that viewer. When ``napari_viewer`` is
     ``None``, a fresh standalone state object is returned.
     """
     if napari_viewer is None:
-        return HarpyAppState()
+        return SpatiatoAppState()
 
     try:
         state = _VIEWER_APP_STATES.get(napari_viewer)
     except TypeError:
-        state = getattr(napari_viewer, "_harpy_app_state", None)
+        state = getattr(napari_viewer, "_spatiato_app_state", None)
 
     if state is not None:
         return state
 
-    state = HarpyAppState(napari_viewer)
+    state = SpatiatoAppState(napari_viewer)
 
     try:
         _VIEWER_APP_STATES[napari_viewer] = state
     except TypeError:
-        napari_viewer._harpy_app_state = state
+        napari_viewer._spatiato_app_state = state
 
     return state

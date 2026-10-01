@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 
-from napari_harpy.widgets.shapes_annotation._snapshot import (
+from spatiato.widgets.shapes_annotation._snapshot import (
     _annotation_layer_snapshots_equal,
     _capture_annotation_layer_snapshot,
 )

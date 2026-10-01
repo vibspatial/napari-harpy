@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/src/napari_harpy/_static/logo.svg" alt="Spatiato logo" width="400">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/src/spatiato/_static/logo.svg" alt="Spatiato logo" width="400">
 </p>
 
-<h1 align="center">napari-harpy: a spatial omics interface for napari.</h1>
+<h1 align="center">spatiato: a spatial omics interface for napari.</h1>
 
 [![PyPI](https://img.shields.io/pypi/v/napari-harpy.svg)](https://pypi.org/project/napari-harpy/)
 
 Built around [`SpatialData`](https://spatialdata.scverse.org/en/stable/) and [`Harpy`](https://harpy.readthedocs.io/en/latest/) for interactive exploration, feature extraction, and object classification.
 
-`napari-harpy` is a napari plugin for viewing, exploring, and analyzing
+`spatiato` is a napari plugin for viewing, exploring, and analyzing
 `SpatialData` datasets. It includes its own viewer for loading and
 browsing data inside napari, alongside annotation, feature extraction, and
 interactive object classification workflows.
@@ -18,14 +18,14 @@ interactive object classification workflows.
 Install from [PyPI](https://pypi.org/project/napari-harpy/):
 
 ```bash
-pip install napari-harpy
+pip install spatiato
 ```
 
 ## Quickstart
 
 The quickest way to try the plugin is to create a small example `SpatialData`
 object, write it to a temporary zarr store, read it back as an on-disk dataset,
-and launch the Harpy napari interface with `Interactive`.
+and launch the Spatiato napari interface with `Interactive`.
 
 ```python
 import tempfile
@@ -33,8 +33,8 @@ from pathlib import Path
 
 from spatialdata import read_zarr
 
-from napari_harpy import Interactive
-from napari_harpy.datasets import blobs_multi_region
+from spatiato import Interactive
+from spatiato.datasets import blobs_multi_region
 
 zarr_path = Path(tempfile.mkdtemp()) / "blobs_multi_region.zarr"
 
@@ -45,7 +45,7 @@ sdata = read_zarr(zarr_path)
 Interactive(sdata)
 ```
 
-This opens napari with the Harpy widgets docked and the
+This opens napari with the Spatiato widgets docked and the
 `blobs_multi_region` dataset available in the shared viewer state.
 Shapes triangulation uses the fast Bermuda backend by default. To use Numba
 instead, launch with `Interactive(sdata, triangulation_backend="numba")`.
@@ -59,7 +59,7 @@ The current repository contains four working widgets:
 
 Today the plugin supports:
 
-- loading and viewing `SpatialData` through the Harpy viewer widget
+- loading and viewing `SpatialData` through the Spatiato viewer widget
 - selecting a labels element, optional image, compatible coordinate system, and
   linked table from the shared loaded `SpatialData`
 - calculating intensity and morphology features through Harpy
@@ -79,19 +79,19 @@ Today the plugin supports:
 - headless feature extraction and classifier application for scripted or batch
   processing
 
-Example napari-harpy session:
+Example spatiato session:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/viewer.png" alt="napari-harpy viewer example screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/viewer.png" alt="spatiato viewer example screenshot" width="900">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/object_classification.png" alt="napari-harpy object classification example screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/object_classification.png" alt="spatiato object classification example screenshot" width="900">
 </p>
 
 ## Headless and Multi-Sample Workflows
 
-For scripted or batch processing, use the public `napari_harpy.headless` module.
+For scripted or batch processing, use the public `spatiato.headless` module.
 It can apply an exported classifier to an existing feature matrix, or compute
 the required features before applying the classifier.
 
@@ -104,13 +104,13 @@ selection is read from the exported classifier's `source_channels` metadata.
 ```python
 from spatialdata import read_zarr
 
-from napari_harpy import headless
+from spatiato import headless
 
 sdata = read_zarr("experiment.zarr")
 
 result = headless.apply_classifier_with_feature_extraction_from_path(
     sdata,
-    "classifier.harpy-classifier.joblib",
+    "classifier.spatiato-classifier.joblib",
     table_name="table_multi",
     labels_name=["sample_1_labels", "sample_2_labels"],
     coordinate_system=["sample_1", "sample_2"],
@@ -135,10 +135,10 @@ napari
 
 Open the widgets from the napari plugin menu:
 
-- `Plugins -> napari-harpy -> Viewer`
-- `Plugins -> napari-harpy -> Feature Extraction`
-- `Plugins -> napari-harpy -> Object Classification`
-- `Plugins -> napari-harpy -> Annotation`
+- `Plugins -> spatiato -> Viewer`
+- `Plugins -> spatiato -> Feature Extraction`
+- `Plugins -> spatiato -> Object Classification`
+- `Plugins -> spatiato -> Annotation`
 
 ### Optional real-OpenGL renderer qualification
 
@@ -148,7 +148,7 @@ It is skipped during ordinary test runs because it requires a working
 Qt, VisPy, and OpenGL environment. Run it explicitly with:
 
 ```bash
-NAPARI_HARPY_RUN_REAL_GL_TESTS=1 \
+SPATIATO_RUN_REAL_GL_TESTS=1 \
 .venv/bin/pytest -q tests/viewer/tiled_points/vispy/test_real_canvas.py
 ```
 
@@ -163,7 +163,7 @@ A small local debug script is available at
 [`scripts/debug_widget.py`](scripts/debug_widget.py).
 
 It creates a temporary `blobs_multi_region` zarr store, loads it into napari,
-and docks the Harpy widgets automatically.
+and docks the Spatiato widgets automatically.
 This is useful for quickly reproducing widget behavior during development.
 
 Run it with:

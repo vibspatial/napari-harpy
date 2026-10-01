@@ -2,11 +2,11 @@ I investigated without changing repo code.
 
 **Findings**
 
-`napari-harpy` renders multiplex images in two very different ways:
+`spatiato` renders multiplex images in two very different ways:
 
-Stack mode creates one napari `Image` layer for the full multiscale image. For `c, y, x` multiplex data, the channel axis stays as a napari dimension slider, so normally only one channel slice is rendered at a time. See [adapter.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/viewer/adapter.py:1280).
+Stack mode creates one napari `Image` layer for the full multiscale image. For `c, y, x` multiplex data, the channel axis stays as a napari dimension slider, so normally only one channel slice is rendered at a time. See [adapter.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/viewer/adapter.py:1280).
 
-Overlay mode removes the stack layer, then creates one separate napari `Image` layer per selected channel, using `isel(c=channel_index)` for every scale and additive blending. See [adapter.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/viewer/adapter.py:1335) and [adapter.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/viewer/adapter.py:1886).
+Overlay mode removes the stack layer, then creates one separate napari `Image` layer per selected channel, using `isel(c=channel_index)` for every scale and additive blending. See [adapter.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/viewer/adapter.py:1335) and [adapter.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/viewer/adapter.py:1886).
 
 For your image, `morphology_focus_global_ROI1_rechunked` is a dask-backed multiscale `DataTree`:
 

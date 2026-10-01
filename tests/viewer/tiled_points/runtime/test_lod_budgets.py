@@ -19,15 +19,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
-from napari_harpy.viewer.tiled_points.contracts import (
+import spatiato.viewer.tiled_points.runtime.cache_session as cache_session_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderResult,
     TiledPointsViewportState,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings, _TiledPointsCacheWorker
+from spatiato.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings, _TiledPointsCacheWorker
 
 _VERTEX_BYTES = TILED_POINTS_VERTEX_DTYPE.itemsize
 

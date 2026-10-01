@@ -9,7 +9,7 @@ import pandas as pd
 import zarr
 from spatialdata.models import TableModel
 
-from napari_harpy.core.spatialdata import get_table, normalize_table_metadata
+from spatiato.core.spatialdata import get_table, normalize_table_metadata
 
 if TYPE_CHECKING:
     from anndata import AnnData

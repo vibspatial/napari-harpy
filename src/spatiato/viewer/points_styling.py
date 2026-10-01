@@ -7,22 +7,22 @@ from typing import TYPE_CHECKING, Any, Literal
 import numpy as np
 from napari.layers import Points
 
-from napari_harpy.core.class_palette import default_categorical_colors
+from spatiato.core.class_palette import default_categorical_colors
 
 if TYPE_CHECKING:
-    from napari_harpy._points_value_index import PointsValueSelection
+    from spatiato._points_value_index import PointsValueSelection
 
 POINTS_SELECTION_SOLID_COLOR = "#00FFFF"
 POINTS_SELECTION_MAX_CATEGORICAL_COLORS = 102
 POINTS_SELECTION_DEFAULT_SIZE = 5.0
 POINTS_SELECTION_DEFAULT_SYMBOL = "disc"
-_POINTS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_points_size_sync_callback"
-_POINTS_SYMBOL_SYNC_CALLBACK_ATTR = "_harpy_points_symbol_sync_callback"
-_POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR = "_harpy_points_face_color_sync_callback"
-_POINTS_FACE_COLOR_OVERRIDE_ATTR = "_harpy_points_face_color_override"
-_POINT_RADIUS_SIZE_SYNC_CALLBACK_ATTR = "_harpy_point_radius_size_sync_callback"
-_POINT_RADIUS_ORIGINAL_SIZES_ATTR = "_harpy_point_radius_original_sizes"
-_POINT_RADIUS_REFERENCE_SIZE_ATTR = "_harpy_point_radius_reference_size"
+_POINTS_SIZE_SYNC_CALLBACK_ATTR = "_spatiato_points_size_sync_callback"
+_POINTS_SYMBOL_SYNC_CALLBACK_ATTR = "_spatiato_points_symbol_sync_callback"
+_POINTS_FACE_COLOR_SYNC_CALLBACK_ATTR = "_spatiato_points_face_color_sync_callback"
+_POINTS_FACE_COLOR_OVERRIDE_ATTR = "_spatiato_points_face_color_override"
+_POINT_RADIUS_SIZE_SYNC_CALLBACK_ATTR = "_spatiato_point_radius_size_sync_callback"
+_POINT_RADIUS_ORIGINAL_SIZES_ATTR = "_spatiato_point_radius_original_sizes"
+_POINT_RADIUS_REFERENCE_SIZE_ATTR = "_spatiato_point_radius_reference_size"
 
 
 @dataclass(frozen=True)

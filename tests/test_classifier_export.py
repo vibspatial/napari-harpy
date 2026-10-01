@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from sklearn.ensemble import RandomForestClassifier
 
-from napari_harpy.core.object_classification.classifier_export import (
+from spatiato.core.object_classification.classifier_export import (
     CLASSIFIER_EXPORT_SCHEMA_VERSION,
     ClassifierExportBundle,
 )
@@ -29,7 +29,7 @@ def _make_bundle(*, source_channels: object = _MISSING) -> ClassifierExportBundl
     return ClassifierExportBundle(
         schema_version=CLASSIFIER_EXPORT_SCHEMA_VERSION,
         created_at="2026-05-05T09:05:00+00:00",
-        napari_harpy_version="0.0.0-test",
+        spatiato_version="0.0.0-test",
         sklearn_version=None,
         estimator=estimator,
         source_classifier_config={

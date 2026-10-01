@@ -28,23 +28,23 @@ from qtpy.QtWidgets import (
 )
 from xarray import DataArray, DataTree
 
-from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
-from napari_harpy.core.histogram import (
+from spatiato._app_state import CoordinateSystemChangedEvent, SpatiatoAppState, get_or_create_app_state
+from spatiato.core.histogram import (
     HistogramResult,
     HistogramSettings,
     HistogramTarget,
     resolve_default_histogram_scale,
 )
-from napari_harpy.core.spatialdata import (
+from spatiato.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
     get_spatialdata_image_options_for_coordinate_system_from_sdata,
 )
-from napari_harpy.viewer.adapter import ImageLayerBinding
-from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS
-from napari_harpy.widgets.histogram.controller import HistogramController
-from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget
-from napari_harpy.widgets.histogram.status_card import (
+from spatiato.viewer.adapter import ImageLayerBinding
+from spatiato.viewer.image_styling import DEFAULT_OVERLAY_COLORS
+from spatiato.widgets.histogram.controller import HistogramController
+from spatiato.widgets.histogram.plot_widget import _HistogramPlotWidget
+from spatiato.widgets.histogram.status_card import (
     _HistogramStatusCardSpec,
     build_histogram_calculated_card_spec,
     build_histogram_error_card_spec,
@@ -52,15 +52,15 @@ from napari_harpy.widgets.histogram.status_card import (
     build_histogram_ready_card_spec,
     build_histogram_running_card_spec,
 )
-from napari_harpy.widgets.image_layer_row import (
+from spatiato.widgets.image_layer_row import (
     _binding_channel_index,
     _binding_channel_name,
     _ImageLayerRow,
     _normalized_color_or_none,
     _solid_color_from_layer,
 )
-from napari_harpy.widgets.overlay_color_button import OverlayColorButton
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.overlay_color_button import OverlayColorButton
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CALCULATE_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
@@ -330,8 +330,8 @@ class HistogramWidget(QWidget):
         self._update_empty_state()
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared Harpy app state for this widget."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared Spatiato app state for this widget."""
         return self._app_state
 
     @property

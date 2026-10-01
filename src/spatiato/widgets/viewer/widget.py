@@ -20,15 +20,15 @@ from qtpy.QtWidgets import (
 )
 from spatialdata import read_zarr
 
-from napari_harpy._app_state import (
+from spatiato._app_state import (
     CoordinateSystemChangedEvent,
-    HarpyAppState,
     ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
+    SpatiatoAppState,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy.core.spatialdata import (
+from spatiato.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_image_channel_names_from_sdata,
@@ -39,13 +39,13 @@ from napari_harpy.core.spatialdata import (
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
     get_table_color_source_options,
 )
-from napari_harpy.viewer.adapter import ImageLayerBinding
-from napari_harpy.viewer.points_styling import PointsLoadResult
-from napari_harpy.widgets.image_layer_row import (
+from spatiato.viewer.adapter import ImageLayerBinding
+from spatiato.viewer.points_styling import PointsLoadResult
+from spatiato.widgets.image_layer_row import (
     _normalized_color_or_none,
     _solid_color_from_layer,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
     CompactComboBox,
@@ -57,14 +57,14 @@ from napari_harpy.widgets.shared_styles import (
     format_feedback_identifier,
     set_status_card,
 )
-from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
-from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
-from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
-from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
-from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
-from napari_harpy.widgets.viewer.points_widget import PointsValueWidget
-from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest, _ShapesCardWidget
-from napari_harpy.widgets.viewer.status_card import (
+from spatiato.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
+from spatiato.widgets.viewer.disclosure import _CollapsibleSectionWidget, _DisclosureElementWidget
+from spatiato.widgets.viewer.image_widget import _ImageCardWidget
+from spatiato.widgets.viewer.labels_widget import LabelsLoadRequest, _LabelsCardWidget
+from spatiato.widgets.viewer.points_controller import PointsController, PointsLoadRequest, PointsValueSource
+from spatiato.widgets.viewer.points_widget import PointsValueWidget
+from spatiato.widgets.viewer.shapes_widget import ShapesLoadRequest, _ShapesCardWidget
+from spatiato.widgets.viewer.status_card import (
     _ViewerStatusCardSpec,
     build_image_loaded_card_spec,
     build_points_layer_card_spec,
@@ -74,11 +74,11 @@ from napari_harpy.widgets.viewer.status_card import (
     build_styled_shapes_card_spec,
     build_viewer_feedback_card_spec,
 )
-from napari_harpy.widgets.viewer.styles import (
+from spatiato.widgets.viewer.styles import (
     EMPTY_STATE_STYLESHEET,
     INPUT_CONTROL_STYLESHEET,
 )
-from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
+from spatiato.widgets.viewer.tiled_points_controller import TiledPointsController
 
 if TYPE_CHECKING:
     import napari
@@ -86,7 +86,7 @@ if TYPE_CHECKING:
 
 
 _SUMMARY_COORDINATE_SYSTEM_MAX_LENGTH = 32
-_EXPERIMENTAL_TILED_POINTS_ENV = "NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS"
+_EXPERIMENTAL_TILED_POINTS_ENV = "SPATIATO_EXPERIMENTAL_TILED_POINTS"
 _TRUE_ENV_VALUES = frozenset({"1", "on", "true", "yes"})
 
 
@@ -98,11 +98,11 @@ def _experimental_tiled_points_enabled(explicit: bool | None) -> bool:
 
 
 class ViewerWidget(QWidget):
-    """Shared viewer widget backed by `HarpyAppState` and `ViewerAdapter`.
+    """Shared viewer widget backed by `SpatiatoAppState` and `ViewerAdapter`.
 
     Points use the in-memory backend by default. Pass
     ``experimental_tiled_points=True`` or set
-    ``NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS=1`` before starting napari to opt
+    ``SPATIATO_EXPERIMENTAL_TILED_POINTS=1`` before starting napari to opt
     into the cache-backed tiled renderer for this widget's lifetime.
     """
 
@@ -314,8 +314,8 @@ class ViewerWidget(QWidget):
         super().closeEvent(event)
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared Harpy app state for this widget."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared Spatiato app state for this widget."""
         return self._app_state
 
     @property

@@ -6,31 +6,31 @@ from pathlib import Path
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import (
     _LevelBuildPlan,
     _LevelKind,
     _PointsCacheBuildPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import (
     TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
     _tile_bucket_ids,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT64_MAX,
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.sampling import _select_sampled_tile_indices
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.sampling import _select_sampled_tile_indices
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _BucketWriteResult,
     _LevelWriteResult,
     _PlannedTile,
     _ZarrWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
 
 
 @dataclass(frozen=True)

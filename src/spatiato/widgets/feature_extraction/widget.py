@@ -23,14 +23,14 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import (
-    HarpyAppState,
+from spatiato._app_state import (
+    SpatiatoAppState,
     TableDirtySnapshot,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatialdata import (
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatialdata import (
     SpatialDataImageOption,
     SpatialDataLabelsOption,
     get_annotating_table_names,
@@ -42,29 +42,29 @@ from napari_harpy.core.spatialdata import (
     validate_table_annotation_coverage,
     validate_table_region_instance_ids,
 )
-from napari_harpy.core.validation import (
+from spatiato.core.validation import (
     normalize_spatialdata_name,
     spatialdata_element_name_exists,
 )
-from napari_harpy.widgets.feature_extraction.controller import (
+from spatiato.widgets.feature_extraction.controller import (
     FeatureExtractionBindingState,
     FeatureExtractionController,
     FeatureExtractionResult,
     FeatureExtractionTriplet,
 )
-from napari_harpy.widgets.feature_extraction.status_card import (
+from spatiato.widgets.feature_extraction.status_card import (
     _FeatureExtractionStatusCardSpec,
     build_feature_extraction_controller_feedback_card_spec,
     build_feature_extraction_selection_status_card_spec,
     build_feature_extraction_status_card_entries,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     CALCULATE_BUTTON_STYLESHEET as _CALCULATE_BUTTON_STYLESHEET,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _FEATURE_CHECKBOX_STYLESHEET,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
     STATUS_CARD_PALETTE,
@@ -84,10 +84,10 @@ from napari_harpy.widgets.shared_styles import (
     format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     WIDGET_SURFACE_COLOR as _WIDGET_SURFACE_COLOR,
 )
 
@@ -158,7 +158,7 @@ _DEFAULT_NEW_TABLE_NAME = "features_table"
 
 
 def _shutdown_feature_extraction_controller(
-    app_state: HarpyAppState,
+    app_state: SpatiatoAppState,
     controller: FeatureExtractionController,
 ) -> None:
     """Detach the destroyed widget without opening a table-reload race.
@@ -418,8 +418,8 @@ class FeatureExtractionWidget(QWidget):
         apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
 
-        # The napari viewer identifies which shared Harpy session this widget
-        # belongs to. We use it to attach to the per-viewer HarpyAppState
+        # The napari viewer identifies which shared Spatiato session this widget
+        # belongs to. We use it to attach to the per-viewer SpatiatoAppState
         # instead of scanning viewer layers directly.
         self._app_state = get_or_create_app_state(napari_viewer)
         self._feature_extraction_controller = FeatureExtractionController(
@@ -699,8 +699,8 @@ class FeatureExtractionWidget(QWidget):
         self.refresh_from_sdata(self._app_state.sdata)
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared Harpy app state for this widget."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared Spatiato app state for this widget."""
         return self._app_state
 
     @property
@@ -791,7 +791,7 @@ class FeatureExtractionWidget(QWidget):
         return False
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
-        """Refresh the widget from the shared Harpy SpatialData state."""
+        """Refresh the widget from the shared Spatiato SpatialData state."""
         if sdata is None:
             self._clear_selection_inputs()
             self._bind_current_selection()

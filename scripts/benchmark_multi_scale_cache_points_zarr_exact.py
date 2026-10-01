@@ -19,30 +19,30 @@ import zarr
 from benchmark_multi_scale_cache_points_zarr_bucket import _read_filtered_display_payload
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
     _PointsCacheBuildPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import (
     BUCKET_HASH_METHOD,
     TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import _normalized_row_values
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from spatiato.core.multi_scale_cache_points_zarr.source.value_normalization import _normalized_row_values
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _LevelWriteResult,
     _ZarrWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _ExactWriterConfig,
     _write_exact_level,
 )
@@ -456,7 +456,7 @@ def main() -> None:
     args.work_directory.mkdir(parents=True, exist_ok=True)
     args.json_output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
-        prefix="napari-harpy-zarr-exact-evaluation-",
+        prefix="spatiato-zarr-exact-evaluation-",
         dir=args.work_directory,
     ) as workspace_text:
         workspace = Path(workspace_text)
@@ -494,7 +494,7 @@ def main() -> None:
         )
         exact = plan.levels[0]
         report = {
-            "schema_version": "harpy-zarr-exact-evaluation-v1",
+            "schema_version": "spatiato-zarr-exact-evaluation-v1",
             "environment": {
                 "python": platform.python_version(),
                 "platform": platform.platform(),

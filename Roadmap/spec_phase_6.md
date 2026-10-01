@@ -39,11 +39,11 @@ against the table stored inside the selected in-memory `SpatialData` object.
 
 Relevant code paths:
 
-- `src/napari_harpy/_spatialdata.py`
-- `src/napari_harpy/_annotation.py`
-- `src/napari_harpy/_classifier.py`
-- `src/napari_harpy/_classifier_viewer_styling.py`
-- `src/napari_harpy/_persistence.py`
+- `src/spatiato/_spatialdata.py`
+- `src/spatiato/_annotation.py`
+- `src/spatiato/_classifier.py`
+- `src/spatiato/_classifier_viewer_styling.py`
+- `src/spatiato/_persistence.py`
 
 This is good news for phase 6, because there is already a natural authoritative object to keep.
 

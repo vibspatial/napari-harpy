@@ -5,13 +5,13 @@ from contextlib import ExitStack
 from pathlib import Path
 from types import TracebackType
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
     _UINT32_MAX,
     _require_integer_in_range,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 
 
 class _BucketReaderCache:

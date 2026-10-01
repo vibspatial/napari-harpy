@@ -6,7 +6,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Shapes
 from napari.layers.shapes._shapes_constants import Mode
 
-import napari_harpy.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
+import spatiato.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
 
 
 def test_shapes_layer_baseline_capture_and_restore_round_trip(

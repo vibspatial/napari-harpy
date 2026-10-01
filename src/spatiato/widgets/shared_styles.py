@@ -18,7 +18,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._resources import get_logo_path
+from spatiato._resources import get_logo_path
 
 WIDGET_SURFACE_COLOR = "#25272c"
 WIDGET_SURFACE_STYLESHEET = f"background-color: {WIDGET_SURFACE_COLOR};"
@@ -263,7 +263,7 @@ def create_header_logo(object_name: str) -> QLabel:
         logo_label.setPixmap(logo_pixmap)
         return logo_label
 
-    logo_label.setText("napari-harpy")
+    logo_label.setText("spatiato")
     logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
     return logo_label
 

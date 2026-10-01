@@ -8,37 +8,37 @@ The diagram uses short class names for these implementations:
     GUI-side integration that submits viewports and supplies the synchronous
     ``activate_snapshot`` callback, including renderer events and status updates.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.layer_runtime``
+    Module: ``spatiato.viewer.tiled_points.runtime.layer_runtime``
 
 ``_TiledPointsViewportScheduler``
     GUI-side scheduling with one active request and one latest pending submission;
     rejects stale results and forwards activation feedback before the next request.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.viewport_scheduler``
+    Module: ``spatiato.viewer.tiled_points.runtime.viewport_scheduler``
 
 ``_TiledPointsCacheSession``
     GUI-side interface that transports requests and results across the worker-thread
     boundary and manages the worker lifecycle.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+    Module: ``spatiato.viewer.tiled_points.runtime.cache_session``
 
 ``_TiledPointsCacheWorker``
     Worker-thread owner of the reader and cached data; evaluates LOD and rendering
     limits, reuses the accepted batch when possible, or prepares a replacement.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+    Module: ``spatiato.viewer.tiled_points.runtime.cache_session``
 
 ``_PointsCacheReader``
     Cache metadata, viewport tile planning, and physical Zarr payload reads.
 
-    Module: ``napari_harpy.core.multi_scale_cache_points_zarr.reader``
+    Module: ``spatiato.core.multi_scale_cache_points_zarr.reader``
 
 A render batch (``TiledPointsRenderBatch``) holds one immutable NumPy point array
 prepared for rendering from the required tiles. Each row contains a cache-relative
 position and a value ID. This is CPU-side data, not the renderer's GPU VBO.
 A snapshot (``TiledPointsRenderSnapshot``) references this batch alongside request
 identity, LOD, and status metadata. These types and ``TiledPointsRenderResult``
-live in ``napari_harpy.viewer.tiled_points.contracts``.
+live in ``spatiato.viewer.tiled_points.contracts``.
 
 Worker-owned cached data
 -----------------------
@@ -47,13 +47,13 @@ Worker-owned cached data
     The worker keeps one accepted ``_retained_viewport`` and may also hold a
     ``_pending_viewport`` awaiting GUI acceptance, not a history of past viewports.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+    Module: ``spatiato.viewer.tiled_points.runtime.cache_session``
 
 ``_CpuTileResidency``
     Byte-bounded LRU of decoded tile locations and value IDs, reusable when a
     replacement batch must be packed. This is separate from the retained batch.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.residency``
+    Module: ``spatiato.viewer.tiled_points.runtime.residency``
 
 Neither cache is owned by the viewport_scheduler. Its ``_pending_submission`` is a
 viewport request waiting to be dispatched, not the worker's prepared candidate
@@ -103,13 +103,13 @@ from dataclasses import dataclass
 
 from qtpy.QtCore import QObject, Signal, Slot
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsViewportState,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.runtime.cache_session import (
+from spatiato.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionState,
     _TiledPointsCacheSession,

@@ -17,15 +17,15 @@ from typing import Any
 import psutil
 import pyarrow as pa
 
-import napari_harpy.core.multi_scale_cache_points_zarr.source.validation as validation_module
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+import spatiato.core.multi_scale_cache_points_zarr.source.validation as validation_module
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     ValidatedPointsSource,
     validate_parquet_points_source,
 )
 
-_BENCHMARK_SCHEMA_VERSION = "harpy-points-validation-benchmark-v1"
+_BENCHMARK_SCHEMA_VERSION = "spatiato-points-validation-benchmark-v1"
 _RSS_SAMPLE_INTERVAL_SECONDS = 0.01
 
 
@@ -198,7 +198,7 @@ def _context(source_path: Path) -> dict[str, object]:
     return {
         "versions": {
             "python": platform.python_version(),
-            "napari_harpy": _version("napari-harpy"),
+            "spatiato": _version("spatiato"),
             "pyarrow": _version("pyarrow"),
             "numpy": _version("numpy"),
             "dask": _version("dask"),

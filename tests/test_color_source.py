@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from napari_harpy.core._color_source import (
+from spatiato.core._color_source import (
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
 )
-from napari_harpy.viewer.labels_styling import LabelsStyleResult
-from napari_harpy.viewer.shapes_styling import ShapesStyleResult
+from spatiato.viewer.labels_styling import LabelsStyleResult
+from spatiato.viewer.shapes_styling import ShapesStyleResult
 
 
 def test_table_color_source_spec_rejects_invalid_source_kind() -> None:

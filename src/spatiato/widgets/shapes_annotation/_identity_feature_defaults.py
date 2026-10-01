@@ -16,7 +16,7 @@ class _AnnotationIdentityFeatureDefaultGuard:
     the next drawn shape. It can seed or update that template from existing
     feature rows, for example from the last row when a layer is initialized or
     from a selected row during interaction. That is useful for normal columns
-    such as ``label`` or ``class``, but it is wrong for Harpy's source identity
+    such as ``label`` or ``class``, but it is wrong for Spatiato's source identity
     column because a new unsaved row must not inherit an existing row ID.
 
     Example before clearing::
@@ -33,13 +33,13 @@ class _AnnotationIdentityFeatureDefaultGuard:
             "label": np.asarray(["tumor"], dtype=object),
         }
 
-    Because ``None`` is treated as a missing feature value, Harpy's status text
+    Because ``None`` is treated as a missing feature value, Spatiato's status text
     omits the identity feature for a newly drawn unsaved row instead of showing
     an identity. Unlike ``pd.NA``, ``None`` also remains safely comparable when
     napari derives common properties from multiple selected shapes.
 
     Existing ``layer.features`` rows are left untouched. Newly drawn rows receive
-    a missing source ID while they are unsaved, so Harpy's status text has no
+    a missing source ID while they are unsaved, so Spatiato's status text has no
     identity feature to show for those rows. The save path later assigns fresh
     stable IDs such as ``__annotation_2``.
     """

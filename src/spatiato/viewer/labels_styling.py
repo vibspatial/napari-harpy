@@ -8,25 +8,25 @@ import pandas as pd
 from napari.layers import Labels
 from napari.utils.colormaps import DirectLabelColormap, label_colormap
 
-from napari_harpy.core._color_source import (
+from spatiato.core._color_source import (
     TableColorSourceSpec,
     TableColorValueKind,
     validate_table_color_value_kind,
 )
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     CategoricalPaletteSource,
     resolve_table_categorical_palette,
     validate_categorical_palette_source,
 )
-from napari_harpy.core.spatialdata import get_table, validate_table_binding
-from napari_harpy.viewer._styling import (
+from spatiato.core.spatialdata import get_table, validate_table_binding
+from spatiato.viewer._styling import (
     build_string_categorical_values,
     default_categorical_palette_for_categories,
     is_string_like_series,
     normalize_category_value,
 )
-from napari_harpy.viewer.labels_colormap import (
+from spatiato.viewer.labels_colormap import (
     CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
     compact_continuous_label_colormap_from_values,

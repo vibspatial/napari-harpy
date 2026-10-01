@@ -14,7 +14,7 @@ from napari.utils.colormaps import DirectLabelColormap
 from napari.utils.colormaps import _accelerated_cmap as _accel_cmap
 from numba import njit, typed, types
 
-from napari_harpy.viewer._styling import (
+from spatiato.viewer._styling import (
     MISSING_CATEGORICAL_COLOR,
     MISSING_CONTINUOUS_COLOR,
     OVERLAY_CONTINUOUS_COLORMAP,
@@ -96,10 +96,10 @@ class CompactLabelsMapping:
       "stroma" -> 3
     ```
 
-    If a later sparse edit annotates label `109` as `"tumor"`, Harpy can add
+    If a later sparse edit annotates label `109` as `"tumor"`, Spatiato can add
     `109 -> 2` to `label_ids` / `texture_codes` without rebuilding the full
     colormap. If the edit introduces a brand-new value such as `"immune"`,
-    Harpy appends one new RGBA row, adds `"immune" -> 4` to
+    Spatiato appends one new RGBA row, adds `"immune" -> 4` to
     `value_texture_codes`, and maps the edited label to texture code `4`.
     This is why value ownership of texture codes is stored explicitly
     instead of rediscovering it from repeated RGBA values.
@@ -144,7 +144,7 @@ class CompactLabelsMapping:
 
 @dataclass(frozen=True)
 class _CompactSparseLabelUpdateResult:
-    """Result of one Harpy sparse annotation update on compact label colors."""
+    """Result of one Spatiato sparse annotation update on compact label colors."""
 
     texture_code: int
     texture_table_changed: bool
@@ -196,7 +196,7 @@ class CompactLabelColormap(DirectLabelColormap):
     """Direct labels colormap backed by compact label-to-texture state.
 
     Methods that mirror names from `DirectLabelColormap` are napari-facing
-    private hooks. Methods prefixed with `_compact_` are Harpy-only helpers for
+    private hooks. Methods prefixed with `_compact_` are Spatiato-only helpers for
     looking up RGBA values from `CompactLabelsMapping`.
 
     Napari and vispy still expect direct-label internals shaped like
@@ -244,7 +244,7 @@ class CompactLabelColormap(DirectLabelColormap):
         *,
         value_color: Any | None = None,
     ) -> _CompactSparseLabelUpdateResult:
-        """Harpy helper for sparse annotation: set one label's value.
+        """Spatiato helper for sparse annotation: set one label's value.
 
         If the value was not present when the compact colormap was built,
         `value_color` is required and is appended as a new texture row.
@@ -265,7 +265,7 @@ class CompactLabelColormap(DirectLabelColormap):
         )
 
     def remove_label(self, label_id: int) -> _CompactSparseLabelUpdateResult:
-        """Harpy helper for sparse annotation: remove one explicit label.
+        """Spatiato helper for sparse annotation: remove one explicit label.
 
         Removed labels fall through to the default/unmapped texture code, which
         is how compact user-class coloring represents unlabeled class `0`.
@@ -289,11 +289,11 @@ class CompactLabelColormap(DirectLabelColormap):
         *,
         value_color: Any | None,
     ) -> int:
-        """Harpy helper for sparse annotation: resolve a value texture code.
+        """Spatiato helper for sparse annotation: resolve a value texture code.
 
         Sparse annotation updates receive a value/class id, but the compact
         labels colormap stores per-label colors as texture codes. This helper
-        preserves the missing `value -> texture_code` relationship so Harpy
+        preserves the missing `value -> texture_code` relationship so Spatiato
         can update one label without rebuilding the full colormap. If the
         value is new, `value_color` is used to append one RGBA row and
         remember the new value-to-texture-code mapping for future edits.
@@ -311,7 +311,7 @@ class CompactLabelColormap(DirectLabelColormap):
         texture_code = len(compact.texture_rgba)
         value_texture_codes[normalized_value] = texture_code
         # Install the expanded compact mapping so napari-facing texture-code
-        # lookup views and derived caches stay synchronized with Harpy state.
+        # lookup views and derived caches stay synchronized with Spatiato state.
         self._install_compact_mapping(
             replace(
                 compact,
@@ -324,14 +324,14 @@ class CompactLabelColormap(DirectLabelColormap):
         return texture_code
 
     def _install_compact_mapping(self, compact_mapping: CompactLabelsMapping) -> None:
-        """Harpy helper for sparse annotation: install updated compact state."""
+        """Spatiato helper for sparse annotation: install updated compact state."""
         object.__setattr__(self, "_compact_mapping", compact_mapping)
         object.__setattr__(self, "_label_to_texture_mapping", _CompactLabelToTextureMapping(compact_mapping))
         object.__setattr__(self, "_texture_color_dict", dict(enumerate(compact_mapping.texture_rgba)))
         self._clear_cache()
 
     def _validate_sparse_label_id(self, label_id: int) -> int:
-        """Harpy helper for sparse annotation: validate an edited label id."""
+        """Spatiato helper for sparse annotation: validate an edited label id."""
         label_id = int(label_id)
         if label_id <= 0 or label_id == self._compact_mapping.background_value:
             raise ValueError("Compact sparse label updates require a positive non-background label id.")
@@ -364,7 +364,7 @@ class CompactLabelColormap(DirectLabelColormap):
         backed by compact arrays. Napari may read the first tuple item as a
         `label_id -> texture_code` mapping, while vispy reads the second item
         as the `texture_code -> RGBA` table. Returning a mapping view here is
-        what lets Harpy avoid building a huge `label_id -> RGBA` dictionary.
+        what lets Spatiato avoid building a huge `label_id -> RGBA` dictionary.
         """
         if self.use_selection and apply_selection:
             # Mirror `DirectLabelColormap` selected-label rendering: only
@@ -457,7 +457,7 @@ class CompactLabelColormap(DirectLabelColormap):
         super()._clear_cache()
 
     def _compact_rgba_for_label(self, label_id: int, *, apply_selection: bool) -> np.ndarray:
-        """Harpy helper: resolve one label id through compact texture codes."""
+        """Spatiato helper: resolve one label id through compact texture codes."""
         if apply_selection and self.use_selection and label_id != self.selection:
             return _TRANSPARENT_RGBA
         compact = self._compact_mapping
@@ -471,7 +471,7 @@ class CompactLabelColormap(DirectLabelColormap):
         return compact.texture_rgba[texture_code]
 
     def _compact_rgba_for_values(self, values: np.ndarray, *, apply_selection: bool) -> np.ndarray:
-        """Harpy helper: resolve an array of label ids through compact state."""
+        """Spatiato helper: resolve an array of label ids through compact state."""
         compact = self._compact_mapping
         flat_values = values.ravel()
         texture_codes = np.full(flat_values.shape, compact.default_texture_code, dtype=np.int64)
@@ -499,7 +499,7 @@ def _compact_mapping_with_label_texture_code(
     label_id: int,
     texture_code: int,
 ) -> CompactLabelsMapping:
-    """Harpy helper for sparse annotation: set one label texture code.
+    """Spatiato helper for sparse annotation: set one label texture code.
 
     This intentionally returns a replaced `CompactLabelsMapping`
     instead of mutating the existing arrays in place, so the caller can install
@@ -542,7 +542,7 @@ def _compact_mapping_without_label(
     *,
     label_id: int,
 ) -> CompactLabelsMapping:
-    """Harpy helper for sparse annotation: remove one explicit label mapping."""
+    """Spatiato helper for sparse annotation: remove one explicit label mapping."""
     label_ids = compact.label_ids
     position = int(np.searchsorted(label_ids, label_id))
     if position >= len(label_ids) or int(label_ids[position]) != label_id:
@@ -807,11 +807,11 @@ def direct_label_colormap_from_rgba(
     *,
     background_value: int = 0,
 ) -> DirectLabelColormap:
-    """Construct a direct labels colormap from Harpy-generated RGBA arrays.
+    """Construct a direct labels colormap from Spatiato-generated RGBA arrays.
 
     Napari's public ``DirectLabelColormap(color_dict=...)`` constructor becomes
     expensive for large labels layers because it validates and color-normalizes
-    every ``label_id -> RGBA`` entry. Harpy's styled-labels paths already build
+    every ``label_id -> RGBA`` entry. Spatiato's styled-labels paths already build
     numeric RGBA arrays, so the large constructor pass is redundant.
 
     To avoid that bottleneck, construct a tiny normal ``DirectLabelColormap``
@@ -819,7 +819,7 @@ def direct_label_colormap_from_rgba(
     the model and event emitters correctly. Then install the trusted full RGBA
     mapping directly and clear napari's derived colormap caches.
 
-    This is an internal fast path for RGBA dictionaries generated by Harpy
+    This is an internal fast path for RGBA dictionaries generated by Spatiato
     itself. It performs only cheap structural checks on the default/background
     entries and does not revalidate every per-label color in the mapping. The
     mapping container and per-label arrays are not copied; callers should treat
@@ -907,7 +907,7 @@ def _categorical_texture_codes(
 
     Pandas categorical values use the fast `.cat.codes` path and map category
     codes through the palette texture-code table. Other dtypes are normalized
-    value-by-value so NumPy scalar variants and missing values match Harpy's
+    value-by-value so NumPy scalar variants and missing values match Spatiato's
     existing categorical-coloring semantics.
     """
     if len(values) == 0:

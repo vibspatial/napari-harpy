@@ -110,7 +110,7 @@ labels colormap produced by the existing full-refresh path.
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `src/spatiato/widgets/object_classification/viewer_styling.py`
 - `tests/test_object_classification_widget.py`
 
 ### Behavior Matrix
@@ -406,7 +406,7 @@ After Phase 2B, with auto training disabled:
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/widget.py`
+- `src/spatiato/widgets/object_classification/widget.py`
 - `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py` if controller callback behavior needs a focused
   test
@@ -532,7 +532,7 @@ When unchecked:
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/widget.py`
+- `src/spatiato/widgets/object_classification/widget.py`
 - `tests/test_object_classification_widget.py`
 
 ### State Model
@@ -710,8 +710,8 @@ the broad work that Phase 3 is meant to remove:
 
 ### Files
 
-- `src/napari_harpy/core/annotation.py`
-- `src/napari_harpy/widgets/object_classification/annotation_controller.py`
+- `src/spatiato/core/annotation.py`
+- `src/spatiato/widgets/object_classification/annotation_controller.py`
 - `tests/test_object_classification_widget.py`
 - `tests/test_class_palette.py` or a new focused annotation-core test if useful
 
@@ -921,7 +921,7 @@ It will not remove:
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
+- `src/spatiato/widgets/object_classification/viewer_styling.py`
 - `tests/test_object_classification_widget.py`
 - Add a focused viewer-styling test file if that keeps tests clearer.
 
@@ -1029,8 +1029,8 @@ one UI refresh cycle:
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/widget.py`
-- `src/napari_harpy/widgets/object_classification/controller.py` if a small
+- `src/spatiato/widgets/object_classification/widget.py`
+- `src/spatiato/widgets/object_classification/controller.py` if a small
   controller-side cache or invalidation hook is clearer
 - `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py` only if controller-side behavior changes
@@ -1270,9 +1270,9 @@ Keep the branching contained and easy to debug:
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
-- `src/napari_harpy/widgets/object_classification/annotation_controller.py`
-- `src/napari_harpy/widgets/object_classification/widget.py`
+- `src/spatiato/widgets/object_classification/viewer_styling.py`
+- `src/spatiato/widgets/object_classification/annotation_controller.py`
+- `src/spatiato/widgets/object_classification/widget.py`
 - `tests/test_object_classification_widget.py`
 - Add a focused viewer-styling test file if that keeps tests clearer.
 
@@ -1399,8 +1399,8 @@ are actually cleared or written.
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/viewer_styling.py`
-- `src/napari_harpy/widgets/object_classification/widget.py`
+- `src/spatiato/widgets/object_classification/viewer_styling.py`
+- `src/spatiato/widgets/object_classification/widget.py`
 - `tests/test_object_classification_widget.py`
 - `tests/test_viewer_styling.py`
 
@@ -1453,8 +1453,8 @@ parenting and an explicit shutdown contract:
 
 ### Files
 
-- `src/napari_harpy/widgets/object_classification/controller.py`
-- `src/napari_harpy/widgets/object_classification/widget.py`
+- `src/spatiato/widgets/object_classification/controller.py`
+- `src/spatiato/widgets/object_classification/widget.py`
 - `tests/test_classifier.py`
 - `tests/test_object_classification_widget.py`
 
@@ -1697,7 +1697,7 @@ Run focused checks after each phase:
 
 ```bash
 source .venv/bin/activate
-ruff check src/napari_harpy tests
+ruff check src/spatiato tests
 pytest -q tests/test_object_classification_widget.py
 ```
 

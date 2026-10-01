@@ -31,22 +31,22 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import ShapesModel, TableModel
 from spatialdata.transformations import Identity, set_transformation
 
-import napari_harpy._app_state as app_state_module
-import napari_harpy.core.shapes_geometry as shapes_geometry_module
-import napari_harpy.widgets.annotation.widget as annotation_widget_module
-import napari_harpy.widgets.shapes_annotation._edit_guard as shapes_annotation_edit_guard_module
-import napari_harpy.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
-import napari_harpy.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
-import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
-from napari_harpy._app_state import (
+import spatiato._app_state as app_state_module
+import spatiato.core.shapes_geometry as shapes_geometry_module
+import spatiato.widgets.annotation.widget as annotation_widget_module
+import spatiato.widgets.shapes_annotation._edit_guard as shapes_annotation_edit_guard_module
+import spatiato.widgets.shapes_annotation._identity_feature_defaults as shapes_annotation_identity_defaults_module
+import spatiato.widgets.shapes_annotation._layer_state as shapes_annotation_layer_state_module
+import spatiato.widgets.shapes_annotation.widget as shapes_annotation_widget_module
+from spatiato._app_state import (
     ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
     get_or_create_app_state,
 )
-from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
-from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
-from napari_harpy.core.shapes_annotation import AnnotateShapesElementResult
-from napari_harpy.core.shapes_geometry import (
+from spatiato._shapes_triangulation import configure_shapes_triangulation_backend
+from spatiato.core._color_source import ShapeColumnColorSourceSpec
+from spatiato.core.shapes_annotation import AnnotateShapesElementResult
+from spatiato.core.shapes_geometry import (
     NapariPolygonVertexDeletion,
     delete_napari_polygon_vertex,
     insert_napari_polygon_vertex,
@@ -54,17 +54,17 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_topology,
     shapely_polygon_to_napari_polygon_vertices,
 )
-from napari_harpy.core.spatialdata_io import write_shapes_element
-from napari_harpy.viewer.adapter import ShapesLayerBinding
-from napari_harpy.viewer.shapes_styling import (
+from spatiato.core.spatialdata_io import write_shapes_element
+from spatiato.viewer.adapter import ShapesLayerBinding
+from spatiato.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
     PRIMARY_SHAPES_FACE_COLOR,
     apply_primary_shapes_layer_style,
 )
-from napari_harpy.widgets.annotation.models import AnnotationContext
-from napari_harpy.widgets.annotation.widget import AnnotationWidget
-from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
+from spatiato.widgets.annotation.models import AnnotationContext
+from spatiato.widgets.annotation.widget import AnnotationWidget
+from spatiato.widgets.shapes_annotation.widget import ShapesAnnotation
 
 _SPACE_PAN_TIP_TEXT = (
     "Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape."
@@ -375,7 +375,7 @@ def _direct_drag_callback_selecting_vertex(*, moved_vertex_index: int) -> Callab
         layer.selected_data = {0}
         yield "press"
         if getattr(event, "type", None) == "mouse_move":
-            raise AssertionError("Harpy resumed the native generator for a guarded polygon move.")
+            raise AssertionError("Spatiato resumed the native generator for a guarded polygon move.")
 
     return direct_drag_callback
 
@@ -2296,7 +2296,7 @@ def test_annotation_layer_edit_guard_direct_drag_restores_and_continues_after_pa
     assert next(drag) is None
 
     # The first valid candidate was partially written before the injected
-    # renderer failure. Harpy restores the accepted baseline and keeps this
+    # renderer failure. Spatiato restores the accepted baseline and keeps this
     # same gesture alive for another move.
     np.testing.assert_array_equal(np.asarray(layer.data[0], dtype=float), original_vertices)
     event.position = tuple(later_valid_coordinate)
@@ -2996,7 +2996,7 @@ def test_annotation_layer_edit_guard_vertex_remove_rejects_unsafe_polygon_hit(
         unsafe_vertices = np.asarray(vertices, dtype=object if unsafe_case == "nonnumeric" else float)
         unsafe_vertices[0, 0] = "not-a-coordinate" if unsafe_case == "nonnumeric" else np.nan
         # Inject the malformed row after construction so this routing test
-        # reaches Harpy without asking napari to triangulate unsafe input first.
+        # reaches Spatiato without asking napari to triangulate unsafe input first.
         layer._data_view.shapes[0]._data = unsafe_vertices
     original_vertices = np.asarray(layer.data[0]).copy()
     layer._drag_modes = dict(layer._drag_modes)
@@ -5266,7 +5266,7 @@ def test_shapes_annotation_widget_adopts_native_empty_shapes_layer(
     # napari inserts layer -> layers.events.inserted emitted ->
     # `_on_viewer_layer_inserted(...)` -> `QTimer.singleShot(0, ...)` ->
     # later `_maybe_adopt_native_shapes_layer(...)`. The adopted layer should
-    # also be the Harpy replacement, not the original plain napari Shapes layer.
+    # also be the Spatiato replacement, not the original plain napari Shapes layer.
     qtbot.waitUntil(
         lambda: (
             widget._annotation_session is not None
@@ -5478,7 +5478,7 @@ def test_shapes_annotation_widget_native_name_falls_back_and_suffixes_collision(
     assert adopted_layer.name == "new_shapes_2"
 
 
-def test_shapes_annotation_widget_deferred_native_adoption_ignores_harpy_loaded_shapes(
+def test_shapes_annotation_widget_deferred_native_adoption_ignores_spatiato_loaded_shapes(
     qtbot,
     sdata_blobs: SpatialData,
 ) -> None:

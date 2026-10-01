@@ -12,15 +12,15 @@ from napari.utils.triangulation_backend import TriangulationBackend, get_backend
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from napari_harpy._shapes_triangulation import (
+from spatiato._shapes_triangulation import (
     configure_shapes_triangulation_backend,
     ensure_shapes_triangulation_backend,
 )
-from napari_harpy.core.shapes_geometry import (
+from spatiato.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
-from napari_harpy.viewer.adapter import _build_shapes_layer
+from spatiato.viewer.adapter import _build_shapes_layer
 
 TRIANGULATION_REGRESSION_POLYGONS = (
     pytest.param(POLYGON_WITH_HOLES_TRIANGULATION_FIXTURE_1, id="annotation_1"),
@@ -56,7 +56,7 @@ def _shape_mesh_metrics(layer: Shapes, expected: Polygon) -> tuple[str | None, f
     return mesh_path, overdraw, symmetric_difference
 
 
-def test_harpy_shapes_construction_without_interactive_uses_default_bermuda(
+def test_spatiato_shapes_construction_without_interactive_uses_default_bermuda(
     restore_triangulation_backend: None,
     sdata_blobs,
 ) -> None:

@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import napari_harpy.viewer.adapter as adapter_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
-from napari_harpy.viewer.adapter import TiledPointsLayerBinding, ViewerAdapter
-from napari_harpy.viewer.tiled_points.application import (
+import spatiato.viewer.adapter as adapter_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
+from spatiato.viewer.adapter import TiledPointsLayerBinding, ViewerAdapter
+from spatiato.viewer.tiled_points.application import (
     TiledPointsApplicationSettings,
     TiledPointsCacheDescriptor,
 )

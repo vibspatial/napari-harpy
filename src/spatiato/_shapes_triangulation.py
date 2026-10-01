@@ -15,7 +15,7 @@ _CONFIGURED_SHAPES_TRIANGULATION_BACKEND = TriangulationBackend.bermuda
 
 
 def configure_shapes_triangulation_backend(backend: ShapesTriangulationBackend) -> None:
-    """Configure the process-wide backend used by Harpy Shapes layers."""
+    """Configure the process-wide backend used by Spatiato Shapes layers."""
     try:
         configured_backend = _SUPPORTED_SHAPES_TRIANGULATION_BACKENDS[backend]
     except (KeyError, TypeError) as error:
@@ -30,7 +30,7 @@ def configure_shapes_triangulation_backend(backend: ShapesTriangulationBackend) 
 
 
 def ensure_shapes_triangulation_backend() -> None:
-    """Keep napari aligned with Harpy's configured Shapes backend."""
+    """Keep napari aligned with Spatiato's configured Shapes backend."""
     settings = get_settings()
     settings.experimental.triangulation_backend = _CONFIGURED_SHAPES_TRIANGULATION_BACKEND
     if get_backend() != _CONFIGURED_SHAPES_TRIANGULATION_BACKEND:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from napari_harpy.widgets.shared_styles import StatusCardKind, validate_status_card_kind
+from spatiato.widgets.shared_styles import StatusCardKind, validate_status_card_kind
 
 
 @dataclass(frozen=True)

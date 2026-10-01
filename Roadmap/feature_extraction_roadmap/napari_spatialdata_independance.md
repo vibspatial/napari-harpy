@@ -2,9 +2,9 @@
 
 ## Goal
 
-Make `napari-harpy` independent of `napari-spatialdata` for dataset loading, selection state, and widget operation.
+Make `spatiato` independent of `napari-spatialdata` for dataset loading, selection state, and widget operation.
 
-The objective is **not** to immediately replace every visualization convenience provided by `napari-spatialdata`. The objective is to make `napari-harpy` own the authoritative application state:
+The objective is **not** to immediately replace every visualization convenience provided by `napari-spatialdata`. The objective is to make `spatiato` own the authoritative application state:
 
 - opening `SpatialData`
 - tracking loaded datasets and samples
@@ -21,7 +21,7 @@ Today, both widgets depend on discovering `SpatialData` objects indirectly by sc
 - `layer.metadata["sdata"]`
 - `layer.metadata["name"]`
 
-This makes `napari-harpy` dependent on:
+This makes `spatiato` dependent on:
 
 - `napari-spatialdata` loading behavior
 - `napari-spatialdata` metadata conventions
@@ -32,7 +32,7 @@ That dependency was useful for the MVP, but it now limits the architecture.
 
 Becoming independent of `napari-spatialdata` would give us:
 
-- direct dataset opening from within `napari-harpy`
+- direct dataset opening from within `spatiato`
 - explicit, stable application state
 - less fragility if external metadata conventions change
 - a cleaner path to multi-sample workflows
@@ -43,7 +43,7 @@ Becoming independent of `napari-spatialdata` would give us:
 
 `SpatialData` itself should be the authoritative data model.
 
-`napari-harpy` should own:
+`spatiato` should own:
 
 - dataset/session state
 - selected sample
@@ -126,8 +126,8 @@ This gives us independence where it matters, without taking on unnecessary rende
 
 Create a new internal module, for example:
 
-- `src/napari_harpy/_session.py`
-- or `src/napari_harpy/_spatialdata_session.py`
+- `src/spatiato/_session.py`
+- or `src/spatiato/_spatialdata_session.py`
 
 This module should introduce the concept of an application session.
 
@@ -214,7 +214,7 @@ These should become napari-facing helpers:
 
 Suggested module:
 
-- `src/napari_harpy/_viewer_adapter.py`
+- `src/spatiato/_viewer_adapter.py`
 
 ## Phase 3: Replace viewer-discovery as the primary source of options
 
@@ -416,4 +416,4 @@ That is the key step that will:
 - simplify future feature work
 - make multi-sample support realistic
 - support channel-aware image selection cleanly
-- move `napari-harpy` from a plugin add-on toward a coherent application layer
+- move `spatiato` from a plugin add-on toward a coherent application layer

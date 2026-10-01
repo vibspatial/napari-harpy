@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import tile_major_bucket_path
+from spatiato.core.multi_scale_cache_points_zarr.storage._paths import tile_major_bucket_path
 
 _INT16_MAX = 2**15 - 1
 _INT64_MAX = 2**63 - 1

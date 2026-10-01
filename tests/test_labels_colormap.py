@@ -10,14 +10,14 @@ from napari.layers import Labels
 from napari.utils.colormap_backend import get_backend, set_backend
 from napari.utils.colormaps import DirectLabelColormap
 
-import napari_harpy.viewer.labels_colormap as labels_colormap_module
-from napari_harpy.core.class_palette import DEFAULT_NEUTRAL_COLOR
-from napari_harpy.viewer._styling import (
+import spatiato.viewer.labels_colormap as labels_colormap_module
+from spatiato.core.class_palette import DEFAULT_NEUTRAL_COLOR
+from spatiato.viewer._styling import (
     MISSING_CATEGORICAL_COLOR,
     MISSING_CONTINUOUS_COLOR,
     continuous_rgba_for_values,
 )
-from napari_harpy.viewer.labels_colormap import (
+from spatiato.viewer.labels_colormap import (
     CompactLabelColormap,
     CompactLabelsMapping,
     compact_categorical_label_colormap_from_values,

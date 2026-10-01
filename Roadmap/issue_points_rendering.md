@@ -5,7 +5,7 @@
 `napari` is not the right primitive for directly drawing very large point clouds as a single
 `Points` layer when the dataset reaches tens of millions to billions of rows.
 
-For `napari-harpy`, the concrete rendering strategy should be:
+For `spatiato`, the concrete rendering strategy should be:
 
 1. keep the `SpatialData` points element as the source of truth
 2. convert the currently visible points into a raster overview image
@@ -34,7 +34,7 @@ That narrower milestone is the concrete target for the first pass.
 
 ## Goal
 
-Make `napari-harpy` capable of showing `SpatialData` points in napari with responsive pan and zoom,
+Make `spatiato` capable of showing `SpatialData` points in napari with responsive pan and zoom,
 including datasets that are far too large for direct per-point rendering.
 
 ## First Milestone
@@ -44,8 +44,8 @@ The first milestone should deliberately stop short of full points support.
 Concrete deliverable:
 
 1. user selects a small set of genes
-2. `napari-harpy` filters the `SpatialData` points element lazily to those genes
-3. `napari-harpy` renders the current viewport into an RGB image
+2. `spatiato` filters the `SpatialData` points element lazily to those genes
+3. `spatiato` renders the current viewport into an RGB image
 4. that RGB image is shown in napari as a standard `Image` layer
 5. the image is refreshed on pan and zoom in the background
 
@@ -558,5 +558,5 @@ The concrete plan is:
 - if "very snappy" behavior is required at `1e9+` scale, precomputed multiscale raster products
   should be the preferred overview representation
 
-This gives `napari-harpy` a path to points support that is realistic, performant, and compatible with
+This gives `spatiato` a path to points support that is realistic, performant, and compatible with
 the raster rendering direction already described in `issue_napari_spatialdata.md`.

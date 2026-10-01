@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 from napari.layers import Shapes
 
-from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
-from napari_harpy.widgets.shapes_annotation._layer_style import (
+from spatiato._shapes_triangulation import ensure_shapes_triangulation_backend
+from spatiato.widgets.shapes_annotation._layer_style import (
     _capture_shapes_layer_style,
     _restore_shapes_layer_current_style,
     _restore_shapes_layer_row_styles,

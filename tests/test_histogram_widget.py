@@ -10,13 +10,13 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import QComboBox, QCompleter, QLabel, QWidget
 from spatialdata import SpatialData
 
-import napari_harpy.core.histogram as histogram_module
-import napari_harpy.widgets.histogram.widget as histogram_widget_module
-from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy.core.histogram import HistogramResult
-from napari_harpy.core.spatialdata import get_spatialdata_image_options_for_coordinate_system_from_sdata
-from napari_harpy.widgets.histogram.controller import HistogramJob, HistogramJobResult
-from napari_harpy.widgets.histogram.widget import HistogramWidget
+import spatiato.core.histogram as histogram_module
+import spatiato.widgets.histogram.widget as histogram_widget_module
+from spatiato._app_state import get_or_create_app_state
+from spatiato.core.histogram import HistogramResult
+from spatiato.core.spatialdata import get_spatialdata_image_options_for_coordinate_system_from_sdata
+from spatiato.widgets.histogram.controller import HistogramJob, HistogramJobResult
+from spatiato.widgets.histogram.widget import HistogramWidget
 
 
 def test_histogram_overlay_match_rejects_unknown_state() -> None:

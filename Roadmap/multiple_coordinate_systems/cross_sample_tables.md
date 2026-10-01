@@ -116,7 +116,7 @@ The current Harpy backend already supports multi-region feature extraction by
 accepting list-valued `labels_layer`, `img_layer`, and `to_coordinate_system`
 inputs and aligning results by `region_key` plus `instance_key`.
 
-That means the main missing work in napari-harpy is UI, selection modeling,
+That means the main missing work in spatiato is UI, selection modeling,
 eligibility validation, and controller orchestration rather than inventing a
 new backend feature format from scratch.
 
@@ -529,7 +529,7 @@ This helps future reload, debugging, and user-facing status text.
 
 Files:
 
-- `src/napari_harpy/_spatialdata.py`
+- `src/spatiato/_spatialdata.py`
 - `tests/test_spatialdata.py`
 
 Work:
@@ -553,8 +553,8 @@ Acceptance:
 
 Files:
 
-- `src/napari_harpy/widgets/_feature_extraction_widget.py`
-- `src/napari_harpy/_feature_extraction.py`
+- `src/spatiato/widgets/_feature_extraction_widget.py`
+- `src/spatiato/_feature_extraction.py`
 - `tests/test_feature_extraction_widget.py`
 - `tests/test_feature_extraction.py`
 
@@ -582,8 +582,8 @@ Acceptance:
 
 Files:
 
-- `src/napari_harpy/widgets/_feature_extraction_widget.py`
-- `src/napari_harpy/_spatialdata.py`
+- `src/spatiato/widgets/_feature_extraction_widget.py`
+- `src/spatiato/_spatialdata.py`
 - `tests/test_feature_extraction_widget.py`
 - `tests/test_spatialdata.py`
 
@@ -666,8 +666,8 @@ Status: [x] Completed
 
 Files:
 
-- `src/napari_harpy/widgets/_object_classification_widget.py`
-- `src/napari_harpy/_classifier.py`
+- `src/spatiato/widgets/_object_classification_widget.py`
+- `src/spatiato/_classifier.py`
 - `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py`
 

@@ -13,32 +13,32 @@ import pyarrow.parquet as pq
 import pytest
 import zarr
 
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
+from spatiato.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
     _TileReadResult,
     _ViewportReadPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
     _BucketReader,
     _PointDisplayPayload,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
     _ValueMajorLevelReader,
 )
 

@@ -14,13 +14,13 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
-from napari_harpy.core._color_source import (
+from spatiato.core._color_source import (
     ShapeColorSourceKind,
     ShapeColumnColorSourceSpec,
     TableColorSourceKind,
     TableColorSourceSpec,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
@@ -30,7 +30,7 @@ from napari_harpy.widgets.shared_styles import (
     build_input_control_stylesheet,
     create_form_label,
 )
-from napari_harpy.widgets.viewer.styles import (
+from spatiato.widgets.viewer.styles import (
     CARD_TITLE_STYLESHEET,
     DETAIL_PANEL_STYLESHEET,
     INPUT_CONTROL_STYLESHEET,
@@ -79,7 +79,7 @@ class _ShapesCardWidget(QFrame):
         self._filtered_color_sources: list[ShapeColumnColorSourceSpec | TableColorSourceSpec] = []
         self._active_source_kind: ShapeColorSourceKind | TableColorSourceKind | None = None
         self.setObjectName(f"viewer_widget_shapes_card_{shapes_name}")
-        self.setProperty("harpyViewerDetailPanel", True)
+        self.setProperty("spatiatoViewerDetailPanel", True)
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)

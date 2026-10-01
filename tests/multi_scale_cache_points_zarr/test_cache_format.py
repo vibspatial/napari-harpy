@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     BACKEND_IDENTIFIER,
     CACHE_SCHEMA_VERSION,
     PUBLICATION_STATE_STAGING,
@@ -15,7 +15,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _ValueMajorMetadata,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _build_cache_attributes
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _build_cache_attributes
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 CatalogExactFixture = Any

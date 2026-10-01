@@ -24,13 +24,13 @@ from qtpy.QtWidgets import (
 )
 from spatialdata.transformations import get_transformation
 
-from napari_harpy._app_state import (
-    HarpyAppState,
+from spatiato._app_state import (
     ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
+    SpatiatoAppState,
     get_or_create_app_state,
 )
-from napari_harpy.core.shapes_annotation import (
+from spatiato.core.shapes_annotation import (
     DEFAULT_SHAPES_INDEX_NAME,
     DEFAULT_SHAPES_INDEX_PREFIX,
     AnnotateShapesElementResult,
@@ -40,38 +40,38 @@ from napari_harpy.core.shapes_annotation import (
     edit_shapes_element_from_napari_shapes_layer,
     validate_existing_shapes_source_geodataframe,
 )
-from napari_harpy.core.spatialdata import (
+from spatiato.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
 )
-from napari_harpy.core.spatialdata_io import (
+from spatiato.core.spatialdata_io import (
     load_shapes_element_from_store,
     shapes_element_exists_in_store,
 )
-from napari_harpy.core.validation import (
+from spatiato.core.validation import (
     normalize_spatialdata_name,
     spatialdata_element_name_exists,
 )
-from napari_harpy.viewer.adapter import ShapesLayerBinding
-from napari_harpy.widgets.annotation.models import (
+from spatiato.viewer.adapter import ShapesLayerBinding
+from spatiato.widgets.annotation.models import (
     AnnotationContext,
     ShapesAnnotationTarget,
     ShapesAnnotationTargetMode,
 )
-from napari_harpy.widgets.shapes_annotation._create_holes import (
+from spatiato.widgets.shapes_annotation._create_holes import (
     _apply_create_holes_plan,
     _create_holes_plan_from_selection,
 )
-from napari_harpy.widgets.shapes_annotation._edit_guard import _AnnotationLayerEditGuard
-from napari_harpy.widgets.shapes_annotation._identity_feature_defaults import _AnnotationIdentityFeatureDefaultGuard
-from napari_harpy.widgets.shapes_annotation._snapshot import (
+from spatiato.widgets.shapes_annotation._edit_guard import _AnnotationLayerEditGuard
+from spatiato.widgets.shapes_annotation._identity_feature_defaults import _AnnotationIdentityFeatureDefaultGuard
+from spatiato.widgets.shapes_annotation._snapshot import (
     _annotation_layer_snapshots_equal,
     _capture_annotation_layer_snapshot,
     _empty_annotation_layer_snapshot,
     _ShapesAnnotationLayerSnapshot,
 )
-from napari_harpy.widgets.shapes_annotation.status_card import (
+from spatiato.widgets.shapes_annotation.status_card import (
     _ShapesAnnotationStatusCardSpec,
     build_annotation_coordinate_system_missing_card_spec,
     build_annotation_create_layer_error_card_spec,
@@ -95,7 +95,7 @@ from napari_harpy.widgets.shapes_annotation.status_card import (
     build_create_holes_error_card_spec,
     build_create_holes_success_card_spec,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
     WARNING_BUTTON_STYLESHEET,
@@ -383,8 +383,8 @@ class ShapesAnnotation(QWidget):
         self._refresh_create_layer_state()
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared per-viewer Harpy app state."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared per-viewer Spatiato app state."""
         return self._app_state
 
     @property
@@ -429,7 +429,7 @@ class ShapesAnnotation(QWidget):
         if context.sdata is not None and context.sdata is not self._app_state.sdata:
             raise ValueError("Annotation context SpatialData must match the shared app state.")
         # Coordinate-system availability is validated centrally by
-        # HarpyAppState. This defensive boundary check does not repeat that
+        # SpatiatoAppState. This defensive boundary check does not repeat that
         # validation; it ensures the child received the same parent-committed
         # shared value.
         if context.coordinate_system != self._app_state.coordinate_system:
@@ -437,7 +437,7 @@ class ShapesAnnotation(QWidget):
 
         # App-state sdata replacement removes registered layers before this
         # child receives its new context, so clear stale annotation UI state when our tracked
-        # layer has already disappeared from the Harpy binding registry.
+        # layer has already disappeared from the Spatiato binding registry.
         if (
             self._annotation_layer is not None
             and self._app_state.viewer_adapter.layer_bindings.get_binding(self._annotation_layer) is None
@@ -589,7 +589,7 @@ class ShapesAnnotation(QWidget):
 
         active_layer = getattr(getattr(getattr(self._viewer, "layers", None), "selection", None), "active", None)
         # napari may expose the active layer through a PublicOnlyProxy in
-        # plugin widgets; Harpy bindings keep the real layer object.
+        # plugin widgets; Spatiato bindings keep the real layer object.
         active_layer = getattr(active_layer, "__wrapped__", active_layer)
         if binding.layer is active_layer:
             # Catch primary shapes loaded through the Viewer widget Add/Update
@@ -641,15 +641,15 @@ class ShapesAnnotation(QWidget):
 
         # This hook lets Annotation react when the user creates or imports a
         # Shapes layer through napari itself (a native Shapes layer).
-        # Harpy-managed insertions are filtered out by the deferred
+        # Spatiato-managed insertions are filtered out by the deferred
         # `layer_bindings.get_binding(layer)` check in
         # `_maybe_adopt_native_shapes_layer(...)`.
-        # Harpy-managed shapes paths in `ViewerAdapter` call
+        # Spatiato-managed shapes paths in `ViewerAdapter` call
         # `_add_layer_to_viewer(self._viewer, layer)` before
         # `self.register_shapes_layer(...)`. `_add_layer_to_viewer(...)` emits
         # this raw insertion event, but Annotation should not adopt layers that
         # were added by the ViewerAdapter. `QTimer.singleShot(0, ...)` queues the
-        # callback for the end of the current Qt event-loop turn, giving Harpy
+        # callback for the end of the current Qt event-loop turn, giving Spatiato
         # time to register its own binding before we decide whether this is still
         # an unbound native napari layer.
         QTimer.singleShot(0, lambda layer=layer: self._maybe_adopt_native_shapes_layer(layer))
@@ -806,7 +806,7 @@ class ShapesAnnotation(QWidget):
 
     def _initial_native_layer_clean_snapshot(self, layer: Shapes) -> _ShapesAnnotationLayerSnapshot:
         # Empty native layers should be clean as they are, including any empty
-        # feature schema. Non-empty native/imported layers are unsaved Harpy
+        # feature schema. Non-empty native/imported layers are unsaved Spatiato
         # annotations, so compare them against an empty baseline and mark them
         # dirty immediately until the user saves them.
         if len(layer.data) == 0:
@@ -965,7 +965,7 @@ class ShapesAnnotation(QWidget):
 
         binding = self._app_state.viewer_adapter.layer_bindings.get_binding(layer)
         if not isinstance(binding, ShapesLayerBinding):
-            raise ValueError("Opened shapes layer is missing its Harpy shapes binding.")
+            raise ValueError("Opened shapes layer is missing its Spatiato shapes binding.")
 
         if (
             binding.element_type != "shapes"
@@ -1212,7 +1212,7 @@ class ShapesAnnotation(QWidget):
             # element, so reset the hidden field before it is shown again.
             self._clear_consumed_new_shapes_name()
 
-        # Bring the Harpy registry back in sync with the just-saved
+        # Bring the Spatiato registry back in sync with the just-saved
         # SpatialData element. The same live layer can now represent a
         # different row count and source-index feature name than when it was
         # first registered.
@@ -1419,7 +1419,7 @@ class ShapesAnnotation(QWidget):
     def _connect_annotation_dirty_events(self, layer: Shapes) -> None:
         """Observe geometry mutations on the active annotation layer.
 
-        Napari-harpy currently provides no feature-only Shapes editing
+        Spatiato currently provides no feature-only Shapes editing
         workflow. Napari emits a completed data event after updating
         row-aligned features during shape additions and removals, so listening
         to features as well would duplicate the snapshot comparison.

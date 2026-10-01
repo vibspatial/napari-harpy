@@ -7,8 +7,8 @@ import pytest
 from dask.callbacks import Callback
 from spatialdata import SpatialData
 
-import napari_harpy.core.spatial_query.centroids as centroids_module
-from napari_harpy.core.spatial_query import (
+import spatiato.core.spatial_query.centroids as centroids_module
+from spatiato.core.spatial_query import (
     CANONICAL_OBSM_KEY,
     SPATIAL_COORDINATES_KEY,
     CanonicalCacheUpdateAction,

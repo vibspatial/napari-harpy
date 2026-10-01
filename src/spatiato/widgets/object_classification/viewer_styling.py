@@ -8,29 +8,29 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_labeled_class_color,
     normalize_class_values,
     resolve_table_categorical_palette,
 )
-from napari_harpy.core.object_classification.annotation import (
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLUMN,
 )
-from napari_harpy.core.spatialdata import (
+from spatiato.core.spatialdata import (
     SpatialDataTableMetadata,
     get_table,
     get_table_metadata,
 )
-from napari_harpy.viewer._styling import MISSING_CONTINUOUS_COLOR
-from napari_harpy.viewer.adapter import ViewerAdapter
-from napari_harpy.viewer.labels_colormap import (
+from spatiato.viewer._styling import MISSING_CONTINUOUS_COLOR
+from spatiato.viewer.adapter import ViewerAdapter
+from spatiato.viewer.labels_colormap import (
     CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
     compact_continuous_label_colormap_from_values,
 )
-from napari_harpy.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
-from napari_harpy.widgets.object_classification.controller import (
+from spatiato.viewer.labels_styling import _build_labels_features, _get_region_rows_by_instance
+from spatiato.widgets.object_classification.controller import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from anndata import AnnData
     from spatialdata import SpatialData
 
-    from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
+    from spatiato.widgets.object_classification.annotation_controller import UserClassAnnotationChange
 
 COLOR_BY_USER_CLASS = USER_CLASS_COLUMN
 COLOR_BY_PRED_CLASS = PRED_CLASS_COLUMN

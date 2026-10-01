@@ -20,20 +20,20 @@ from spatialdata.models import get_axes_names
 from spatialdata.transformations import get_transformation
 from xarray import DataArray, DataTree
 
-from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
-from napari_harpy.core._color_source import (
+from spatiato._shapes_triangulation import ensure_shapes_triangulation_backend
+from spatiato.core._color_source import (
     ShapeColumnColorSourceSpec,
     TableColorSourceSpec,
 )
-from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
-from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
-from napari_harpy.viewer.labels_async import sync_labels_display_after_colormap_change
-from napari_harpy.viewer.labels_styling import (
+from spatiato.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
+from spatiato.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode, ImageLoadResult
+from spatiato.viewer.labels_async import sync_labels_display_after_colormap_change
+from spatiato.viewer.labels_styling import (
     LabelsLoadResult,
     apply_table_color_source_to_labels_layer,
     build_styled_labels_layer_name,
 )
-from napari_harpy.viewer.points_styling import (
+from spatiato.viewer.points_styling import (
     _POINTS_FACE_COLOR_OVERRIDE_ATTR,
     POINTS_SELECTION_MAX_CATEGORICAL_COLORS,
     POINTS_SELECTION_SOLID_COLOR,
@@ -44,27 +44,27 @@ from napari_harpy.viewer.points_styling import (
     connect_current_size_to_radius_scaled_point_size,
     connect_current_symbol_to_global_point_symbol,
 )
-from napari_harpy.viewer.shapes_styling import (
+from spatiato.viewer.shapes_styling import (
     ShapesLoadResult,
     apply_shape_column_color_source_to_shapes_layer,
     apply_table_color_source_to_shapes_layer,
     build_styled_shapes_layer_name,
 )
-from napari_harpy.viewer.shapes_styling import (
+from spatiato.viewer.shapes_styling import (
     apply_primary_shapes_layer_style as _apply_primary_shapes_layer_style,
 )
-from napari_harpy.viewer.tiled_points.application import (
+from spatiato.viewer.tiled_points.application import (
     TiledPointsApplicationSettings,
     TiledPointsCacheDescriptor,
     canonical_value_palette,
 )
-from napari_harpy.viewer.tiled_points.napari import TiledPointsLayerModel, register_tiled_points_layer
-from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from spatiato.viewer.tiled_points.napari import TiledPointsLayerModel, register_tiled_points_layer
+from spatiato.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData
 
-    from napari_harpy._points_value_index import PointsValueSelection
+    from spatiato._points_value_index import PointsValueSelection
 
 ElementType = Literal["labels", "image", "shapes", "points"]
 ShapesLayerShapeType = Literal["polygon", "ellipse"]
@@ -77,8 +77,8 @@ SourceRowIdByRenderedRow = tuple[int, ...] | range
 DEFAULT_SHAPES_INDEX_FEATURE_NAME = "index"
 
 
-class _HarpyShapes(Shapes):
-    """Napari ``Shapes`` layer with Harpy-specific status-bar text.
+class _SpatiatoShapes(Shapes):
+    """Napari ``Shapes`` layer with Spatiato-specific status-bar text.
 
     This subclass only customizes display behavior: when the cursor is over a
     rendered shape, it reads the feature row from ``layer.features`` and
@@ -128,7 +128,7 @@ class _HarpyShapes(Shapes):
     def _get_feature_status(self, value: Any) -> str | None:
         """Return status text for the picked rendered shape row.
 
-        Harpy keeps the source GeoDataFrame index in ``layer.features`` so a
+        Spatiato keeps the source GeoDataFrame index in ``layer.features`` so a
         rendered napari row can be traced back to its original source row, even
         when one source geometry expands into multiple rendered rows. That
         source index is shown first, followed by any other non-missing feature
@@ -161,8 +161,8 @@ class _HarpyShapes(Shapes):
         return "; ".join(status_parts) or None
 
 
-class _HarpyPointRadiusShapes(Points):
-    """Napari ``Points`` layer with shapes-style Harpy status-bar text."""
+class _SpatiatoPointRadiusShapes(Points):
+    """Napari ``Points`` layer with shapes-style Spatiato status-bar text."""
 
     def __init__(
         self,
@@ -193,7 +193,7 @@ class _HarpyPointRadiusShapes(Points):
 
         # Napari Points already appends normal feature columns to the status
         # text. The fallback feature name "index" is special-cased by napari
-        # and is not shown, so Harpy only appends that source index manually.
+        # and is not shown, so Spatiato only appends that source index manually.
         if self._source_shapes_index_feature_name != DEFAULT_SHAPES_INDEX_FEATURE_NAME:
             return status
 
@@ -240,7 +240,7 @@ def _is_missing_feature_value(value: Any) -> bool:
 
 
 def _insert_feature_status_first(status_text: str, feature_status: str) -> str:
-    """Insert Harpy source-index status before napari Points feature text."""
+    """Insert Spatiato source-index status before napari Points feature text."""
     if not status_text:
         return feature_status
     if ";" not in status_text:
@@ -433,7 +433,7 @@ class _NapariShapesLayerInputs:
         index, using the GeoDataFrame index name or ``"index"`` fallback.
     source_row_id_by_rendered_row
         Internal integer source GeoDataFrame row id for each rendered napari
-        row. This is later stored in the Harpy layer binding so every row in
+        row. This is later stored in the Spatiato layer binding so every row in
         ``data`` can be mapped back to its source row even when ``len(data)``
         differs from the source GeoDataFrame row count. For example, if source
         row position ``7`` is a ``MultiPolygon`` that expands into three
@@ -496,16 +496,16 @@ class _BuiltShapesLayer:
 
 
 class LayerBindingRegistry:
-    """In-memory mapping from napari layers to Harpy SpatialData element identity.
+    """In-memory mapping from napari layers to Spatiato SpatialData element identity.
 
     Internally, this registry is keyed by the live napari layer object
     identity (``id(layer)``) and stores a ``LayerBinding`` value describing
-    what that layer means from Harpy's perspective.
+    what that layer means from Spatiato's perspective.
 
     In other words, it maps:
 
     - a concrete napari layer object
-    - to the corresponding ``SpatialData`` element identity and Harpy-specific
+    - to the corresponding ``SpatialData`` element identity and Spatiato-specific
       binding metadata for that layer
 
     That metadata includes the shared element identity:
@@ -515,7 +515,7 @@ class LayerBindingRegistry:
     - ``element_type``
     - ``coordinate_system``
 
-    and also the layer-type-specific semantics that Harpy needs for lookup and
+    and also the layer-type-specific semantics that Spatiato needs for lookup and
     viewer behavior, for example:
 
     - labels-layer role such as ``primary`` or ``styled``
@@ -525,7 +525,7 @@ class LayerBindingRegistry:
     - shapes-layer role such as ``primary`` or ``styled``
     - styled-shapes layer metadata via ``style_spec``
 
-    The registry is Harpy's source of truth for answering questions such as:
+    The registry is Spatiato's source of truth for answering questions such as:
 
     - which napari layer represents a given labels element
     - what styling / role metadata is attached to a given labels layer
@@ -533,7 +533,7 @@ class LayerBindingRegistry:
     - whether an image is shown in stack mode or overlay mode
     - which overlay layer corresponds to which image channel
 
-    This keeps Harpy's layer lookup logic in one central place instead of
+    This keeps Spatiato's layer lookup logic in one central place instead of
     relying on napari layer metadata as the primary contract.
     """
 
@@ -734,15 +734,15 @@ class LayerBindingRegistry:
 
 
 class ViewerAdapter(QObject):
-    """Harpy-owned service for viewer-facing layer lookup and activation.
+    """Spatiato-owned service for viewer-facing layer lookup and activation.
 
-    The adapter wraps a napari viewer and provides the Harpy-level operations
+    The adapter wraps a napari viewer and provides the Spatiato-level operations
     that care about what loaded layers *mean* in terms of `SpatialData`
     elements.
 
     It is responsible for tasks such as:
 
-    - registering and unregistering Harpy-managed layer bindings
+    - registering and unregistering Spatiato-managed layer bindings
     - resolving which loaded napari layer corresponds to a labels element
     - resolving which loaded napari layers correspond to an image element
     - activating a requested layer in the viewer
@@ -754,7 +754,7 @@ class ViewerAdapter(QObject):
     Primary Labels presentation
     ---------------------------
     A primary Labels layer is a shared presentation surface used by multiple
-    napari-harpy workflows. It has no persistent styling owner or styling
+    spatiato workflows. It has no persistent styling owner or styling
     history. Each accepted styling operation updates the same live layer, and
     the most recently applied style is therefore the visible style.
 
@@ -789,7 +789,7 @@ class ViewerAdapter(QObject):
     # Used by consumers that depend on the annotation-capable labels-layer
     # lifecycle, including Object Classification and Spatial Query.
     primary_labels_layers_changed = Signal()
-    # Emitted after a primary shapes layer has a Harpy binding while loaded in
+    # Emitted after a primary shapes layer has a Spatiato binding while loaded in
     # the viewer. Consumers can rely on the binding registry being ready.
     primary_shapes_layer_registered = Signal(object)
     # Emitted when the set/order of live, usable image bindings changes.
@@ -828,9 +828,9 @@ class ViewerAdapter(QObject):
         """Register a labels layer in the shared binding registry.
 
         For primary labels layers, registration itself may be the moment when a
-        live napari layer becomes Harpy-usable. This happens on the normal
+        live napari layer becomes Spatiato-usable. This happens on the normal
         ``insert -> register`` path used by ``ensure_labels_loaded(...)`` and
-        also when Harpy discovers a pre-existing viewer layer and binds it
+        also when Spatiato discovers a pre-existing viewer layer and binds it
         later. Emit ``primary_labels_layers_changed`` here when the layer is
         already present in the viewer so those flows do not depend on the
         viewer's ``inserted`` event having seen a binding already.
@@ -945,7 +945,7 @@ class ViewerAdapter(QObject):
         return binding
 
     def apply_primary_shapes_layer_style(self, layer: Shapes) -> None:
-        """Apply Harpy's editable primary shapes presentation to one layer."""
+        """Apply Spatiato's editable primary shapes presentation to one layer."""
         _apply_primary_shapes_layer_style(layer)
 
     def normalize_native_shapes_layer_for_annotation(
@@ -954,8 +954,8 @@ class ViewerAdapter(QObject):
         *,
         source_shapes_index_feature_name: str,
     ) -> Shapes:
-        """Replace a native napari Shapes layer with Harpy's status-aware layer."""
-        if isinstance(layer, _HarpyShapes):
+        """Replace a native napari Shapes layer with Spatiato's status-aware layer."""
+        if isinstance(layer, _SpatiatoShapes):
             layer._source_shapes_index_feature_name = source_shapes_index_feature_name
             return layer
 
@@ -963,7 +963,7 @@ class ViewerAdapter(QObject):
             raise ValueError("Cannot normalize a Shapes layer that is not loaded in the viewer.")
 
         _normalize_native_shapes_layer_transform(layer)
-        replacement = _build_harpy_shapes_layer_from_native_layer(
+        replacement = _build_spatiato_shapes_layer_from_native_layer(
             layer,
             source_shapes_index_feature_name=source_shapes_index_feature_name,
         )
@@ -1028,7 +1028,7 @@ class ViewerAdapter(QObject):
     def _on_viewer_layer_inserted(self, event: Any) -> None:
         """React to viewer-layer insertion when binding already exists.
 
-        In the current built-in loading paths, Harpy usually adds the napari
+        In the current built-in loading paths, Spatiato usually adds the napari
         layer to the viewer first and registers it second, so this handler is
         not the main signal path for primary labels or usable image
         availability. Keep it so the adapter still behaves correctly for
@@ -1046,7 +1046,7 @@ class ViewerAdapter(QObject):
             self.image_layers_changed.emit()
 
     def _on_viewer_layer_removed(self, event: Any) -> None:
-        """Unregister Harpy-managed layers when they disappear from the viewer."""
+        """Unregister Spatiato-managed layers when they disappear from the viewer."""
         layer = getattr(event, "value", None)
         if not isinstance(layer, Layer):
             logger.warning("Ignoring viewer layer removal event without a napari Layer payload.")
@@ -1057,7 +1057,7 @@ class ViewerAdapter(QObject):
         removed_binding = self.unregister_layer(layer)
         if removed_binding is None:
             logger.warning(
-                "Removed napari layer `%s` had no matching Harpy layer binding.", getattr(layer, "name", layer)
+                "Removed napari layer `%s` had no matching Spatiato layer binding.", getattr(layer, "name", layer)
             )
         if had_primary_labels_semantics:
             self.primary_labels_layers_changed.emit()
@@ -1712,7 +1712,7 @@ class ViewerAdapter(QObject):
         if existing_layer is not None:
             binding = self._layer_bindings.get_binding(existing_layer)
             if not isinstance(binding, ShapesLayerBinding):
-                raise ValueError("Loaded shapes layer is missing its Harpy shapes binding.")
+                raise ValueError("Loaded shapes layer is missing its Spatiato shapes binding.")
             return ShapesLoadResult(
                 layer=existing_layer,
                 created=False,
@@ -1744,8 +1744,8 @@ class ViewerAdapter(QObject):
                 skipped_geometry_count=built_layer.skipped_geometry_count,
             )
         except Exception:
-            # The layer is already visible in napari. Remove it so failed Harpy
-            # registration does not leave an unbound Harpy-created layer for the
+            # The layer is already visible in napari. Remove it so failed Spatiato
+            # registration does not leave an unbound Spatiato-created layer for the
             # Annotation widget's native-layer adoption listener to react to.
             _remove_layer_after_failed_registration(self._viewer, layer)
             raise
@@ -1851,8 +1851,8 @@ class ViewerAdapter(QObject):
                 source_shapes_index_feature_name=source_shapes_index_feature_name,
             )
         except Exception:
-            # The layer is already visible in napari. Remove it so failed Harpy
-            # registration does not leave an unbound Harpy-created layer for the
+            # The layer is already visible in napari. Remove it so failed Spatiato
+            # registration does not leave an unbound Spatiato-created layer for the
             # Annotation widget's native-layer adoption listener to react to.
             _remove_layer_after_failed_registration(self._viewer, layer)
             raise
@@ -1899,8 +1899,8 @@ class ViewerAdapter(QObject):
                     skipped_geometry_count=built_layer.skipped_geometry_count,
                 )
             except Exception:
-                # The layer is already visible in napari. Remove it so failed Harpy
-                # registration does not leave an unbound Harpy-created layer for the
+                # The layer is already visible in napari. Remove it so failed Spatiato
+                # registration does not leave an unbound Spatiato-created layer for the
                 # Annotation widget's native-layer adoption listener to react to.
                 _remove_layer_after_failed_registration(self._viewer, layer)
                 raise
@@ -1908,7 +1908,7 @@ class ViewerAdapter(QObject):
             layer = existing_layer
             binding = self._layer_bindings.get_binding(layer)
             if not isinstance(binding, ShapesLayerBinding):
-                raise ValueError("Styled shapes layer is missing its Harpy shapes binding.")
+                raise ValueError("Styled shapes layer is missing its Spatiato shapes binding.")
 
         layer.name = build_styled_shapes_layer_name(shapes_name, style_spec)
         if isinstance(style_spec, ShapeColumnColorSourceSpec):
@@ -2046,7 +2046,7 @@ class ViewerAdapter(QObject):
         sdata: SpatialData | None,
         coordinate_system: str | None,
     ) -> list[LayerBinding]:
-        """Remove Harpy-managed layers that do not belong to the active coordinate system."""
+        """Remove Spatiato-managed layers that do not belong to the active coordinate system."""
         removed_bindings: list[LayerBinding] = []
         for binding in self._layer_bindings.iter_bindings():
             if sdata is not None and binding.sdata_id != id(sdata):
@@ -2059,7 +2059,7 @@ class ViewerAdapter(QObject):
         return removed_bindings
 
     def remove_layers_for_sdata(self, sdata: SpatialData | None) -> list[LayerBinding]:
-        """Remove all Harpy-managed layers for one SpatialData object."""
+        """Remove all Spatiato-managed layers for one SpatialData object."""
         if sdata is None:
             return []
 
@@ -2295,7 +2295,7 @@ def _remove_layer_after_failed_registration(viewer: Any | None, layer: Layer) ->
     try:
         _remove_layer_from_viewer(viewer, layer)
     except (AttributeError, RuntimeError, TypeError, ValueError):  # pragma: no cover - defensive cleanup fallback
-        logger.debug("Could not remove napari layer after Harpy registration failed.", exc_info=True)
+        logger.debug("Could not remove napari layer after Spatiato registration failed.", exc_info=True)
 
 
 def _get_stack_image_layer_data(element: DataArray | DataTree) -> tuple[DataArray | list[DataArray], bool]:
@@ -2465,7 +2465,7 @@ def _build_shapes_layer(
     transformed_shapes = transform_spatial_element(shapes_element, to_coordinate_system=coordinate_system)
     point_radius_inputs = _prepare_napari_point_radius_shapes_layer_inputs(transformed_shapes)
     if point_radius_inputs is not None:
-        layer = _HarpyPointRadiusShapes(
+        layer = _SpatiatoPointRadiusShapes(
             point_radius_inputs.coordinates,
             ndim=2,
             name=name,
@@ -2499,7 +2499,7 @@ def _build_shapes_layer(
         )
 
     ensure_shapes_triangulation_backend()
-    layer = _HarpyShapes(
+    layer = _SpatiatoShapes(
         napari_layer_inputs.data,
         name=name,
         shape_type=napari_layer_inputs.shape_types,
@@ -2523,9 +2523,9 @@ def _build_empty_primary_shapes_layer(
     *,
     name: str,
     source_shapes_index_feature_name: str = DEFAULT_SHAPES_INDEX_FEATURE_NAME,
-) -> _HarpyShapes:
+) -> _SpatiatoShapes:
     ensure_shapes_triangulation_backend()
-    layer = _HarpyShapes(
+    layer = _SpatiatoShapes(
         [],
         ndim=2,
         name=name,
@@ -2555,11 +2555,11 @@ def _normalize_native_shapes_layer_transform(layer: Shapes) -> None:
         layer.data = baked_data
 
 
-def _build_harpy_shapes_layer_from_native_layer(
+def _build_spatiato_shapes_layer_from_native_layer(
     layer: Shapes,
     *,
     source_shapes_index_feature_name: str,
-) -> _HarpyShapes:
+) -> _SpatiatoShapes:
     data = [np.asarray(vertices, dtype=float).copy() for vertices in layer.data]
     shape_type = [str(shape_type) for shape_type in layer.shape_type]
     features = layer.features.copy(deep=True)
@@ -2578,7 +2578,7 @@ def _build_harpy_shapes_layer_from_native_layer(
         kwargs["shape_type"] = shape_type
 
     ensure_shapes_triangulation_backend()
-    replacement = _HarpyShapes(data, **kwargs)
+    replacement = _SpatiatoShapes(data, **kwargs)
     _apply_primary_shapes_layer_style(replacement)
     replacement.opacity = layer.opacity
     replacement.blending = layer.blending

@@ -13,13 +13,13 @@ from napari.layers import Shapes
 from napari.layers.shapes._shapes_constants import Mode
 from shapely.geometry import Polygon
 
-import napari_harpy.widgets.shapes_annotation._create_holes as create_holes_module
-from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
-from napari_harpy.core.shapes_geometry import (
+import spatiato.widgets.shapes_annotation._create_holes as create_holes_module
+from spatiato._shapes_triangulation import configure_shapes_triangulation_backend
+from spatiato.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
-from napari_harpy.viewer.shapes_styling import apply_primary_shapes_layer_style
+from spatiato.viewer.shapes_styling import apply_primary_shapes_layer_style
 
 
 def _copy_layer_data(layer: object) -> list[np.ndarray]:
@@ -304,19 +304,19 @@ def test_apply_create_holes_plan_rejects_invalid_plan_before_mutation() -> None:
 
 
 class TestCreateHolesTriangulationFailure:
-    """Characterize the Bermuda failure and specify Harpy's rollback contract.
+    """Characterize the Bermuda failure and specify Spatiato's rollback contract.
 
     The checked-in fixture is the exact 570-by-2 ``float32`` napari polygon
     path captured from the failed ``Create holes`` operation. Its exterior and
     two holes render independently with Bermuda 0.1.7, but their valid combined
     hole encoding causes Bermuda's face triangulator to panic. Napari converts
     that panic into ``RuntimeError`` after replacing the live layer's private
-    shape view, which would leave the annotation layer empty without Harpy's
+    shape view, which would leave the annotation layer empty without Spatiato's
     transaction rollback.
 
     The first test retains the real upstream reproducer while Bermuda is
     affected. The second test injects the same failure boundary only for the
-    combined candidate, so Harpy's full-layer rollback remains covered after
+    combined candidate, so Spatiato's full-layer rollback remains covered after
     Bermuda fixes this particular input. Both verify that the Create-holes
     transaction consumes the application error after restoring every captured
     layer property.

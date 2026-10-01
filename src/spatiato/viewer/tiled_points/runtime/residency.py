@@ -7,7 +7,7 @@ from collections.abc import Iterable
 
 from loguru import logger
 
-from napari_harpy.viewer.tiled_points.contracts import TiledPointsRenderTile, TileResidencyKey
+from spatiato.viewer.tiled_points.contracts import TiledPointsRenderTile, TileResidencyKey
 
 
 class _CpuTileResidency:

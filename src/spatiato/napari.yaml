@@ -1,41 +1,41 @@
-name: napari-harpy
-display_name: napari-harpy
+name: spatiato
+display_name: spatiato
 schema_version: 0.1.0
 categories:
   - Annotation
 contributions:
   commands:
-    - id: napari-harpy.read_spatialdata_store
-      title: Read SpatialData zarr store into Harpy state
-      python_name: napari_harpy._reader:get_reader
-    - id: napari-harpy.viewer
+    - id: spatiato.read_spatialdata_store
+      title: Read SpatialData zarr store into Spatiato state
+      python_name: spatiato._reader:get_reader
+    - id: spatiato.viewer
       title: Open viewer widget
-      python_name: napari_harpy.widgets.viewer.widget:ViewerWidget
-    - id: napari-harpy.feature_extraction
+      python_name: spatiato.widgets.viewer.widget:ViewerWidget
+    - id: spatiato.feature_extraction
       title: Open feature extraction widget
-      python_name: napari_harpy.widgets.feature_extraction.widget:FeatureExtractionWidget
-    - id: napari-harpy.histogram
+      python_name: spatiato.widgets.feature_extraction.widget:FeatureExtractionWidget
+    - id: spatiato.histogram
       title: Open image histogram widget
-      python_name: napari_harpy.widgets.histogram.widget:HistogramWidget
-    - id: napari-harpy.object_classification
+      python_name: spatiato.widgets.histogram.widget:HistogramWidget
+    - id: spatiato.object_classification
       title: Open object classification widget
-      python_name: napari_harpy.widgets.object_classification.widget:ObjectClassificationWidget
-    - id: napari-harpy.shapes_annotation
+      python_name: spatiato.widgets.object_classification.widget:ObjectClassificationWidget
+    - id: spatiato.shapes_annotation
       title: Open annotation widget
-      python_name: napari_harpy.widgets.annotation.widget:AnnotationWidget
+      python_name: spatiato.widgets.annotation.widget:AnnotationWidget
   widgets:
-    - command: napari-harpy.viewer
+    - command: spatiato.viewer
       display_name: Viewer
-    - command: napari-harpy.feature_extraction
+    - command: spatiato.feature_extraction
       display_name: Feature Extraction
-    - command: napari-harpy.histogram
+    - command: spatiato.histogram
       display_name: Image Histogram
-    - command: napari-harpy.object_classification
+    - command: spatiato.object_classification
       display_name: Object Classification
-    - command: napari-harpy.shapes_annotation
+    - command: spatiato.shapes_annotation
       display_name: Annotation
   readers:
-    - command: napari-harpy.read_spatialdata_store
+    - command: spatiato.read_spatialdata_store
       filename_patterns:
         - '*.zarr'
       accepts_directories: true

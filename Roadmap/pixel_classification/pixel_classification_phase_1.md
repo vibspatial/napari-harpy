@@ -159,7 +159,7 @@ Prediction and save UX:
 Add a separate pixel-classification package instead of mixing this into object classification.
 
 ```text
-src/napari_harpy/core/pixel_classification/
+src/spatiato/core/pixel_classification/
   __init__.py
   cache_store.py
   classifier.py
@@ -169,7 +169,7 @@ src/napari_harpy/core/pixel_classification/
   prediction.py
   projection.py
 
-src/napari_harpy/widgets/pixel_classification/
+src/spatiato/widgets/pixel_classification/
   __init__.py
   annotation_controller.py
   controller.py
@@ -179,15 +179,15 @@ src/napari_harpy/widgets/pixel_classification/
 
 Register the new widget in:
 
-- `src/napari_harpy/napari.yaml`;
-- `src/napari_harpy/widgets/__init__.py`;
-- `src/napari_harpy/_interactive.py`.
+- `src/spatiato/napari.yaml`;
+- `src/spatiato/widgets/__init__.py`;
+- `src/spatiato/_interactive.py`.
 
 The core package should be importable without Qt and should contain the testable data/model/cache logic. The widget
 package should own napari layers, Qt controls, thread workers, and user-facing state.
 
 Do not add `spatialdata_io.py` or a central `types.py` by default. The repository already has shared SpatialData
-helpers in `src/napari_harpy/core/spatialdata.py`, plus validation helpers in `src/napari_harpy/core/validation.py`.
+helpers in `src/spatiato/core/spatialdata.py`, plus validation helpers in `src/spatiato/core/validation.py`.
 Phase 1 should extend and reuse those shared modules for generic SpatialData concerns instead of introducing a
 parallel pixel-classification-specific I/O layer. Pixel-specific dataclasses should live beside the behavior that owns
 them, following existing patterns such as `core/histogram.py`, `core/classifier.py`, and
@@ -402,27 +402,27 @@ entry point that later slices can fill in without changing public names.
 Files to add:
 
 ```text
-src/napari_harpy/core/pixel_classification/__init__.py
-src/napari_harpy/widgets/pixel_classification/__init__.py
-src/napari_harpy/widgets/pixel_classification/controller.py
-src/napari_harpy/widgets/pixel_classification/status_card.py
-src/napari_harpy/widgets/pixel_classification/widget.py
+src/spatiato/core/pixel_classification/__init__.py
+src/spatiato/widgets/pixel_classification/__init__.py
+src/spatiato/widgets/pixel_classification/controller.py
+src/spatiato/widgets/pixel_classification/status_card.py
+src/spatiato/widgets/pixel_classification/widget.py
 tests/test_pixel_classification_widget.py
 ```
 
 Files to update:
 
 ```text
-src/napari_harpy/napari.yaml
-src/napari_harpy/widgets/__init__.py
-src/napari_harpy/_interactive.py
+src/spatiato/napari.yaml
+src/spatiato/widgets/__init__.py
+src/spatiato/_interactive.py
 tests/test_package.py
 tests/test_app_state.py
 ```
 
 Core package requirements:
 
-- `napari_harpy.core.pixel_classification` exists and imports without importing Qt, napari, torch, or torchvision;
+- `spatiato.core.pixel_classification` exists and imports without importing Qt, napari, torch, or torchvision;
 - `__init__.py` should stay minimal, with no eager imports of heavy or optional dependencies;
 - no placeholder feature/cache/classifier modules should be added in Slice 1 unless they are needed by the widget shell.
 
@@ -452,9 +452,9 @@ Controller/status requirements:
 
 Napari manifest registration:
 
-- add command id `napari-harpy.pixel_classification`;
+- add command id `spatiato.pixel_classification`;
 - command title should be `Open pixel classification widget`;
-- `python_name` should be `napari_harpy.widgets.pixel_classification.widget:PixelClassificationWidget`;
+- `python_name` should be `spatiato.widgets.pixel_classification.widget:PixelClassificationWidget`;
 - add a widget contribution with display name `Pixel Classification`;
 - keep existing widget display names unchanged.
 
@@ -463,7 +463,7 @@ Lazy widget export:
 - add `PixelClassificationWidget` to the `TYPE_CHECKING` block in `widgets/__init__.py`;
 - add `"pixel_classification.widget": ["PixelClassificationWidget"]` to the lazy loader mapping;
 - add `"PixelClassificationWidget"` to `__all__`;
-- importing `napari_harpy.widgets` should not import the pixel widget module until the attribute is requested.
+- importing `spatiato.widgets` should not import the pixel widget module until the attribute is requested.
 
 Interactive launcher registration:
 
@@ -471,25 +471,25 @@ Interactive launcher registration:
 - add `"pixel_classification": "Pixel Classification"` to `_WIDGET_NAMES`;
 - add `"pixel_classification"` to `_ALL_WIDGET_IDS`;
 - update the `Interactive` docstring so the valid widget list includes `pixel_classification`;
-- `Interactive(..., widgets="pixel_classification")` should dock only `("napari-harpy", "Pixel Classification", True)`;
+- `Interactive(..., widgets="pixel_classification")` should dock only `("spatiato", "Pixel Classification", True)`;
 - `Interactive(..., widgets="all")` should include the new widget exactly once.
 
 Slice 1 tests:
 
 - `tests/test_package.py`: assert the napari manifest contributes the `Pixel Classification` widget and command;
-- `tests/test_package.py`: assert lazy import exposes `PixelClassificationWidget` from `napari_harpy.widgets`;
+- `tests/test_package.py`: assert lazy import exposes `PixelClassificationWidget` from `spatiato.widgets`;
 - `tests/test_app_state.py`: assert `Interactive(..., widgets="pixel_classification")` docks the new widget;
 - `tests/test_app_state.py`: update the `"all"` expected dock list to include `Pixel Classification`;
 - `tests/test_pixel_classification_widget.py`: instantiate `PixelClassificationWidget()` and with a viewer, assert object
   name and shared app-state binding;
-- add or extend an import hygiene test so importing `napari_harpy.core.pixel_classification` does not import
+- add or extend an import hygiene test so importing `spatiato.core.pixel_classification` does not import
   `torch`, `torchvision`, `napari`, or Qt bindings.
 
 Acceptance criteria:
 
 - the widget appears in the napari manifest;
 - `Interactive(..., widgets=("pixel_classification",))` can open it;
-- importing `napari_harpy.core.pixel_classification` does not import Qt, napari, torch, or torchvision.
+- importing `spatiato.core.pixel_classification` does not import Qt, napari, torch, or torchvision.
 
 2. Source resolution and target-card UX
 

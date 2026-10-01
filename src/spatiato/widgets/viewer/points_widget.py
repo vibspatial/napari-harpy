@@ -16,8 +16,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._points_value_index import DEFAULT_RENDER_POINT_BUDGET
-from napari_harpy.widgets.shared_styles import (
+from spatiato._points_value_index import DEFAULT_RENDER_POINT_BUDGET
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
@@ -35,13 +35,13 @@ from napari_harpy.widgets.shared_styles import (
 )
 
 if TYPE_CHECKING:
-    from napari_harpy.widgets.viewer.points_controller import PointsController, PointsValueSource
-    from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
+    from spatiato.widgets.viewer.points_controller import PointsController, PointsValueSource
+    from spatiato.widgets.viewer.tiled_points_controller import TiledPointsController
 
 POINTS_RENDER_BUDGET_MIN = 1_000
 POINTS_RENDER_BUDGET_MAX = 100_000_000
 _DETAIL_PANEL_STYLESHEET = (
-    "QFrame[harpyViewerDetailPanel='true'] {"
+    "QFrame[spatiatoViewerDetailPanel='true'] {"
     f"background-color: {WIDGET_PANEL_COLOR}; "
     f"border: 1px solid {WIDGET_BORDER_COLOR}; "
     "border-radius: 8px;}"
@@ -85,7 +85,7 @@ class PointsValueWidget(QFrame):
         self._selected_values: list[str] = []
         self._value_selection_warning: str | None = None
         self.setObjectName("viewer_widget_points_value_widget")
-        self.setProperty("harpyViewerDetailPanel", True)
+        self.setProperty("spatiatoViewerDetailPanel", True)
         self.setStyleSheet(_DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)

@@ -12,10 +12,10 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy.viewer.adapter import ImageLayerBinding
-from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS
-from napari_harpy.widgets.overlay_color_button import OverlayColorButton
-from napari_harpy.widgets.shared_styles import (
+from spatiato.viewer.adapter import ImageLayerBinding
+from spatiato.viewer.image_styling import DEFAULT_OVERLAY_COLORS
+from spatiato.widgets.overlay_color_button import OverlayColorButton
+from spatiato.widgets.shared_styles import (
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_MUTED_COLOR,
     WIDGET_TEXT_COLOR,

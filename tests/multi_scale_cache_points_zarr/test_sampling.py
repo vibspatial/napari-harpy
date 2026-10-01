@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.sampling as sampling_module
-from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
+import spatiato.core.multi_scale_cache_points_zarr.sampling as sampling_module
+from spatiato.core.multi_scale_cache_points_zarr.sampling import (
     SAMPLED_TILE_MICROGRID_EDGE,
     SAMPLING_METHOD,
     SAMPLING_SEED,
@@ -21,7 +21,7 @@ def test_sampling_priorities_have_fixed_vectors() -> None:
     candidate_cell_id = np.array([0, 1, 255, 17], dtype=np.int64)
     cell_id = np.array([0, 1, 17, 255], dtype=np.uint64)
 
-    assert SAMPLING_METHOD == "harpy-value-neutral-stratified-splitmix64-v1"
+    assert SAMPLING_METHOD == "spatiato-value-neutral-stratified-splitmix64-v1"
     assert SAMPLING_SEED == 0
     assert SAMPLED_TILE_MICROGRID_EDGE == 16
     assert _point_priorities(point_id, candidate_cell_id, level=1, tile_x=2, tile_y=3).tolist() == [

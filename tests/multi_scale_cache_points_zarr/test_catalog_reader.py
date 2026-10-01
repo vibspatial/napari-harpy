@@ -6,12 +6,12 @@ import pytest
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
 
 CatalogExactFixture = Any
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"

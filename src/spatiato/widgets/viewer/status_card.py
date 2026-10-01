@@ -4,17 +4,17 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
+from spatiato.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 if TYPE_CHECKING:
-    from napari_harpy.core._color_source import TableColorSourceSpec
-    from napari_harpy.viewer.image_styling import ImageLoadResult
-    from napari_harpy.viewer.labels_styling import LabelsLoadResult
-    from napari_harpy.viewer.points_styling import PointsLoadResult
-    from napari_harpy.viewer.shapes_styling import ShapesLoadResult
-    from napari_harpy.widgets.viewer.labels_widget import LabelsLoadRequest
-    from napari_harpy.widgets.viewer.points_controller import PointsLoadRequest
-    from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
+    from spatiato.core._color_source import TableColorSourceSpec
+    from spatiato.viewer.image_styling import ImageLoadResult
+    from spatiato.viewer.labels_styling import LabelsLoadResult
+    from spatiato.viewer.points_styling import PointsLoadResult
+    from spatiato.viewer.shapes_styling import ShapesLoadResult
+    from spatiato.widgets.viewer.labels_widget import LabelsLoadRequest
+    from spatiato.widgets.viewer.points_controller import PointsLoadRequest
+    from spatiato.widgets.viewer.shapes_widget import ShapesLoadRequest
 
 
 @dataclass(frozen=True)
@@ -288,7 +288,7 @@ def _append_palette_status_lines(
         lines.append("Used the stored categorical palette.")
         return "success"
     if result.palette_source == "default_invalid":
-        lines.append("The stored categorical palette was invalid, so Harpy used the default categorical palette.")
+        lines.append("The stored categorical palette was invalid, so Spatiato used the default categorical palette.")
         return "warning"
     if result.palette_source == "default_missing":
         lines.append("Used the default categorical palette because no stored palette was present.")

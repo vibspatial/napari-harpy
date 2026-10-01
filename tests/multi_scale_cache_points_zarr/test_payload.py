@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
 
 
 def _payload() -> _PointPayload:

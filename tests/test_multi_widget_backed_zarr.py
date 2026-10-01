@@ -12,16 +12,16 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import QCheckBox
 from spatialdata import SpatialData, read_zarr
 
-import napari_harpy.widgets.object_classification.controller as classifier_module
-import napari_harpy.widgets.persistence.controls as persistence_controls_module
-from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
-from napari_harpy.core.feature_matrix_metadata import register_feature_matrix_metadata
-from napari_harpy.core.object_classification.annotation import (
+import spatiato.widgets.object_classification.controller as classifier_module
+import spatiato.widgets.persistence.controls as persistence_controls_module
+from spatiato._app_state import TableStateChangedEvent, get_or_create_app_state
+from spatiato.core.feature_matrix_metadata import register_feature_matrix_metadata
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
-from napari_harpy.core.persistence import TableComponentPath, write_table_components
-from napari_harpy.core.spatial_query import (
+from spatiato.core.persistence import TableComponentPath, write_table_components
+from spatiato.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     CanonicalCacheState,
@@ -31,14 +31,14 @@ from napari_harpy.core.spatial_query import (
     inspect_canonical_cache,
     read_canonical_centers_from_cache,
 )
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
-from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
-from napari_harpy.widgets.feature_extraction.controller import FeatureExtractionResult
-from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
-from napari_harpy.widgets.object_classification.controller import CLASSIFIER_CONFIG_KEY
-from napari_harpy.widgets.object_classification.widget import ObjectClassificationWidget
-from napari_harpy.widgets.spatial_query.widget import SpatialQuery
-from napari_harpy.widgets.viewer.widget import ViewerWidget
+from spatiato.viewer._styling import MISSING_CATEGORICAL_COLOR
+from spatiato.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
+from spatiato.widgets.feature_extraction.controller import FeatureExtractionResult
+from spatiato.widgets.feature_extraction.widget import FeatureExtractionWidget
+from spatiato.widgets.object_classification.controller import CLASSIFIER_CONFIG_KEY
+from spatiato.widgets.object_classification.widget import ObjectClassificationWidget
+from spatiato.widgets.spatial_query.widget import SpatialQuery
+from spatiato.widgets.viewer.widget import ViewerWidget
 
 
 class _EventEmitter:

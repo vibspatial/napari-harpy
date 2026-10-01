@@ -8,12 +8,12 @@ import numpy as np
 import pytest
 from qtpy.QtWidgets import QDockWidget
 
-from napari_harpy.viewer.tiled_points import (
+from spatiato.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
     TiledPointsLayerStatus,
 )
-from napari_harpy.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
+from spatiato.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
 
 
 @pytest.fixture

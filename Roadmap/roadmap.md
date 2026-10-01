@@ -1,8 +1,8 @@
-# napari-harpy Roadmap
+# spatiato Roadmap
 
 ## Current Status
 
-`napari-harpy` now has a working MVP for interactive object classification on `SpatialData`
+`spatiato` now has a working MVP for interactive object classification on `SpatialData`
 datasets loaded through `napari-spatialdata`.
 
 Current workflow in the repository:
@@ -59,8 +59,8 @@ Status: complete.
 
 Implemented:
 
-- installable `src/napari_harpy` package
-- npe2 manifest in `src/napari_harpy/napari.yaml`
+- installable `src/spatiato` package
+- npe2 manifest in `src/spatiato/napari.yaml`
 - dock widget discoverable from napari
 - local development notes and debug workflow in `README.md` and `scripts/debug_widget.py`
 

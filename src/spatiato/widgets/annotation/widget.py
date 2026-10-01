@@ -9,20 +9,20 @@ from qtpy.QtCore import QSignalBlocker, Qt, Signal
 from qtpy.QtWidgets import QFormLayout, QFrame, QScrollArea, QVBoxLayout, QWidget
 from spatialdata.transformations import get_transformation
 
-from napari_harpy._app_state import (
+from spatiato._app_state import (
     CoordinateSystemChangedEvent,
     CoordinateSystemChangeRequest,
-    HarpyAppState,
+    SpatiatoAppState,
     get_or_create_app_state,
 )
-from napari_harpy.core.shapes_annotation import validate_existing_shapes_source_geodataframe
-from napari_harpy.core.spatialdata import (
+from spatiato.core.shapes_annotation import validate_existing_shapes_source_geodataframe
+from spatiato.core.spatialdata import (
     get_coordinate_system_names_from_sdata,
     get_spatialdata_shapes_options_for_coordinate_system_from_sdata,
 )
-from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
-from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
+from spatiato.widgets.shapes_annotation.widget import ShapesAnnotation
+from spatiato.widgets.shared_styles import (
     WIDGET_MIN_WIDTH,
     CompactComboBox,
     apply_scroll_content_surface,
@@ -33,7 +33,7 @@ from napari_harpy.widgets.shared_styles import (
     format_feedback_identifier,
     format_tooltip,
 )
-from napari_harpy.widgets.spatial_query.widget import SpatialQuery
+from spatiato.widgets.spatial_query.widget import SpatialQuery
 
 if TYPE_CHECKING:
     import napari
@@ -202,8 +202,8 @@ class AnnotationWidget(QWidget):
         )
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared per-viewer Harpy app state."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared per-viewer Spatiato app state."""
         return self._app_state
 
     @property
@@ -268,7 +268,7 @@ class AnnotationWidget(QWidget):
 
         Viewer, Object Classification, and other widgets share this app state.
         Unsaved polygon edits still exist only in the Shapes child's editable
-        napari layer, so the parent must reject the change before Harpy removes
+        napari layer, so the parent must reject the change before Spatiato removes
         old-coordinate-system layers when the user cancels discard.
         """
         del request

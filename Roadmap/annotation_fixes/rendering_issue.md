@@ -400,7 +400,7 @@ Recommended Slice 1 test flow:
 
 1. Set napari settings/runtime state to an unsafe backend such as
    `Fastest available`.
-2. Import or reload `napari_harpy`.
+2. Import or reload `spatiato`.
 3. Assert importing Harpy switched settings and runtime triangulation to
    `Numba`.
 4. Construct a plain napari `Shapes` layer from
@@ -473,12 +473,12 @@ state alone.
 
 Harpy encoding:
 
-- `src/napari_harpy/core/shapes_geometry.py`
+- `src/spatiato/core/shapes_geometry.py`
 - `shapely_polygon_to_napari_polygon_vertices(...)`
 
 Harpy adapter:
 
-- `src/napari_harpy/viewer/adapter.py`
+- `src/spatiato/viewer/adapter.py`
 - `_prepare_napari_shapes_layer_inputs(...)`
 - `_shapely_polygon_to_napari_polygon_vertices(...)`
 
@@ -589,22 +589,22 @@ def _ensure_harpy_shapes_triangulation_backend() -> None:
 
 Current code state after rollback:
 
-- `src/napari_harpy/__init__.py` currently only resolves `__version__` and
+- `src/spatiato/__init__.py` currently only resolves `__version__` and
   installs lazy module attributes through `lazy_loader`.
-- There is no triangulation helper in `src/napari_harpy`.
+- There is no triangulation helper in `src/spatiato`.
 - `viewer/adapter.py` and the annotation widget do not currently set napari's
   triangulation backend.
 
 Slice 1 should be deliberately minimal: set Harpy's Shapes triangulation policy
-as soon as `napari_harpy` is imported, then verify that a Shapes layer created
+as soon as `spatiato` is imported, then verify that a Shapes layer created
 after that import uses the Numba/VisPy path for the `__annotation_1`-like
 fixture.
 
 Implementation specification:
 
-1. Add a small private helper in `src/napari_harpy/__init__.py`, or in a tiny
+1. Add a small private helper in `src/spatiato/__init__.py`, or in a tiny
    internal module imported by `__init__.py`, that applies the backend policy.
-2. Call that helper during `napari_harpy` package import.
+2. Call that helper during `spatiato` package import.
 3. If either napari settings or runtime backend is unsafe
    (`Fastest available` or `bermuda`), set
    `settings.experimental.triangulation_backend` to
@@ -614,7 +614,7 @@ Implementation specification:
 5. Do not reconstruct or mutate any existing layers in this slice.
 
 This import-time policy should help both Harpy-managed Shapes and plain napari
-CSV/native Shapes workflows, as long as `napari_harpy` is imported before the
+CSV/native Shapes workflows, as long as `spatiato` is imported before the
 Shapes layer is constructed. If the backend setting is persisted by napari
 settings, it may also help later napari processes, but the unit test should only
 rely on behavior within the current Python process.
@@ -664,11 +664,11 @@ Implement Slice 1 only, then report back before adding broader remesh hooks.
 
 Slice 1 test coverage should verify:
 
-- importing or reloading `napari_harpy` with unsafe napari settings/runtime
+- importing or reloading `spatiato` with unsafe napari settings/runtime
   backend state switches both to `Numba`;
 - the implementation updates napari settings as well as runtime state, not only
   `set_backend(Numba)`;
-- after `import napari_harpy`, constructing a plain napari `Shapes` layer from
+- after `import spatiato`, constructing a plain napari `Shapes` layer from
   `ANNOTATION_1_HOLE_TRIANGULATION_REGRESSION_POLYGON` uses the Numba/VisPy
   mesh path rather than `_set_meshes_compiled_bermuda`;
 - the same fixture triangulates without overdraw when the resulting mesh is
@@ -679,7 +679,7 @@ Slice 1 test coverage should verify:
 Manual verification after Slice 1:
 
 1. Start from unsafe backend state (`Fastest available` / `bermuda`).
-2. Import `napari_harpy`.
+2. Import `spatiato`.
 3. Create or open the `bermuda_hole_regression` Shapes layer only after that
    import.
 4. Confirm `get_backend()` reports `Numba`.

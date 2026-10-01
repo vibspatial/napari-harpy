@@ -17,16 +17,16 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy.viewer.adapter import ImageLayerBinding
-from napari_harpy.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
-from napari_harpy.widgets.image_layer_row import (
+from spatiato.viewer.adapter import ImageLayerBinding
+from spatiato.viewer.image_styling import DEFAULT_OVERLAY_COLORS, ImageDisplayMode
+from spatiato.widgets.image_layer_row import (
     _binding_channel_index,
     _binding_channel_name,
     _ImageLayerRow,
     _normalized_color_or_none,
     _solid_color_from_layer,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CHECKBOX_STYLESHEET,
     COMPLETER_POPUP_STYLESHEET,
@@ -37,7 +37,7 @@ from napari_harpy.widgets.shared_styles import (
     build_input_control_stylesheet,
     format_tooltip,
 )
-from napari_harpy.widgets.viewer.styles import CARD_TITLE_STYLESHEET, DETAIL_PANEL_STYLESHEET, EMPTY_STATE_STYLESHEET
+from spatiato.widgets.viewer.styles import CARD_TITLE_STYLESHEET, DETAIL_PANEL_STYLESHEET, EMPTY_STATE_STYLESHEET
 
 _CHANNEL_WARNING_STYLESHEET = f"color: {WIDGET_WARNING_TEXT_COLOR}; font-weight: 600;"
 _CHANNEL_PANEL_STYLESHEET = "QWidget { background: transparent; }"
@@ -120,7 +120,7 @@ class _ImageCardWidget(QFrame):
             )
 
         self.setObjectName(f"viewer_widget_image_card_{image_name}")
-        self.setProperty("harpyViewerDetailPanel", True)
+        self.setProperty("spatiatoViewerDetailPanel", True)
         self.setStyleSheet(DETAIL_PANEL_STYLESHEET)
 
         layout = QVBoxLayout(self)

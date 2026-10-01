@@ -6,9 +6,9 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from napari_harpy import __version__ as napari_harpy_version
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _PointsCacheBuildPlan
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato import __version__ as spatiato_version
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _PointsCacheBuildPlan
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_STAGING,
     _BuildMetadata,
     _CacheAttributes,
@@ -20,20 +20,20 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _ValueMajorMetadata,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import (
     BUCKET_HASH_METHOD,
     TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
-from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from spatiato.core.multi_scale_cache_points_zarr.sampling import (
     SAMPLED_TILE_MICROGRID_EDGE,
     SAMPLING_METHOD,
     SAMPLING_SEED,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import _normalized_arrow_type
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from spatiato.core.multi_scale_cache_points_zarr.source.signature import _normalized_arrow_type
+from spatiato.core.multi_scale_cache_points_zarr.storage._paths import (
     MANIFEST_GROUP,
     TILE_MAJOR_BUCKET_GLOB,
     TILE_MAJOR_GROUP,
@@ -42,19 +42,19 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
     VALUES_GROUP,
     ZARR_METADATA_FILENAME,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _iter_bucket_range_batches,
     _read_bucket_storage_settings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_writer import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_writer import (
     _CatalogWriter,
     _ValueTilesWriteSummary,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _LevelWriteResult,
     _ZarrWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major import _write_value_major_sidecars
+from spatiato.core.multi_scale_cache_points_zarr.writer.value_major import _write_value_major_sidecars
 
 
 def _write_staged_cache_catalog(
@@ -143,7 +143,7 @@ def _write_staged_cache_catalog(
     )
 
     with TemporaryDirectory(
-        prefix=f"harpy-value-major-{cache_generation_id}-",
+        prefix=f"spatiato-value-major-{cache_generation_id}-",
         dir=temporary_directory_root,
     ) as temporary_directory:
         # Construction-only companion to the persisted ``value_tiles`` rows.
@@ -437,7 +437,7 @@ def _build_cache_attributes(
     return _CacheAttributes(
         cache_generation_id=cache_generation_id,
         publication_state=PUBLICATION_STATE_STAGING,
-        created_by_version=napari_harpy_version,
+        created_by_version=spatiato_version,
         zarr_settings=zarr_settings,
         source=source,
         geometry=geometry,

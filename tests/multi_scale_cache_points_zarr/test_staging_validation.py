@@ -7,24 +7,24 @@ import pytest
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_COMPLETE,
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
     _write_bridge_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.spatial import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
+from spatiato.core.multi_scale_cache_points_zarr.writer.spatial import (
     _SpatialWriterConfig,
     _write_spatial_levels,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.staging_validation import (
     _ManifestBucket,
     _validate_staged_cache,
 )

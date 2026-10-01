@@ -8,17 +8,17 @@ import numpy as np
 from napari._vispy.layers.base import VispyBaseLayer
 from vispy.scene.visuals import Compound
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderBatch,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
 )
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
-from napari_harpy.viewer.tiled_points.render_batch import (
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.render_batch import (
     MAX_EXACT_FLOAT32_INTEGER,
 )
-from napari_harpy.viewer.tiled_points.vispy.visuals import (
+from spatiato.viewer.tiled_points.vispy.visuals import (
     _TiledPointsSnapshotVisualNode,
     _ValuePaletteTexture,
 )

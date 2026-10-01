@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     WIDGET_SUCCESS_COLOR,
     WIDGET_WARNING_TEXT_COLOR,
 )

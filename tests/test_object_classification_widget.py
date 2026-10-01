@@ -20,48 +20,48 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 from spatialdata.transformations import get_transformation
 
-import napari_harpy._app_state as app_state_module
-import napari_harpy.widgets.object_classification.annotation_controller as annotation_module
-import napari_harpy.widgets.object_classification.controller as classifier_module
-import napari_harpy.widgets.object_classification.widget as widget_module
-import napari_harpy.widgets.persistence.controls as persistence_controls_module
-import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
-from napari_harpy.core.class_palette import (
+import spatiato._app_state as app_state_module
+import spatiato.widgets.object_classification.annotation_controller as annotation_module
+import spatiato.widgets.object_classification.controller as classifier_module
+import spatiato.widgets.object_classification.widget as widget_module
+import spatiato.widgets.persistence.controls as persistence_controls_module
+import spatiato.widgets.viewer.widget as viewer_widget_module
+from spatiato._app_state import TableStateChangedEvent, get_or_create_app_state
+from spatiato.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_categorical_colors,
     default_class_colors,
 )
-from napari_harpy.core.feature_matrix_metadata import (
+from spatiato.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
     HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     register_feature_matrix_metadata,
 )
-from napari_harpy.core.object_classification.annotation import (
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
     UserClassStateChange,
 )
-from napari_harpy.core.object_classification.classifier_export import (
+from spatiato.core.object_classification.classifier_export import (
     DEFAULT_CLASSIFIER_EXPORT_SUFFIX,
     read_classifier_export_bundle,
 )
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatialdata import SpatialDataLabelsOption
-from napari_harpy.viewer.labels_colormap import CompactLabelColormap
-from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
-from napari_harpy.widgets.object_classification.controller import (
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatialdata import SpatialDataLabelsOption
+from spatiato.viewer.labels_colormap import CompactLabelColormap
+from spatiato.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
+from spatiato.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.widgets.object_classification.widget import (
-    ObjectClassificationWidget as HarpyWidget,
+from spatiato.widgets.object_classification.widget import (
+    ObjectClassificationWidget,
 )
-from napari_harpy.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
-from napari_harpy.widgets.spatial_query.widget import SpatialQuery
-from napari_harpy.widgets.viewer.widget import ViewerWidget
+from spatiato.widgets.shared_styles import STATUS_CARD_PALETTE, WIDGET_MIN_WIDTH
+from spatiato.widgets.spatial_query.widget import SpatialQuery
+from spatiato.widgets.viewer.widget import ViewerWidget
 
 
 def _feature_table_event(
@@ -183,7 +183,7 @@ def make_viewer_with_shared_sdata(sdata: SpatialData, layers: list[Labels] | Non
     return viewer
 
 
-def select_segmentation(widget: HarpyWidget, index: int = 0) -> None:
+def select_segmentation(widget: ObjectClassificationWidget, index: int = 0) -> None:
     widget.segmentation_combo.setCurrentIndex(index)
 
 
@@ -220,7 +220,7 @@ def _add_feature_table_for_labels(
 _SUCCESS_FEEDBACK_STYLE = STATUS_CARD_PALETTE["success"]
 
 
-def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: str) -> None:
+def _assert_persistence_success_feedback(widget: ObjectClassificationWidget, expected_message: str) -> None:
     assert "Persistence Updated" in widget.persistence_controls.feedback_label.text()
     assert expected_message in widget.persistence_controls.feedback_label.text()
 
@@ -230,7 +230,7 @@ def _assert_persistence_success_feedback(widget: HarpyWidget, expected_message: 
     assert f"border: 1px solid {_SUCCESS_FEEDBACK_STYLE['border']}" in stylesheet
 
 
-def _assert_feature_metadata_warning_card(widget: HarpyWidget) -> None:
+def _assert_feature_metadata_warning_card(widget: ObjectClassificationWidget) -> None:
     assert "Feature Metadata Warning" in widget.warning_status.text()
 
     stylesheet = widget.warning_status.styleSheet()
@@ -405,7 +405,7 @@ def rename_table_instance_key(sdata: SpatialData, *, table_name: str = "table", 
 
 
 def test_widget_can_be_instantiated(qtbot) -> None:
-    widget = HarpyWidget()
+    widget = ObjectClassificationWidget()
 
     qtbot.addWidget(widget)
 
@@ -450,7 +450,7 @@ def test_widget_destruction_unregisters_table_reload_participant(qtbot) -> None:
     """Ensure Qt destruction cannot leave a stale reload participant."""
     viewer = DummyViewer(seed_shared_sdata=False)
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
 
     assert any(participant is widget for participant in app_state._table_reload_participants)
 
@@ -460,7 +460,7 @@ def test_widget_destruction_unregisters_table_reload_participant(qtbot) -> None:
 
 def test_widget_initial_action_rows_fit_current_minimum_width(qtbot) -> None:
     viewer = DummyViewer(seed_shared_sdata=False)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
 
     qtbot.addWidget(widget)
 
@@ -479,7 +479,7 @@ def test_widget_refreshes_when_shared_sdata_changes(qtbot, sdata_blobs: SpatialD
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer], seed_shared_sdata=False)
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
 
     qtbot.addWidget(widget)
 
@@ -503,7 +503,7 @@ def test_widget_clears_when_shared_sdata_is_cleared(qtbot, sdata_blobs: SpatialD
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = make_viewer_with_shared_sdata(sdata_blobs, layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
 
     qtbot.addWidget(widget)
 
@@ -531,7 +531,7 @@ def test_widget_populates_segmentation_dropdown_from_spatialdata(qtbot, sdata_bl
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.coordinate_system_combo.count() == 1
@@ -581,7 +581,7 @@ def test_widget_populates_segmentation_choices_from_shared_sdata_without_loaded_
 ) -> None:
     viewer = make_viewer_with_shared_sdata(sdata_blobs)
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.coordinate_system_combo.count() == 1
@@ -627,7 +627,7 @@ def test_widget_filters_segmentation_choices_by_selected_coordinate_system(
         lambda *, sdata, coordinate_system: [global_option] if coordinate_system == "global" else [cells_option],
     )
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.coordinate_system_combo.count() == 2
@@ -687,7 +687,7 @@ def test_widget_coordinate_system_change_updates_viewer_widget(qtbot, monkeypatc
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(fake_sdata)
     viewer_widget = ViewerWidget(viewer)
-    object_widget = HarpyWidget(viewer)
+    object_widget = ObjectClassificationWidget(viewer)
 
     qtbot.addWidget(viewer_widget)
     qtbot.addWidget(object_widget)
@@ -728,7 +728,7 @@ def test_shared_coordinate_system_switch_prunes_registered_layers_and_keeps_exte
     app_state = get_or_create_app_state(viewer)
     app_state.set_sdata(fake_sdata)
     viewer_widget = ViewerWidget(viewer)
-    object_widget = HarpyWidget(viewer)
+    object_widget = ObjectClassificationWidget(viewer)
 
     qtbot.addWidget(viewer_widget)
     qtbot.addWidget(object_widget)
@@ -816,7 +816,7 @@ def test_widget_clears_selected_segmentation_on_coordinate_system_change_even_wh
         ),
     )
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -873,7 +873,7 @@ def test_widget_unbinds_when_selected_segmentation_is_not_valid_in_new_coordinat
         coordinate_system="global",
     )
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -900,7 +900,7 @@ def test_widget_surfaces_invalid_table_binding_for_duplicate_instance_ids(qtbot,
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -931,7 +931,7 @@ def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_ne
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -979,7 +979,7 @@ def test_widget_rejects_invalid_user_class_without_mutation_and_styles_labels_ne
 def test_widget_auto_loads_selected_segmentation_when_shared_sdata_is_set(qtbot, sdata_blobs: SpatialData) -> None:
     viewer = DummyViewer()
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     assert widget.segmentation_combo.count() == 0
@@ -1002,7 +1002,7 @@ def test_widget_updates_table_dropdown_when_segmentation_changes(qtbot, sdata_bl
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     widget.segmentation_combo.setCurrentIndex(1)
@@ -1030,7 +1030,7 @@ def test_widget_warns_when_loaded_segmentation_has_no_annotation_table(qtbot, sd
     )
     viewer = DummyViewer(layers=[primary_layer, multiscale_layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     widget.segmentation_combo.setCurrentIndex(1)
@@ -1047,7 +1047,7 @@ def test_widget_updates_selected_feature_key_when_feature_matrix_changes(qtbot, 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     widget.training_scope_combo.setCurrentIndex(widget.training_scope_combo.findData("selected_segmentation_only"))
@@ -1085,7 +1085,7 @@ def test_widget_feature_matrix_registration_button_enables_for_unregistered_matr
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1109,7 +1109,7 @@ def test_widget_preserves_valid_custom_user_class_palette_during_binding_and_sty
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1135,7 +1135,7 @@ def test_widget_disables_retrain_button_for_unregistered_feature_matrix_metadata
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1172,7 +1172,7 @@ def test_widget_register_feature_matrix_button_registers_metadata_and_recovers_t
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     mark_dirty_reasons: list[str | None] = []
@@ -1215,7 +1215,7 @@ def test_widget_register_feature_matrix_button_shows_error_without_dirty_side_ef
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     mark_dirty_reasons: list[str | None] = []
@@ -1251,7 +1251,7 @@ def test_widget_register_feature_matrix_button_ignores_stale_click_after_externa
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     assert widget.register_feature_matrix_button.isEnabled()
@@ -1287,7 +1287,7 @@ def test_widget_feature_matrix_registration_button_disables_for_valid_custom_met
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1307,7 +1307,7 @@ def test_widget_feature_matrix_registration_button_disables_for_valid_harpy_meta
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1325,7 +1325,7 @@ def test_widget_feature_matrix_registration_button_warns_for_invalid_matrix(
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     widget.feature_matrix_combo.setCurrentIndex(widget.feature_matrix_combo.findData("bad_features"))
@@ -1352,7 +1352,7 @@ def test_widget_feature_matrix_registration_button_warns_for_missing_source_kind
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1378,7 +1378,7 @@ def test_widget_feature_matrix_registration_button_warns_for_mismatched_metadata
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1395,7 +1395,7 @@ def test_widget_marks_classifier_dirty_when_training_scope_changes(
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1434,7 +1434,7 @@ def test_widget_marks_classifier_dirty_when_prediction_scope_changes(
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1481,7 +1481,7 @@ def test_widget_shows_classifier_preparation_hidden_write_notice_for_table_wide_
     layer = make_blobs_labels_layer(sdata_blobs_multi_region)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     table_index = widget.table_combo.findData("table_multi")
@@ -1505,7 +1505,7 @@ def test_widget_omits_hidden_write_line_for_effectively_selected_prediction_scop
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1531,7 +1531,7 @@ def test_widget_shows_eligible_classifier_preparation_summary(qtbot, sdata_blobs
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1556,7 +1556,7 @@ def test_widget_disables_retrain_button_when_preparation_is_not_trainable(qtbot,
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1575,7 +1575,7 @@ def test_widget_refreshes_feature_matrix_selector_when_first_key_is_written(qtbo
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     mark_dirty_reasons: list[str | None] = []
@@ -1609,7 +1609,7 @@ def test_widget_invalidates_classifier_when_selected_feature_matrix_is_overwritt
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     table = sdata_blobs["table"]
@@ -1682,7 +1682,7 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     previous_items = [
@@ -1707,7 +1707,7 @@ def test_widget_ignores_feature_matrix_writes_for_other_tables(qtbot, sdata_blob
 def test_widget_ignores_non_feature_matrix_write_events(qtbot, sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1730,7 +1730,7 @@ def test_widget_ignores_feature_matrix_writes_for_other_sdata(
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1761,7 +1761,7 @@ def test_widget_consumes_spatial_query_user_class_event_without_republishing(
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1824,7 +1824,7 @@ def test_widget_ignores_unrelated_spatial_query_annotation_events(
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1854,7 +1854,7 @@ def test_widget_rejects_invalid_spatial_query_user_class_state_without_retrainin
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -1918,12 +1918,12 @@ def test_widget_refreshes_persistence_for_any_selected_table_event(
     """Keep Write Table State synchronized for every selected-table mutation.
 
     Persistence readiness is table-wide, so domain-specific event filtering
-    must not hide changes produced by other napari-harpy widgets or components.
+    must not hide changes produced by other spatiato widgets or components.
     """
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     domain_calls: list[str] = []
@@ -1963,7 +1963,7 @@ def test_widget_does_not_refresh_persistence_for_unrelated_table_event(
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     refresh_calls: list[str] = []
@@ -2000,7 +2000,7 @@ def test_widget_disables_write_when_shared_table_event_cleans_selected_table(
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     dirty_event = TableStateChangedEvent(
@@ -2041,7 +2041,7 @@ def test_widget_discovers_new_feature_matrix_table_without_stealing_existing_sel
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2076,7 +2076,7 @@ def test_widget_auto_selects_new_feature_matrix_table_when_no_table_was_availabl
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
     app_state = get_or_create_app_state(viewer)
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     widget.segmentation_combo.setCurrentIndex(1)
     mark_dirty_reasons: list[str | None] = []
@@ -2115,7 +2115,7 @@ def test_widget_updates_color_by_mode_when_selection_changes(qtbot, sdata_blobs:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     widget.color_by_combo.setCurrentIndex(1)
@@ -2127,7 +2127,7 @@ def test_widget_tracks_picked_instance_id_from_labels_layer(qtbot, sdata_blobs: 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2143,7 +2143,7 @@ def test_widget_accepts_first_pick_when_instance_id_is_one(qtbot, sdata_blobs: S
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2158,7 +2158,7 @@ def test_widget_automatically_enables_pick_mode_for_bound_labels_layer(qtbot, sd
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2170,7 +2170,7 @@ def test_widget_picks_multiscale_labels_layers_without_napari_pick_mode(qtbot, s
     layer = make_multiscale_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2198,7 +2198,7 @@ def test_widget_auto_loads_selected_segmentation_when_it_is_not_yet_loaded(qtbot
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     widget.segmentation_combo.setCurrentIndex(1)
@@ -2221,7 +2221,7 @@ def test_widget_clears_selected_segmentation_after_manual_layer_removal(qtbot, s
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2246,7 +2246,7 @@ def test_widget_ignores_unrelated_labels_layer_removal(qtbot, monkeypatch, sdata
     primary_layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[primary_layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
 
     widget.segmentation_combo.setCurrentIndex(1)
@@ -2277,7 +2277,7 @@ def test_widget_handles_tables_without_obsm_entries(qtbot, sdata_blobs: SpatialD
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2295,7 +2295,7 @@ def test_widget_applies_user_class_to_picked_instance(qtbot, sdata_blobs: Spatia
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
@@ -2339,7 +2339,7 @@ def test_widget_emits_updated_table_event_when_user_class_is_already_color_sourc
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
@@ -2362,7 +2362,7 @@ def test_widget_apply_shortcut_applies_user_class_to_picked_instance(qtbot, sdat
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2387,7 +2387,7 @@ def test_widget_uses_table_instance_key_name_in_status_and_annotation_feedback(q
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2403,7 +2403,7 @@ def test_widget_can_clear_user_class_for_picked_instance(qtbot, sdata_blobs: Spa
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2427,7 +2427,7 @@ def test_widget_clear_shortcut_clears_user_class_for_picked_instance(qtbot, sdat
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2465,7 +2465,7 @@ def test_widget_warns_when_selected_label_is_missing_from_annotation_table(
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2489,7 +2489,7 @@ def test_widget_recolors_layer_from_user_class_annotations(qtbot, sdata_blobs: S
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2516,7 +2516,7 @@ def test_widget_user_class_annotation_uses_sparse_refresh_for_compact_user_class
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     full_refresh_calls = []
@@ -2554,7 +2554,7 @@ def test_widget_user_class_annotation_falls_back_to_full_refresh_when_row_scoped
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     row_scoped_calls = []
@@ -2596,7 +2596,7 @@ def test_widget_user_class_annotation_updates_feature_only_in_prediction_color_m
         table.uns.pop(USER_CLASS_COLORS_KEY, None)
         layer = make_blobs_labels_layer(sdata_blobs)
         viewer = DummyViewer(layers=[layer])
-        widget = HarpyWidget(viewer)
+        widget = ObjectClassificationWidget(viewer)
         qtbot.addWidget(widget)
         select_segmentation(widget)
         widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData(color_by))
@@ -2644,7 +2644,7 @@ def test_widget_user_class_annotation_falls_back_to_full_refresh_when_prediction
 ) -> None:
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
@@ -2679,7 +2679,7 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     widget.color_by_combo.setCurrentIndex(widget.color_by_combo.findData("pred_class"))
@@ -2711,7 +2711,7 @@ def test_widget_auto_train_prediction_color_mode_keeps_immediate_refresh_feature
 
 
 def test_widget_annotation_defers_classifier_controls_until_selection_status(qtbot, monkeypatch) -> None:
-    widget = HarpyWidget(DummyViewer())
+    widget = ObjectClassificationWidget(DummyViewer())
     qtbot.addWidget(widget)
     calls: list[str] = []
 
@@ -2767,7 +2767,7 @@ def test_widget_auto_train_toggle_controls_annotation_retraining(
     _set_feature_metadata(backed_sdata_blobs)
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     schedule_calls: list[str] = []
@@ -2843,7 +2843,7 @@ def test_widget_disables_sync_for_clean_backed_spatialdata(qtbot, backed_sdata_b
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
@@ -2864,7 +2864,7 @@ def test_widget_marks_persistence_dirty_on_annotation_change_and_clears_it_on_sy
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
@@ -2894,7 +2894,7 @@ def test_widget_syncs_user_class_to_backed_zarr(qtbot, backed_sdata_blobs: Spati
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
@@ -2940,7 +2940,7 @@ def test_widget_marks_persistence_dirty_after_classifier_writes_results(qtbot, b
 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -2967,7 +2967,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
 ) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
@@ -3000,7 +3000,7 @@ def test_widget_cancels_dirty_reload_when_user_chooses_cancel(
 def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
@@ -3035,7 +3035,7 @@ def test_widget_dirty_reload_can_write_then_reload(qtbot, monkeypatch, backed_sd
 def test_widget_dirty_reload_can_discard_local_edits(qtbot, monkeypatch, backed_sdata_blobs: SpatialData) -> None:
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     monkeypatch.setattr(widget._classifier_controller, "schedule_retrain", lambda *args, **kwargs: False)
@@ -3071,7 +3071,7 @@ def test_widget_reloads_table_state_from_backed_zarr(qtbot, backed_sdata_blobs: 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
@@ -3115,7 +3115,7 @@ def test_spatial_query_reload_prepares_object_classification_for_shared_table(
     """A Spatial Query reload must freeze Object Classification through shared app state before reloading their table."""
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    object_classification = HarpyWidget(viewer)
+    object_classification = ObjectClassificationWidget(viewer)
     spatial_query = SpatialQuery(viewer)
     qtbot.addWidget(object_classification)
     qtbot.addWidget(spatial_query)
@@ -3156,7 +3156,7 @@ def test_widget_reload_falls_back_when_selected_feature_key_disappears(qtbot, ba
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
 
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     expected_table_path = Path(backed_sdata_blobs.path) / "tables" / "table"
@@ -3205,7 +3205,7 @@ def test_widget_reload_freezes_classifier_worker_and_ignores_late_results(
 
     layer = make_blobs_labels_layer(backed_sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     workers: list[_DeferredWorker] = []
@@ -3300,7 +3300,7 @@ def test_widget_retrain_button_recovers_after_worker_finishes(qtbot, monkeypatch
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     workers: list[_DeferredWorker] = []
@@ -3350,7 +3350,7 @@ def test_widget_classifier_status_changes_do_not_refresh_layer_styling(
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     refresh_calls: list[str] = []
@@ -3373,7 +3373,7 @@ def test_widget_destroyed_shuts_down_classifier_controller(qtbot, monkeypatch, s
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     select_segmentation(widget)
     controller = widget._classifier_controller
     created_job_ids: list[int] = []
@@ -3412,7 +3412,7 @@ def test_widget_retrains_classifier_after_annotation_changes(qtbot, sdata_blobs:
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     emitted_events: list[object] = []
@@ -3472,7 +3472,7 @@ def test_widget_colors_predictions_using_pred_class_palette_in_pred_class_mode(q
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
     widget.auto_train_checkbox.setChecked(True)
@@ -3518,7 +3518,7 @@ def test_widget_colors_confidence_continuously_in_pred_confidence_mode(qtbot, sd
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -3540,7 +3540,7 @@ def test_widget_exposes_label_metadata_in_napari_status_bar(qtbot, sdata_blobs: 
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -3566,7 +3566,7 @@ def test_widget_retrain_button_triggers_manual_retraining(qtbot, monkeypatch, sd
     _set_feature_metadata(sdata_blobs)
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 
@@ -3605,7 +3605,7 @@ def test_widget_exports_classifier_with_mocked_save_dialog(
 
     layer = make_blobs_labels_layer(sdata_blobs)
     viewer = DummyViewer(layers=[layer])
-    widget = HarpyWidget(viewer)
+    widget = ObjectClassificationWidget(viewer)
     qtbot.addWidget(widget)
     select_segmentation(widget)
 

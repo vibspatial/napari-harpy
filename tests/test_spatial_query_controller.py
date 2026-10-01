@@ -7,8 +7,8 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
-import napari_harpy.widgets.spatial_query.controller as controller_module
-from napari_harpy.core.spatial_query import (
+import spatiato.widgets.spatial_query.controller as controller_module
+from spatiato.core.spatial_query import (
     CANONICAL_OBSM_KEY,
     SPATIAL_COORDINATES_KEY,
     CanonicalCacheReport,
@@ -20,7 +20,7 @@ from napari_harpy.core.spatial_query import (
     ensure_canonical_centers,
     inspect_canonical_cache,
 )
-from napari_harpy.widgets.spatial_query.controller import (
+from spatiato.widgets.spatial_query.controller import (
     SpatialQueryController,
     _run_canonical_center_query,
     _run_canonical_centers_calculation,

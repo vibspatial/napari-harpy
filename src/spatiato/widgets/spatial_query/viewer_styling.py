@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from napari_harpy.core._color_source import TableColorSourceSpec
-from napari_harpy.core.spatial_query.annotation import require_compatible_spatial_annotation_column
-from napari_harpy.core.spatialdata import get_table
-from napari_harpy.viewer.adapter import ViewerAdapter
-from napari_harpy.viewer.labels_styling import (
+from spatiato.core._color_source import TableColorSourceSpec
+from spatiato.core.spatial_query.annotation import require_compatible_spatial_annotation_column
+from spatiato.core.spatialdata import get_table
+from spatiato.viewer.adapter import ViewerAdapter
+from spatiato.viewer.labels_styling import (
     LabelsLoadResult,
     apply_neutral_labels_style,
     apply_table_color_source_to_labels_layer,

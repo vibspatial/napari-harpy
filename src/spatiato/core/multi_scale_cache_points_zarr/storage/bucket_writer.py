@@ -9,13 +9,13 @@ import numpy as np
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _UINT32_MAX,
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     TILE_MAJOR_LOCATION,
     TILE_MAJOR_POINT_ID,
     TILE_MAJOR_RANGE_ROW_COUNT,
@@ -32,7 +32,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _array_creation_options,
     _BucketAttributes,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _BucketWriteResult,
 )

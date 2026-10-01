@@ -15,8 +15,8 @@ from napari.layers.shapes._shapes_models import Ellipse, Path
 from napari.layers.shapes._shapes_utils import point_to_lines
 from napari.utils.key_bindings import coerce_keybinding
 
-from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
-from napari_harpy.core.shapes_geometry import (
+from spatiato._shapes_triangulation import ensure_shapes_triangulation_backend
+from spatiato.core.shapes_geometry import (
     NapariPolygonTopology,
     delete_napari_polygon_vertex,
     insert_napari_polygon_vertex,
@@ -24,11 +24,11 @@ from napari_harpy.core.shapes_geometry import (
     napari_polygon_vertices_to_shapely_polygon,
     napari_polygon_vertices_to_topology,
 )
-from napari_harpy.widgets.shapes_annotation._layer_state import (
+from spatiato.widgets.shapes_annotation._layer_state import (
     _capture_shapes_layer_baseline,
     _restore_shapes_layer_baseline,
 )
-from napari_harpy.widgets.shapes_annotation._layer_style import (
+from spatiato.widgets.shapes_annotation._layer_style import (
     _capture_shapes_layer_style,
     _restore_shapes_layer_current_style,
     _restore_shapes_layer_row_styles,
@@ -345,10 +345,10 @@ class _AnnotationLayerEditGuard:
 
         # Lifecycle handled here: a guarded mode is already active, so napari
         # has copied its callback from `_drag_modes` into
-        # `mouse_drag_callbacks`. Harpy then replaces `_drag_modes`, but that
+        # `mouse_drag_callbacks`. Spatiato then replaces `_drag_modes`, but that
         # does not update the copied active callback. Without this explicit
         # swap, napari's native mutating callback would remain active and
-        # bypass Harpy's movement, deletion, or insertion guard. Disconnect
+        # bypass Spatiato's movement, deletion, or insertion guard. Disconnect
         # calls the same helper with old/new mappings reversed to restore the
         # active native callback.
         _replace_callback(
@@ -568,7 +568,7 @@ class _AnnotationLayerEditGuard:
         Advance napari's native generator exactly once so it performs the
         mouse-press setup and records the vertex under the cursor, then classify
         that initial press. Delegated gestures continue through the native
-        generator. For Harpy-owned polygon gestures, keep the native generator
+        generator. For Spatiato-owned polygon gestures, keep the native generator
         suspended and validate and transactionally apply each mouse move
         ourselves. Finally, close the suspended generator and perform the
         release cleanup that napari can no longer perform. Completion is
@@ -576,7 +576,7 @@ class _AnnotationLayerEditGuard:
         """
         route = _PolygonVertexDragRoute.DELEGATE
         active_drag: _PolygonVertexDragState | None = None
-        harpy_owned = False
+        spatiato_owned = False
         normal_release = False
         try:
             # This is the only advancement shared by every route. It lets
@@ -594,7 +594,7 @@ class _AnnotationLayerEditGuard:
 
             if route is _PolygonVertexDragRoute.DELEGATE:
                 # Napari retains ownership of both move and release handling
-                # for gestures outside Harpy's polygon-vertex guard.
+                # for gestures outside Spatiato's polygon-vertex guard.
                 yield yielded
                 while True:
                     try:
@@ -605,7 +605,7 @@ class _AnnotationLayerEditGuard:
             # GUARD and REJECT leave the native generator suspended at its
             # press yield. Yield that press step to napari's event dispatcher,
             # then handle every later event without advancing native code.
-            harpy_owned = True
+            spatiato_owned = True
             yield yielded
 
             while event.type == "mouse_move":
@@ -619,11 +619,11 @@ class _AnnotationLayerEditGuard:
             normal_release = event.type == "mouse_release"
         finally:
             try:
-                # Harpy-owned routes never resume native code after its press
+                # Spatiato-owned routes never resume native code after its press
                 # yield, so close that suspended generator before local cleanup.
                 direct_drag.close()
             finally:
-                if harpy_owned:
+                if spatiato_owned:
                     # Replace napari's unexecuted release path. The finisher
                     # emits completion only for a normal, accepted mutation.
                     self._finish_polygon_vertex_drag(
@@ -783,7 +783,7 @@ class _AnnotationLayerEditGuard:
         *,
         emit_completed: bool,
     ) -> None:
-        """Finish a Harpy-owned drag in place of napari's suspended generator.
+        """Finish a Spatiato-owned drag in place of napari's suspended generator.
 
         Always clear napari's temporary interaction state and restore its
         highlight. After a normal release, emit the native ``CHANGED`` event
@@ -1106,7 +1106,7 @@ class _AnnotationLayerEditGuard:
         layer.mode = current_mode
         layer.selected_data = {index for index in selected_data if index < len(layer.data)}
 
-        # Restore current draw defaults without emitting Harpy's style sync
+        # Restore current draw defaults without emitting Spatiato's style sync
         # callbacks, then reapply row styles last so callback side effects
         # cannot overwrite the final styling.
         _restore_shapes_layer_current_style(layer, style_snapshot)

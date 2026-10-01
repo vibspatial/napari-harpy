@@ -23,29 +23,29 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import (
+from spatiato._app_state import (
     CoordinateSystemChangedEvent,
-    HarpyAppState,
+    SpatiatoAppState,
     TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy.core.feature_matrix_metadata import (
+from spatiato.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
     inspect_feature_matrix_metadata,
     register_feature_matrix_metadata,
 )
-from napari_harpy.core.object_classification.annotation import (
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
 )
-from napari_harpy.core.object_classification.classifier import (
+from spatiato.core.object_classification.classifier import (
     ObjectClassificationStateError,
     validate_object_classification_table_state,
 )
-from napari_harpy.core.object_classification.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatialdata import (
+from spatiato.core.object_classification.classifier_export import DEFAULT_CLASSIFIER_EXPORT_SUFFIX
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatialdata import (
     SpatialDataLabelsOption,
     SpatialDataTableMetadata,
     get_annotating_table_names,
@@ -56,22 +56,22 @@ from napari_harpy.core.spatialdata import (
     get_table_obsm_keys,
     validate_table_binding,
 )
-from napari_harpy.viewer.labels_styling import apply_neutral_labels_style
-from napari_harpy.widgets.object_classification.annotation_controller import (
+from spatiato.viewer.labels_styling import apply_neutral_labels_style
+from spatiato.widgets.object_classification.annotation_controller import (
     AnnotationController,
     UserClassAnnotationChange,
 )
-from napari_harpy.widgets.object_classification.controller import (
+from spatiato.widgets.object_classification.controller import (
     DEFAULT_PREDICTION_SCOPE,
     DEFAULT_TRAINING_SCOPE,
     ClassifierController,
     ClassifierScopeMode,
     ClassifierTableStateChange,
 )
-from napari_harpy.widgets.object_classification.feature_matrix_registration import (
+from spatiato.widgets.object_classification.feature_matrix_registration import (
     _build_feature_matrix_registration_button_state,
 )
-from napari_harpy.widgets.object_classification.status_card import (
+from spatiato.widgets.object_classification.status_card import (
     _LabelsLayerPreparationResult,
     _ObjectClassificationStatusCardSpec,
     build_object_classification_classifier_feedback_card_spec,
@@ -79,7 +79,7 @@ from napari_harpy.widgets.object_classification.status_card import (
     build_object_classification_selection_status_card_spec,
     build_object_classification_warning_status_card_spec,
 )
-from napari_harpy.widgets.object_classification.viewer_styling import (
+from spatiato.widgets.object_classification.viewer_styling import (
     COLOR_BY_OPTIONS,
     COLOR_BY_PRED_CLASS,
     COLOR_BY_PRED_CONFIDENCE,
@@ -87,14 +87,14 @@ from napari_harpy.widgets.object_classification.viewer_styling import (
     ClassStateError,
     ViewerStylingController,
 )
-from napari_harpy.widgets.persistence.controls import TablePersistenceControls
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.persistence.controls import TablePersistenceControls
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET as _ACTION_BUTTON_STYLESHEET,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     CHECKBOX_STYLESHEET as _CHECKBOX_STYLESHEET,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     SMALL_ACTION_BUTTON_STYLESHEET,
     WIDGET_BORDER_COLOR,
     WIDGET_PANEL_COLOR,
@@ -108,7 +108,7 @@ from napari_harpy.widgets.shared_styles import (
     format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets.shared_styles import (
+from spatiato.widgets.shared_styles import (
     WIDGET_MIN_WIDTH as _WIDGET_MIN_WIDTH,
 )
 
@@ -134,7 +134,7 @@ class ObjectClassificationWidget(QWidget):
     """
     Widget for object classification.
 
-    The widget is migrating toward the shared Harpy app-state architecture.
+    The widget is migrating toward the shared Spatiato app-state architecture.
     It already receives the loaded `SpatialData` object through
     `self._app_state.sdata` / `sdata_changed`, and now resolves live labels
     layers through the shared `ViewerAdapter` plus layer bindings.
@@ -154,8 +154,8 @@ class ObjectClassificationWidget(QWidget):
         apply_widget_surface(self)
         self.setMinimumWidth(_WIDGET_MIN_WIDTH)
         self._viewer = napari_viewer
-        # The napari viewer identifies which shared Harpy session this widget
-        # belongs to. We use it to attach to the per-viewer HarpyAppState.
+        # The napari viewer identifies which shared Spatiato session this widget
+        # belongs to. We use it to attach to the per-viewer SpatiatoAppState.
         self._app_state = get_or_create_app_state(napari_viewer)
         self._annotation_controller = AnnotationController(
             self._app_state.viewer_adapter,
@@ -432,8 +432,8 @@ class ObjectClassificationWidget(QWidget):
         )
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared Harpy app state for this widget."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared Spatiato app state for this widget."""
         return self._app_state
 
     def _create_annotation_shortcuts(self) -> list[QShortcut]:
@@ -507,7 +507,7 @@ class ObjectClassificationWidget(QWidget):
         return get_table_metadata(self.selected_spatialdata, self.selected_table_name)
 
     def refresh_from_sdata(self, sdata: SpatialData | None) -> None:
-        """Refresh the widget from the shared Harpy SpatialData state."""
+        """Refresh the widget from the shared Spatiato SpatialData state."""
         if sdata is None:
             self._clear_selection_inputs()
             self._bind_current_selection()
@@ -1604,7 +1604,7 @@ class ObjectClassificationWidget(QWidget):
             self,
             "Export Classifier",
             str(self._default_classifier_export_path()),
-            "Harpy classifier (*.harpy-classifier.joblib);;Joblib files (*.joblib);;All files (*)",
+            "Spatiato classifier (*.spatiato-classifier.joblib);;Joblib files (*.joblib);;All files (*)",
         )
         if not selected_path:
             return

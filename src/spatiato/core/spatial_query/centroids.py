@@ -9,14 +9,14 @@ import pandas as pd
 from harpy.image import get_dataarray
 from harpy.utils import RasterAggregator
 
-from napari_harpy.core.spatial_query.canonical import (
+from spatiato.core.spatial_query.canonical import (
     CANONICAL_OBSM_KEY,
     apply_canonical_cache_update,
     build_canonical_cache_update_payload,
     build_canonical_source_signature,
     inspect_canonical_cache,
 )
-from napari_harpy.core.spatial_query.canonical_models import (
+from spatiato.core.spatial_query.canonical_models import (
     CanonicalCacheReport,
     CanonicalCacheState,
     CanonicalCacheUpdatePayload,

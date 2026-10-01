@@ -5,7 +5,7 @@ from __future__ import annotations
 import pyarrow as pa
 import pyarrow.compute as pc
 
-VALUE_NORMALIZATION_METHOD = "harpy-string-trim-unicode-white-space-case-sensitive-v1"
+VALUE_NORMALIZATION_METHOD = "spatiato-string-trim-unicode-white-space-case-sensitive-v1"
 
 _UNICODE_WHITE_SPACE = "".join(
     chr(code_point)

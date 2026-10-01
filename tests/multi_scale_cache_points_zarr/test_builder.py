@@ -7,26 +7,26 @@ import pyarrow.parquet as pq
 import pytest
 from filelock import FileLock
 
-import napari_harpy.core.multi_scale_cache_points_zarr.builder as builder_module
-import napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog as catalog_module
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
+import spatiato.core.multi_scale_cache_points_zarr.builder as builder_module
+import spatiato.core.multi_scale_cache_points_zarr.writer.catalog as catalog_module
+from spatiato.core.multi_scale_cache_points_zarr.builder import (
     _acquire_output_build_lock,
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_COMPLETE,
     _CatalogWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     PointsSourceValidationError,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 
 def _validated_source(tmp_path: Path) -> ValidatedPointsSource:

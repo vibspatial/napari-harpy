@@ -7,46 +7,46 @@ The diagrams use short class names for these implementations:
 ``_TiledPointsLayerRuntime``
     GUI-side wiring between layer events, viewport submission, and renderer replies.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.layer_runtime``
+    Module: ``spatiato.viewer.tiled_points.runtime.layer_runtime``
 
 ``_TiledPointsViewportScheduler``
     GUI-side request scheduling, stale-result rejection, and activation feedback.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.viewport_scheduler``
+    Module: ``spatiato.viewer.tiled_points.runtime.viewport_scheduler``
 
 ``_TiledPointsCacheSession``
     GUI-side interface that transports requests and results across the worker-thread
     boundary and manages the worker lifecycle.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+    Module: ``spatiato.viewer.tiled_points.runtime.cache_session``
 
 ``_TiledPointsCacheWorker``
     Worker-thread owner of the reader and cached data; selects LOD, decides whether
     the accepted batch can be reused, and prepares replacement snapshots.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+    Module: ``spatiato.viewer.tiled_points.runtime.cache_session``
 
 ``_PointsCacheReader``
     Cache metadata, viewport tile planning, and physical Zarr payload reads.
 
-    Module: ``napari_harpy.core.multi_scale_cache_points_zarr.reader``
+    Module: ``spatiato.core.multi_scale_cache_points_zarr.reader``
 
 ``TiledPointsLayerModel``
     Logical layer and events connecting viewport changes to snapshot rendering.
 
-    Module: ``napari_harpy.viewer.tiled_points.napari.layer``
+    Module: ``spatiato.viewer.tiled_points.napari.layer``
 
 ``VispyTiledPointsLayer``
     Renderer that consumes snapshots and emits acceptance or failure results.
 
-    Module: ``napari_harpy.viewer.tiled_points.vispy.layer``
+    Module: ``spatiato.viewer.tiled_points.vispy.layer``
 
 A render batch (``TiledPointsRenderBatch``) holds one immutable NumPy point array
 prepared for rendering from the required tiles. Each row contains a cache-relative
 position and a value ID. This is CPU-side data, not the renderer's GPU VBO.
 A snapshot (``TiledPointsRenderSnapshot``) references this batch alongside request
 identity, LOD, and status metadata. These types and ``TiledPointsRenderResult``
-live in ``napari_harpy.viewer.tiled_points.contracts``.
+live in ``spatiato.viewer.tiled_points.contracts``.
 
 Worker-owned cached data
 -----------------------
@@ -56,14 +56,14 @@ Worker-owned cached data
     accepted entry; ``_pending_viewport`` awaits GUI acceptance. These are not a
     viewport-history cache.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.cache_session``
+    Module: ``spatiato.viewer.tiled_points.runtime.cache_session``
 
 ``_CpuTileResidency``
     Decoded tile locations and value IDs, retained within a byte-bounded LRU.
     These tiles can be reused when preparing a new render batch, independently
     of whether the previous packed batch can be reused.
 
-    Module: ``napari_harpy.viewer.tiled_points.runtime.residency``
+    Module: ``spatiato.viewer.tiled_points.runtime.residency``
 
 Both are CPU-side state, separate from the renderer's VBO. A retained-batch hit
 avoids tile planning, payload reads, and packing. A replacement can also avoid
@@ -173,22 +173,22 @@ from pathlib import Path
 from napari.utils.events import Event
 from qtpy.QtCore import QObject, Slot
 
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _CacheDatasetInfo
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.core.multi_scale_cache_points_zarr.reader import _CacheDatasetInfo
+from spatiato.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
     TiledPointsLayerStatus,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsViewportState,
 )
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
-from napari_harpy.viewer.tiled_points.runtime.cache_session import (
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
     _CacheSessionState,
     _TiledPointsCacheSession,
 )
-from napari_harpy.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
+from spatiato.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
 
 _SessionFactory = Callable[[Path, _CacheSessionSettings], _TiledPointsCacheSession]
 

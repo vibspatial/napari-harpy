@@ -13,11 +13,11 @@ from qtpy.QtCore import Qt
 from spatialdata import SpatialData
 from spatialdata.transformations import Identity, set_transformation
 
-import napari_harpy.widgets.persistence.controls as persistence_controls_module
-import napari_harpy.widgets.spatial_query.widget as widget_module
-from napari_harpy._app_state import ShapesElementReloadedEvent, TableReloadRequest, TableStateChangedEvent
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatial_query import (
+import spatiato.widgets.persistence.controls as persistence_controls_module
+import spatiato.widgets.spatial_query.widget as widget_module
+from spatiato._app_state import ShapesElementReloadedEvent, TableReloadRequest, TableStateChangedEvent
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     CanonicalCacheState,
@@ -28,9 +28,9 @@ from napari_harpy.core.spatial_query import (
     inspect_canonical_cache,
     read_canonical_centers_from_cache,
 )
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
-from napari_harpy.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
-from napari_harpy.widgets.spatial_query.widget import (
+from spatiato.viewer._styling import MISSING_CATEGORICAL_COLOR
+from spatiato.widgets.annotation.models import AnnotationContext, ShapesAnnotationTarget
+from spatiato.widgets.spatial_query.widget import (
     CANONICAL_CACHE_UPDATE_SOURCE,
     SPATIAL_QUERY_ANNOTATION_SOURCE,
     SpatialQuery,

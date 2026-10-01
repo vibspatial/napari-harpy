@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
     _UINT32_MAX,

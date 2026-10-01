@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 import pytest
 
-from napari_harpy.viewer.labels_async import sync_labels_display_after_colormap_change
+from spatiato.viewer.labels_async import sync_labels_display_after_colormap_change
 
 
 class _RecordingSignal:

@@ -45,15 +45,15 @@ Continuous color source discovery is already explicit:
 
 Relevant files:
 
-- `src/napari_harpy/core/_color_source.py`
-- `src/napari_harpy/core/spatialdata.py`
-- `src/napari_harpy/viewer/_styling.py`
-- `src/napari_harpy/viewer/labels_styling.py`
-- `src/napari_harpy/viewer/shapes_styling.py`
-- `src/napari_harpy/viewer/adapter.py`
-- `src/napari_harpy/widgets/viewer/labels_widget.py`
-- `src/napari_harpy/widgets/viewer/shapes_widget.py`
-- `src/napari_harpy/widgets/viewer/widget.py`
+- `src/spatiato/core/_color_source.py`
+- `src/spatiato/core/spatialdata.py`
+- `src/spatiato/viewer/_styling.py`
+- `src/spatiato/viewer/labels_styling.py`
+- `src/spatiato/viewer/shapes_styling.py`
+- `src/spatiato/viewer/adapter.py`
+- `src/spatiato/widgets/viewer/labels_widget.py`
+- `src/spatiato/widgets/viewer/shapes_widget.py`
+- `src/spatiato/widgets/viewer/widget.py`
 
 Important current behavior:
 
@@ -274,7 +274,7 @@ Avoid adding a broad legend/card system. This is a local control for the current
 
 ### Dependencies
 
-`superqt` is available through napari in the current environment, but it is not a direct dependency of `napari-harpy`.
+`superqt` is available through napari in the current environment, but it is not a direct dependency of `spatiato`.
 
 Preferred options:
 

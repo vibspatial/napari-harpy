@@ -7,14 +7,14 @@ import zarr
 from zarr.codecs import BytesCodec, Crc32cCodec, ShardingCodec
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _UINT32_MAX,
     _bucket_path,
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     _BYTE_ENDIAN,
     _CHUNK_KEY_ENCODING_NAME,
     _CHUNK_KEY_SEPARATOR,
@@ -41,7 +41,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _compressors,
     _parse_root_attributes,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _BucketWriteResult
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _BucketWriteResult
 
 _EXPECTED_NODES = {
     **dict.fromkeys(TILE_MAJOR_BUCKET_ARRAY_PATHS, zarr.Array),

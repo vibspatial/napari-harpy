@@ -17,21 +17,21 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import (
-    HarpyAppState,
+from spatiato._app_state import (
     ShapesElementReloadedEvent,
+    SpatiatoAppState,
     TableChangeKind,
     TableReloadRequest,
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
-from napari_harpy.core.object_classification.classifier import (
+from spatiato.core.object_classification.annotation import USER_CLASS_COLUMN
+from spatiato.core.object_classification.classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatial_query import (
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     SPATIAL_COORDINATES_KEY,
@@ -51,15 +51,15 @@ from napari_harpy.core.spatial_query import (
     summarize_spatial_annotation,
     validate_and_resolve_spatial_annotation_value_kind,
 )
-from napari_harpy.core.spatialdata import (
+from spatiato.core.spatialdata import (
     get_annotating_table_names,
     get_spatialdata_labels_options_for_coordinate_system_from_sdata,
     get_table_metadata,
 )
-from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
-from napari_harpy.widgets.annotation.models import AnnotationContext
-from napari_harpy.widgets.persistence.controls import TablePersistenceControls
-from napari_harpy.widgets.shared_styles import (
+from spatiato.core.validation import normalize_spatialdata_dataframe_column_name
+from spatiato.widgets.annotation.models import AnnotationContext
+from spatiato.widgets.persistence.controls import TablePersistenceControls
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     CompactComboBox,
     build_input_control_stylesheet,
@@ -67,15 +67,15 @@ from napari_harpy.widgets.shared_styles import (
     format_tooltip,
     set_status_card,
 )
-from napari_harpy.widgets.spatial_query.controller import SpatialQueryController
-from napari_harpy.widgets.spatial_query.status_card import (
+from spatiato.widgets.spatial_query.controller import SpatialQueryController
+from spatiato.widgets.spatial_query.status_card import (
     _SpatialQueryStatusCardSpec,
     build_spatial_annotation_failure_status_card_spec,
     build_spatial_annotation_outcome_status_card_spec,
     build_spatial_query_controller_status_card_spec,
     build_spatial_query_status_card_spec,
 )
-from napari_harpy.widgets.spatial_query.viewer_styling import (
+from spatiato.widgets.spatial_query.viewer_styling import (
     load_and_style_spatial_annotation_labels,
     load_and_style_unannotated_spatial_annotation_labels,
 )
@@ -439,8 +439,8 @@ class SpatialQuery(QWidget):
         )
 
     @property
-    def app_state(self) -> HarpyAppState:
-        """Return the shared per-viewer Harpy app state."""
+    def app_state(self) -> SpatiatoAppState:
+        """Return the shared per-viewer Spatiato app state."""
         return self._app_state
 
     @property

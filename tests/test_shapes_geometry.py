@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from shapely.geometry import Polygon
 
-from napari_harpy.core.shapes_geometry import (
+from spatiato.core.shapes_geometry import (
     NapariPolygonTopology,
     create_polygon_with_direct_holes,
     delete_napari_polygon_vertex,

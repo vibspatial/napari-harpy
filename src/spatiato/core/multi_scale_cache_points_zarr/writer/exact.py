@@ -13,28 +13,28 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import (
     _LevelKind,
     _PointsCacheBuildPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import (
     TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
     _tile_bucket_ids,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT64_MAX,
     _require_integer_in_range,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY
-from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import (
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from spatiato.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY
+from spatiato.core.multi_scale_cache_points_zarr.source.value_normalization import (
     VALUE_NORMALIZATION_METHOD,
     _normalized_row_values,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _BucketWriteResult,
     _LevelWriteResult,
@@ -96,7 +96,7 @@ class _SourceRowGroupReadSpec:
         source no longer matches the validated inventory.
     point_id_start
         First canonical internal cache point ID assigned to this row group.
-        Harpy synthesizes this value from the source file's global row offset
+        Spatiato synthesizes this value from the source file's global row offset
         and the rows in preceding row groups within that file. It is not read
         from a Parquet column or Parquet metadata field.
 
@@ -106,7 +106,7 @@ class _SourceRowGroupReadSpec:
     one Dask input task. Carrying the physical row-group identity and global
     point-ID start explicitly makes point identity independent of Dask
     partition and execution order. Parquet supplies physical row counts and
-    ordering; Harpy assigns the resulting internal IDs.
+    ordering; Spatiato assigns the resulting internal IDs.
     """
 
     relative_path: str
@@ -338,7 +338,7 @@ def _write_exact_level(
         for bucket_id, partition in enumerate(bucketed.to_delayed())
     )
     with tempfile.TemporaryDirectory(
-        prefix="napari-harpy-zarr-exact-shuffle-",
+        prefix="spatiato-zarr-exact-shuffle-",
         dir=temporary_directory_root,
     ) as shuffle_directory:
         with dask.config.set({"temporary-directory": shuffle_directory}):
@@ -481,7 +481,7 @@ def _annotate_source_partition(
         Row count recorded for this physical row group during source
         validation. Annotation fails if the decoded partition disagrees.
     point_id_start
-        First Harpy-internal cache point ID assigned to this row group. It is
+        First Spatiato-internal cache point ID assigned to this row group. It is
         derived from canonical physical source-row order and is not read from
         a Parquet column.
     x_column
@@ -603,7 +603,7 @@ def _annotate_source_partition(
         source_label=source_label,
     )
     # The selected source columns contain coordinates and values only. Synthesize
-    # Harpy's internal cache identity from canonical physical source-row order;
+    # Spatiato's internal cache identity from canonical physical source-row order;
     # this is not a point-ID column read from Parquet.
     point_id = np.arange(
         point_id_start,

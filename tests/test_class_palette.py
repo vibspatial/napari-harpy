@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     GODSNOT_102,
     default_categorical_colors,
     default_class_colors,

@@ -44,18 +44,18 @@ from qtpy.QtCore import Qt, QTimer, Slot
 from qtpy.QtWidgets import QApplication
 from vispy.scene import SceneCanvas
 
-import napari_harpy.viewer.tiled_points.runtime.cache_session as session_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
-from napari_harpy.viewer.tiled_points.application import canonical_value_palette
-from napari_harpy.viewer.tiled_points.contracts import (
+import spatiato.viewer.tiled_points.runtime.cache_session as session_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
+from spatiato.viewer.tiled_points.application import canonical_value_palette
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsDatasetReference,
     TiledPointsRenderResult,
 )
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
-from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
-from napari_harpy.viewer.tiled_points.runtime.lod import _lod_thresholds
-from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from spatiato.viewer.tiled_points.runtime.lod import _lod_thresholds
+from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 
 def _wait(app, predicate, *, timeout=120.0):

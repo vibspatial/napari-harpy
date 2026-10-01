@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from napari_harpy.widgets.viewer.status_card import (
+from spatiato.widgets.viewer.status_card import (
     _ViewerStatusCardSpec,
     build_image_loaded_card_spec,
     build_points_layer_card_spec,

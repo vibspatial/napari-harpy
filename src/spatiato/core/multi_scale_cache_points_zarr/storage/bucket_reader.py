@@ -11,7 +11,7 @@ import numpy.typing as npt
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
     _UINT32_MAX,
@@ -19,11 +19,11 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._row_selection import (
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.storage._row_selection import (
     _build_exact_row_selection,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     TILE_MAJOR_BUCKET_ARRAY_PATHS,
     TILE_MAJOR_LOCATION,
     TILE_MAJOR_POINT_ID,
@@ -37,7 +37,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     _BucketAttributes,
     _parse_root_attributes,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
     _validate_array_layouts,
     _validate_hierarchy,
 )

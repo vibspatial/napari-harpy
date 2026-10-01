@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from napari_harpy._points_value_index import (
+from spatiato._points_value_index import (
     DEFAULT_INDEX_COLUMN,
     DEFAULT_RANDOM_STATE,
     DEFAULT_RENDER_POINT_BUDGET,
@@ -141,7 +141,7 @@ def test_points_value_index_constants() -> None:
     assert DEFAULT_INDEX_COLUMN == "gene"
     assert DEFAULT_RENDER_POINT_BUDGET == 100_000
     assert DEFAULT_RANDOM_STATE == 42
-    assert POINTS_VALUE_INDEX_SCHEMA_VERSION == "harpy-points-value-index-0.1"
+    assert POINTS_VALUE_INDEX_SCHEMA_VERSION == "spatiato-points-value-index-0.1"
 
 
 def test_points_value_table_records_value_table() -> None:

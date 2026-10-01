@@ -10,12 +10,12 @@ import joblib
 from sklearn import __version__ as sklearn_version
 from sklearn.ensemble import RandomForestClassifier
 
-from napari_harpy import __version__ as napari_harpy_version
-from napari_harpy.core.feature_matrix_metadata import normalize_feature_columns
+from spatiato import __version__ as spatiato_version
+from spatiato.core.feature_matrix_metadata import normalize_feature_columns
 
-CLASSIFIER_EXPORT_BUNDLE_TYPE = "napari_harpy_classifier"
+CLASSIFIER_EXPORT_BUNDLE_TYPE = "spatiato_classifier"
 CLASSIFIER_EXPORT_SCHEMA_VERSION = 1
-DEFAULT_CLASSIFIER_EXPORT_SUFFIX = ".harpy-classifier.joblib"
+DEFAULT_CLASSIFIER_EXPORT_SUFFIX = ".spatiato-classifier.joblib"
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class ClassifierExportBundle:
 
     schema_version: int
     created_at: str
-    napari_harpy_version: str | None
+    spatiato_version: str | None
     sklearn_version: str | None
     estimator: RandomForestClassifier
     source_classifier_config: dict[str, object]
@@ -93,7 +93,7 @@ class ClassifierExportBundle:
     @property
     def source_kind(self) -> str:
         """Return the source kind captured in the feature metadata."""
-        from napari_harpy.core.feature_matrix_metadata import normalize_feature_matrix_source_kind
+        from spatiato.core.feature_matrix_metadata import normalize_feature_matrix_source_kind
 
         return normalize_feature_matrix_source_kind(self.source_feature_metadata)
 
@@ -128,7 +128,7 @@ def build_classifier_export_bundle(
     bundle = ClassifierExportBundle(
         schema_version=CLASSIFIER_EXPORT_SCHEMA_VERSION,
         created_at=datetime.now(UTC).isoformat() if created_at is None else created_at,
-        napari_harpy_version=napari_harpy_version,
+        spatiato_version=spatiato_version,
         sklearn_version=sklearn_version,
         estimator=snapshot.estimator,
         source_classifier_config=deepcopy(snapshot.classifier_config),
@@ -260,7 +260,7 @@ def _bundle_to_payload(bundle: ClassifierExportBundle) -> dict[str, object]:
         "bundle_type": CLASSIFIER_EXPORT_BUNDLE_TYPE,
         "schema_version": bundle.schema_version,
         "created_at": bundle.created_at,
-        "napari_harpy_version": bundle.napari_harpy_version,
+        "spatiato_version": bundle.spatiato_version,
         "sklearn_version": bundle.sklearn_version,
         "source_classifier_config": deepcopy(bundle.source_classifier_config),
         "source_feature_metadata": deepcopy(bundle.source_feature_metadata),
@@ -290,9 +290,9 @@ def _payload_to_bundle(payload: Mapping[str, object]) -> ClassifierExportBundle:
     if not isinstance(estimator, RandomForestClassifier):
         raise ValueError("Classifier artifact estimator must be a RandomForestClassifier.")
 
-    napari_version = payload.get("napari_harpy_version")
+    napari_version = payload.get("spatiato_version")
     if napari_version is not None and not isinstance(napari_version, str):
-        raise ValueError("Classifier artifact `napari_harpy_version` must be a string or None.")
+        raise ValueError("Classifier artifact `spatiato_version` must be a string or None.")
     sklearn_artifact_version = payload.get("sklearn_version")
     if sklearn_artifact_version is not None and not isinstance(sklearn_artifact_version, str):
         raise ValueError("Classifier artifact `sklearn_version` must be a string or None.")
@@ -300,7 +300,7 @@ def _payload_to_bundle(payload: Mapping[str, object]) -> ClassifierExportBundle:
     bundle = ClassifierExportBundle(
         schema_version=schema_version,
         created_at=created_at,
-        napari_harpy_version=napari_version,
+        spatiato_version=napari_version,
         sklearn_version=sklearn_artifact_version,
         estimator=estimator,
         source_classifier_config=dict(source_classifier_config),

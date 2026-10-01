@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 
 type SpatialDimension = Literal["z", "y", "x"]
 
-_DIGEST_DOMAIN = b"napari-harpy/spatial-canonical/instance-set"
+_DIGEST_DOMAIN = b"spatiato/spatial-canonical/instance-set"
 _DIGEST_ENCODING_VERSION = 1
 
 

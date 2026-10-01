@@ -9,7 +9,7 @@ from loguru import logger
 from matplotlib import colormaps
 from matplotlib.colors import to_rgba
 
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_categorical_colors,
 )
@@ -63,7 +63,7 @@ def build_string_categorical_values(
         logger.warning(
             f"Column `{column_name}` has {unique_count} unique string values across "
             f"{len(full_values)} rows, which exceeds the categorical viewer-coloring threshold of {threshold}. "
-            "Harpy will render it with the default categorical palette anyway; "
+            "Spatiato will render it with the default categorical palette anyway; "
             "convert the column to pandas categorical dtype to mark this as intentional."
         )
     else:

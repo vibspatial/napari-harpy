@@ -11,7 +11,7 @@ contract. In particular, see [`cache_format.py`](cache_format.py),
 [`storage/_schema.py`](storage/_schema.py), and
 [`storage/catalog_reader.py`](storage/catalog_reader.py). The example values in
 this document are illustrative, but every array shape, pointer, count, and
-relationship follows the current `harpy-multiscale-points-zarr-cache-0.2`
+relationship follows the current `spatiato-multiscale-points-zarr-cache-0.2`
 format.
 
 ## 1. The three address spaces

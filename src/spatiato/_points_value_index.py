@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_integer_dtype, is_numeric_dtype, is_object_dtype, is_string_dtype
 
-POINTS_VALUE_INDEX_SCHEMA_VERSION = "harpy-points-value-index-0.1"
+POINTS_VALUE_INDEX_SCHEMA_VERSION = "spatiato-points-value-index-0.1"
 DEFAULT_X = "x"
 DEFAULT_Y = "y"
 DEFAULT_INDEX_COLUMN = "gene"

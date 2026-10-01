@@ -1,13 +1,13 @@
 """Worker-owned runtime services for cache-backed tiled points."""
 
-from napari_harpy.viewer.tiled_points.runtime.cache_session import (
+from spatiato.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
     _CacheSessionState,
     _TiledPointsCacheSession,
 )
-from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
-from napari_harpy.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
+from spatiato.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from spatiato.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
 
 __all__ = [
     "_CacheSessionFailure",

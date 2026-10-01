@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from napari_harpy.core.feature_matrix_metadata import (
+from spatiato.core.feature_matrix_metadata import (
     CUSTOM_OBSM_SOURCE_KIND,
     HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     FeatureMatrixMetadataState,

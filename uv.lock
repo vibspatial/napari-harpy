@@ -2562,97 +2562,6 @@ wheels = [
 ]
 
 [[package]]
-name = "napari-harpy"
-version = "0.1.3"
-source = { editable = "." }
-dependencies = [
-    { name = "dask", extra = ["dataframe"] },
-    { name = "harpy-analysis" },
-    { name = "joblib" },
-    { name = "lazy-loader" },
-    { name = "loguru" },
-    { name = "napari", extra = ["all"] },
-    { name = "pandas" },
-    { name = "pyarrow" },
-    { name = "pyqtgraph" },
-    { name = "spatialdata" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "myst-nb" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-qt" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "sphinx" },
-    { name = "sphinx-autodoc-typehints" },
-    { name = "sphinx-book-theme" },
-    { name = "sphinx-copybutton" },
-    { name = "sphinx-design" },
-    { name = "sphinx-rtd-theme" },
-    { name = "sphinxcontrib-bibtex" },
-    { name = "torchvision" },
-    { name = "tox" },
-    { name = "twine" },
-]
-docs = [
-    { name = "myst-nb" },
-    { name = "sphinx" },
-    { name = "sphinx-autodoc-typehints" },
-    { name = "sphinx-book-theme" },
-    { name = "sphinx-copybutton" },
-    { name = "sphinx-design" },
-    { name = "sphinx-rtd-theme" },
-    { name = "sphinxcontrib-bibtex" },
-]
-test = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-qt" },
-    { name = "pytest-xdist" },
-    { name = "tox" },
-]
-torch = [
-    { name = "torchvision" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dask", extras = ["dataframe"] },
-    { name = "harpy-analysis", specifier = ">=0.4.4" },
-    { name = "joblib" },
-    { name = "lazy-loader", specifier = ">=0.4" },
-    { name = "loguru" },
-    { name = "myst-nb", marker = "extra == 'docs'" },
-    { name = "napari", extras = ["all"], specifier = ">=0.4.18" },
-    { name = "napari-harpy", extras = ["test", "docs", "torch"], marker = "extra == 'dev'" },
-    { name = "pandas", specifier = "<3.0" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pyarrow" },
-    { name = "pyqtgraph", specifier = ">=0.13.7" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-cov", marker = "extra == 'test'" },
-    { name = "pytest-qt", marker = "extra == 'test'" },
-    { name = "pytest-xdist", marker = "extra == 'test'" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "spatialdata", specifier = ">=0.7.2" },
-    { name = "sphinx", marker = "extra == 'docs'", specifier = ">=4.5" },
-    { name = "sphinx-autodoc-typehints", marker = "extra == 'docs'" },
-    { name = "sphinx-book-theme", marker = "extra == 'docs'", specifier = ">=1.0.0" },
-    { name = "sphinx-copybutton", marker = "extra == 'docs'" },
-    { name = "sphinx-design", marker = "extra == 'docs'" },
-    { name = "sphinx-rtd-theme", marker = "extra == 'docs'" },
-    { name = "sphinxcontrib-bibtex", marker = "extra == 'docs'", specifier = ">=1.0.0" },
-    { name = "torchvision", marker = "extra == 'torch'" },
-    { name = "tox", marker = "extra == 'test'" },
-    { name = "twine", marker = "extra == 'dev'", specifier = ">=4.0.2" },
-]
-provides-extras = ["torch", "test", "docs", "dev"]
-
-[[package]]
 name = "napari-metadata"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5060,6 +4969,99 @@ sdist = { url = "https://files.pythonhosted.org/packages/b0/4c/cf5b141a624d09f6d
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/b8/ab2141c09b5eda2b13c727d8ddaff56f364f41a2127f30260199629c65dc/spatialdata_plot-0.4.0-py3-none-any.whl", hash = "sha256:e64b713e97d05caf84516007002739c38b84bbd59450424f0c2d83593179b1ed", size = 114794, upload-time = "2026-05-27T15:19:43.436Z" },
 ]
+
+[[package]]
+name = "spatiato"
+version = "0.1.3"
+source = { editable = "." }
+dependencies = [
+    { name = "dask", extra = ["dataframe"] },
+    { name = "filelock" },
+    { name = "harpy-analysis" },
+    { name = "joblib" },
+    { name = "lazy-loader" },
+    { name = "loguru" },
+    { name = "napari", extra = ["all"] },
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "pyqtgraph" },
+    { name = "spatialdata" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "myst-nb" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-qt" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+    { name = "sphinx" },
+    { name = "sphinx-autodoc-typehints" },
+    { name = "sphinx-book-theme" },
+    { name = "sphinx-copybutton" },
+    { name = "sphinx-design" },
+    { name = "sphinx-rtd-theme" },
+    { name = "sphinxcontrib-bibtex" },
+    { name = "torchvision" },
+    { name = "tox" },
+    { name = "twine" },
+]
+docs = [
+    { name = "myst-nb" },
+    { name = "sphinx" },
+    { name = "sphinx-autodoc-typehints" },
+    { name = "sphinx-book-theme" },
+    { name = "sphinx-copybutton" },
+    { name = "sphinx-design" },
+    { name = "sphinx-rtd-theme" },
+    { name = "sphinxcontrib-bibtex" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-qt" },
+    { name = "pytest-xdist" },
+    { name = "tox" },
+]
+torch = [
+    { name = "torchvision" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dask", extras = ["dataframe"] },
+    { name = "filelock", specifier = ">=3.20.1" },
+    { name = "harpy-analysis", specifier = ">=0.4.4" },
+    { name = "joblib" },
+    { name = "lazy-loader", specifier = ">=0.4" },
+    { name = "loguru" },
+    { name = "myst-nb", marker = "extra == 'docs'" },
+    { name = "napari", extras = ["all"], specifier = ">=0.4.18" },
+    { name = "pandas", specifier = "<3.0" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pyarrow" },
+    { name = "pyqtgraph", specifier = ">=0.13.7" },
+    { name = "pytest", marker = "extra == 'test'" },
+    { name = "pytest-cov", marker = "extra == 'test'" },
+    { name = "pytest-qt", marker = "extra == 'test'" },
+    { name = "pytest-xdist", marker = "extra == 'test'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "spatialdata", specifier = ">=0.7.2" },
+    { name = "spatiato", extras = ["test", "docs", "torch"], marker = "extra == 'dev'" },
+    { name = "sphinx", marker = "extra == 'docs'", specifier = ">=4.5" },
+    { name = "sphinx-autodoc-typehints", marker = "extra == 'docs'" },
+    { name = "sphinx-book-theme", marker = "extra == 'docs'", specifier = ">=1.0.0" },
+    { name = "sphinx-copybutton", marker = "extra == 'docs'" },
+    { name = "sphinx-design", marker = "extra == 'docs'" },
+    { name = "sphinx-rtd-theme", marker = "extra == 'docs'" },
+    { name = "sphinxcontrib-bibtex", marker = "extra == 'docs'", specifier = ">=1.0.0" },
+    { name = "torchvision", marker = "extra == 'torch'" },
+    { name = "tox", marker = "extra == 'test'" },
+    { name = "twine", marker = "extra == 'dev'", specifier = ">=4.0.2" },
+]
+provides-extras = ["torch", "test", "docs", "dev"]
 
 [[package]]
 name = "sphinx"

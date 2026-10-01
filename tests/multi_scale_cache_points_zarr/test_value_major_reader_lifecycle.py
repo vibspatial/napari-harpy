@@ -8,10 +8,10 @@ import pytest
 import zarr
 from zarr.storage import LocalStore
 
-import napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader as level_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
+import spatiato.core.multi_scale_cache_points_zarr.storage.value_major_reader as level_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
 
 
 def _assert_closed(reader: _ValueMajorLevelReader) -> None:

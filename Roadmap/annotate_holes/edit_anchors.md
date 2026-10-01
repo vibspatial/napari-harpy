@@ -85,7 +85,7 @@ second hole group:     [9, 11]
 ```
 
 This is the core contract: napari may report that one raw vertex moved, but
-napari-harpy must treat some raw vertices as aliases of the same logical
+spatiato must treat some raw vertices as aliases of the same logical
 topology vertex and keep those aliases identical.
 
 ## Current Napari Edit Path

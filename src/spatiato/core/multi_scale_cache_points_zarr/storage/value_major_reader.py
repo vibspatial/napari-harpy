@@ -9,21 +9,21 @@ import numpy as np
 import numpy.typing as npt
 import zarr
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _ValueMajorMetadata
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import _ValueMajorMetadata
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT64_MAX,
     _require_integer_in_range,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._row_selection import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._row_selection import (
     _build_exact_row_selection,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_MAJOR_LOCATION_DTYPE,
     VALUE_MAJOR_POINTER_DTYPE,
     value_major_location,
     value_major_point_indptr,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
     _strict_array,
     _validate_array_layout,
 )

@@ -19,53 +19,53 @@ from benchmark_multi_scale_cache_points_zarr_exact import (
     _ResourceSampler,
 )
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
     _PointsCacheBuildPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     ValidatedPointsSource,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_LEVEL_INDPTR,
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CacheRootReader,
     _iter_bucket_range_batches,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketWriteResult,
     _LevelWriteResult,
     _ZarrWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
     _write_bridge_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _ExactWriterConfig,
     _write_exact_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.spatial import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.spatial import (
     _SpatialWriterConfig,
     _write_spatial_levels,
 )
 
 _EXPECTED_XENIUM_POINT_COUNT = 136_578_750
-_PYRAMID_INVENTORY_SCHEMA_VERSION = "harpy-zarr-benchmark-pyramid-inventory-v1"
+_PYRAMID_INVENTORY_SCHEMA_VERSION = "spatiato-zarr-benchmark-pyramid-inventory-v1"
 _PYRAMID_INVENTORY_NAME = "_benchmark_pyramid_inventory.json"
 
 
@@ -577,7 +577,7 @@ def main() -> None:
             raise RuntimeError("Z6 wrote forbidden Parquet, JSON-sidecar, or completion artifacts.")
 
         report = {
-            "schema_version": "harpy-zarr-catalog-evaluation-v1",
+            "schema_version": "spatiato-zarr-catalog-evaluation-v1",
             "environment": {
                 "python": platform.python_version(),
                 "platform": platform.platform(),

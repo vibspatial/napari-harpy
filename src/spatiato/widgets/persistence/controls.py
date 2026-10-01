@@ -15,9 +15,9 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from napari_harpy._app_state import HarpyAppState, TableDirtyStateChangedEvent
-from napari_harpy.widgets.persistence.controller import PersistenceController
-from napari_harpy.widgets.shared_styles import (
+from spatiato._app_state import SpatiatoAppState, TableDirtyStateChangedEvent
+from spatiato.widgets.persistence.controller import PersistenceController
+from spatiato.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     PRIMARY_BUTTON_STYLESHEET,
     SECONDARY_BUTTON_STYLESHEET,
@@ -46,7 +46,7 @@ class TablePersistenceControls(QWidget):
     Reload is also generic at this boundary. This component resolves Write /
     Discard / Cancel and then captures one immutable ``TableReloadRequest``.
     Before replacing any in-memory AnnData components,
-    ``PersistenceController`` passes that request through ``HarpyAppState``.
+    ``PersistenceController`` passes that request through ``SpatiatoAppState``.
     App state calls ``prepare_for_table_reload()`` on every registered workflow.
     Unrelated workflows ignore the request; workflows using the selected table
     stop work that must not survive its replacement. For example, Object
@@ -60,7 +60,7 @@ class TablePersistenceControls(QWidget):
             ↓
         PersistenceController captures the accepted request
             ↓
-        HarpyAppState prepares every affected participant
+        SpatiatoAppState prepares every affected participant
             ↓
         PersistenceController executes the captured request
             ↓
@@ -69,7 +69,7 @@ class TablePersistenceControls(QWidget):
 
     def __init__(
         self,
-        app_state: HarpyAppState,
+        app_state: SpatiatoAppState,
         *,
         write_content_description: str = "table state",
         reload_source: str = "table_persistence_controls",

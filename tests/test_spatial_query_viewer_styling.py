@@ -9,9 +9,9 @@ import pandas as pd
 import pytest
 from matplotlib.colors import to_rgba
 
-from napari_harpy.viewer._styling import MISSING_CATEGORICAL_COLOR
-from napari_harpy.viewer.adapter import LabelsLayerBinding, ViewerAdapter
-from napari_harpy.widgets.spatial_query.viewer_styling import (
+from spatiato.viewer._styling import MISSING_CATEGORICAL_COLOR
+from spatiato.viewer.adapter import LabelsLayerBinding, ViewerAdapter
+from spatiato.widgets.spatial_query.viewer_styling import (
     load_and_style_spatial_annotation_labels,
     load_and_style_unannotated_spatial_annotation_labels,
 )

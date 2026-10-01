@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy.widgets.object_classification.controller import ClassifierPreparationSummary
-from napari_harpy.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
+from spatiato.widgets.object_classification.controller import ClassifierPreparationSummary
+from spatiato.widgets.shared_styles import StatusCardKind, format_feedback_identifier, validate_status_card_kind
 
 _LabelsLayerPreparationKind = Literal["none", "loaded", "activated", "error"]
 
@@ -83,8 +83,8 @@ def build_object_classification_selection_status_card_spec(
         return _ObjectClassificationStatusCardSpec(
             title="No SpatialData Loaded",
             lines=(
-                'Load a SpatialData object through the Harpy Viewer widget, reader, or "Interactive(sdata)".',
-                "This form updates automatically from the shared Harpy state.",
+                'Load a SpatialData object through the Spatiato Viewer widget, reader, or "Interactive(sdata)".',
+                "This form updates automatically from the shared Spatiato state.",
             ),
             kind="warning",
         )

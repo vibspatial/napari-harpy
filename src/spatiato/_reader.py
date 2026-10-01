@@ -8,15 +8,15 @@ from typing import TYPE_CHECKING
 import napari
 from spatialdata import read_zarr
 
-from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
+from spatiato._app_state import get_or_create_app_state
+from spatiato.widgets.spatialdata_replacement_dialog import confirm_spatialdata_replacement
 
 if TYPE_CHECKING:
     from napari.types import LayerData
 
 PathLike = str | Path
 PathOrPaths = PathLike | Sequence[PathLike]
-_PLUGIN_NAME = "napari-harpy"
+_PLUGIN_NAME = "spatiato"
 _VIEWER_WIDGET_NAME = "Viewer"
 _READER_WIDGET_ORDER = ("Viewer", "Feature Extraction", "Object Classification")
 
@@ -32,14 +32,14 @@ def get_reader(path: PathOrPaths):
 
 
 def _read_spatialdata_store(path: PathOrPaths) -> list[LayerData]:
-    """Load a SpatialData store into Harpy app state and show the Harpy viewer widget."""
+    """Load a SpatialData store into Spatiato app state and show the Spatiato viewer widget."""
     candidate = _normalize_single_path(path)
     if candidate is None:
-        raise ValueError("napari-harpy reader expects exactly one SpatialData zarr store path.")
+        raise ValueError("spatiato reader expects exactly one SpatialData zarr store path.")
 
     viewer = napari.current_viewer()
     if viewer is None:
-        raise RuntimeError("napari-harpy reader requires an active napari viewer.")
+        raise RuntimeError("spatiato reader requires an active napari viewer.")
 
     app_state = get_or_create_app_state(viewer)
     if app_state.sdata is not None and not confirm_spatialdata_replacement():
@@ -47,7 +47,7 @@ def _read_spatialdata_store(path: PathOrPaths) -> list[LayerData]:
 
     sdata = read_zarr(candidate)
     app_state.set_sdata(sdata, discard_current=True)
-    _ensure_harpy_widgets(viewer)
+    _ensure_spatiato_widgets(viewer)
     return [(None,)]
 
 
@@ -96,7 +96,7 @@ def _read_root_attributes(store_path: Path) -> dict[str, object]:
     return {}
 
 
-def _ensure_harpy_widgets(viewer: object) -> None:
+def _ensure_spatiato_widgets(viewer: object) -> None:
     window = getattr(viewer, "window", None)
     add_plugin_dock_widget = getattr(window, "add_plugin_dock_widget", None)
     if not callable(add_plugin_dock_widget):

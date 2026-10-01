@@ -12,7 +12,7 @@ from spatialdata import SpatialData
 from spatialdata.models import TableModel
 from xarray import DataArray
 
-from napari_harpy.core.spatial_query import (
+from spatiato.core.spatial_query import (
     CANONICAL_OBSM_KEY,
     SPATIAL_COORDINATES_KEY,
     CanonicalCacheMismatch,
@@ -31,7 +31,7 @@ from napari_harpy.core.spatial_query import (
     inspect_canonical_cache,
     parse_canonical_metadata,
 )
-from napari_harpy.core.spatialdata import SpatialDataTableMetadata
+from spatiato.core.spatialdata import SpatialDataTableMetadata
 
 
 def test_mismatch_scope_is_derived_from_code() -> None:
@@ -46,7 +46,7 @@ def test_mismatch_scope_is_derived_from_code() -> None:
 
 
 def test_instance_set_digest_has_pinned_order_independent_encoding() -> None:
-    expected = "sha256:1020a68ff134a26d0139cd20507546c0278f2c308da95133089a5a7c9c8a4718"
+    expected = "sha256:7ef4762e8bdf71b17b15d1851b143148a684e4bd566cb2bc3b62c9e6ce06d30f"
 
     assert build_instance_set_digest("nuclei", [3, 1, 2]) == expected
     assert build_instance_set_digest("nuclei", np.array([2, 3, 1], dtype=np.uint64)) == expected
@@ -426,7 +426,7 @@ def _metadata_for(labels_name: str, instance_ids: list[int]):
                 n_obs=len(instance_ids),
                 instance_set_digest=build_instance_set_digest(labels_name, instance_ids),
                 algorithm_version=1,
-                generated_by_package="napari-harpy",
+                generated_by_package="spatiato",
                 generated_by_version="0.1.1",
                 generated_at="2026-07-14T00:00:00Z",
             )

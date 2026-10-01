@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from harpy.utils._keys import _FEATURE_MATRICES_KEY
 
-from napari_harpy._app_state import TableReloadRequest
-from napari_harpy.core.feature_extraction import (
+from spatiato._app_state import TableReloadRequest
+from spatiato.core.feature_extraction import (
     FeatureExtractionChannel,
     FeatureExtractionTriplet,
     _get_triplet_channel_selection_error,
@@ -21,8 +21,8 @@ from napari_harpy.core.feature_extraction import (
     _resolve_harpy_image_name_parameter,
     _resolve_harpy_labels_name_parameter,
 )
-from napari_harpy.core.spatialdata import get_table
-from napari_harpy.core.validation import normalize_spatialdata_name, validate_new_spatialdata_element_name
+from spatiato.core.spatialdata import get_table
+from spatiato.core.validation import normalize_spatialdata_name, validate_new_spatialdata_element_name
 
 if TYPE_CHECKING:
     from anndata import AnnData
@@ -48,7 +48,7 @@ thread_worker = _resolve_thread_worker()
 class FeatureExtractionRequest:
     """A validated feature-extraction request covering one or more triplets.
 
-    `table_name` is always the napari-harpy target table name. `create_table`
+    `table_name` is always the spatiato target table name. `create_table`
     decides whether that name refers to an existing table or to a table Harpy
     should create while writing the feature matrix.
     """

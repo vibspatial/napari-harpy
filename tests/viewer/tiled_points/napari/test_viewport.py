@@ -6,7 +6,7 @@ from uuid import uuid4
 import numpy as np
 import pytest
 
-from napari_harpy.viewer.tiled_points import (
+from spatiato.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
     TiledPointsViewportState,

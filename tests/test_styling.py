@@ -4,13 +4,13 @@ import numpy as np
 import pandas as pd
 from matplotlib.colors import to_rgba
 
-from napari_harpy.viewer._styling import (
+from spatiato.viewer._styling import (
     categorical_colors_for_values,
     categorical_rgba_for_values,
     continuous_colors_for_values,
     continuous_rgba_for_values,
 )
-from napari_harpy.viewer.labels_colormap import (
+from spatiato.viewer.labels_colormap import (
     CompactLabelColormap,
     compact_categorical_label_colormap_from_values,
     compact_continuous_label_colormap_from_values,

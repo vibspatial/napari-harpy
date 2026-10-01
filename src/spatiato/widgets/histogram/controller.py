@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-import napari_harpy.core.histogram as histogram_core
-from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
+import spatiato.core.histogram as histogram_core
+from spatiato.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData

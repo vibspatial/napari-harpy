@@ -20,7 +20,7 @@ from napari.layers.base._base_constants import ActionType
 from napari.layers.shapes import _shapes_utils
 from napari.layers.shapes._shapes_constants import Mode
 
-from napari_harpy.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
+from spatiato.core.shapes_geometry import napari_polygon_vertices_to_shapely_polygon
 
 
 def _make_direct_regression_layer() -> Shapes:
@@ -48,7 +48,7 @@ def test_native_direct_first_next_runs_press_setup_and_yields_before_polygon_mut
     It identifies raw vertex 39, initializes drag and selection/highlight
     state, and then yields. It does not move polygon data, call
     ``_data_view.edit(...)``, triangulate, mark the layer as moving, or emit a
-    data-change event. Harpy's edit guard depends on this yield boundary to
+    data-change event. Spatiato's edit guard depends on this yield boundary to
     reuse napari's press setup while retaining control before napari mutates or
     triangulates the polygon.
     """
@@ -114,10 +114,10 @@ def test_native_direct_move_triangulation_failure_leaves_hole_anchor_unsynchroni
     The drag starts with duplicated third-hole anchors 34 and 39 synchronized
     at Q. Napari moves only raw vertex 39 to Q' and sends the resulting row to
     the real Numba/VisPy triangulator, which raises. The failed move remains in
-    the live row: index 34 is still Q, index 39 is Q', and Harpy can no longer
+    the live row: index 34 is still Q, index 39 is Q', and Spatiato can no longer
     decode the third hole as closed.
 
-    This test characterizes the failure state that Harpy's edit guard must
+    This test characterizes the failure state that Spatiato's edit guard must
     handle. It demonstrates why a rendering failure must restore the cached
     accepted row instead of leaving napari's partially applied move live.
     """
@@ -170,7 +170,7 @@ def test_native_direct_move_triangulation_failure_leaves_hole_anchor_unsynchroni
         vertices[TRIANGULATION_REGRESSION_MOVED_VERTEX_INDEX],
     )
     # The failed triangulation leaves index 34 at Q and index 39 at Q', so
-    # Harpy rejects the third hole as unclosed. This is why the edit guard must
+    # Spatiato rejects the third hole as unclosed. This is why the edit guard must
     # restore the cached accepted row when triangulation raises: that rollback
     # resynchronizes the aliases instead of leaving malformed live data behind.
     with pytest.raises(ValueError, match="each hole ring must be closed"):
@@ -191,8 +191,8 @@ def test_native_simple_polygon_vertex_remove_accepts_invalid_shortened_row(
     both ``CHANGING`` and ``CHANGED`` without raising.
 
     Unlike the move regression, this edit does not fail during rendering. It
-    completes while leaving live data that Harpy cannot decode as a valid
-    Shapely polygon. This characterizes why Harpy's edit guard must validate a
+    completes while leaving live data that Spatiato cannot decode as a valid
+    Shapely polygon. This characterizes why Spatiato's edit guard must validate a
     deletion candidate before accepting it and preserve the previous valid row
     when validation fails.
     """

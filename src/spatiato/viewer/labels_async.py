@@ -15,14 +15,14 @@ class _PendingLabelsSync:
     queued: bool = False
 
 
-# Keep this workaround-local instead of storing it in Harpy layer bindings:
+# Keep this workaround-local instead of storing it in Spatiato layer bindings:
 # the state only coordinates one deferred napari/Vispy display sync, and the
 # weak keys avoid keeping removed napari layers alive.
 _PENDING_LABELS_SYNCS: WeakKeyDictionary[Labels, _PendingLabelsSync] = WeakKeyDictionary()
 
 
 def sync_labels_display_after_colormap_change(layer: Labels) -> None:
-    """Synchronize labels display after Harpy assigns a table-driven colormap.
+    """Synchronize labels display after Spatiato assigns a table-driven colormap.
 
     Napari labels rendering has two pieces of state that must agree:
 
@@ -31,7 +31,7 @@ def sync_labels_display_after_colormap_change(layer: Labels) -> None:
     - the Vispy texture-code-to-RGBA table produced from the current labels
       colormap.
 
-    When Harpy assigns a direct/compact labels colormap while napari async
+    When Spatiato assigns a direct/compact labels colormap while napari async
     slicing is enabled, those two pieces can temporarily get out of sync.
     The colormap assignment can update the Vispy color table before napari has
     recomputed the displayed labels image for that new colormap. The visible
@@ -59,28 +59,28 @@ def sync_labels_display_after_colormap_change(layer: Labels) -> None:
 
     The immediate three-step sync is correct when `layer.loaded` is true. In
     that state napari is not waiting for an async slice response for this layer,
-    so Harpy can safely recompute the current slice and rebuild/upload the
+    so Spatiato can safely recompute the current slice and rebuild/upload the
     matching Vispy state.
 
     When `layer.loaded` is false, napari already has an async slice in flight.
     Calling `layer.set_view_slice()` at that moment can re-enter napari's global
     Dask cache while the async worker is also using it. In practice that can
     crash inside `dask.cache.Cache._posttask` with a missing `starttimes` entry.
-    The fix is not to disable async slicing or the Dask cache. Instead, Harpy
+    The fix is not to disable async slicing or the Dask cache. Instead, Spatiato
     records that a sync is pending, returns immediately, and waits for napari to
     mark the layer loaded again.
 
     The deferred path connects once to napari's private
     `layer._slicing_state.loaded_data` signal. When napari finishes applying the
-    async slice, Harpy queues a single `QTimer.singleShot(0, ...)` callback.
+    async slice, Spatiato queues a single `QTimer.singleShot(0, ...)` callback.
     The zero-delay Qt callback lets napari finish its current slice-ready event
-    before Harpy runs the forced sync. Repeated requests while the layer is
+    before Spatiato runs the forced sync. Repeated requests while the layer is
     unloaded are coalesced into one pending sync, and the queued callback
     rechecks `layer.loaded` before doing any work. If the layer became unloaded
     again, the sync stays pending until the next loaded notification.
 
     This keeps napari async slicing and the Dask cache enabled, avoids blocking
-    the UI thread, and preserves the final display guarantee: after Harpy
+    the UI thread, and preserves the final display guarantee: after Spatiato
     recolors labels, the displayed texture-code image and the Vispy colormap
     table are synchronized for the latest colormap.
 
@@ -89,7 +89,7 @@ def sync_labels_display_after_colormap_change(layer: Labels) -> None:
     sync: about 3.25 ms versus 14.7 ms under a headless `ViewerModel`
     async-slicing benchmark. The likely reason is that napari had already
     landed the current slice and the relevant Dask/cache state was warm by the
-    time Harpy ran the forced sync.
+    time Spatiato ran the forced sync.
 
     Workaround for https://github.com/napari/napari/issues/9188.
     """
@@ -129,11 +129,11 @@ def _request_deferred_sync(layer: Labels) -> None:
     #
     # 1. `sync_labels_display_after_colormap_change(...)` sees
     #    `layer.loaded == False`.
-    # 2. Harpy enters this deferred path.
+    # 2. Spatiato enters this deferred path.
     # 3. Napari finishes the async slice and emits `loaded_data`.
     # 4. `layer.loaded` is now true.
-    # 5. Harpy connects to `loaded_data`.
-    # 6. Harpy sets `pending = True`.
+    # 5. Spatiato connects to `loaded_data`.
+    # 6. Spatiato sets `pending = True`.
     # 7. No more `loaded_data` signal is guaranteed to happen.
     # 8. Without this guard, the pending sync could never run.
     if layer.loaded:

@@ -13,21 +13,21 @@ from time import perf_counter
 
 import psutil
 
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
+from spatiato.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     _ValueMajorMetadata,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 _RSS_SAMPLE_INTERVAL_SECONDS = 0.25
 
@@ -206,7 +206,7 @@ def main() -> None:
     value_major_stored_bytes = sum(level["value_major"]["stored_bytes"] for level in levels)  # type: ignore[index]
 
     report = {
-        "schema_version": "harpy-tiled-points-cache-variant-v1",
+        "schema_version": "spatiato-tiled-points-cache-variant-v1",
         "environment": {
             "python": platform.python_version(),
             "platform": platform.platform(),

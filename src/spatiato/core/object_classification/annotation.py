@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     default_categorical_colors,
     extend_categorical_palette,
     normalize_class_values,

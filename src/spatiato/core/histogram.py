@@ -205,7 +205,7 @@ def _select_channel_values(array: DataArray, channel_name: str, image_name: str)
         duplicates = ", ".join(f"`{name}`" for name in duplicate_names)
         raise ValueError(
             f"Image element `{image_name}` exposes duplicate channel names ({duplicates}), "
-            "which napari-harpy does not support."
+            "which spatiato does not support."
         )
     if channel_name not in channel_names:
         available = ", ".join(f"`{name}`" for name in channel_names) or "none"

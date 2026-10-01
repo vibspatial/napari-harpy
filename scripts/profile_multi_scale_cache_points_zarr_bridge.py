@@ -16,22 +16,22 @@ from typing import Any
 import psutil
 from benchmark_multi_scale_cache_points_zarr_exact import _ResourceSampler
 
-import napari_harpy.core.multi_scale_cache_points_zarr.sampling as sampling_module
-import napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer as bucket_writer_module
-import napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge as bridge_module
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+import spatiato.core.multi_scale_cache_points_zarr.sampling as sampling_module
+import spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer as bucket_writer_module
+import spatiato.core.multi_scale_cache_points_zarr.writer.bridge as bridge_module
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import _BridgeWriterConfig
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.writer.bridge import _BridgeWriterConfig
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _ExactWriterConfig,
     _write_exact_level,
 )
@@ -281,7 +281,7 @@ def main() -> None:
 
     args.work_directory.mkdir(parents=True, exist_ok=True)
     args.json_output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="napari-harpy-zarr-bridge-profile-", dir=args.work_directory) as text:
+    with tempfile.TemporaryDirectory(prefix="spatiato-zarr-bridge-profile-", dir=args.work_directory) as text:
         workspace = Path(text)
         staging = workspace / "staging"
         shuffle = workspace / "shuffle"
@@ -319,7 +319,7 @@ def main() -> None:
             bridge_seconds = perf_counter() - bridge_start
 
         report = {
-            "schema_version": "harpy-zarr-bridge-stage-profile-v1",
+            "schema_version": "spatiato-zarr-bridge-stage-profile-v1",
             "environment": {
                 "python": platform.python_version(),
                 "platform": platform.platform(),

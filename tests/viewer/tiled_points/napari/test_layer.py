@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from napari.components import ViewerModel
 
-from napari_harpy.viewer.tiled_points import (
+from spatiato.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
     TiledPointsLayerStatus,

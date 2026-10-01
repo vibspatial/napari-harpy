@@ -10,15 +10,15 @@ import numpy as np
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     _CacheAttributes,
     _parse_cache_attributes,
     _ValueMajorMetadata,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import VALUE_MAJOR_GROUP, level_name
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
+from spatiato.core.multi_scale_cache_points_zarr.storage._paths import VALUE_MAJOR_GROUP, level_name
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
     VALUE_MAJOR_LOCATION_ARRAY,
     VALUE_MAJOR_POINT_INDPTR_ARRAY,
@@ -29,7 +29,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     ZARR_USE_CONSOLIDATED,
     _array_creation_options,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
 
 
 @dataclass(frozen=True)

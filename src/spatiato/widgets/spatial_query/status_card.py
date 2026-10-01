@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from napari_harpy.core.spatial_query import (
+from spatiato.core.spatial_query import (
     CanonicalCacheReport,
     CanonicalCacheState,
     SpatialAnnotationSummary,
 )
-from napari_harpy.widgets.shared_styles import StatusCardKind, validate_status_card_kind
+from spatiato.widgets.shared_styles import StatusCardKind, validate_status_card_kind
 
 _FIRST_CALCULATION_TOOLTIP = (
     "Centers will first be calculated for the selected labels element before the spatial query runs."

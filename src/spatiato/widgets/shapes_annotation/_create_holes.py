@@ -5,17 +5,17 @@ from dataclasses import dataclass
 import numpy as np
 from napari.layers import Shapes
 
-from napari_harpy._shapes_triangulation import ensure_shapes_triangulation_backend
-from napari_harpy.core.shapes_geometry import (
+from spatiato._shapes_triangulation import ensure_shapes_triangulation_backend
+from spatiato.core.shapes_geometry import (
     create_polygon_with_direct_holes,
     napari_polygon_vertices_to_shapely_polygon,
     shapely_polygon_to_napari_polygon_vertices,
 )
-from napari_harpy.widgets.shapes_annotation._layer_state import (
+from spatiato.widgets.shapes_annotation._layer_state import (
     _capture_shapes_layer_baseline,
     _restore_shapes_layer_baseline,
 )
-from napari_harpy.widgets.shapes_annotation._layer_style import (
+from spatiato.widgets.shapes_annotation._layer_style import (
     _restore_shapes_layer_current_style,
     _restore_shapes_layer_row_styles,
     _trim_stale_private_color_rows_before_rebuild,

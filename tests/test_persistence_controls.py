@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from spatialdata import SpatialData
 
-from napari_harpy._app_state import (
-    HarpyAppState,
+from spatiato._app_state import (
+    SpatiatoAppState,
     TableReloadRequest,
     TableStateChangedEvent,
 )
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.widgets.persistence.controls import TablePersistenceControls
+from spatiato.core.persistence import TableComponentPath
+from spatiato.widgets.persistence.controls import TablePersistenceControls
 
 
 def _dirty_user_class(
-    app_state: HarpyAppState,
+    app_state: SpatiatoAppState,
     sdata: SpatialData,
     *,
     table_name: str = "table",
@@ -30,7 +30,7 @@ def _dirty_user_class(
 
 
 def test_bound_controls_synchronize_after_one_control_writes(qtbot, backed_sdata_blobs: SpatialData) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     first = TablePersistenceControls(app_state)
     second = TablePersistenceControls(app_state)
     qtbot.addWidget(first)
@@ -56,7 +56,7 @@ def test_dirty_event_refreshes_only_controls_bound_to_affected_table(
     sdata_blobs: SpatialData,
     sdata_blobs_multi_region: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     affected = TablePersistenceControls(app_state)
     unrelated = TablePersistenceControls(app_state)
     qtbot.addWidget(affected)
@@ -77,7 +77,7 @@ def test_reload_request_prepares_participants_before_execution(
     monkeypatch,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controls = TablePersistenceControls(
         app_state,
         reload_source="object_classification",
@@ -120,7 +120,7 @@ def test_participant_failure_stops_reload_and_reports_feedback(
     monkeypatch,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controls = TablePersistenceControls(app_state)
     qtbot.addWidget(controls)
     controls.bind(backed_sdata_blobs, "table", "blobs_labels")

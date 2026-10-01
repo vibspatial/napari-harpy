@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
-from napari_harpy.core.spatial_query import (
+from spatiato.core.spatial_query import (
     CanonicalCacheReport,
     CanonicalCacheState,
     CanonicalCacheUpdatePayload,

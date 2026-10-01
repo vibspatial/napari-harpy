@@ -6,8 +6,8 @@ from pathlib import Path, PurePosixPath
 
 import pyarrow as pa
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import points_element_path
-from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_location import points_element_path
+from spatiato.core.multi_scale_cache_points_zarr.source.errors import (
     ParquetMetadataValidationError,
     PointContentValidationError,
     PointsSourceValidationError,

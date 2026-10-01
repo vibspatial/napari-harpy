@@ -9,31 +9,31 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
-from napari_harpy.core.class_palette import (
+from spatiato.core.class_palette import (
     default_categorical_colors,
     extend_categorical_palette,
     normalize_color_sequence,
     resolve_table_categorical_palette,
 )
-from napari_harpy.core.object_classification.annotation import USER_CLASS_COLUMN
-from napari_harpy.core.object_classification.classifier import (
+from spatiato.core.object_classification.annotation import USER_CLASS_COLUMN
+from spatiato.core.object_classification.classifier import (
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.core.spatial_query.canonical import (
+from spatiato.core.spatial_query.canonical import (
     CANONICAL_ALGORITHM_VERSION,
     CANONICAL_OBSM_KEY,
     build_canonical_region_binding,
     inspect_canonical_cache,
 )
-from napari_harpy.core.spatial_query.canonical_models import (
+from spatiato.core.spatial_query.canonical_models import (
     CanonicalCacheState,
     CanonicalRegionBinding,
     _readonly_array,
 )
-from napari_harpy.core.spatial_query.query_models import CanonicalCenterQueryResult
-from napari_harpy.core.spatialdata import get_table_metadata
-from napari_harpy.core.validation import normalize_spatialdata_dataframe_column_name
+from spatiato.core.spatial_query.query_models import CanonicalCenterQueryResult
+from spatiato.core.spatialdata import get_table_metadata
+from spatiato.core.validation import normalize_spatialdata_dataframe_column_name
 
 if TYPE_CHECKING:
     from anndata import AnnData

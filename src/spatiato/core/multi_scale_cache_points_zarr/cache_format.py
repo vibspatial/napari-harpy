@@ -14,30 +14,30 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Final
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import points_element_path
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import BUCKET_HASH_METHOD
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_location import points_element_path
+from spatiato.core.multi_scale_cache_points_zarr.hashing import BUCKET_HASH_METHOD
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT16_MAX,
     _INT64_MAX,
     _UINT32_MAX,
     _expected_level_kind,
     _require_integer_in_range,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
+from spatiato.core.multi_scale_cache_points_zarr.sampling import (
     SAMPLED_TILE_MICROGRID_EDGE,
     SAMPLING_METHOD,
     SAMPLING_SEED,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
-from napari_harpy.core.multi_scale_cache_points_zarr.source.value_normalization import VALUE_NORMALIZATION_METHOD
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+from spatiato.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
+from spatiato.core.multi_scale_cache_points_zarr.source.value_normalization import VALUE_NORMALIZATION_METHOD
+from spatiato.core.multi_scale_cache_points_zarr.storage._paths import (
     MANIFEST_GROUP,
     VALUE_MAJOR_GROUP,
     VALUE_TILES_GROUP,
     VALUES_GROUP,
     tile_major_level_path,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     _COORDINATE_ENCODING,
     _MANIFEST_ROW_ORDER,
     _PAYLOAD_SCHEMA_VERSION,
@@ -47,11 +47,11 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_MAJOR_ROW_ORDER,
     ZARR_FORMAT_VERSION,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
-CACHE_SCHEMA_VERSION: Final = "harpy-multiscale-points-zarr-cache-0.2"
-BACKEND_IDENTIFIER: Final = "harpy-zarr-v3-bucket-sparse-ranges-value-major-v2"
-CREATED_BY_PACKAGE: Final = "napari-harpy"
+CACHE_SCHEMA_VERSION: Final = "spatiato-multiscale-points-zarr-cache-0.2"
+BACKEND_IDENTIFIER: Final = "spatiato-zarr-v3-bucket-sparse-ranges-value-major-v2"
+CREATED_BY_PACKAGE: Final = "spatiato"
 PUBLICATION_STATE_STAGING: Final = "staging"
 PUBLICATION_STATE_COMPLETE: Final = "complete"
 

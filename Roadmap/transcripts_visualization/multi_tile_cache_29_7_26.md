@@ -21,7 +21,7 @@ Where this document conflicts with the following notes, this document wins:
 - `visualizing_transcripts.md`
 - `visualizing_transcripts_tiled_multiscale.md`
 - `neuroglancer_napari_points_cache_recommendations.md`
-- `ticket_napari_harpy.md`
+- `ticket_spatiato.md`
 
 Those files remain useful research and implementation history. They should not
 be treated as current contracts for sampling, budgets, physical layout, or
@@ -105,7 +105,7 @@ initial format must not make them impossible.
 
 ### Historical implementation evidence
 
-`src/napari_harpy/_transcript_tiles.py` contains historical implementations of:
+`src/spatiato/_transcript_tiles.py` contains historical implementations of:
 
 - cache and level dataclasses;
 - validation of backed SpatialData points elements;
@@ -161,7 +161,7 @@ almost-complete multiscale feature. The production replacement starts from a
 fresh package at:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points/
+src/spatiato/core/multi_scale_cache_points/
 ```
 
 The new package may inspect `_transcript_tiles.py` as implementation history, but
@@ -170,7 +170,7 @@ idea must be expressed independently and justified by the new contracts. This
 keeps the replacement independently testable and makes eventual removal of the
 old module straightforward.
 
-`src/napari_harpy/_transcript_tiles.py` and
+`src/spatiato/_transcript_tiles.py` and
 `tests/test_transcript_tiles.py` remain temporarily as implementation history
 and a source of possible edge cases, not as an authoritative behavioral
 specification. They are removed only
@@ -203,7 +203,7 @@ The core cache package must not import Qt, napari, or VisPy. Napari-specific
 code belongs under a viewer-facing package such as:
 
 ```text
-src/napari_harpy/viewer/multi_scale_points/
+src/spatiato/viewer/multi_scale_points/
 ```
 
 Private napari registration details remain isolated at that boundary.
@@ -477,7 +477,7 @@ Backed SpatialData points element
 The initial source and construction package is:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points/
+src/spatiato/core/multi_scale_cache_points/
   __init__.py
   models.py
   source.py
@@ -1075,7 +1075,7 @@ The exact metadata object is:
   "schema_version": "harpy-multiscale-points-cache-0.1",
   "cache_generation_id": "00000000-0000-0000-0000-000000000000",
   "created_by": {
-    "package": "napari-harpy",
+    "package": "spatiato",
     "version": "0.0.0"
   },
   "source": {
@@ -2154,7 +2154,7 @@ custom Layer subclass to custom Qt controls and a custom VisPy layer.
 All private napari integration must be isolated in a narrow adapter such as:
 
 ```text
-napari_harpy/viewer/_napari_transcript_registration.py
+spatiato/viewer/_napari_transcript_registration.py
 ```
 
 The rest of the cache, store, planner, scheduler, and backend protocol must be
@@ -2420,7 +2420,7 @@ Migration cleanup occurs only after those criteria pass:
 - inspect legacy tests for useful edge cases and write independently specified
   replacement tests where the new contracts require them;
 - verify the direct fallback remains intact;
-- remove `src/napari_harpy/_transcript_tiles.py` in a dedicated cleanup change.
+- remove `src/spatiato/_transcript_tiles.py` in a dedicated cleanup change.
 
 ### Phase 5: physically value-selective IO and advanced interaction
 

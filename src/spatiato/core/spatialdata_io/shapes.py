@@ -11,10 +11,10 @@ from spatialdata import SpatialData
 from spatialdata._io.io_shapes import _read_shapes as _spatialdata_read_shapes
 from spatialdata.models import ShapesModel
 
-from napari_harpy.core.validation import normalize_spatialdata_name
+from spatiato.core.validation import normalize_spatialdata_name
 
 _ELEMENT_CONTAINERS = ("images", "labels", "points", "shapes", "tables")
-_RECOVERY_ROOT_NAME = ".harpy_recovery"
+_RECOVERY_ROOT_NAME = ".spatiato_recovery"
 
 ShapesElementValidator = Callable[[gpd.GeoDataFrame], None]
 
@@ -84,9 +84,9 @@ def write_shapes_element(
     lifecycle (using ``tumor`` as an example)::
 
         shapes/tumor                           # current element on disk
-        shapes/tumor__napari_harpy_stage_...  # new element, fully serialized on disk under a staging name
+        shapes/tumor__spatiato_stage_...  # new element, fully serialized on disk under a staging name
             ↓
-        .harpy_recovery/shapes__tumor__...     # move current element here
+        .spatiato_recovery/shapes__tumor__...     # move current element here
             ↓
         shapes/tumor                           # move staged replacement here
             ↓
@@ -139,7 +139,7 @@ def write_shapes_element(
     shapes_path = store_path / "shapes"
     shapes_collection_existed_before_write = shapes_path.exists()
     requested_path = shapes_path / normalized_name
-    staging_name = f"{normalized_name}__napari_harpy_stage_{uuid4().hex}"
+    staging_name = f"{normalized_name}__spatiato_stage_{uuid4().hex}"
     staging_path = shapes_path / staging_name
     recovery_root = store_path / _RECOVERY_ROOT_NAME
     previous_element_recovery_path: Path | None = None

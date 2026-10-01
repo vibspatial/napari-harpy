@@ -16,12 +16,12 @@ from spatialdata.models import PointsModel, ShapesModel, TableModel
 from spatialdata.transformations import Affine, Identity
 from xarray import DataArray
 
-import napari_harpy.viewer._styling as styling_module
-from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy._points_value_index import PointsValueSelection
-from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
-from napari_harpy.core.class_palette import default_categorical_colors
-from napari_harpy.viewer.adapter import (
+import spatiato.viewer._styling as styling_module
+from spatiato._app_state import get_or_create_app_state
+from spatiato._points_value_index import PointsValueSelection
+from spatiato.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
+from spatiato.core.class_palette import default_categorical_colors
+from spatiato.viewer.adapter import (
     ImageLayerBinding,
     LabelsLayerBinding,
     LayerBindingRegistry,
@@ -32,9 +32,9 @@ from napari_harpy.viewer.adapter import (
     _prepare_napari_point_radius_shapes_layer_inputs,
     _prepare_napari_shapes_layer_inputs,
 )
-from napari_harpy.viewer.labels_colormap import CompactLabelColormap
-from napari_harpy.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
-from napari_harpy.viewer.shapes_styling import (
+from spatiato.viewer.labels_colormap import CompactLabelColormap
+from spatiato.viewer.points_styling import POINTS_SELECTION_SOLID_COLOR
+from spatiato.viewer.shapes_styling import (
     _SHAPES_EDGE_COLOR_SYNC_CALLBACK_ATTR,
     _SHAPES_EDGE_WIDTH_SYNC_CALLBACK_ATTR,
     _SHAPES_FACE_COLOR_SYNC_CALLBACK_ATTR,
@@ -1298,7 +1298,7 @@ def test_viewer_adapter_ensure_points_layer_from_selection_applies_single_catego
     assert np.allclose(result.layer.border_color, result.layer.face_color)
 
 
-def test_viewer_adapter_ensure_points_layer_from_selection_keeps_multi_categorical_palette_owned_by_harpy() -> None:
+def test_viewer_adapter_ensure_points_layer_from_selection_keeps_multi_categorical_palette_owned_by_spatiato() -> None:
     sdata = SimpleNamespace()
     identity = make_points_identity(sdata)
     selection = make_points_selection(["AAMP", "AXL"], selected_values=("AAMP", "AXL"))
@@ -2257,7 +2257,7 @@ def test_viewer_adapter_ensure_styled_labels_loaded_warns_for_high_cardinality_s
     assert isinstance(result.layer.colormap, CompactLabelColormap)
     assert len(warning_messages) == 1
     assert "exceeds the categorical viewer-coloring threshold" in warning_messages[0]
-    assert "Harpy will render it with the default categorical palette anyway" in warning_messages[0]
+    assert "Spatiato will render it with the default categorical palette anyway" in warning_messages[0]
 
 
 def test_viewer_adapter_ensure_styled_labels_loaded_x_var_is_continuous(sdata_blobs) -> None:
@@ -2701,7 +2701,7 @@ def test_viewer_adapter_ensure_shapes_loaded_uses_named_geodataframe_index_in_fe
     assert "cell_id: cell_1" in layer.get_status(position=(1, 1))["value"]
 
 
-def test_viewer_adapter_normalizes_native_shapes_layer_to_harpy_status_layer() -> None:
+def test_viewer_adapter_normalizes_native_shapes_layer_to_spatiato_status_layer() -> None:
     native_layer = Shapes(
         [
             np.asarray(

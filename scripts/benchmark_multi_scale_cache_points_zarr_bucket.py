@@ -10,12 +10,12 @@ from time import perf_counter
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader, _PointDisplayPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader, _PointDisplayPayload
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _PlannedTile,
     _ZarrWriteSettings,
@@ -96,7 +96,7 @@ def main() -> None:
     temporary_parent = None if args.work_directory is None else str(args.work_directory)
     if args.work_directory is not None:
         args.work_directory.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="napari-harpy-zarr-bucket-", dir=temporary_parent) as workspace_text:
+    with tempfile.TemporaryDirectory(prefix="spatiato-zarr-bucket-", dir=temporary_parent) as workspace_text:
         workspace = Path(workspace_text)
         point_id_start = 0
         write_start = perf_counter()
@@ -142,7 +142,7 @@ def main() -> None:
                 }
 
         report = {
-            "schema_version": "harpy-zarr-bucket-characterization-v1",
+            "schema_version": "spatiato-zarr-bucket-characterization-v1",
             "configuration": {
                 "point_chunk_rows": settings.point_chunk_rows,
                 "point_shard_rows": settings.point_shard_rows,

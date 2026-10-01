@@ -8,35 +8,35 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major as value_major_module
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+import spatiato.core.multi_scale_cache_points_zarr.writer.value_major as value_major_module
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _plan_points_cache
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
     _write_bridge_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _ExactWriterConfig,
     _write_exact_level,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.spatial import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.spatial import (
     _SpatialWriterConfig,
     _write_spatial_levels,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.value_major import (
     _expand_ranges,
     _RangeFragmentBatch,
     _read_fragment_locations,

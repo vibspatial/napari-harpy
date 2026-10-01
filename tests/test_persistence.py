@@ -9,12 +9,12 @@ from harpy.utils._keys import _FEATURE_MATRICES_KEY
 from spatialdata import SpatialData, read_zarr
 from spatialdata.models import TableModel
 
-import napari_harpy.core.persistence as persistence_module
-from napari_harpy._app_state import HarpyAppState, TableStateChangedEvent
-from napari_harpy.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND, register_feature_matrix_metadata
-from napari_harpy.core.object_classification.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatial_query import (
+import spatiato.core.persistence as persistence_module
+from spatiato._app_state import SpatiatoAppState, TableStateChangedEvent
+from spatiato.core.feature_matrix_metadata import CUSTOM_OBSM_SOURCE_KIND, register_feature_matrix_metadata
+from spatiato.core.object_classification.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatial_query import (
     CANONICAL_CACHE_PATHS,
     CANONICAL_OBSM_KEY,
     CanonicalCacheState,
@@ -23,18 +23,18 @@ from napari_harpy.core.spatial_query import (
     build_canonical_cache_update_payload,
     inspect_canonical_cache,
 )
-from napari_harpy.core.spatialdata import get_table, get_table_metadata
-from napari_harpy.widgets.object_classification.controller import (
+from spatiato.core.spatialdata import get_table, get_table_metadata
+from spatiato.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.widgets.persistence.controller import PersistenceController
+from spatiato.widgets.persistence.controller import PersistenceController
 
 
 def _record_mutation(
-    app_state: HarpyAppState,
+    app_state: SpatiatoAppState,
     sdata: SpatialData,
     *paths: TableComponentPath,
     table_name: str = "table",
@@ -85,7 +85,7 @@ def test_persistence_controller_requires_backed_spatialdata(sdata_blobs: Spatial
 def test_canonical_cache_update_round_trips_as_one_dirty_consistency_unit(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     _apply_canonical_cache(backed_sdata_blobs)
@@ -108,7 +108,7 @@ def test_failed_second_canonical_write_acknowledges_neither_path(
     backed_sdata_blobs: SpatialData,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table", "blobs_labels")
     _apply_canonical_cache(backed_sdata_blobs)
@@ -148,7 +148,7 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
     sdata_blobs: SpatialData,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
@@ -168,7 +168,7 @@ def test_persistence_controller_tracks_dirty_state_per_selected_table(
 
 
 def test_persistence_controller_reads_dirty_state_from_shared_app_state(sdata_blobs: SpatialData) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
@@ -183,7 +183,7 @@ def test_persistence_controller_can_write_table_state_requires_backed_dirty_tabl
     sdata_blobs: SpatialData,
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(sdata_blobs, "table")
 
@@ -209,7 +209,7 @@ def test_persistence_controller_can_write_table_state_requires_backed_dirty_tabl
 
 
 def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backed_sdata_blobs: SpatialData) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     index = backed_sdata_blobs["table"].obs.index
@@ -284,7 +284,7 @@ def test_persistence_controller_syncs_table_obs_and_colors_to_backed_store(backe
 def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     table = backed_sdata_blobs["table"]
@@ -317,7 +317,7 @@ def test_persistence_controller_syncs_feature_matrix_metadata_to_backed_store(
 def test_persistence_controller_creates_and_removes_nested_uns_entry(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     table = backed_sdata_blobs["table"]
@@ -339,7 +339,7 @@ def test_persistence_controller_creates_and_removes_nested_uns_entry(
 def test_persistence_controller_reloads_registered_custom_feature_matrix_metadata(
     backed_sdata_blobs: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     table = backed_sdata_blobs["table"]
@@ -395,7 +395,7 @@ def test_persistence_controller_reloads_registered_custom_feature_matrix_metadat
 def test_persistence_controller_syncs_multi_region_classifier_config_fields(
     backed_sdata_blobs_multi_region: SpatialData,
 ) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs_multi_region, "table_multi")
     table = backed_sdata_blobs_multi_region["table_multi"]
@@ -529,7 +529,7 @@ def test_persistence_controller_captures_exact_reload_request(
 
 
 def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs: SpatialData) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     _record_mutation(app_state, backed_sdata_blobs, TableComponentPath("obs", (USER_CLASS_COLUMN,)))
@@ -542,7 +542,7 @@ def test_persistence_controller_clears_dirty_state_after_sync(backed_sdata_blobs
 
 
 def test_persistence_controller_clears_dirty_state_after_reload(backed_sdata_blobs: SpatialData) -> None:
-    app_state = HarpyAppState()
+    app_state = SpatiatoAppState()
     controller = PersistenceController(app_state)
     controller.bind(backed_sdata_blobs, "table")
     _write_disk_snapshot_payload(backed_sdata_blobs)

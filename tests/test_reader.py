@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import napari_harpy._reader as reader_module
+import spatiato._reader as reader_module
 
 
 def _write_spatialdata_zarr_json(path: Path) -> None:
@@ -53,7 +53,7 @@ def test_get_reader_rejects_multiple_paths(tmp_path) -> None:
     assert reader is None
 
 
-def test_reader_loads_spatialdata_into_harpy_app_state(tmp_path, monkeypatch) -> None:
+def test_reader_loads_spatialdata_into_spatiato_app_state(tmp_path, monkeypatch) -> None:
     store_path = tmp_path / "example.zarr"
     _write_spatialdata_zarr_json(store_path)
     fake_sdata = object()
@@ -93,9 +93,9 @@ def test_reader_loads_spatialdata_into_harpy_app_state(tmp_path, monkeypatch) ->
     assert requested_viewers == [fake_viewer]
     assert recorded_sdata == [fake_sdata]
     assert window_calls == [
-        ("napari-harpy", "Viewer", True),
-        ("napari-harpy", "Feature Extraction", True),
-        ("napari-harpy", "Object Classification", True),
+        ("spatiato", "Viewer", True),
+        ("spatiato", "Feature Extraction", True),
+        ("spatiato", "Object Classification", True),
     ]
     assert viewer_dock_raised == ["Viewer"]
 

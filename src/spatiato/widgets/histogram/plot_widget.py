@@ -9,8 +9,8 @@ from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import QGridLayout, QSizePolicy, QToolTip, QWidget
 
-from napari_harpy.core.histogram import HistogramResult
-from napari_harpy.widgets.histogram.styles import (
+from spatiato.core.histogram import HistogramResult
+from spatiato.widgets.histogram.styles import (
     HISTOGRAM_AXIS_GRID_COLOR,
     HISTOGRAM_AXIS_TEXT_COLOR,
     HISTOGRAM_BAR_EDGE_COLOR,

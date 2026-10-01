@@ -6,7 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 from shapely.geometry import Polygon
 
-from napari_harpy.core.spatial_query.canonical_models import (
+from spatiato.core.spatial_query.canonical_models import (
     CanonicalCentersResult,
     CanonicalRegionBinding,
     _readonly_array,
@@ -88,7 +88,7 @@ class CanonicalCenterQueryResult:
     result rather than only its binding. The matching instance IDs are a
     geometric decision made from that exact source signature and center
     snapshot. The ``apply_spatial_annotation()`` domain operation in
-    ``napari_harpy.core.spatial_query.annotation`` later passes this result to
+    ``spatiato.core.spatial_query.annotation`` later passes this result to
     ``_require_current_query_provenance()``, which compares both against the
     current cache. This prevents an old query from annotating rows after centers
     were rebuilt or otherwise changed before the result reached annotation
