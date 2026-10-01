@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -31,6 +31,7 @@ from napari_harpy.viewer.tiled_points.contracts import (
     _ViewportRequest,
 )
 from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
+from napari_harpy.viewer.tiled_points.runtime.lod import _LodDecisionReason, _select_lod
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 _UINT32_MAX = np.iinfo(np.uint32).max
@@ -408,8 +409,12 @@ class _TiledPointsCacheWorker(QObject):
         count selected points in complete intersecting tiles, not individually
         clipped points.
 
-        Select the finest LOD meeting the preferred target. If none fits, the reader
-        returns the coarsest level; accept it only if it satisfies the hard limits.
+        Without compatible accepted history, select the finest LOD meeting the
+        preferred target. Subsequent requests use hysteresis: a finer level can
+        remain above that target within a bounded tolerance, while refinement
+        requires crossing a lower threshold. All estimates concern the incoming
+        viewport, not the old packed allocation. If no preferred fit or hysteresis
+        choice is available, use the coarsest level only within the hard limits.
         For example, with a preferred target of 50,000 points and a hard capacity of
         100,000, a coarsest level containing 80,000 points is allowed, with an
         informational density message. A hard-limit rejection instead publishes a
@@ -492,16 +497,17 @@ class _TiledPointsCacheWorker(QObject):
                 _vertex_point_capacity(max_vertex_payload_bytes),
             )
             preferred_point_budget = min(request.viewport.effective_point_budget, hard_point_capacity)
-            level_selection = reader.select_level(
-                viewport,
-                preferred_point_budget,
-                value_index=self._selected_value_index,
+            level_selection, decision_reason = self._select_viewport_level(
+                reader,
+                request,
+                viewport=viewport,
+                preferred_point_budget=preferred_point_budget,
+                hard_point_capacity=hard_point_capacity,
             )
             self._require_not_cancelled()
-            # If no level meets the preferred target, `level_selection` already
-            # describes the coarsest level. Reuse that level's estimate from
-            # `level_selection.estimated_point_count` to check the hard limits
-            # without another level scan or IO.
+            # The policy returns evidence for the chosen level, including any
+            # tolerated density overrun or coarsest fallback. Check its estimate
+            # against hard capacity without another level scan or payload IO.
             point_count = level_selection.estimated_point_count
             within_budget = point_count <= hard_point_capacity
             budget_message = None
@@ -519,8 +525,11 @@ class _TiledPointsCacheWorker(QObject):
                     limits.append(f"{required_bytes:,} vertex bytes required, limit {max_vertex_payload_bytes:,} bytes")
                 budget_message = "View exceeds hard rendering limits: " + "; ".join(limits)
             elif point_count > request.viewport.screen_density_budget:
+                explanation = (
+                    "Coarsest level" if decision_reason == "coarsest_density_fallback" else "LOD hysteresis tolerance"
+                )
                 budget_message = (
-                    "Coarsest level; above preferred screen density "
+                    f"{explanation}; above preferred screen density "
                     f"({point_count:,} points; target {request.viewport.screen_density_budget:,})"
                 )
             dataset_info = reader.dataset_info
@@ -601,6 +610,48 @@ class _TiledPointsCacheWorker(QObject):
             logger.exception("Tiled-points cache session failed while reading a viewport snapshot.")
             self._pending_viewport = None
             self._report_viewport_failure(request, error)
+
+    def _select_viewport_level(
+        self,
+        reader: _PointsCacheReader,
+        request: _ViewportRequest,
+        *,
+        viewport: _IntrinsicViewport,
+        preferred_point_budget: int,
+        hard_point_capacity: int,
+    ) -> tuple[_LevelSelection, _LodDecisionReason]:
+        """Evaluate fresh candidates against compatible accepted LOD history.
+
+        A disjoint pan or an oversized old allocation can still use the previous
+        level as history. Only cache/selection identity matters here. Whether
+        the complete old batch is reusable is checked separately, after the
+        new viewport's level and hard rendering permission have been determined.
+        This method does not commit history or perform point-payload IO.
+        """
+        previous_level = None
+        retained = self._retained_viewport
+        if retained is not None:
+            snapshot = retained.snapshot
+            if (
+                snapshot.cache_generation_id == reader.dataset_info.cache_generation_id
+                and snapshot.selection_generation == request.selection_generation
+                and snapshot.requested_value_ids == request.requested_value_ids
+            ):
+                previous_level = snapshot.level
+
+        def candidates() -> Iterator[_LevelSelection]:
+            for candidate in reader.iter_level_candidates(
+                viewport, preferred_point_budget, value_index=self._selected_value_index
+            ):
+                self._require_not_cancelled()
+                yield candidate
+
+        return _select_lod(
+            candidates(),
+            preferred_point_budget=preferred_point_budget,
+            hard_point_capacity=hard_point_capacity,
+            previous_level=previous_level,
+        )
 
     @Slot(object)
     def acknowledge_render_result(self, result: TiledPointsRenderResult) -> None:
@@ -916,8 +967,8 @@ def _read_viewport_snapshot(
 
     ``level_selection`` supplies the selected level and its visible count and
     omission metadata. Its ``within_budget`` flag concerns the preferred density
-    target, not hard eligibility: a permitted coarsest-level fallback may have
-    this flag set to False. ``budget_message`` carries the worker's diagnostic.
+    target, not hard eligibility: hysteresis tolerance or a permitted coarsest
+    fallback may leave it False. ``budget_message`` carries the worker's diagnostic.
     """
     dataset_info = reader.dataset_info
     level_kind = _expected_level_kind(level_selection.level)
