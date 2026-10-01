@@ -301,7 +301,7 @@ def _time_runtime_planning(
                 "level": selection.level,
                 "estimated_point_count": selection.estimated_point_count,
                 "positive_visible_tile_count": selection.positive_visible_tile_count,
-                "within_budget": selection.within_budget,
+                "fits_point_budget": selection.fits_point_budget,
                 "lod_seconds": lod_seconds,
                 "positive_tile_discovery_seconds": discovery_seconds,
                 "discovered_positive_tiles": len(positive),
@@ -343,7 +343,7 @@ def _measure_selected_viewport(
         started = perf_counter()
         if fixed_level is None:
             selection = reader.select_level(viewport, point_budget, value_index=value_index)
-            if not selection.within_budget:
+            if not selection.fits_point_budget:
                 raise RuntimeError("The realistic selected viewport did not fit the supplied point budget.")
             level = selection.level
             estimated_points = selection.estimated_point_count

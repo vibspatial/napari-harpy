@@ -128,7 +128,7 @@ def _level_selection_report(selection: _LevelSelection) -> dict[str, object]:
         "level": selection.level,
         "estimated_point_count": selection.estimated_point_count,
         "positive_visible_tile_count": selection.positive_visible_tile_count,
-        "within_budget": selection.within_budget,
+        "fits_point_budget": selection.fits_point_budget,
         "omitted_value_ids": None if omitted_value_ids is None else omitted_value_ids.tolist(),
     }
 

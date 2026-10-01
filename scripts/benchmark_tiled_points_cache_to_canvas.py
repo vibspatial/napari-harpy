@@ -345,7 +345,10 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
 
         patches.patch(owner, name, measured)
 
-    timed_method(_PointsCacheReader, "select_level", "level_selection")
+    # Time iterator consumption and policy choice together, not merely creation
+    # of a lazy candidate iterator. Keep ordinary reader callers visible too.
+    timed_method(_TiledPointsCacheWorker, "_select_viewport_level", "level_selection")
+    timed_method(_PointsCacheReader, "select_level", "ordinary_level_selection")
     timed_method(_PointsCacheReader, "plan_viewport", "viewport_plan")
     timed_plan_viewport = _PointsCacheReader.plan_viewport
 
@@ -505,7 +508,7 @@ def _snapshot_with_generation(
         requested_value_ids=snapshot.requested_value_ids,
         level=snapshot.level,
         level_kind=snapshot.level_kind,
-        within_budget=snapshot.within_budget,
+        within_hard_limits=snapshot.within_hard_limits,
         estimated_point_count=snapshot.estimated_point_count,
         omitted_value_ids=snapshot.omitted_value_ids,
         rendered_tile_count=snapshot.rendered_tile_count,
@@ -889,7 +892,7 @@ def main() -> None:
         report["snapshot"] = {
             "level": snapshot.level,
             "level_kind": snapshot.level_kind,
-            "within_budget": snapshot.within_budget,
+            "within_hard_limits": snapshot.within_hard_limits,
             "estimated_point_count": snapshot.estimated_point_count,
             "tile_count": snapshot.rendered_tile_count,
             "point_count": snapshot.rendered_point_count,
@@ -936,7 +939,7 @@ def main() -> None:
                     viewport=subset_viewport,
                 ),
             )
-            if not subset_snapshot.within_budget:
+            if not subset_snapshot.within_hard_limits:
                 raise RuntimeError("The centered renderer subset unexpectedly exceeds the point budget.")
             report["renderer"] = _renderer_report(
                 snapshot,

@@ -125,7 +125,7 @@ def _measure_worker(
         snapshot = _read_worker_snapshot(worker, request)
         worker_ms = _elapsed_ms(started)
 
-    if not snapshot.within_budget or len(plans) != 1:
+    if not snapshot.within_hard_limits or len(plans) != 1:
         raise RuntimeError("Benchmark requires one accepted viewport plan.")
     plan = plans[0]
     if plan.selected_value_level_index is None:

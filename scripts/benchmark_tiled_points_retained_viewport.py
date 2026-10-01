@@ -6,8 +6,9 @@ Example::
         --selection value_a --selection value_a value_b --all-values \
         --real-canvas --json-output /tmp/retained-viewports.json
 
-The baseline disables only the worker's retained entry at the snapshot helper
-boundary. Both modes use real LOD selection, CPU tile residency, storage routes,
+By default the baseline disables only packed-batch reuse. With --compare-lod,
+both modes retain batches and compare ordinary LOD selection with hysteresis.
+Both modes use real LOD evaluation, CPU tile residency, storage routes,
 queued delivery, generation handling, and activation feedback. With --real-canvas
 they also use the real single-VBO renderer; otherwise activation is simulated
 and no GPU timings are reported. Filesystem caches are not flushed. Timing hooks
@@ -46,9 +47,14 @@ from vispy.scene import SceneCanvas
 import napari_harpy.viewer.tiled_points.runtime.cache_session as session_module
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
 from napari_harpy.viewer.tiled_points.application import canonical_value_palette
-from napari_harpy.viewer.tiled_points.contracts import TiledPointsDatasetReference, TiledPointsRenderResult
+from napari_harpy.viewer.tiled_points.contracts import (
+    TILED_POINTS_VERTEX_DTYPE,
+    TiledPointsDatasetReference,
+    TiledPointsRenderResult,
+)
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from napari_harpy.viewer.tiled_points.runtime.lod import _lod_thresholds
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 
@@ -86,7 +92,29 @@ def _trace(info, point_budget):
     ]
 
 
-def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_budget):
+def _pan_trace(info, point_budget, *, density_budget, fraction, steps):
+    """Replay the same fixed-size horizontal pan in both directions."""
+    view = replace(
+        _centered_viewport(info, fraction, point_budget, 1200, 900),
+        screen_density_budget=density_budget,
+    )
+    width = view.x_max - view.x_min
+    travel = info.x_max - info.x_min - width
+    positions = list(range(steps)) + list(range(steps - 2, -1, -1))
+    return [
+        (
+            f"pan_{index}_{position}",
+            replace(
+                view,
+                x_min=info.x_min + travel * position / (steps - 1),
+                x_max=info.x_min + travel * position / (steps - 1) + width,
+            ),
+        )
+        for index, position in enumerate(positions)
+    ]
+
+
+def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_budget, trace=None, hysteresis=True):
     records = {}
     timings = _TimingLog()
     visual = canvas = view = runtime = None
@@ -95,6 +123,7 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
     last_tick = time.perf_counter()
     gc_intervals = []
     gc_started = {}
+    lod_decisions = {}
 
     def track_gc(phase, details):
         key = (threading.get_ident(), details["generation"])
@@ -157,7 +186,15 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
                 "vertices_identity": id(snapshot.render_batch.vertices),
                 "level": snapshot.level,
                 "level_kind": snapshot.level_kind,
-                "within_budget": snapshot.within_budget,
+                "within_hard_limits": snapshot.within_hard_limits,
+                "budget_message": snapshot.budget_message,
+                "preferred_points": min(
+                    request.viewport.screen_density_budget,
+                    request.viewport.hard_render_point_budget,
+                    self._settings.max_vertex_payload_bytes // TILED_POINTS_VERTEX_DTYPE.itemsize,
+                ),
+                "hard_points": request.viewport.hard_render_point_budget,
+                "vertex_byte_limit": self._settings.max_vertex_payload_bytes,
                 "visible_estimate": snapshot.estimated_point_count,
                 "payload_points": snapshot.rendered_point_count,
                 "payload_tiles": snapshot.rendered_tile_count,
@@ -167,8 +204,9 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
                 "transient_candidate_bytes": 0 if reused else snapshot.render_batch.nbytes,
                 "breakdown": timings.summary(),
                 "activated": False,
+                **lod_decisions[request.request_generation],
             }
-            if not snapshot.within_budget:
+            if not snapshot.within_hard_limits:
                 records[request.request_generation]["outcome"] = "metadata_only_over_budget"
                 records[request.request_generation]["reuse_rejection"] = "visible_budget"
             # Exclude building the benchmark record itself from queued-delivery time.
@@ -231,6 +269,32 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
     timer.timeout.connect(tick)
     with _TemporaryPatches() as patches:
         _install_reader_timers(timings, patches)
+        timed_select = session_module._TiledPointsCacheWorker._select_viewport_level
+
+        def measured_select(worker, reader, request, **kwargs):
+            selection, reason = timed_select(worker, reader, request, **kwargs)
+            upper, refinement = _lod_thresholds(kwargs["preferred_point_budget"], kwargs["hard_point_capacity"])
+            lod_decisions[request.request_generation] = {
+                "lod_reason": reason,
+                "upper_threshold": upper if hysteresis else None,
+                "refinement_threshold": refinement if hysteresis else None,
+                "hard_capacity": kwargs["hard_point_capacity"],
+                "previous_level": None
+                if worker._retained_viewport is None
+                else worker._retained_viewport.snapshot.level,
+            }
+            return selection, reason
+
+        patches.patch(session_module._TiledPointsCacheWorker, "_select_viewport_level", measured_select)
+        if not hysteresis:
+            select_lod = session_module._select_lod
+
+            def ordinary_lod(candidates, **kwargs):
+                # Remove only the LOD history input, not packed-batch retention
+                # or acceptance feedback. Evaluate identical metadata and limits.
+                return select_lod(candidates, **{**kwargs, "previous_level": None})
+
+            patches.patch(session_module, "_select_lod", ordinary_lod)
         patches.patch(session_module, "_TiledPointsCacheWorker", _MeasuredCacheWorker)
         if not retain:
             # Disable only the reuse decision. The worker still evaluates LOD,
@@ -287,7 +351,7 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
                     and runtime._viewport_scheduler.pending_request_generation is None
                 )
 
-            for label, viewport in _trace(info, point_budget):
+            for label, viewport in _trace(info, point_budget) if trace is None else trace:
                 # Start a genuinely disjoint sequence with a fresh packed entry.
                 # A full-extent active entry would otherwise cover both regions.
                 if label == "disjoint_left":
@@ -303,7 +367,7 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
                 record = records.get(generation)
                 if record is None:
                     raise RuntimeError(f"Request failed: {layer.display_status.message}")
-                if record["within_budget"] and not record["activated"]:
+                if record["within_hard_limits"] and not record["activated"]:
                     raise RuntimeError(f"Activation failed: {layer.display_status.message}")
                 if canvas is not None:
                     started = time.perf_counter()
@@ -323,7 +387,7 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
             # submissions and obsolete dispatched work from accepted-view timings.
             full = _trace(info, point_budget)[0][1]
             width = (full.x_max - full.x_min) * 0.15
-            for i in range(24):
+            for i in range(24 if trace is None else 0):
                 start = full.x_min + (full.x_max - full.x_min) * i / 24
                 submit(f"fast_pan_{i}", replace(full, x_min=start, x_max=start + width))
                 app.processEvents()
@@ -342,7 +406,7 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
 
     for generation, record in records.items():
         record["label"] = submitted[generation][0]
-        record["obsolete"] = record["within_budget"] and not record["activated"]
+        record["obsolete"] = record["within_hard_limits"] and not record["activated"]
         for name in (
             "worker_finished",
             "activation_started",
@@ -353,6 +417,7 @@ def _run_case(app, cache_root, info, selection, *, retain, real_canvas, point_bu
             record.pop(name, None)
     return {
         "retention_enabled": retain,
+        "lod_policy": "hysteresis" if hysteresis else "ordinary",
         "requests": list(records.values()),
         "coalesced_submissions": len(submitted) - len(records),
         "qt_timer_gap_max_ms": max(frame_gaps, default=0),
@@ -369,16 +434,43 @@ def main():
     parser.add_argument("--point-budget", type=int, default=100_000)
     parser.add_argument("--real-canvas", action="store_true")
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument(
+        "--pan-steps", type=int, default=0, help="Positions per direction; zero uses the mixed reuse trace."
+    )
+    parser.add_argument(
+        "--viewport-fraction", type=float, default=0.25, help="Fixed pan width/height as dataset fractions."
+    )
+    parser.add_argument(
+        "--density-budget", type=int, default=50_000, help="Preferred point count for --pan-steps traces."
+    )
+    parser.add_argument(
+        "--compare-lod", action="store_true", help="Compare ordinary LOD/hysteresis with retention on in both."
+    )
     parser.add_argument("--json-output", type=Path, required=True)
     args = parser.parse_args()
     if args.point_budget <= 0 or args.repeats <= 0 or not (args.selection or args.all_values):
         parser.error("Supply a selection or --all-values and a positive point budget.")
+    if args.pan_steps != 0 and args.pan_steps < 2:
+        parser.error("--pan-steps must be zero or at least two.")
+    if not 0 < args.viewport_fraction <= 1 or args.density_budget <= 0:
+        parser.error("Supply a viewport fraction in (0, 1] and a positive density budget.")
     app = QApplication.instance() or QApplication([])
     with _PointsCacheReader(args.cache_root) as reader:
         info = reader.dataset_info
     selections = [(names, tuple(sorted({info.value_names.index(name) for name in names}))) for names in args.selection]
     if args.all_values:
         selections.append((None, None))
+    trace = (
+        _pan_trace(
+            info,
+            args.point_budget,
+            density_budget=args.density_budget,
+            fraction=args.viewport_fraction,
+            steps=args.pan_steps,
+        )
+        if args.pan_steps
+        else None
+    )
     report = {
         "cache_root": str(args.cache_root),
         "git": _git_state(),
@@ -391,7 +483,9 @@ def main():
         for repeat in range(args.repeats):
             # Alternate mode order so cold filesystem/allocator effects do not
             # systematically favor either branch of the comparison.
-            for retain in (False, True) if repeat % 2 == 0 else (True, False):
+            for enabled in (False, True) if repeat % 2 == 0 else (True, False):
+                retain = True if args.compare_lod else enabled
+                hysteresis = enabled if args.compare_lod else True
                 result = _run_case(
                     app,
                     args.cache_root,
@@ -400,10 +494,15 @@ def main():
                     retain=retain,
                     real_canvas=args.real_canvas,
                     point_budget=args.point_budget,
+                    trace=trace,
+                    hysteresis=hysteresis,
                 )
                 result["repeat"] = repeat
                 case["modes"].append(result)
-                print(f"Completed selection={names}, retention={retain}, repeat={repeat}", flush=True)
+                print(
+                    f"Completed selection={names}, retention={retain}, hysteresis={hysteresis}, repeat={repeat}",
+                    flush=True,
+                )
         report["cases"].append(case)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     report["peak_rss_mib"] = peak / ((1 << 20) if sys.platform == "darwin" else 1024)
