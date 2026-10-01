@@ -1,6 +1,6 @@
 The overall architecture is strong and I would continue with it. The important caveat is that the branch is still building the foundations: it does not yet contain an end-to-end tiled cache, runtime tile loader, or napari renderer.
 
-As of 3 August 2026, [`feature/transcripts_cache`](https://github.com/vibspatial/napari-harpy/tree/feature/transcripts_cache) is 23 commits ahead of `main`.
+As of 3 August 2026, [`feature/transcripts_cache`](https://github.com/vibspatial/spatiato/tree/feature/transcripts_cache) is 23 commits ahead of `main`.
 
 ## What is implemented now
 
@@ -15,7 +15,7 @@ The branch has completed validation slices V0–V3:
 | Internal `point_id` policy | Stable identity from file offset + row position |
 | Focused tests | Models, source resolution, inventory and signatures |
 
-The [validation roadmap](https://github.com/vibspatial/napari-harpy/blob/feature/transcripts_cache/Roadmap/transcripts_visualization/validation_cache_29_7_26.md) correctly identifies V4—the bounded coordinate/value scan—as the next step. The current [`validation.py`](https://github.com/vibspatial/napari-harpy/blob/feature/transcripts_cache/src/napari_harpy/core/multi_scale_cache_points/validation.py) only performs metadata validation; it does not yet establish coordinate bounds or build the value table.
+The [validation roadmap](https://github.com/vibspatial/spatiato/blob/feature/transcripts_cache/Roadmap/transcripts_visualization/validation_cache_29_7_26.md) correctly identifies V4—the bounded coordinate/value scan—as the next step. The current [`validation.py`](https://github.com/vibspatial/spatiato/blob/feature/transcripts_cache/src/napari_harpy/core/multi_scale_cache_points/validation.py) only performs metadata validation; it does not yet establish coordinate bounds or build the value table.
 
 Still unimplemented:
 
@@ -32,7 +32,7 @@ So this is presently a well-specified Phase 0 implementation, not yet a working 
 
 ## Evaluation of the cache design
 
-The authoritative [cache and renderer roadmap](https://github.com/vibspatial/napari-harpy/blob/feature/transcripts_cache/Roadmap/transcripts_visualization/multi_tile_cache_29_7_26.md) gets the most important architectural choices right:
+The authoritative [cache and renderer roadmap](https://github.com/vibspatial/spatiato/blob/feature/transcripts_cache/Roadmap/transcripts_visualization/multi_tile_cache_29_7_26.md) gets the most important architectural choices right:
 
 - SpatialData remains canonical; the cache is deletable and derived.
 - Every LOD remains points—no raster fallback.

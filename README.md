@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/src/spatiato/_static/logo.svg" alt="Spatiato logo" width="400">
+  <img src="https://raw.githubusercontent.com/vibspatial/spatiato/main/src/spatiato/_static/logo.svg" alt="Spatiato logo" width="400">
 </p>
 
 <h1 align="center">spatiato: a spatial omics interface for napari.</h1>
 
-[![PyPI](https://img.shields.io/pypi/v/napari-harpy.svg)](https://pypi.org/project/napari-harpy/)
+[![PyPI](https://img.shields.io/pypi/v/spatiato.svg)](https://pypi.org/project/spatiato/)
 
 Built around [`SpatialData`](https://spatialdata.scverse.org/en/stable/) and [`Harpy`](https://harpy.readthedocs.io/en/latest/) for interactive exploration, feature extraction, and object classification.
 
@@ -15,7 +15,7 @@ interactive object classification workflows.
 
 ## Installation
 
-Install from [PyPI](https://pypi.org/project/napari-harpy/):
+Install from [PyPI](https://pypi.org/project/spatiato/):
 
 ```bash
 pip install spatiato
@@ -82,11 +82,11 @@ Today the plugin supports:
 Example spatiato session:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/viewer.png" alt="spatiato viewer example screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/spatiato/main/docs/_static/viewer.png" alt="spatiato viewer example screenshot" width="900">
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/object_classification.png" alt="spatiato object classification example screenshot" width="900">
+  <img src="https://raw.githubusercontent.com/vibspatial/spatiato/main/docs/_static/object_classification.png" alt="spatiato object classification example screenshot" width="900">
 </p>
 
 ## Headless and Multi-Sample Workflows
