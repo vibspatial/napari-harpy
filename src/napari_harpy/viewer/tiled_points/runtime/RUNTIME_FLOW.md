@@ -115,11 +115,15 @@ flowchart TB
     Publish -.->|queued Qt: snapshot reference| Receive
 ```
 
-The worker first tries the finest level meeting the preferred screen-density
-target, capped by the hard limits. If none meets that preference, it can still
-use the coarsest level when that level fits the hard point and vertex-byte
-limits. A hard-limit failure returns metadata with an empty batch; the GUI
-reports the limit without replacing the current visual.
+Without compatible accepted LOD history, the worker chooses the finest level
+meeting the preferred screen-density target, capped by the hard limits. With
+that history, it applies hysteresis: refine when a finer candidate meets the
+lower threshold; otherwise stay at the accepted level if it meets the upper
+threshold, then try coarser candidates. All estimates concern the new viewport.
+If no hysteresis choice is available, the policy falls back to the finest
+preferred-budget fit, or the coarsest level if it fits the hard point and
+vertex-byte limits. A hard-limit failure returns metadata with an empty batch;
+the GUI reports the limit without replacing the current visual.
 
 The replacement path chooses its physical route **after LOD selection**:
 
@@ -131,6 +135,49 @@ Both routes return the same logical tile payloads to CPU residency. The runtime
 does not need a route-specific CPU tile cache. See
 [route selection](../../../core/multi_scale_cache_points_zarr/reader.py#L941)
 and [missing-tile reads](../../../core/multi_scale_cache_points_zarr/reader.py#L1007).
+
+### LOD history versus render-batch reuse
+
+The same `_retained_viewport` serves two distinct purposes:
+
+1. **LOD history:** `_select_viewport_level()` takes `previous_level` from the
+   accepted snapshot when cache generation, selection generation and requested
+   value IDs match. It passes that level to `_select_lod()` with fresh estimates
+   for the incoming viewport. Without compatible history, `previous_level` is
+   `None`. This step does not require containment or the old batch to fit the
+   new limits; it only uses the accepted level as hysteresis history.
+2. **Batch reuse:** after choosing a level and checking hard limits, the worker
+   asks whether the retained packed point array can serve this request. This
+   additionally requires the same LOD, containment within the original bounds,
+   and the entire retained allocation fitting the current hard limits.
+
+The diagram below details the renderable path; hard-limit rejection follows
+the separate branch in the overview above.
+
+```mermaid
+flowchart TD
+    R["_retained_viewport<br/>Last accepted snapshot + original bounds"]
+    L["_select_viewport_level → _select_lod<br/>Choose LOD using fresh viewport estimates"]
+    Q{"Can the retained batch serve<br/>this request at the chosen LOD?"}
+    U["Reuse the packed batch"]
+    N["Prepare a replacement batch"]
+
+    R -->|"Compatible snapshot.level → previous_level"| L
+    L -->|"hard limits satisfied"| Q
+    R -->|"Original bounds, batch and identity"| Q
+    Q -->|Yes| U
+    Q -->|No| N
+```
+
+For example, after accepting viewport A at Exact, a disjoint pan to B can still
+use Exact as `previous_level`. Hysteresis may choose Exact again, but A's batch
+cannot serve B because B lies outside A's bounds. The worker prepares a
+replacement, potentially reusing decoded CPU tiles. Only GUI acceptance makes
+that candidate the retained entry and the source of subsequent LOD history;
+rejection preserves A, as described in section 3.
+
+Implementation: [accepted LOD history](cache_session.py#L631),
+[LOD policy](lod.py#L55), and [batch-reuse checks](cache_session.py#L156).
 
 ### What reuse avoids
 
@@ -165,7 +212,7 @@ and [renderer batch-identity check](../vispy/layer.py#L164).
 ## 3. Acceptance: from pending candidate to retained viewport
 
 Preparing a candidate does not replace the retained viewport. The worker
-[stores it in `_pending_viewport`](cache_session.py#L596) while awaiting the
+[stores it in `_pending_viewport`](cache_session.py#L605) while awaiting the
 GUI's acceptance or rejection:
 
 1. **GUI acceptance:** layer runtime's
@@ -173,10 +220,10 @@ GUI's acceptance or rejection:
    synchronous acceptance result, not completion of a GPU draw.
 2. **Feedback ordering:** the scheduler
    [forwards that result before dispatching the next viewport](viewport_scheduler.py#L409).
-   The session [queues it to the worker](cache_session.py#L819); the GUI does
+   The session [queues it to the worker](cache_session.py#L870); the GUI does
    not wait for the worker to process it.
 3. **Worker retention:** the worker's
-   [`acknowledge_render_result()`](cache_session.py#L606) checks the pending
+   [`acknowledge_render_result()`](cache_session.py#L657) checks the pending
    candidate's request and selection generations. For a matching candidate,
    it clears `_pending_viewport` and promotes the candidate only when
    `applied=True`. Rejection preserves the previous `_retained_viewport`;
