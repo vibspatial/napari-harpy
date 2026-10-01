@@ -151,22 +151,38 @@ The same `_retained_viewport` serves two distinct purposes:
    additionally requires the same LOD, containment within the original bounds,
    and the entire retained allocation fitting the current hard limits.
 
-The diagram below details the renderable path; hard-limit rejection follows
-the separate branch in the overview above.
+The two areas below separate **LOD selection on the left** from **batch reuse
+on the right**. The retained viewport supplies different inputs to each area;
+it is one shared entry, not two caches. The diagram details the renderable path;
+hard-limit rejection follows the separate branch in the overview above.
 
 ```mermaid
-flowchart TD
+flowchart TB
     R["_retained_viewport<br/>Last accepted snapshot + original bounds"]
-    L["_select_viewport_level → _select_lod<br/>Choose LOD using fresh viewport estimates"]
-    Q{"Can the retained batch serve<br/>this request at the chosen LOD?"}
-    U["Reuse the packed batch"]
-    N["Prepare a replacement batch"]
 
-    R -->|"Compatible snapshot.level → previous_level"| L
-    L -->|"hard limits satisfied"| Q
-    R -->|"Original bounds, batch and identity"| Q
-    Q -->|Yes| U
-    Q -->|No| N
+    subgraph Decisions["Viewport decisions"]
+        direction LR
+        subgraph LOD["1. LOD selection — including hysteresis"]
+            direction TB
+            L["_select_viewport_level → _select_lod<br/>Choose LOD using fresh viewport estimates"]
+            H["Check the chosen estimate<br/>against hard limits"]
+            L --> H
+        end
+
+        subgraph Reuse["2. Render-batch reuse"]
+            direction TB
+            Q{"Can the retained batch serve<br/>this request at the chosen LOD?"}
+            U["Reuse the packed batch"]
+            N["Prepare a replacement batch"]
+            Q -->|Yes| U
+            Q -->|No| N
+        end
+
+        LOD -->|"Chosen LOD; hard limits satisfied"| Reuse
+    end
+
+    R -->|"Compatible snapshot.level → previous_level"| LOD
+    R -->|"Original bounds, batch and identity"| Reuse
 ```
 
 For example, after accepting viewport A at Exact, a disjoint pan to B can still
