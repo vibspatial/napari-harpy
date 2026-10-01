@@ -429,7 +429,7 @@ class _TiledPointsLayerRuntime(QObject):
         rejected = TiledPointsRenderResult(snapshot.request_generation, snapshot.selection_generation, applied=False)
         if self._closed:
             return rejected
-        if not snapshot.within_budget:
+        if not snapshot.within_hard_limits:
             # This is a metadata-only viewport result, not renderer input. Keep
             # the active visual untouched and report why it was not replaced.
             self._set_transient_status(f"{snapshot.budget_message}; retaining the previous view")

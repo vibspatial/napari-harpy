@@ -199,7 +199,7 @@ class VispyTiledPointsLayer(VispyBaseLayer[TiledPointsLayerModel]):
             raise ValueError("`snapshot` must be TiledPointsRenderSnapshot.")
         if snapshot.cache_generation_id != self.layer.data.cache_generation_id:
             raise ValueError("Render snapshot cache generation differs from the layer dataset.")
-        if not snapshot.within_budget:
+        if not snapshot.within_hard_limits:
             return False
 
         render_batch = snapshot.render_batch

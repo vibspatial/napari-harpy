@@ -212,10 +212,10 @@ class TiledPointsLayerModel(Layer):
         point per logical canvas pixel.
 
         This is a display-density heuristic, not the marker diameter or a
-        guarantee that rendered points will be spatially separated. If no
-        cached level meets this preference, the coarsest level may render more
-        densely, provided it still satisfies the hard point and vertex-byte
-        limits.
+        guarantee that rendered points will be spatially separated. LOD
+        hysteresis may keep a denser representation within a bounded tolerance.
+        If no preferred or hysteresis choice is available, the coarsest fallback
+        may also exceed this preference. Both hard rendering limits still apply.
         """
         return self._target_pixels_per_point
 

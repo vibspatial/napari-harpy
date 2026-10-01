@@ -125,6 +125,17 @@ preferred-budget fit, or the coarsest level if it fits the hard point and
 vertex-byte limits. A hard-limit failure returns metadata with an empty batch;
 the GUI reports the limit without replacing the current visual.
 
+The two budget flags describe different checks:
+
+- `_LevelSelection.fits_point_budget`: whether the estimate fits the budget
+  supplied to the reader, which is the preferred budget in the viewer.
+- `TiledPointsRenderSnapshot.within_hard_limits`: whether the chosen payload
+  satisfies both hard rendering limits.
+
+Hysteresis can therefore choose a candidate with `fits_point_budget=False` and
+produce a snapshot with `within_hard_limits=True`. Neither flag reports renderer
+acceptance; that is the separate `TiledPointsRenderResult.applied` result.
+
 The replacement path chooses its physical route **after LOD selection**:
 
 - All values: tile-major `location` and point-level `value_id` payloads.

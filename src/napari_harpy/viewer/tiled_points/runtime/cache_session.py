@@ -420,9 +420,9 @@ class _TiledPointsCacheWorker(QObject):
         informational density message. A hard-limit rejection instead publishes a
         metadata-only snapshot explaining the limit, without reading point payloads.
 
-        Accordingly, ``level_selection.within_budget`` describes the reader's fit
+        Accordingly, ``level_selection.fits_point_budget`` describes the reader's fit
         against the preferred target, whereas the published snapshot's
-        ``within_budget`` describes whether the hard limits permit rendering.
+        ``within_hard_limits`` describes whether the hard limits permit rendering.
 
         Retained render-batch reuse
         --------------------------
@@ -509,12 +509,12 @@ class _TiledPointsCacheWorker(QObject):
             # tolerated density overrun or coarsest fallback. Check its estimate
             # against hard capacity without another level scan or payload IO.
             point_count = level_selection.estimated_point_count
-            within_budget = point_count <= hard_point_capacity
+            within_hard_limits = point_count <= hard_point_capacity
             budget_message = None
             # A hard-limit violation produces a metadata-only TiledPointsRenderSnapshot
-            # below, with within_budget=False and an empty render batch. No point
+            # below, with within_hard_limits=False and an empty render batch. No point
             # payloads are read; the GUI retains the previous view rather than clearing it.
-            if not within_budget:
+            if not within_hard_limits:
                 limits = []
                 if point_count > request.viewport.hard_render_point_budget:
                     limits.append(
@@ -543,7 +543,7 @@ class _TiledPointsCacheWorker(QObject):
             )
 
             # 2. Reject, reuse the accepted batch, or prepare a replacement.
-            if not within_budget:
+            if not within_hard_limits:
                 # i) Reject: the requested view exceeds the hard rendering limits.
                 snapshot = TiledPointsRenderSnapshot(
                     cache_generation_id=dataset_info.cache_generation_id,
@@ -552,7 +552,7 @@ class _TiledPointsCacheWorker(QObject):
                     requested_value_ids=request.requested_value_ids,
                     level=level_selection.level,
                     level_kind=level_kind,
-                    within_budget=False,
+                    within_hard_limits=False,
                     estimated_point_count=level_selection.estimated_point_count,
                     omitted_value_ids=omitted_value_ids,
                     rendered_tile_count=0,
@@ -966,7 +966,7 @@ def _read_viewport_snapshot(
     It neither selects a level nor inspects or updates retained viewport state.
 
     ``level_selection`` supplies the selected level and its visible count and
-    omission metadata. Its ``within_budget`` flag concerns the preferred density
+    omission metadata. Its ``fits_point_budget`` flag concerns the preferred density
     target, not hard eligibility: hysteresis tolerance or a permitted coarsest
     fallback may leave it False. ``budget_message`` carries the worker's diagnostic.
     """
@@ -1052,7 +1052,7 @@ def _read_viewport_snapshot(
         requested_value_ids=request.requested_value_ids,
         level=level_selection.level,
         level_kind=level_kind,
-        within_budget=True,
+        within_hard_limits=True,
         estimated_point_count=level_selection.estimated_point_count,
         omitted_value_ids=omitted_value_ids,
         rendered_tile_count=len(ordered_tiles),
