@@ -4708,7 +4708,7 @@ Viewport methods return one immutable `_ViewportReadResult` containing the
 selected level and the tuple of positive `_TileReadResult` objects in manifest
 order. `select_level()` returns an immutable `_LevelSelection` containing the
 chosen level, estimated point count, positive visible-tile count, and
-`within_budget` flag rather than returning an unexplained integer. For a
+`fits_point_budget` flag rather than returning an unexplained integer. For a
 value-filtered request it also returns read-only sorted `omitted_value_ids`:
 requested values with a positive Exact visible count and zero count at the
 selected level. The field is an empty `uint32` array when none were omitted and
@@ -4822,7 +4822,7 @@ count is at most the positive
   summed without point-level deduplication;
 - a disjoint viewport selects Exact and produces no tile results;
 - when no level fits for an all-values request, select the terminal overview
-  and set `within_budget` from its actual estimate rather than assuming the
+  and set `fits_point_budget` from its actual estimate rather than assuming the
   construction overview limit also fits this runtime budget.
 
 The construction and runtime limits are different contracts. For example, a
@@ -4838,13 +4838,13 @@ terminal overview                       82,000     no
 
 selected level      = terminal overview
 estimated rows      = 82,000
-within_budget       = False
+fits_point_budget       = False
 ```
 
 The terminal overview is still the smallest available all-values
 representation, but returning it does not mean that `select_level()` satisfied
 the caller's effective budget. If its estimate were 18,000 instead,
-`within_budget` would be `True`. Z9 reports this state truthfully; it does not
+`fits_point_budget` would be `True`. Z9 reports this state truthfully; it does not
 thin the 82,000 rows at read time.
 
 Use the same budget-first policy for all-values and value-filtered requests:
@@ -4854,11 +4854,11 @@ Use the same budget-first policy for all-values and value-filtered requests:
 2. for a value-filtered request, sum visible points only for requested values
    represented at that level;
 3. return the first level whose estimate is at most `point_budget`, with
-   `within_budget = True`;
+   `fits_point_budget = True`;
 4. do not make a sampled level ineligible because it omits one or more requested
    values;
 5. if no serialized level fits, return the coarsest level with
-   `within_budget = False`.
+   `fits_point_budget = False`.
 
 This makes the render budget authoritative for a multi-value request: one rare
 value lost during sampling cannot force every other selected value back to
@@ -4990,7 +4990,7 @@ Add focused real-Zarr tests for:
 - Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
   no-level-fits LOD decisions from catalog counts only;
 - an all-values `point_budget` below the terminal overview count selecting that
-  terminal level with `within_budget = False` rather than claiming a fit;
+  terminal level with `fits_point_budget = False` rather than claiming a fit;
 - a selected value that exceeds the budget at Exact and disappears at the next
   sampled level, proving that the zero-count sampled level is a valid fit;
 - multiple requested values where one disappears while another remains,
@@ -5070,7 +5070,7 @@ focused test still freezes the behavior.
 Exercise several caller-supplied `point_budget` values below and at the retained
 100,000-point overview limit, including budgets derived from documented example
 canvas sizes and screen-space densities. Report when the terminal overview is
-the best available all-values level but still has `within_budget = False`.
+the best available all-values level but still has `fits_point_budget = False`.
 These calculations provide evidence for whether a later construction-policy
 experiment should lower `overview_point_budget`; Z9 does not change that policy,
 claim visual acceptance without a napari integration, or implement runtime
@@ -5090,7 +5090,7 @@ Record:
 - application-cold and application-warm request timings;
 - proof that no acceptance-reader request accesses a `point_id` payload chunk;
 - chosen LOD, estimated point count, actual returned point count, and
-  `within_budget` decision.
+  `fits_point_budget` decision.
 
 #### Bucket-target decision
 
@@ -5195,7 +5195,7 @@ shard is unavailable, while construction reads fail, freezing that acceptance
 requests slice only `location` and point-level `value_id`.
 
 Catalog-only LOD selection chose the terminal 100,000-point overview for a
-full-dataset all-values viewport. It reported `within_budget = True` for a
+full-dataset all-values viewport. It reported `fits_point_budget = True` for a
 100,000 runtime budget and `False` for 50,000 and 25,000, rather than claiming
 that the terminal level satisfied those smaller screen-derived budgets. For a
 common selected value it chose L4 with 78,789 estimated points; median,
