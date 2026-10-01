@@ -8,6 +8,7 @@ import pytest
 from filelock import FileLock
 
 import napari_harpy.core.multi_scale_cache_points_zarr.builder as builder_module
+import napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog as catalog_module
 from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _acquire_output_build_lock,
     _build_points_cache_zarr,
@@ -24,7 +25,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     validate_parquet_points_source,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 
@@ -49,7 +50,12 @@ def _validated_source(tmp_path: Path) -> ValidatedPointsSource:
     return validate_parquet_points_source(source, max_batch_rows=2)
 
 
-def _config(*, overview_point_budget: int, target_points_per_bucket: int = 2_000_000) -> _PointsCacheBuilderConfig:
+def _config(
+    *,
+    overview_point_budget: int,
+    target_points_per_bucket: int = 2_000_000,
+    max_open_value_major_readers: int | None = None,
+) -> _PointsCacheBuilderConfig:
     return _PointsCacheBuilderConfig(
         leaf_tile_size=10,
         overview_point_budget=overview_point_budget,
@@ -68,6 +74,7 @@ def _config(*, overview_point_budget: int, target_points_per_bucket: int = 2_000
             value_tile_chunk_rows=2,
             value_tile_shard_rows=4,
         ),
+        max_open_value_major_readers=max_open_value_major_readers,
     )
 
 
@@ -89,7 +96,7 @@ def _build(
 
 
 def _generation_id(cache_root: Path) -> str:
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         return reader.attributes.cache_generation_id
 
 
@@ -102,6 +109,15 @@ def _assert_publication_released(tmp_path: Path, output_name: str = "transcripts
     assert not list(tmp_path.glob(f"{output_name}.backup-*"))
 
 
+def test_builder_config_defaults_to_all_value_major_readers_and_validates_explicit_bound() -> None:
+    config = _config(overview_point_budget=10)
+
+    assert config.max_open_value_major_readers is None
+    assert _config(overview_point_budget=10, max_open_value_major_readers=3).max_open_value_major_readers == 3
+    with pytest.raises(ValueError, match="max_open_value_major_readers"):
+        _config(overview_point_budget=10, max_open_value_major_readers=0)
+
+
 def test_builder_publishes_complete_exact_only_generation(tmp_path: Path) -> None:
     validated = _validated_source(tmp_path)
 
@@ -109,7 +125,7 @@ def test_builder_publishes_complete_exact_only_generation(tmp_path: Path) -> Non
 
     generation_id = _generation_id(output)
     assert output == tmp_path / "transcripts_vis_zarr"
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         reader.validate_contents()
         assert reader.attributes.cache_generation_id == generation_id
         assert reader.attributes.publication_state == PUBLICATION_STATE_COMPLETE
@@ -132,7 +148,7 @@ def test_builder_persists_and_validates_configured_bucket_target(tmp_path: Path)
         config=_config(overview_point_budget=10, target_points_per_bucket=2),
     )
 
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         reader.validate_contents()
         assert reader.attributes.build.target_points_per_bucket == 2
 
@@ -142,7 +158,7 @@ def test_builder_publishes_complete_multilevel_generation(tmp_path: Path) -> Non
 
     output = _build(validated, tmp_path, overview_point_budget=2)
 
-    with _CatalogReader(output) as reader:
+    with _CacheRootReader(output) as reader:
         reader.validate_contents()
         levels = reader.attributes.levels
         assert tuple(level.kind for level in levels[:2]) == ("exact", "bridge")
@@ -220,6 +236,29 @@ def test_builder_final_source_guard_failure_removes_unpublished_generation(
     assert guard_calls == 2
     assert not (tmp_path / "transcripts_vis_zarr").exists()
     assert (tmp_path / "temporary").is_dir()
+    assert not any((tmp_path / "temporary").iterdir())
+    _assert_publication_released(tmp_path)
+
+
+def test_builder_preserves_completed_generation_when_value_major_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validated = _validated_source(tmp_path)
+    output = _build(validated, tmp_path)
+    original_generation_id = _generation_id(output)
+
+    def fail_sidecar(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise RuntimeError("simulated value-major write failure")
+
+    monkeypatch.setattr(catalog_module, "_write_value_major_sidecars", fail_sidecar)
+
+    with pytest.raises(RuntimeError, match="simulated value-major write failure"):
+        _build(validated, tmp_path)
+
+    assert _generation_id(output) == original_generation_id
+    assert not list(tmp_path.glob("transcripts_vis_zarr.staging-*"))
     assert not any((tmp_path / "temporary").iterdir())
     _assert_publication_released(tmp_path)
 

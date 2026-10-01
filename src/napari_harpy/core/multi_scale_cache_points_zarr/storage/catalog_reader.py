@@ -10,21 +10,6 @@ import zarr
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    CATALOG_ARRAY_DTYPES,
-    LEVELS_GROUP,
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_GROUP,
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_N_POINTS,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
-    VALUE_TILES_GROUP,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-    VALUES_GROUP,
-    VALUES_N_POINTS,
     _CacheAttributes,
     _parse_cache_attributes,
 )
@@ -36,7 +21,41 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import _parse_root_attributes
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+    CACHE_ROOT_GROUPS,
+    TILE_MAJOR_GROUP,
+    VALUE_MAJOR_GROUP,
+    level_name,
+    tile_major_bucket_name,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    CATALOG_ARRAY_DTYPES,
+    CATALOG_ARRAY_PATHS,
+    CATALOG_GROUP_ARRAYS,
+    MANIFEST_BUCKET_ID,
+    MANIFEST_BUCKET_TILE_INDEX,
+    MANIFEST_LEVEL_INDPTR,
+    MANIFEST_N_POINTS,
+    MANIFEST_TILE_X,
+    MANIFEST_TILE_Y,
+    TILE_MAJOR_BUCKET_ARRAY_PATHS,
+    TILE_MAJOR_RANGE_ROW_COUNT,
+    TILE_MAJOR_RANGE_ROW_START,
+    TILE_MAJOR_RANGE_TILE_INDPTR,
+    TILE_MAJOR_RANGE_VALUE_ID,
+    TILE_MAJOR_TILE_OFFSET,
+    TILE_MAJOR_TILE_X,
+    TILE_MAJOR_TILE_Y,
+    TILE_MAJOR_VALUE_ID,
+    VALUE_MAJOR_LEVEL_ARRAYS,
+    VALUE_TILES_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
+    VALUES_N_POINTS,
+    ZARR_FORMAT_VERSION,
+    ZARR_USE_CONSOLIDATED,
+    _parse_root_attributes,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import (
     _strict_array,
     _validate_array_layout,
@@ -47,19 +66,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketWriteResult,
     _ZarrWriteSettings,
 )
-
-_CATALOG_ARRAY_PATHS = (
-    VALUES_N_POINTS,
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
-    MANIFEST_N_POINTS,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
 
 
 @dataclass(frozen=True, eq=False)
@@ -67,17 +74,21 @@ class _RangeRecordBatch:
     """Hold one bounded batch from one level's sortable tile/value records.
 
     Level identity belongs to the containing level stream rather than being
-    repeated for every record in the batch.
+    repeated for every record in the batch. ``row_start`` is the bucket-global
+    coordinate source address carried through the catalog permutation for
+    value-major sidecar construction.
     """
 
     value_id: np.ndarray
     manifest_index: np.ndarray
+    row_start: np.ndarray
     n_points: np.ndarray
 
     def __post_init__(self) -> None:
         arrays = (
             ("value_id", self.value_id, np.dtype(np.uint32)),
             ("manifest_index", self.manifest_index, np.dtype(np.uint64)),
+            ("row_start", self.row_start, np.dtype(np.uint64)),
             ("n_points", self.n_points, np.dtype(np.uint64)),
         )
         row_count: int | None = None
@@ -107,8 +118,29 @@ class _RangeRecordBatch:
         return len(self.value_id)
 
 
-class _CatalogReader:
-    """Open a self-describing cache root and validate its frozen catalog layout."""
+class _CacheRootReader:
+    """Own the cache-root store, lookup arrays, and value-major level readers.
+
+    Ownership and access
+    --------------------
+    - Own the cache-root store and Zarr group.
+    - Retain cache-wide lookup Zarr arrays: ``manifest/*``,
+      ``values/n_points``, and ``value_tiles/*``. Access these through
+      ``array(name)``.
+    - Own one ``_ValueMajorLevelReader`` per level. Each owns its location
+      and point-pointer array references and uses the same root store.
+      ``value_major_level(level)`` returns that existing reader.
+
+    Validation and lifecycle
+    ------------------------
+    - Opening validates the hierarchy and array layouts without decoding
+      point payloads or loading pointer vectors.
+    - ``validate_contents()`` separately reads lookup metadata and
+      value-major pointers to check their consistency, without reading
+      point payloads.
+    - Closing invalidates every value-major level reader before closing
+      the shared root store.
+    """
 
     def __init__(self, cache_root: Path) -> None:
         self._cache_root = cache_root
@@ -116,16 +148,17 @@ class _CatalogReader:
         self._root: zarr.Group | None = None
         self._attributes: _CacheAttributes | None = None
         self._arrays: dict[str, zarr.Array] = {}
+        self._value_major_readers: list[_ValueMajorLevelReader] = []
 
     @property
     def attributes(self) -> _CacheAttributes:
         if self._attributes is None:
-            raise RuntimeError("Catalog reader is not open.")
+            raise RuntimeError("Cache-root reader is not open.")
         return self._attributes
 
-    def __enter__(self) -> _CatalogReader:
+    def __enter__(self) -> _CacheRootReader:
         if self._store is not None:
-            raise RuntimeError("A catalog reader can be entered only once.")
+            raise RuntimeError("A cache-root reader can be entered only once.")
         if not isinstance(self._cache_root, Path) or not self._cache_root.is_dir():
             raise FileNotFoundError("Cache root does not exist.")
         self._store = LocalStore(self._cache_root, read_only=True)
@@ -133,13 +166,26 @@ class _CatalogReader:
             self._root = zarr.open_group(
                 store=self._store,
                 mode="r",
-                zarr_format=3,
-                use_consolidated=False,
+                zarr_format=ZARR_FORMAT_VERSION,
+                use_consolidated=ZARR_USE_CONSOLIDATED,
             )
             self._attributes = _parse_cache_attributes(dict(self._root.attrs))
             self._validate_hierarchy()
-            self._arrays = {name: self._strict_array(name) for name in _CATALOG_ARRAY_PATHS}
+            self._arrays = {name: _strict_array(self._root, name) for name in CATALOG_ARRAY_PATHS}
             self._validate_layouts()
+            for level, metadata in enumerate(self.attributes.levels):
+                # Register each successful construction immediately so failure
+                # at a later level still invalidates all earlier readers.
+                self._value_major_readers.append(
+                    _ValueMajorLevelReader(
+                        self._root,
+                        level=level,
+                        point_count=metadata.point_count,
+                        value_count=self.attributes.catalog.value_count,
+                        metadata=self.attributes.value_major,
+                        codec_id=self.attributes.zarr_settings.codec_id,
+                    )
+                )
         except Exception:
             self._close()
             raise
@@ -156,11 +202,17 @@ class _CatalogReader:
         return False
 
     def array(self, name: str) -> zarr.Array:
-        """Return one strict catalog array by its frozen cache-relative path."""
+        """Return a cache-wide lookup Zarr array by its cache-relative path."""
         try:
             return self._arrays[name]
         except KeyError as error:
-            raise ValueError(f"Unknown or unopened catalog array: {name}.") from error
+            raise ValueError(f"Unknown or unopened cache-root array: {name}.") from error
+
+    def value_major_level(self, level: int) -> _ValueMajorLevelReader:
+        """Borrow an existing level reader, valid only while this root is open."""
+        self._root_or_raise()
+        _require_integer_in_range(level, "level", maximum=len(self._value_major_readers) - 1)
+        return self._value_major_readers[level]
 
     def validate_contents(self) -> None:
         """Validate the logical catalog without reading point payload arrays.
@@ -168,7 +220,7 @@ class _CatalogReader:
         Within staged validation, this method establishes that the catalog
         arrays are internally consistent.
 
-        Validation proceeds in four layers:
+        Validation proceeds in five layers:
 
         1. Canonical values: require every value to have a positive Exact count
            and require their sum to equal the validated source row count.
@@ -182,6 +234,9 @@ class _CatalogReader:
            by manifest tile, cache level, and Exact value, and compare those
            independently derived totals with ``manifest/n_points``, root level
            point counts, and ``values/n_points``, respectively.
+        5. Value-major pointers: read each small pointer vector and require its
+           per-value differences and terminal to equal the same independently
+           derived value-tile totals and declared level point count.
 
         Opening the reader has already validated the root hierarchy and catalog
         array layouts. This method checks their logical contents and the bucket
@@ -241,9 +296,9 @@ class _CatalogReader:
         if bool((manifest[MANIFEST_N_POINTS] == 0).any()):
             raise ValueError("Manifest point counts must be positive.")
         addresses: set[tuple[int, int, int]] = set()
-        levels_group = self._root_or_raise()[LEVELS_GROUP]
-        if not isinstance(levels_group, zarr.Group):
-            raise ValueError("Cache levels node is not a group.")
+        tile_major_group = self._root_or_raise()[TILE_MAJOR_GROUP]
+        if not isinstance(tile_major_group, zarr.Group):
+            raise ValueError("Cache tile-major node is not a group.")
         for level, metadata in enumerate(attributes.levels):
             start = int(level_indptr[level])
             stop = int(level_indptr[level + 1])
@@ -284,10 +339,10 @@ class _CatalogReader:
                     raise ValueError("Manifest bucket-local indexes are not contiguous from zero.")
             if int(manifest[MANIFEST_N_POINTS][start:stop].sum(dtype=np.uint64)) != metadata.point_count:
                 raise ValueError("Manifest point counts do not match root level metadata.")
-            level_group = levels_group[f"level_{level}"]
+            level_group = tile_major_group[level_name(level)]
             if not isinstance(level_group, zarr.Group):
                 raise ValueError("Serialized cache level is not a Zarr group.")
-            expected_buckets = {f"bucket-{bucket_id:03d}.zarr" for bucket_id in set(bucket_ids.tolist())}
+            expected_buckets = {tile_major_bucket_name(bucket_id) for bucket_id in set(bucket_ids.tolist())}
             if (
                 set(level_group.group_keys()) != expected_buckets
                 or set(level_group.array_keys())
@@ -326,6 +381,7 @@ class _CatalogReader:
 
         manifest_totals = np.zeros(catalog.manifest_row_count, dtype=np.uint64)
         level_totals = np.zeros(catalog.level_count, dtype=np.uint64)
+        level_value_totals = np.zeros((catalog.level_count, catalog.value_count), dtype=np.uint64)
         exact_value_totals = np.zeros(catalog.value_count, dtype=np.uint64)
         previous_key = -1
         previous_manifest = -1
@@ -362,6 +418,7 @@ class _CatalogReader:
             previous_manifest = int(manifest_index[-1])
             np.add.at(manifest_totals, manifest_index, n_points)
             np.add.at(level_totals, levels, n_points)
+            np.add.at(level_value_totals, (levels, values), n_points)
             exact = levels == 0
             np.add.at(exact_value_totals, values[exact], n_points[exact])
 
@@ -383,30 +440,57 @@ class _CatalogReader:
         if not np.array_equal(exact_value_totals, value_counts):
             raise ValueError("Exact value-tile counts do not reconcile to canonical value totals.")
 
+        # 5. Value-major pointer reconciliation
+        # -------------------------------------
+        # Location payloads remain unread by this mandatory validation step.
+        # The compact pointer vectors are sufficient to prove that every level
+        # declares the same per-value and total row counts as ``value_tiles``.
+        for level, metadata in enumerate(attributes.levels):
+            point_indptr = self.value_major_level(level).load_point_indptr()
+            if (
+                int(point_indptr[0]) != 0
+                or int(point_indptr[-1]) != metadata.point_count
+                or bool((point_indptr[1:] < point_indptr[:-1]).any())
+                or not np.array_equal(np.diff(point_indptr), level_value_totals[level])
+            ):
+                raise ValueError(f"Value-major pointers do not reconcile to level {level} value totals.")
+
     def _validate_hierarchy(self) -> None:
         root = self._root_or_raise()
-        if set(root.group_keys()) != {LEVELS_GROUP, VALUES_GROUP, MANIFEST_GROUP, VALUE_TILES_GROUP}:
+        if set(root.group_keys()) != CACHE_ROOT_GROUPS:
             raise ValueError("Cache root contains missing or unexpected Zarr groups.")
         if set(root.array_keys()):
             raise ValueError("Cache root must not contain arrays directly.")
-        levels = root[LEVELS_GROUP]
-        if not isinstance(levels, zarr.Group):
-            raise ValueError("Cache levels node is not a group.")
-        expected_levels = {f"level_{level}" for level in range(self.attributes.catalog.level_count)}
-        if set(levels.group_keys()) != expected_levels or set(levels.array_keys()) or dict(levels.attrs):
-            raise ValueError("Cache level hierarchy does not match root metadata.")
+        tile_major = root[TILE_MAJOR_GROUP]
+        if not isinstance(tile_major, zarr.Group):
+            raise ValueError("Cache tile-major node is not a group.")
+        expected_levels = {level_name(level) for level in range(self.attributes.catalog.level_count)}
+        if set(tile_major.group_keys()) != expected_levels or set(tile_major.array_keys()) or dict(tile_major.attrs):
+            raise ValueError("Cache tile-major level hierarchy does not match root metadata.")
 
-        expected_arrays = {
-            VALUES_GROUP: {"n_points"},
-            MANIFEST_GROUP: {"level_indptr", "bucket_id", "bucket_tile_index", "tile_x", "tile_y", "n_points"},
-            VALUE_TILES_GROUP: {"indptr", "manifest_index", "n_points"},
-        }
-        for group_name, array_names in expected_arrays.items():
+        for group_name, array_names in CATALOG_GROUP_ARRAYS.items():
             group = root[group_name]
             if not isinstance(group, zarr.Group):
                 raise ValueError(f"Catalog node is not a group: {group_name}.")
             if set(group.array_keys()) != array_names or set(group.group_keys()) or dict(group.attrs):
                 raise ValueError(f"Catalog group has the wrong children or attributes: {group_name}.")
+
+        value_major = root[VALUE_MAJOR_GROUP]
+        if not isinstance(value_major, zarr.Group):
+            raise ValueError("Value-major node is not a group.")
+        expected_levels = {level_name(level) for level in range(self.attributes.catalog.level_count)}
+        if set(value_major.group_keys()) != expected_levels or set(value_major.array_keys()) or dict(value_major.attrs):
+            raise ValueError("Value-major level hierarchy does not match root metadata.")
+        for level_group_name in expected_levels:
+            level_group = value_major[level_group_name]
+            if not isinstance(level_group, zarr.Group):
+                raise ValueError("Value-major level node is not a group.")
+            if (
+                set(level_group.array_keys()) != VALUE_MAJOR_LEVEL_ARRAYS
+                or set(level_group.group_keys())
+                or dict(level_group.attrs)
+            ):
+                raise ValueError("Value-major level has the wrong children or attributes.")
 
     def _validate_layouts(self) -> None:
         attributes = self.attributes
@@ -459,21 +543,15 @@ class _CatalogReader:
                 codec_id=codec_id,
             )
 
-    def _strict_array(self, name: str) -> zarr.Array:
-        root = self._root_or_raise()
-        node = root[name]
-        if not isinstance(node, zarr.Array):
-            raise ValueError(f"Required catalog node is not an array: {name}.")
-        if dict(node.attrs):
-            raise ValueError(f"Catalog arrays must not contain attributes: {name}.")
-        return node.with_config({"read_missing_chunks": False})
-
     def _root_or_raise(self) -> zarr.Group:
         if self._root is None:
-            raise RuntimeError("Catalog root is not open.")
+            raise RuntimeError("Cache root is not open.")
         return self._root
 
     def _close(self) -> None:
+        for reader in self._value_major_readers:
+            reader.close()
+        self._value_major_readers.clear()
         if self._store is not None:
             self._store.close()
         self._store = None
@@ -495,9 +573,9 @@ def _iter_bucket_range_batches(
     ``manifest_indexes[i]`` is the global manifest row assigned to bucket-local
     tile ``i``. Range rows are read in bounded contiguous slices, mapped through
     ``tile_indptr`` to that tile's manifest row, and returned as sortable
-    ``(value_id, manifest_index, n_points)`` records within the bucket's
-    validated level stream. Validation carries value-order and row-coverage
-    state across slice boundaries.
+    ``(value_id, manifest_index, row_start, n_points)`` records within the
+    bucket's validated level stream. Validation carries value-order and
+    row-coverage state across slice boundaries.
     """
     if not isinstance(bucket_result, _BucketWriteResult):
         raise ValueError("`bucket_result` must be _BucketWriteResult.")
@@ -568,37 +646,28 @@ def _iter_compact_bucket_range_batches(
 
     store = LocalStore(cache_root / _bucket_path(level=level, bucket_id=bucket_id), read_only=True)
     try:
-        root = zarr.open_group(store=store, mode="r", zarr_format=3, use_consolidated=False)
+        root = zarr.open_group(
+            store=store,
+            mode="r",
+            zarr_format=ZARR_FORMAT_VERSION,
+            use_consolidated=ZARR_USE_CONSOLIDATED,
+        )
         _validate_hierarchy(root)
         attributes = _parse_root_attributes(
             dict(root.attrs),
             expected_level=level,
             expected_bucket_id=bucket_id,
         )
-        arrays = {
-            name: _strict_array(root, name)
-            for name in (
-                "location",
-                "point_id",
-                "value_id",
-                "tile_x",
-                "tile_y",
-                "tile_offset",
-                "ranges/tile_indptr",
-                "ranges/value_id",
-                "ranges/row_start",
-                "ranges/row_count",
-            )
-        }
+        arrays = {name: _strict_array(root, name) for name in TILE_MAJOR_BUCKET_ARRAY_PATHS}
         # Validate the reopened store at this reader boundary rather than trust
         # an optional earlier catalog preflight. This keeps the iterator safe as
         # a standalone storage primitive and detects changes before array reads.
         _validate_array_layouts(arrays, attributes)
         observed_settings = _ZarrWriteSettings(
-            point_chunk_rows=arrays["value_id"].chunks[0],
-            point_shard_rows=arrays["value_id"].shards[0],  # type: ignore[index]
-            range_chunk_rows=arrays["ranges/value_id"].chunks[0],
-            range_shard_rows=arrays["ranges/value_id"].shards[0],  # type: ignore[index]
+            point_chunk_rows=arrays[TILE_MAJOR_VALUE_ID].chunks[0],
+            point_shard_rows=arrays[TILE_MAJOR_VALUE_ID].shards[0],  # type: ignore[index]
+            range_chunk_rows=arrays[TILE_MAJOR_RANGE_VALUE_ID].chunks[0],
+            range_shard_rows=arrays[TILE_MAJOR_RANGE_VALUE_ID].shards[0],  # type: ignore[index]
             codec_id=attributes.codec_id,
         )
         if observed_settings != expected_settings:
@@ -610,10 +679,10 @@ def _iter_compact_bucket_range_batches(
         if expected_range_count is not None and attributes.range_count != expected_range_count:
             raise ValueError("Bucket physical range count does not match its finalized result.")
 
-        tile_x = np.asarray(arrays["tile_x"][:], dtype=np.uint32)
-        tile_y = np.asarray(arrays["tile_y"][:], dtype=np.uint32)
-        tile_offset = np.asarray(arrays["tile_offset"][:], dtype=np.uint64)
-        tile_indptr = np.asarray(arrays["ranges/tile_indptr"][:], dtype=np.uint64)
+        tile_x = np.asarray(arrays[TILE_MAJOR_TILE_X][:], dtype=np.uint32)
+        tile_y = np.asarray(arrays[TILE_MAJOR_TILE_Y][:], dtype=np.uint32)
+        tile_offset = np.asarray(arrays[TILE_MAJOR_TILE_OFFSET][:], dtype=np.uint64)
+        tile_indptr = np.asarray(arrays[TILE_MAJOR_RANGE_TILE_INDPTR][:], dtype=np.uint64)
         descriptors = expected_descriptors
         if tile_offset[0] != 0 or tile_offset[-1] != attributes.point_count:
             raise ValueError("Bucket tile offsets have invalid terminals.")
@@ -626,6 +695,7 @@ def _iter_compact_bucket_range_batches(
                 descriptor.bucket_tile_index != index
                 or int(tile_x[index]) != descriptor.tile_x
                 or int(tile_y[index]) != descriptor.tile_y
+                or int(tile_offset[index]) != descriptor.bucket_row_start
                 or int(tile_offset[index + 1] - tile_offset[index]) != descriptor.n_points
             ):
                 raise ValueError("Bucket compact tile arrays do not match finalized descriptors.")
@@ -636,9 +706,9 @@ def _iter_compact_bucket_range_batches(
         range_total = attributes.range_count
         for batch_start in range(0, range_total, batch_rows):
             batch_stop = min(batch_start + batch_rows, range_total)
-            values = np.asarray(arrays["ranges/value_id"][batch_start:batch_stop], dtype=np.uint32)
-            row_starts = np.asarray(arrays["ranges/row_start"][batch_start:batch_stop], dtype=np.uint64)
-            row_counts = np.asarray(arrays["ranges/row_count"][batch_start:batch_stop], dtype=np.uint64)
+            values = np.asarray(arrays[TILE_MAJOR_RANGE_VALUE_ID][batch_start:batch_stop], dtype=np.uint32)
+            row_starts = np.asarray(arrays[TILE_MAJOR_RANGE_ROW_START][batch_start:batch_stop], dtype=np.uint64)
+            row_counts = np.asarray(arrays[TILE_MAJOR_RANGE_ROW_COUNT][batch_start:batch_stop], dtype=np.uint64)
             if bool((row_counts == 0).any()):
                 raise ValueError("Bucket sparse range counts must be positive.")
             range_indexes = np.arange(batch_start, batch_stop, dtype=np.uint64)
@@ -677,6 +747,7 @@ def _iter_compact_bucket_range_batches(
             yield _RangeRecordBatch(
                 value_id=np.ascontiguousarray(values),
                 manifest_index=np.ascontiguousarray(manifest_indexes[tile_indexes]),
+                row_start=np.ascontiguousarray(row_starts),
                 n_points=np.ascontiguousarray(row_counts),
             )
         if previous_tile != len(descriptors) - 1 or expected_row_start != attributes.point_count:
@@ -696,31 +767,22 @@ def _read_bucket_storage_settings(
         raise ValueError("`bucket_result` must be _BucketWriteResult.")
     store = LocalStore(cache_root / bucket_result.bucket_path, read_only=True)
     try:
-        root = zarr.open_group(store=store, mode="r", zarr_format=3, use_consolidated=False)
+        root = zarr.open_group(
+            store=store,
+            mode="r",
+            zarr_format=ZARR_FORMAT_VERSION,
+            use_consolidated=ZARR_USE_CONSOLIDATED,
+        )
         _validate_hierarchy(root)
         attributes = _parse_root_attributes(
             dict(root.attrs),
             expected_level=bucket_result.level,
             expected_bucket_id=bucket_result.bucket_id,
         )
-        arrays = {
-            name: _strict_array(root, name)
-            for name in (
-                "location",
-                "point_id",
-                "value_id",
-                "tile_x",
-                "tile_y",
-                "tile_offset",
-                "ranges/tile_indptr",
-                "ranges/value_id",
-                "ranges/row_start",
-                "ranges/row_count",
-            )
-        }
+        arrays = {name: _strict_array(root, name) for name in TILE_MAJOR_BUCKET_ARRAY_PATHS}
         _validate_array_layouts(arrays, attributes)
-        point_shards = arrays["value_id"].shards
-        range_shards = arrays["ranges/value_id"].shards
+        point_shards = arrays[TILE_MAJOR_VALUE_ID].shards
+        range_shards = arrays[TILE_MAJOR_RANGE_VALUE_ID].shards
         if point_shards is None or range_shards is None:
             raise ValueError("Bucket point and range arrays must be sharded.")
         return _ZarrWriteSettings(
@@ -728,9 +790,9 @@ def _read_bucket_storage_settings(
             # and point-level ``value_id`` use identical chunk and shard
             # boundaries along their first, point-row axis. Use the
             # one-dimensional ``value_id`` metadata as their canonical source.
-            point_chunk_rows=arrays["value_id"].chunks[0],
+            point_chunk_rows=arrays[TILE_MAJOR_VALUE_ID].chunks[0],
             point_shard_rows=point_shards[0],
-            range_chunk_rows=arrays["ranges/value_id"].chunks[0],
+            range_chunk_rows=arrays[TILE_MAJOR_RANGE_VALUE_ID].chunks[0],
             range_shard_rows=range_shards[0],
             codec_id=attributes.codec_id,
         )

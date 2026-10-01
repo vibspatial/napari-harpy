@@ -31,6 +31,7 @@ def _tile(**overrides: object) -> _TileDescriptor:
         "level": 0,
         "bucket_id": 0,
         "bucket_tile_index": 0,
+        "bucket_row_start": 0,
         "tile_x": 0,
         "tile_y": 0,
         "n_points": 3,
@@ -40,10 +41,10 @@ def _tile(**overrides: object) -> _TileDescriptor:
 
 
 def test_bucket_path_is_canonical_and_derived_from_identity() -> None:
-    assert _bucket_path(level=0, bucket_id=3) == "levels/level_0/bucket-003.zarr"
-    assert _bucket_path(level=2, bucket_id=999) == "levels/level_2/bucket-999.zarr"
-    assert _bucket_path(level=2, bucket_id=1_000) == "levels/level_2/bucket-1000.zarr"
-    assert _tile(level=2, bucket_id=3).bucket_path == "levels/level_2/bucket-003.zarr"
+    assert _bucket_path(level=0, bucket_id=3) == "tile_major/level_0/bucket-003.zarr"
+    assert _bucket_path(level=2, bucket_id=999) == "tile_major/level_2/bucket-999.zarr"
+    assert _bucket_path(level=2, bucket_id=1_000) == "tile_major/level_2/bucket-1000.zarr"
+    assert _tile(level=2, bucket_id=3).bucket_path == "tile_major/level_2/bucket-003.zarr"
 
 
 @pytest.mark.parametrize(
@@ -70,6 +71,13 @@ def test_bucket_path_rejects_invalid_identity(
         ("level", 2**15),
         ("bucket_id", True),
         ("bucket_tile_index", -1),
+        ("bucket_tile_index", True),
+        ("bucket_tile_index", 2**32),
+        ("bucket_row_start", -1),
+        ("bucket_row_start", True),
+        ("bucket_row_start", None),
+        ("bucket_row_start", 0.5),
+        ("bucket_row_start", 2**63),
         ("tile_x", 2**32),
         ("tile_y", -1),
         ("n_points", 0),
@@ -79,6 +87,15 @@ def test_bucket_path_rejects_invalid_identity(
 def test_tile_descriptor_enforces_serialized_ranges(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         _tile(**{field: value})
+
+
+def test_tile_descriptor_requires_a_complete_bounded_point_interval() -> None:
+    tile = _tile(bucket_row_start=2**63 - 4)
+    assert tile.bucket_row_start + tile.n_points == 2**63 - 1
+    with pytest.raises(ValueError, match="supported row domain"):
+        _tile(bucket_row_start=2**63 - 3)
+    with pytest.raises(ValueError, match="contiguous from zero"):
+        _BucketWriteResult((_tile(bucket_row_start=1),), 3, 1)
 
 
 def test_write_settings_require_positive_aligned_rows_and_codec() -> None:
@@ -105,7 +122,7 @@ def test_bucket_plan_exposes_exact_read_only_prefix_sums() -> None:
     )
 
     assert plan.tile_count == 3
-    assert plan.bucket_path == "levels/level_0/bucket-000.zarr"
+    assert plan.bucket_path == "tile_major/level_0/bucket-000.zarr"
     assert plan.point_count == 10
     assert plan.tile_offset.tolist() == [0, 3, 5, 10]
     assert not plan.tile_offset.flags.writeable
@@ -128,7 +145,10 @@ def test_bucket_plan_rejects_empty_duplicate_unordered_or_overflowing_tiles() ->
 
 
 def test_bucket_and_level_results_reconcile_and_order_logical_tiles() -> None:
-    bucket_0_tiles = (_tile(n_points=3), _tile(bucket_tile_index=1, tile_x=0, tile_y=1, n_points=2))
+    bucket_0_tiles = (
+        _tile(n_points=3),
+        _tile(bucket_tile_index=1, bucket_row_start=3, tile_x=0, tile_y=1, n_points=2),
+    )
     bucket_0 = _BucketWriteResult(bucket_0_tiles, 5, 3)
     bucket_1_tile = _tile(
         bucket_id=1,
@@ -143,7 +163,7 @@ def test_bucket_and_level_results_reconcile_and_order_logical_tiles() -> None:
     assert (bucket_1.level, bucket_1.bucket_id, bucket_1.bucket_path) == (
         0,
         1,
-        "levels/level_0/bucket-001.zarr",
+        "tile_major/level_0/bucket-001.zarr",
     )
     assert result.level == 0
     assert [(tile.tile_x, tile.tile_y) for tile in result.tile_descriptors] == [(0, 0), (1, 0), (0, 1)]

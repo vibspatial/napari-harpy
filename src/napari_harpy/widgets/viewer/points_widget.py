@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
 
 POINTS_RENDER_BUDGET_MIN = 1_000
-POINTS_RENDER_BUDGET_MAX = 1_000_000
+POINTS_RENDER_BUDGET_MAX = 100_000_000
 _DETAIL_PANEL_STYLESHEET = (
     "QFrame[harpyViewerDetailPanel='true'] {"
     f"background-color: {WIDGET_PANEL_COLOR}; "
@@ -261,7 +261,11 @@ class PointsValueWidget(QFrame):
             can_visualize=controller.can_visualize,
             is_loading=controller.is_loading or controller.is_loading_values,
         )
-        if self._value_selection_warning and controller.can_visualize and not (controller.is_loading or controller.is_loading_values):
+        if (
+            self._value_selection_warning
+            and controller.can_visualize
+            and not (controller.is_loading or controller.is_loading_values)
+        ):
             self.show_status(
                 title="Points Warning",
                 lines=[self._value_selection_warning],
@@ -429,9 +433,7 @@ class PointsValueWidget(QFrame):
         self.add_value_button.setEnabled(
             value_selection_enabled and self._resolve_available_value(self.value_input.text()) is not None
         )
-        self.clear_selection_button.setEnabled(
-            value_selection_enabled and bool(self._selected_values)
-        )
+        self.clear_selection_button.setEnabled(value_selection_enabled and bool(self._selected_values))
         self._refresh_add_update_state()
 
     def _refresh_add_update_state(self, _text: str | None = None) -> None:

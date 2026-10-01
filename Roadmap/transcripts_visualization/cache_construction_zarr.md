@@ -295,7 +295,7 @@ the new package and must not create cross-writer dependencies.
           indptr/                            # (level, value_id) -> entries
           manifest_index/                    # entry -> manifest row
           n_points/                          # entry count
-        levels/
+        tile_major/
           zarr.json
           level_0/
             zarr.json
@@ -367,7 +367,7 @@ n_points: int
 
 `bucket_path` is not stored independently on the descriptor. It is the
 canonical cache-relative property
-`levels/level_<level>/bucket-<bucket_id, minimum three digits>.zarr`, derived
+`tile_major/level_<level>/bucket-<bucket_id, minimum three digits>.zarr`, derived
 only from `level` and `bucket_id`.
 
 `bucket_tile_index` is a zero-based tile ordinal inside a bucket. It is not a
@@ -418,7 +418,7 @@ bucket_id              = <JSON integer>
 tile_count             = <JSON integer>
 point_count            = <JSON integer>
 range_count            = <JSON integer>
-point_order            = ["tile_y", "tile_x", "value_id", "point_id"]
+point_row_order        = ["tile_y", "tile_x", "value_id", "point_id"]
 coordinate_encoding    = "tile-relative-xy-float32-v1"
 codec_id               = "zstd-v1"
 ```
@@ -1189,7 +1189,7 @@ Required invariants:
 - `point_count_upper_bound` is positive and at most `int64_max`;
 - Exact has `max_points_per_tile is None`;
 - Bridge and spatial levels have a positive `int64`-compatible capacity;
-- `relative_directory` is derived as `levels/level_<level>` and is not stored as
+- `relative_directory` is derived as `tile_major/level_<level>` and is not stored as
   independent mutable data.
 
 Define `_PointsCacheBuildPlan`:
@@ -1358,7 +1358,7 @@ Bucket filenames use a canonical minimum width of three digits and do not
 depend on the complete planned bucket count:
 
 ```text
-levels/level_<level>/bucket-<bucket_id:03d>.zarr
+tile_major/level_<level>/bucket-<bucket_id:03d>.zarr
 ```
 
 The width is a minimum: bucket IDs above 999 expand normally. Numeric ordering
@@ -1932,7 +1932,7 @@ Before creating a Dask graph it requires:
 - `plan` is a `_PointsCacheBuildPlan` whose first level is uncapped Exact level
   zero;
 - `staging_root` is an existing isolated generation root;
-- `levels/level_0` does not already exist; the Exact coordinator owns creation
+- `tile_major/level_0` does not already exist; the Exact coordinator owns creation
   of this directory;
 - `temporary_directory_root` is an existing caller-owned scratch root and is
   distinct from staged cache output;
@@ -2401,7 +2401,7 @@ Before opening an input store or creating output, require:
 - Exact is uncapped and Bridge has a positive `max_points_per_tile`;
 - every Exact descriptor lies inside the planned Exact grid;
 - the staged Exact level exists below `staging_root`;
-- `levels/level_1` does not exist; Z4 owns creation of that directory;
+- `tile_major/level_1` does not exist; Z4 owns creation of that directory;
 - `config` contains valid Zarr settings and a positive reader-cache bound.
 
 #### One Exact descriptor is one complete input tile
@@ -3268,7 +3268,7 @@ The nested value types and structure are:
     "identifier": "harpy-zarr-v3-bucket-sparse-value-ranges-v1",
     "zarr_format": 3,
     "payload_schema_version": 1,
-    "point_order": ["tile_y", "tile_x", "value_id", "point_id"],
+    "point_row_order": ["tile_y", "tile_x", "value_id", "point_id"],
     "coordinate_encoding": "tile-relative-xy-float32-v1",
     "codec_id": "zstd-v1",
     "point_chunk_rows": 4096,
@@ -3338,7 +3338,7 @@ The nested value types and structure are:
       "tile_count": 7844,
       "point_count": 136578750,
       "range_count": 1000000,
-      "relative_directory": "levels/level_0"
+      "relative_directory": "tile_major/level_0"
     }
   ],
   "value_names": ["ACTB", "EPCAM", "MALAT1"],
@@ -3712,9 +3712,9 @@ canonical SpatialData store. The benchmark workspace has two distinct roles:
 sdata_xenium_full_data_core.transcripts-cache-workspace/
   pyramid-base/
     _benchmark_pyramid_inventory.json
-    levels/                         # Exact, Bridge, and every Spatial level
+    tile_major/                     # Exact, Bridge, and every Spatial level
   z6-<run-name>/
-    levels/                         # cheap local clone of pyramid-base/levels
+    tile_major/                     # cheap local clone of pyramid-base/tile_major
     values/
     manifest/
     value_tiles/
@@ -3875,9 +3875,9 @@ The mandatory path is:
 
 ```text
 staging_root only
-  -> open a fresh read-only _CatalogReader
+  -> open a fresh read-only _CacheRootReader
   -> parse and validate root attributes, hierarchy, and catalog layouts
-  -> _CatalogReader.validate_contents()
+  -> _CacheRootReader.validate_contents()
   -> reconstruct manifest descriptors grouped by physical bucket
   -> enumerate and validate the exact physical bucket inventory
   -> reopen every bucket through the compact validation path
@@ -3888,7 +3888,7 @@ staging_root only
   -> return None
 ```
 
-`_CatalogReader.validate_contents()` is the cache-wide catalog primitive owned
+`_CacheRootReader.validate_contents()` is the cache-wide catalog primitive owned
 by Z6. It validates value totals, manifest pointers and ordering, bucket-local
 addresses, `value_tiles` pointers and ordering, and per-manifest, per-level, and
 Exact per-value totals. Z7 consumes it; it does not duplicate those checks in
@@ -4534,7 +4534,7 @@ scripts/benchmark_multi_scale_cache_points_zarr_acceptance.py
 ```
 
 `reader.py` owns the high-level cache, tile, viewport, and level-selection
-contracts. It composes the existing strict `_CatalogReader`, `_BucketReader`,
+contracts. It composes the existing strict `_CacheRootReader`, `_BucketReader`,
 and `_BucketReaderCache`; it does not duplicate Zarr schema parsing or import
 the existing Parquet-backed cache reader. Low-level visualization reads may be
 added to `storage/bucket_reader.py`, but existing construction-facing
@@ -4548,7 +4548,7 @@ paths, or pass/fail timings become cache-format metadata.
 
 Implement one private `_PointsCacheReader` context manager. On entry it:
 
-1. opens the cache through `_CatalogReader` and therefore validates the frozen
+1. opens the cache through `_CacheRootReader` and therefore validates the frozen
    root, hierarchy, and catalog array layouts;
 2. requires root `publication_state = "complete"` and rejects a staging or
    unsupported generation;
@@ -4582,7 +4582,7 @@ metadata are retained. Point payloads and decoded chunks are not stored in
 `_BucketReaderCache`; operating-system and codec caching remain separate.
 
 Opening an accepted published cache must not call
-`_CatalogReader.validate_contents()` or `_validate_staged_cache()`. Publication
+`_CacheRootReader.validate_contents()` or `_validate_staged_cache()`. Publication
 already ran the independent complete-generation validator; replaying its full
 compact reconciliation on every viewer open would add seconds of unnecessary
 startup work. Runtime reads still fail closed on malformed root/layout metadata
@@ -4607,7 +4607,7 @@ viewer runtime
 Once published, the cache's globally reconciled semantic contents are trusted.
 Neither reader entry nor any tile, viewport, selection, panning, or LOD request
 may revalidate the canonical Parquet source, call `_validate_staged_cache()`,
-call `_CatalogReader.validate_contents()`, reconcile the complete manifest and
+call `_CacheRootReader.validate_contents()`, reconcile the complete manifest and
 `value_tiles`, scan all bucket ranges, or scan a complete point payload.
 
 “Trusted” does not disable cheap defensive checks local to data being opened or
@@ -4708,7 +4708,7 @@ Viewport methods return one immutable `_ViewportReadResult` containing the
 selected level and the tuple of positive `_TileReadResult` objects in manifest
 order. `select_level()` returns an immutable `_LevelSelection` containing the
 chosen level, estimated point count, positive visible-tile count, and
-`within_budget` flag rather than returning an unexplained integer. For a
+`fits_point_budget` flag rather than returning an unexplained integer. For a
 value-filtered request it also returns read-only sorted `omitted_value_ids`:
 requested values with a positive Exact visible count and zero count at the
 selected level. The field is an empty `uint32` array when none were omitted and
@@ -4822,7 +4822,7 @@ count is at most the positive
   summed without point-level deduplication;
 - a disjoint viewport selects Exact and produces no tile results;
 - when no level fits for an all-values request, select the terminal overview
-  and set `within_budget` from its actual estimate rather than assuming the
+  and set `fits_point_budget` from its actual estimate rather than assuming the
   construction overview limit also fits this runtime budget.
 
 The construction and runtime limits are different contracts. For example, a
@@ -4838,13 +4838,13 @@ terminal overview                       82,000     no
 
 selected level      = terminal overview
 estimated rows      = 82,000
-within_budget       = False
+fits_point_budget       = False
 ```
 
 The terminal overview is still the smallest available all-values
 representation, but returning it does not mean that `select_level()` satisfied
 the caller's effective budget. If its estimate were 18,000 instead,
-`within_budget` would be `True`. Z9 reports this state truthfully; it does not
+`fits_point_budget` would be `True`. Z9 reports this state truthfully; it does not
 thin the 82,000 rows at read time.
 
 Use the same budget-first policy for all-values and value-filtered requests:
@@ -4854,11 +4854,11 @@ Use the same budget-first policy for all-values and value-filtered requests:
 2. for a value-filtered request, sum visible points only for requested values
    represented at that level;
 3. return the first level whose estimate is at most `point_budget`, with
-   `within_budget = True`;
+   `fits_point_budget = True`;
 4. do not make a sampled level ineligible because it omits one or more requested
    values;
 5. if no serialized level fits, return the coarsest level with
-   `within_budget = False`.
+   `fits_point_budget = False`.
 
 This makes the render budget authoritative for a multi-value request: one rare
 value lost during sampling cannot force every other selected value back to
@@ -4990,7 +4990,7 @@ Add focused real-Zarr tests for:
 - Exact, Bridge, Spatial, terminal-overview, all-values, selected-value, and
   no-level-fits LOD decisions from catalog counts only;
 - an all-values `point_budget` below the terminal overview count selecting that
-  terminal level with `within_budget = False` rather than claiming a fit;
+  terminal level with `fits_point_budget = False` rather than claiming a fit;
 - a selected value that exceeds the budget at Exact and disappears at the next
   sampled level, proving that the zero-count sampled level is a valid fit;
 - multiple requested values where one disappears while another remains,
@@ -5070,7 +5070,7 @@ focused test still freezes the behavior.
 Exercise several caller-supplied `point_budget` values below and at the retained
 100,000-point overview limit, including budgets derived from documented example
 canvas sizes and screen-space densities. Report when the terminal overview is
-the best available all-values level but still has `within_budget = False`.
+the best available all-values level but still has `fits_point_budget = False`.
 These calculations provide evidence for whether a later construction-policy
 experiment should lower `overview_point_budget`; Z9 does not change that policy,
 claim visual acceptance without a napari integration, or implement runtime
@@ -5090,7 +5090,7 @@ Record:
 - application-cold and application-warm request timings;
 - proof that no acceptance-reader request accesses a `point_id` payload chunk;
 - chosen LOD, estimated point count, actual returned point count, and
-  `within_budget` decision.
+  `fits_point_budget` decision.
 
 #### Bucket-target decision
 
@@ -5195,7 +5195,7 @@ shard is unavailable, while construction reads fail, freezing that acceptance
 requests slice only `location` and point-level `value_id`.
 
 Catalog-only LOD selection chose the terminal 100,000-point overview for a
-full-dataset all-values viewport. It reported `within_budget = True` for a
+full-dataset all-values viewport. It reported `fits_point_budget = True` for a
 100,000 runtime budget and `False` for 50,000 and 25,000, rather than claiming
 that the terminal level satisfied those smaller screen-derived budgets. For a
 common selected value it chose L4 with 78,789 estimated points; median,
@@ -5589,7 +5589,7 @@ selected-value index rather than raw value IDs:
    selected values required by bucket-local sparse-range reads.
 
 Repeated viewport planning for one selected-value index must not call
-`CatalogReader.array(...)`, slice `value_tiles/manifest_index` or
+`_CacheRootReader.array(...)`, slice `value_tiles/manifest_index` or
 `value_tiles/n_points`, open a bucket reader, or read a point payload. Viewport
 payload loading is still I/O by definition, but it must not repeat the
 cache-wide selected-value catalog lookup before opening the already identified

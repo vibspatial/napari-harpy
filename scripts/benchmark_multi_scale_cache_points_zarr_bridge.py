@@ -239,12 +239,12 @@ def main() -> None:
             if args.max_open_exact_readers is None
             else min(args.max_open_exact_readers, exact_result.bucket_count)
         )
-        exact_directory = staging / "levels/level_0"
+        exact_directory = staging / "tile_major/level_0"
         exact_bytes_before = _directory_size(exact_directory)
         exact_objects_before = _directory_file_count(exact_directory)
 
         gc.collect()
-        bridge_directory = staging / "levels/level_1"
+        bridge_directory = staging / "tile_major/level_1"
         with _ResourceSampler(bridge_directory) as resources:
             bridge_start = perf_counter()
             bridge_result = _write_bridge_level(

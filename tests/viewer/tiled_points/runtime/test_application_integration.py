@@ -6,6 +6,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import (
+    points_cache_path,
+    points_element_path,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
 from napari_harpy.viewer.tiled_points.application import (
     DEFAULT_MAX_CPU_TILE_BYTES,
@@ -14,6 +18,7 @@ from napari_harpy.viewer.tiled_points.application import (
     TiledPointsCacheDescriptor,
     canonical_value_palette,
 )
+from napari_harpy.viewer.tiled_points.contracts import TILED_POINTS_VERTEX_DTYPE
 from napari_harpy.widgets.viewer.tiled_points_controller import _CacheDescriptorJob, _load_cache_descriptor
 
 
@@ -30,14 +35,29 @@ class _BackedSpatialData:
         return ["points/transcripts"]
 
 
+def test_points_cache_location_convention(tmp_path: Path) -> None:
+    assert points_element_path("transcripts") == "points/transcripts"
+    assert points_cache_path(tmp_path, "transcripts") == (tmp_path / "points" / "transcripts" / "transcripts_vis_zarr")
+
+
 def test_application_settings_freeze_product_residency_defaults() -> None:
     settings = TiledPointsApplicationSettings()
 
-    assert settings.max_bucket_lookup_bytes is None
     assert settings.max_selected_value_index_bytes is None
     assert settings.max_cpu_tile_bytes == DEFAULT_MAX_CPU_TILE_BYTES
     assert settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
     assert settings.cache_session_settings.max_vertex_payload_bytes == DEFAULT_MAX_VERTEX_PAYLOAD_BYTES
+
+
+@pytest.mark.parametrize("byte_limit", [1, TILED_POINTS_VERTEX_DTYPE.itemsize - 1])
+def test_application_settings_reject_byte_limit_below_one_vertex(byte_limit: int) -> None:
+    with pytest.raises(ValueError, match="max_vertex_payload_bytes.*one vertex"):
+        TiledPointsApplicationSettings(max_vertex_payload_bytes=byte_limit)
+
+
+def test_application_settings_accept_byte_limit_of_exactly_one_vertex() -> None:
+    settings = TiledPointsApplicationSettings(max_vertex_payload_bytes=TILED_POINTS_VERTEX_DTYPE.itemsize)
+    assert settings.cache_session_settings.max_vertex_payload_bytes == TILED_POINTS_VERTEX_DTYPE.itemsize
 
 
 def test_canonical_value_mapping_and_palette_ignore_selection_order(real_cache_root: Path) -> None:
@@ -57,7 +77,7 @@ def test_nested_descriptor_loading_reads_cache_metadata_without_touching_points(
     tmp_path: Path,
     real_cache_root: Path,
 ) -> None:
-    nested_cache = tmp_path / "points" / "transcripts" / "transcripts_vis_zarr"
+    nested_cache = points_cache_path(tmp_path, "transcripts")
     nested_cache.parent.mkdir(parents=True)
     shutil.copytree(real_cache_root, nested_cache)
     sdata = _BackedSpatialData(tmp_path)
@@ -75,7 +95,7 @@ def test_nested_descriptor_rejects_a_different_selected_value_column(
     tmp_path: Path,
     real_cache_root: Path,
 ) -> None:
-    nested_cache = tmp_path / "points" / "transcripts" / "transcripts_vis_zarr"
+    nested_cache = points_cache_path(tmp_path, "transcripts")
     nested_cache.parent.mkdir(parents=True)
     shutil.copytree(real_cache_root, nested_cache)
 

@@ -24,12 +24,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
     _PointsCacheBuildPlan,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_LEVEL_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
     _CatalogWriteSettings,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
 from napari_harpy.core.multi_scale_cache_points_zarr.source import (
@@ -38,8 +34,15 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     ValidatedPointsSource,
     validate_parquet_points_source,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_BUCKET_ID,
+    MANIFEST_BUCKET_TILE_INDEX,
+    MANIFEST_LEVEL_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
-    _CatalogReader,
+    _CacheRootReader,
     _iter_bucket_range_batches,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
@@ -131,6 +134,7 @@ def _level_results_inventory(level_results: tuple[_LevelWriteResult, ...]) -> li
                     "tiles": [
                         {
                             "bucket_tile_index": tile.bucket_tile_index,
+                            "bucket_row_start": tile.bucket_row_start,
                             "tile_x": tile.tile_x,
                             "tile_y": tile.tile_y,
                             "n_points": tile.n_points,
@@ -198,6 +202,7 @@ def _read_pyramid_inventory(
                                 level=raw_level["level"],
                                 bucket_id=raw_bucket["bucket_id"],
                                 bucket_tile_index=raw_tile["bucket_tile_index"],
+                                bucket_row_start=raw_tile["bucket_row_start"],
                                 tile_x=raw_tile["tile_x"],
                                 tile_y=raw_tile["tile_y"],
                                 n_points=raw_tile["n_points"],
@@ -218,7 +223,7 @@ def _read_pyramid_inventory(
     expected_paths = {bucket.bucket_path for result in level_results for bucket in result.buckets}
     observed_paths = {
         str(path.relative_to(pyramid_root))
-        for path in (pyramid_root / "levels").glob("level_*/bucket-*.zarr")
+        for path in (pyramid_root / "tile_major").glob("level_*/bucket-*.zarr")
         if path.is_dir()
     }
     if observed_paths != expected_paths:
@@ -300,11 +305,11 @@ def _build_or_reuse_pyramid(
     )
 
 
-def _hardlink_pyramid_levels(pyramid_root: Path, evaluation_root: Path) -> None:
+def _hardlink_pyramid_tile_major(pyramid_root: Path, evaluation_root: Path) -> None:
     """Clone immutable bucket files cheaply while keeping catalog metadata private."""
     evaluation_root.mkdir()
     try:
-        shutil.copytree(pyramid_root / "levels", evaluation_root / "levels", copy_function=os.link)
+        shutil.copytree(pyramid_root / "tile_major", evaluation_root / "tile_major", copy_function=os.link)
     except Exception:
         shutil.rmtree(evaluation_root)
         raise
@@ -321,8 +326,8 @@ def _bucket_snapshots(staging: Path, results: tuple[_LevelWriteResult, ...]) -> 
     }
 
 
-def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]:
-    groups = ("values", "manifest", "value_tiles")
+def _catalog_storage(staging: Path, reader: _CacheRootReader) -> dict[str, object]:
+    groups = ("values", "manifest", "value_tiles", "value_major")
     per_group_bytes = {group: _directory_size(staging / group) for group in groups}
     per_group_objects = {group: _directory_file_count(staging / group) for group in groups}
     array_paths = (
@@ -336,6 +341,14 @@ def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]
         "value_tiles/indptr",
         "value_tiles/manifest_index",
         "value_tiles/n_points",
+        *(
+            path
+            for level in range(len(reader.attributes.levels))
+            for path in (
+                f"value_major/level_{level}/location",
+                f"value_major/level_{level}/value_point_indptr",
+            )
+        ),
     )
     array_layouts: dict[str, object] = {}
     for name in array_paths:
@@ -368,7 +381,7 @@ def _catalog_storage(staging: Path, reader: _CatalogReader) -> dict[str, object]
 def _verify_representative_bucket_indexes(
     staging: Path,
     results: tuple[_LevelWriteResult, ...],
-    reader: _CatalogReader,
+    reader: _CacheRootReader,
     *,
     zarr_settings: _ZarrWriteSettings,
     batch_rows: int,
@@ -479,6 +492,8 @@ def main() -> None:
         codec_id=args.codec_id,
     )
     catalog_settings = _CatalogWriteSettings()
+    value_major_settings = _ValueMajorWriteSettings()
+    max_open_value_major_readers = None
 
     if args.evaluation_name in {"", ".", ".."} or Path(args.evaluation_name).name != args.evaluation_name:
         raise ValueError("`evaluation-name` must be one nonempty directory name.")
@@ -505,7 +520,7 @@ def main() -> None:
 
         print(f"Creating reusable evaluation generation: {evaluation_root}", flush=True)
         started = perf_counter()
-        _hardlink_pyramid_levels(pyramid_root, evaluation_root)
+        _hardlink_pyramid_tile_major(pyramid_root, evaluation_root)
         prerequisite_clone_seconds = perf_counter() - started
 
         bucket_snapshot = _bucket_snapshots(evaluation_root, level_results)
@@ -524,12 +539,15 @@ def main() -> None:
                 staging_root=evaluation_root,
                 cache_generation_id=generation_id,
                 settings=catalog_settings,
+                value_major_settings=value_major_settings,
+                max_open_value_major_readers=max_open_value_major_readers,
+                temporary_directory_root=temporary,
             )
             catalog_seconds = perf_counter() - started
 
         print("Reopening and streaming strict catalog validation...", flush=True)
         started = perf_counter()
-        with _CatalogReader(evaluation_root) as reader:
+        with _CacheRootReader(evaluation_root) as reader:
             reader.validate_contents()
             representative_verification = _verify_representative_bucket_indexes(
                 evaluation_root,
@@ -555,11 +573,7 @@ def main() -> None:
         if list(temporary.iterdir()):
             raise RuntimeError("Catalog construction retained unexpected scratch data.")
         standalone_json = [path for path in evaluation_root.rglob("*.json") if path.name != "zarr.json"]
-        if (
-            list(evaluation_root.rglob("*.parquet"))
-            or standalone_json
-            or (evaluation_root / "COMPLETED").exists()
-        ):
+        if list(evaluation_root.rglob("*.parquet")) or standalone_json or (evaluation_root / "COMPLETED").exists():
             raise RuntimeError("Z6 wrote forbidden Parquet, JSON-sidecar, or completion artifacts.")
 
         report = {
@@ -579,6 +593,8 @@ def main() -> None:
             },
             "configuration": {
                 **catalog_settings.__dict__,
+                "max_open_value_major_readers": max_open_value_major_readers,
+                "value_major": value_major_settings.__dict__,
                 "point_chunk_rows": zarr_settings.point_chunk_rows,
                 "point_shard_rows": zarr_settings.point_shard_rows,
                 "range_chunk_rows": zarr_settings.range_chunk_rows,
@@ -616,7 +632,7 @@ def main() -> None:
                 "value_tile_manifest_index_shape": manifest_index_shape,
                 "value_tile_n_points_shape": value_tile_count_shape,
                 "largest_level_sort_rows": largest_level_sort_rows,
-                "estimated_largest_level_input_bytes": largest_level_sort_rows * (4 + 8 + 8),
+                "estimated_largest_level_input_bytes": largest_level_sort_rows * (4 + 8 + 8 + 8),
                 "estimated_largest_level_order_bytes": largest_level_sort_rows * 8,
                 **representative_verification,
                 **catalog_storage,

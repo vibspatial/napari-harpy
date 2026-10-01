@@ -59,7 +59,7 @@ from napari_harpy.viewer.tiled_points.application import (
     canonical_value_palette,
 )
 from napari_harpy.viewer.tiled_points.napari import TiledPointsLayerModel, register_tiled_points_layer
-from napari_harpy.viewer.tiled_points.runtime.composition import _TiledPointsLayerRuntime
+from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
 
 if TYPE_CHECKING:
     from spatialdata import SpatialData

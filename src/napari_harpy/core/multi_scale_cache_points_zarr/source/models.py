@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 
 import pyarrow as pa
 
+from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import points_element_path
 from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import (
     ParquetMetadataValidationError,
     PointContentValidationError,
@@ -83,7 +84,7 @@ class ParquetPointsSource:
     @property
     def element_path(self) -> str:
         """Return the canonical SpatialData-relative path for the points element."""
-        return f"points/{self.points_name}"
+        return points_element_path(self.points_name)
 
     @property
     def parquet_path(self) -> Path:

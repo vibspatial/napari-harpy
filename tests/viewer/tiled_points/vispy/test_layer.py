@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from uuid import uuid4
 
 import numpy as np
@@ -81,7 +82,7 @@ def _snapshot(
     tiles: tuple[TiledPointsRenderTile, ...],
     *,
     generation: int,
-    within_budget: bool = True,
+    within_hard_limits: bool = True,
 ) -> TiledPointsRenderSnapshot:
     point_count = sum(tile.point_count for tile in tiles)
     render_batch = pack_render_tiles(
@@ -97,11 +98,14 @@ def _snapshot(
         requested_value_ids=None,
         level=0,
         level_kind="exact",
-        within_budget=within_budget,
-        estimated_point_count=point_count if within_budget else 100,
+        within_hard_limits=within_hard_limits,
+        estimated_point_count=point_count if within_hard_limits else 100,
         omitted_value_ids=(),
         rendered_tile_count=len(tiles),
         render_batch=render_batch,
+        budget_message=None
+        if within_hard_limits
+        else "View exceeds hard rendering limits: 100 points required, limit 1",
     )
 
 
@@ -300,8 +304,10 @@ def test_renderer_hard_point_budget_failure_does_not_stage(
         visual.close()
 
 
-def test_renderer_revalidates_mutated_batch_before_replacing_active_snapshot(
+@pytest.mark.parametrize("reuse_active_batch", [False, True], ids=["new-batch", "active-batch"])
+def test_renderer_revalidates_mutated_batch_before_accepting_snapshot(
     maximum_texture_size: None,
+    reuse_active_batch: bool,
 ) -> None:
     layer = _layer()
     visual = VispyTiledPointsLayer(layer, FontInfo())
@@ -309,8 +315,11 @@ def test_renderer_revalidates_mutated_batch_before_replacing_active_snapshot(
     errors: list[Exception] = []
     layer.events.render_error.connect(lambda event: errors.append(event.value))
     try:
-        assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
-        candidate = _snapshot(layer, (second,), generation=2)
+        active = _snapshot(layer, (first,), generation=1)
+        assert visual.apply_snapshot(active)
+        candidate = (
+            replace(active, request_generation=2) if reuse_active_batch else _snapshot(layer, (second,), generation=2)
+        )
         candidate.render_batch.vertices.flags.writeable = True
         assert not visual.apply_snapshot(candidate)
 
@@ -322,7 +331,7 @@ def test_renderer_revalidates_mutated_batch_before_replacing_active_snapshot(
         visual.close()
 
 
-def test_renderer_upload_failure_does_not_count_candidate_replacement(
+def test_renderer_staging_failure_does_not_count_candidate_replacement(
     maximum_texture_size: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -334,19 +343,115 @@ def test_renderer_upload_failure_does_not_count_candidate_replacement(
     try:
         assert visual.apply_snapshot(_snapshot(layer, (first,), generation=1))
 
-        def _fail_upload(_vertices: np.ndarray, *, copy: bool) -> None:
+        def _fail_staging(_vertices: np.ndarray, *, copy: bool) -> None:
             del copy
-            raise RuntimeError("synthetic upload failure")
+            raise RuntimeError("synthetic staging failure")
 
-        monkeypatch.setattr(visual._snapshot_visual.vertex_buffer, "set_data", _fail_upload)
+        monkeypatch.setattr(visual._snapshot_visual.vertex_buffer, "set_data", _fail_staging)
         assert not visual.apply_snapshot(_snapshot(layer, (second,), generation=2))
 
         assert visual.active_point_count == first.point_count
         assert visual.payload_replacement_count == 1
         assert len(errors) == 1
-        assert str(errors[0]) == "synthetic upload failure"
+        assert str(errors[0]) == "synthetic staging failure"
     finally:
         visual.close()
+
+
+def test_identical_batch_acknowledges_snapshot_without_staging_or_redraw(
+    maximum_texture_size: None,
+) -> None:
+    """Reused vertices need no redraw request, but fresh request metadata is accepted."""
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    snapshot = _snapshot(layer, (_tile(layer, 0, point_count=2),), generation=1)
+    results: list[TiledPointsRenderResult] = []
+    layer.events.render_snapshot_result.connect(lambda event: results.append(event.value))
+    redraw_requests: list[object] = []
+    # Observe scene-update notifications, independently of the VBO staging count.
+    visual.node.events.update.connect(lambda event: redraw_requests.append(event))
+    try:
+        layer.events.render_snapshot(value=snapshot)
+        assert len(redraw_requests) == 1
+        redraw_requests.clear()
+        results.clear()
+
+        layer.events.render_snapshot(value=replace(snapshot, request_generation=2, estimated_point_count=1))
+
+        assert results == [TiledPointsRenderResult(2, 0, True)]
+        assert visual.payload_replacement_count == 1
+        assert visual.active_point_count == 2
+        assert redraw_requests == []
+    finally:
+        visual.close()
+
+
+@pytest.mark.parametrize("point_count", [1, 0], ids=["nonempty", "empty"])
+def test_different_batch_updates_visual_and_requests_redraw(
+    maximum_texture_size: None,
+    point_count: int,
+) -> None:
+    """Replacing point data, including clearing it, still requests a frame."""
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    redraw_requests: list[object] = []
+    visual.node.events.update.connect(lambda event: redraw_requests.append(event))
+    try:
+        assert visual.apply_snapshot(_snapshot(layer, (_tile(layer, 0, point_count=2),), generation=1))
+        redraw_requests.clear()
+        tiles = (_tile(layer, 1),) if point_count else ()
+
+        assert visual.apply_snapshot(_snapshot(layer, tiles, generation=2))
+
+        assert visual.active_point_count == point_count
+        assert visual.payload_replacement_count == (2 if point_count else 1)
+        assert len(redraw_requests) == 1
+    finally:
+        visual.close()
+
+
+def test_renderer_reuses_identical_batch_but_reuploads_after_partial_staging_failure(
+    maximum_texture_size: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restage batch A after staging batch B into the shared VBO fails partway through.
+
+    First verify that reusing batch A skips redundant staging. Then simulate
+    B failing during binding, after set_data() has already run.
+
+    ``VispyTiledPointsLayer.apply_snapshot()`` must clear ``_active_render_batch``
+    before attempting to stage B: the buffer can no longer be assumed to contain A.
+    Returning to the same CPU batch A must therefore stage its vertices again,
+    not take the reuse shortcut.
+    """
+    layer = _layer()
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    first = _snapshot(layer, (_tile(layer, 0, point_count=2),), generation=1)
+    second = _snapshot(layer, (_tile(layer, 1),), generation=3)
+    try:
+        assert visual.apply_snapshot(first)
+        assert visual.apply_snapshot(replace(first, request_generation=2, estimated_point_count=1))
+        assert visual.payload_replacement_count == 1
+        program = visual._snapshot_visual.shared_program
+        original_bind = program.bind
+
+        def fail_after_set_data(_buffer) -> None:
+            raise RuntimeError("bind failed after buffer mutation")
+
+        monkeypatch.setattr(program, "bind", fail_after_set_data)
+        assert not visual.apply_snapshot(second)
+        monkeypatch.setattr(program, "bind", original_bind)
+        assert visual.apply_snapshot(replace(first, request_generation=4))
+        assert visual.payload_replacement_count == 2
+        assert visual.active_point_count == 2
+        assert visual.visual_count == visual.vbo_count == 1
+        # Returning to the same batch remains subject to the current full-payload
+        # limits, even when the latest visible estimate is smaller.
+        layer.hard_render_point_budget = 1
+        assert not visual.apply_snapshot(replace(first, request_generation=5, estimated_point_count=1))
+        assert visual.payload_replacement_count == 2
+    finally:
+        visual.close()
+    assert visual._active_render_batch is None
 
 
 def test_empty_snapshot_suppresses_one_visual_without_replacing_its_vbo(
@@ -358,7 +463,7 @@ def test_empty_snapshot_suppresses_one_visual_without_replacing_its_vbo(
     vertex_buffer = visual._snapshot_visual.vertex_buffer
     try:
         assert visual.apply_snapshot(_snapshot(layer, (tile,), generation=1))
-        assert not visual.apply_snapshot(_snapshot(layer, (), generation=2, within_budget=False))
+        assert not visual.apply_snapshot(_snapshot(layer, (), generation=2, within_hard_limits=False))
         assert visual.active_point_count == tile.point_count
         assert visual.payload_replacement_count == 1
 

@@ -16,6 +16,7 @@ import psutil
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import zarr
+from benchmark_multi_scale_cache_points_zarr_bucket import _read_filtered_display_payload
 from zarr.storage import LocalStore
 
 from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
@@ -358,19 +359,24 @@ def _read_measurements(
         descriptor = first_descriptor_by_value[value_id]
         selected = np.array([value_id], dtype=np.uint32)
         with _BucketReader(staging, level=0, bucket_id=descriptor.bucket_id) as reader:
-            payload = reader.read_display_payload(descriptor, selected)
+            descriptors = next(
+                bucket.tile_descriptors for bucket in result.buckets if bucket.bucket_id == descriptor.bucket_id
+            )
+            reader.set_tile_descriptors(descriptors)
+            payload = _read_filtered_display_payload(reader, descriptor, selected)
             if payload is None:
                 raise RuntimeError("A selected-read measurement value is absent from its recorded tile.")
             timings = _time(
-                lambda descriptor=descriptor, selected=selected: reader.read_display_payload(
+                lambda descriptor=descriptor, selected=selected: _read_filtered_display_payload(
+                    reader,
                     descriptor,
                     selected,
                 )
             )
-        physical = _selected_read_physical_stats(
+        physical = _complete_read_physical_stats(
             staging,
             descriptor=descriptor,
-            value_id=value_id,
+            selected_row_count=len(payload.value_id),
         )
         measurements[category] = {
             "value_id": value_id,
@@ -379,37 +385,34 @@ def _read_measurements(
             "source_tile_count": value_tile_counts[value_id],
             "tile_x": descriptor.tile_x,
             "tile_y": descriptor.tile_y,
-            "logical_rows": payload.logical_point_rows,
+            "logical_rows": len(payload.value_id),
+            "read_mode": "complete_tile_major_then_filter",
+            "complete_rows_read": descriptor.n_points,
             **physical,
             "seconds": timings,
         }
     return measurements
 
 
-def _selected_read_physical_stats(
+def _complete_read_physical_stats(
     staging: Path,
     *,
     descriptor: _TileDescriptor,
-    value_id: int,
+    selected_row_count: int,
 ) -> dict[str, int | float]:
-    """Calculate inner-chunk decode amplification for one selected value run."""
+    """Estimate chunk decoding for a complete tile read before value filtering.
+
+    Both point arrays have the same row chunking. Counts below are per array,
+    not the sum across location and value_id, and exclude any codec cache reuse.
+    """
     bucket_path = staging / descriptor.bucket_path
     store = LocalStore(bucket_path, read_only=True)
     try:
         root = zarr.open_group(store=store, mode="r", zarr_format=3, use_consolidated=False)
-        tile_index = descriptor.bucket_tile_index
-        indptr = np.asarray(root["ranges/tile_indptr"][tile_index : tile_index + 2], dtype=np.uint64)
-        range_start, range_stop = (int(value) for value in indptr)
-        values = np.asarray(root["ranges/value_id"][range_start:range_stop], dtype=np.uint32)
-        position = int(np.searchsorted(values, np.uint32(value_id)))
-        if position >= len(values) or int(values[position]) != value_id:
-            raise RuntimeError("Selected-read range disappeared during evaluation.")
-        row_start = int(root["ranges/row_start"][range_start + position])
-        row_count = int(root["ranges/row_count"][range_start + position])
         point_array = root["value_id"]
         chunk_rows = point_array.chunks[0]
-        first_chunk = row_start // chunk_rows
-        last_chunk = (row_start + row_count - 1) // chunk_rows
+        first_chunk = descriptor.bucket_row_start // chunk_rows
+        last_chunk = (descriptor.bucket_row_start + descriptor.n_points - 1) // chunk_rows
         decoded_rows = sum(
             min((chunk_id + 1) * chunk_rows, point_array.shape[0]) - chunk_id * chunk_rows
             for chunk_id in range(first_chunk, last_chunk + 1)
@@ -417,9 +420,9 @@ def _selected_read_physical_stats(
     finally:
         store.close()
     return {
-        "point_chunks_touched": last_chunk - first_chunk + 1,
-        "decoded_point_rows": decoded_rows,
-        "decoded_row_amplification": decoded_rows / row_count,
+        "point_chunks_touched_per_array": last_chunk - first_chunk + 1,
+        "decoded_point_rows_per_array": decoded_rows,
+        "decoded_rows_per_returned_point": decoded_rows / selected_row_count,
     }
 
 

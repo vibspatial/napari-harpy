@@ -1,0 +1,240 @@
+"""Keep benchmark read paths and instrumentation aligned with reader contracts."""
+
+from __future__ import annotations
+
+import sys
+from dataclasses import replace
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+from types import ModuleType
+
+import numpy as np
+import pytest
+
+from napari_harpy.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+
+
+def _load_benchmark_module(name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Load a repository benchmark script by file path without changing sys.path."""
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / f"{name}.py"
+    spec = spec_from_file_location(name, script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load benchmark script: {script_path}.")
+    module = module_from_spec(spec)
+    # Register before execution so dataclasses and explicitly loaded sibling
+    # scripts can resolve the module. Pytest restores the entry after the test.
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cache_to_canvas_timing_hooks_cover_both_physical_routes(
+    reader_fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    benchmark = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        index = reader.load_selected_value_index(np.array([0, 1], dtype=np.uint32), max_resident_bytes=None)
+        for selected_index, expected_timer in ((None, "bucket_batch"), (index, "value_major_location_read")):
+            timings = benchmark._TimingLog()
+            with benchmark._TemporaryPatches() as patches:
+                benchmark._install_reader_timers(timings, patches)
+                plan = reader.plan_viewport(0, _IntrinsicViewport(0, 0, 12, 10), value_index=selected_index)
+                result = reader.read_planned_tiles(plan, plan.tile_keys)
+            assert result.tiles
+            assert timings.calls[expected_timer]
+
+
+@pytest.mark.parametrize("retain", [True, False], ids=["retained", "replacement-reference"])
+def test_retained_viewport_benchmark_measures_zero_plan_hits_and_disjoint_replacements(
+    reader_fixture, monkeypatch: pytest.MonkeyPatch, qtbot, retain: bool
+) -> None:
+    _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    benchmark = _load_benchmark_module("benchmark_tiled_points_retained_viewport", monkeypatch)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        info = reader.dataset_info
+    report = benchmark._run_case(
+        benchmark.QApplication.instance(),
+        reader_fixture.cache_root,
+        info,
+        (0,),
+        retain=retain,
+        real_canvas=False,
+        point_budget=100_000,
+    )
+    records = {record["label"]: record for record in report["requests"]}
+    hit = records["equal_full"]
+    assert hit["activated"] and hit["same_allocation_after_qt"]
+    assert hit["worker_reused_batch"] is retain
+    assert hit["breakdown"]["level_selection"]["calls"] == 1
+    if retain:
+        assert "viewport_plan" not in hit["breakdown"]
+        assert "render_batch_packing" not in hit["breakdown"]
+    else:
+        assert hit["breakdown"]["viewport_plan"]["calls"] == 1
+        assert hit["breakdown"]["render_batch_packing"]["calls"] == 1
+    assert records["return_left"]["reuse_rejection"] == ("outside_original_viewport" if retain else "disabled")
+    assert not records["return_left"]["worker_reused_batch"]
+    assert records["return_left"]["breakdown"]["viewport_plan"]["calls"] == 1
+
+
+def test_cache_to_canvas_worker_measurements_include_lod_and_warm_replacements(
+    reader_fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    benchmark = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        residency = benchmark._CpuTileResidency(1_000_000)
+        worker = benchmark._make_snapshot_worker(reader, None, residency, max_vertex_payload_bytes=1_000_000)
+        viewport = benchmark._centered_viewport(reader.dataset_info, 1.0, 100_000, 1000, 1000)
+        request = benchmark._ViewportRequest(1, 0, None, viewport)
+        timings = benchmark._TimingLog()
+        with benchmark._TemporaryPatches() as patches:
+            benchmark._install_reader_timers(timings, patches)
+            first = benchmark._read_worker_snapshot(worker, request)
+            assert first.within_hard_limits
+            timings.clear()
+            second = benchmark._read_worker_snapshot(worker, replace(request, request_generation=2))
+        assert second.render_batch is not first.render_batch
+        np.testing.assert_array_equal(second.render_batch.vertices, first.render_batch.vertices)
+        assert len(timings.calls["level_selection"]) == 1
+        assert len(timings.calls["render_batch_packing"]) == 1
+        assert not timings.calls["bucket_batch"]
+
+
+def test_worker_lod_timer_includes_lazy_candidate_evaluation(reader_fixture, monkeypatch):
+    """Work performed on iterator consumption must stay inside the LOD timer."""
+    from types import SimpleNamespace
+
+    benchmark = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    clock = [0.0]
+    monkeypatch.setattr(benchmark, "time", SimpleNamespace(perf_counter=lambda: clock[0]))
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        original = reader.iter_level_candidates
+
+        def candidates(*args, **kwargs):
+            for candidate in original(*args, **kwargs):
+                clock[0] += 0.010  # Simulate ten milliseconds inside each lazy evaluation.
+                yield candidate
+
+        monkeypatch.setattr(reader, "iter_level_candidates", candidates)
+        worker = benchmark._make_snapshot_worker(
+            reader, None, benchmark._CpuTileResidency(1_000_000), max_vertex_payload_bytes=1_000_000
+        )
+        viewport = benchmark._centered_viewport(reader.dataset_info, 1.0, 100_000, 1000, 1000)
+        request = benchmark._ViewportRequest(1, 0, None, viewport)
+        timings = benchmark._TimingLog()
+        with benchmark._TemporaryPatches() as patches:
+            benchmark._install_reader_timers(timings, patches)
+            benchmark._read_worker_snapshot(worker, request)
+            reader.select_level(_IntrinsicViewport(0, 0, 12, 10), 100_000)
+        assert timings.calls["level_selection"] == pytest.approx([10.0])
+        assert timings.calls["ordinary_level_selection"] == pytest.approx([10.0])
+
+
+@pytest.mark.parametrize("hysteresis", [False, True], ids=["ordinary", "hysteresis"])
+def test_paired_lod_benchmark_changes_policy_without_disabling_retention(
+    reader_fixture, monkeypatch, qtbot, hysteresis
+):
+    base = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    benchmark = _load_benchmark_module("benchmark_tiled_points_retained_viewport", monkeypatch)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        info = reader.dataset_info
+    initial = base._centered_viewport(info, 1.0, 6000, 1000, 1000)
+    denser = replace(initial, screen_density_budget=4100)
+    report = benchmark._run_case(
+        benchmark.QApplication.instance(),
+        reader_fixture.cache_root,
+        info,
+        None,
+        retain=True,
+        real_canvas=False,
+        point_budget=6000,
+        trace=[("initial", initial), ("denser", denser), ("same", denser)],
+        hysteresis=hysteresis,
+    )
+    first, changed, same = report["requests"]
+    assert first["level"] == 0
+    assert changed["level"] == (0 if hysteresis else 1)
+    assert changed["lod_reason"] == ("hysteresis_stay" if hysteresis else "ordinary")
+    assert changed["worker_reused_batch"] is hysteresis
+    assert same["worker_reused_batch"]  # Both comparisons retain accepted batches.
+    assert all(row["breakdown"]["level_selection"]["calls"] == 1 for row in report["requests"])
+
+
+def test_viewport_planning_benchmark_keeps_worker_policy_in_timed_path(
+    reader_fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = _load_benchmark_module("benchmark_tiled_points_cache_to_canvas", monkeypatch)
+    benchmark = _load_benchmark_module("benchmark_tiled_points_viewport_planning", monkeypatch)
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        index = reader.load_selected_value_index(np.array([0], dtype=np.uint32), max_resident_bytes=None)
+        viewport = base._centered_viewport(reader.dataset_info, 1.0, 100_000, 1000, 1000)
+        request = benchmark._ViewportRequest(1, 1, (0,), viewport)
+        report = benchmark._measure_worker(reader, index, benchmark._CpuTileResidency(1_000_000), request)
+    assert report["point_count"] > 0
+    assert report["missing_tiles"] > 0
+    assert report["breakdown"]["level_selection"]["calls"] == 1
+    assert report["breakdown"]["render_batch_packing"]["calls"] == 1
+
+
+def test_acceptance_tile_timing_labels_diagnostic_filtering(reader_fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = _load_benchmark_module("benchmark_multi_scale_cache_points_zarr_acceptance", monkeypatch)
+
+    with _PointsCacheReader(reader_fixture.cache_root) as reader:
+        result, report = benchmark._time_tile(reader, 0, 0, 0, value_ids=np.array([0], dtype=np.uint32))
+    assert result is not None and result.value_id.tolist() == [0, 0]
+    assert report["read_mode"] == "complete_tile_major_then_filter"
+
+
+@pytest.mark.parametrize("fixed_level", [0, None], ids=["fixed-exact", "selected-lod"])
+def test_selected_index_benchmark_reads_without_retired_lookup_metrics(
+    reader_fixture, fixed_level, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    benchmark = _load_benchmark_module("benchmark_multi_scale_cache_points_zarr_selected_value_index", monkeypatch)
+
+    report = benchmark._measure_selected_viewport(
+        reader_fixture.cache_root,
+        _IntrinsicViewport(0, 0, 12, 10),
+        np.array([0, 1], dtype=np.uint32),
+        fixed_level=fixed_level,
+        max_resident_bytes=10_000_000,
+        point_budget=100_000,
+    )
+    assert report["first"]["returned_points"] == report["estimated_points"]
+    assert report["repeated"]["returned_points"] == report["first"]["returned_points"]
+
+
+def test_exact_read_measurements_use_complete_arrays_and_reconciled_filter_counts(
+    catalog_exact_fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The Exact benchmark imports this sibling's diagnostic filtering helper.
+    _load_benchmark_module("benchmark_multi_scale_cache_points_zarr_bucket", monkeypatch)
+    benchmark = _load_benchmark_module("benchmark_multi_scale_cache_points_zarr_exact", monkeypatch)
+
+    fixture = catalog_exact_fixture
+    first_descriptor_by_value = {}
+    value_tile_counts = [0] * fixture.validated.value_table.num_rows
+    for bucket in fixture.result.buckets:
+        with _BucketReader(fixture.staging_root, level=0, bucket_id=bucket.bucket_id) as reader:
+            for descriptor in bucket.tile_descriptors:
+                payload = reader.read_construction_payload(descriptor)
+                for value_id in np.unique(payload.value_id):
+                    first_descriptor_by_value.setdefault(int(value_id), descriptor)
+                    value_tile_counts[int(value_id)] += 1
+    report = benchmark._read_measurements(
+        fixture.result,
+        staging=fixture.staging_root,
+        validated=fixture.validated,
+        first_descriptor_by_value=first_descriptor_by_value,
+        value_tile_counts=value_tile_counts,
+    )
+    for category in ("common", "median", "rare_localized", "rare_distributed"):
+        measurement = report[category]
+        assert measurement["read_mode"] == "complete_tile_major_then_filter"
+        assert 0 < measurement["logical_rows"] <= measurement["complete_rows_read"]
+        assert measurement["decoded_point_rows_per_array"] >= measurement["complete_rows_read"]
+        assert measurement["decoded_rows_per_returned_point"] == (
+            measurement["decoded_point_rows_per_array"] / measurement["logical_rows"]
+        )
+        assert measurement["seconds"]

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal
 
 from loguru import logger
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QKeySequence, QPixmap, QShortcut
+from qtpy.QtGui import QKeySequence, QShortcut
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,7 +30,6 @@ from napari_harpy._app_state import (
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy._resources import get_logo_path
 from napari_harpy.core.feature_matrix_metadata import (
     FeatureMatrixMetadataState,
     inspect_feature_matrix_metadata,
@@ -105,6 +104,7 @@ from napari_harpy.widgets.shared_styles import (
     apply_widget_surface,
     build_input_control_stylesheet,
     create_form_label,
+    create_header_logo,
     format_tooltip,
     set_status_card,
 )
@@ -203,7 +203,6 @@ class ObjectClassificationWidget(QWidget):
         self._auto_train_enabled = False
         self._is_deferring_classifier_control_updates = False
         self._layer_styling_error: str | None = None
-        self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -226,7 +225,7 @@ class ObjectClassificationWidget(QWidget):
         self.scroll_area.setWidget(self.scroll_content)
         layout.addWidget(self.scroll_area)
 
-        title = self._create_header_logo()
+        title = create_header_logo("object_classification_header_logo")
 
         selector_layout = QFormLayout()
         selector_layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -447,19 +446,6 @@ class ObjectClassificationWidget(QWidget):
         remove_shortcut.activated.connect(self._trigger_clear_class_shortcut)
 
         return [apply_shortcut, remove_shortcut]
-
-    def _create_header_logo(self) -> QLabel:
-        logo_label = QLabel()
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        logo_pixmap = QPixmap(str(self._logo_path))
-        if not logo_pixmap.isNull():
-            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
-            return logo_label
-
-        logo_label.setText("napari-harpy")
-        logo_label.setStyleSheet("font-size: 18px; font-weight: 600;")
-        return logo_label
 
     def _create_form_label(self, text: str) -> QLabel:
         return create_form_label(text)

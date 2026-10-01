@@ -300,11 +300,11 @@ def test_rebase_rejects_wrong_coarser_tile_and_out_of_tile_coordinates() -> None
 def test_coarser_tile_grouping_handles_four_contributors_and_sparse_edges() -> None:
     plan = _spatial_plan()
     descriptors = (
-        _TileDescriptor(1, 0, 0, 0, 0, 2),
-        _TileDescriptor(1, 1, 0, 1, 0, 2),
-        _TileDescriptor(1, 1, 1, 0, 1, 2),
-        _TileDescriptor(1, 0, 1, 1, 1, 2),
-        _TileDescriptor(1, 0, 2, 2, 2, 1),
+        _TileDescriptor(1, 0, 0, 0, 0, 0, 2),
+        _TileDescriptor(1, 1, 0, 0, 1, 0, 2),
+        _TileDescriptor(1, 1, 1, 2, 0, 1, 2),
+        _TileDescriptor(1, 0, 1, 2, 1, 1, 2),
+        _TileDescriptor(1, 0, 2, 4, 2, 2, 1),
     )
 
     grouped = _group_finer_descriptors(
@@ -330,7 +330,8 @@ def test_coarser_tile_grouping_accepts_every_nonempty_quadrant_count(contributor
     plan = _spatial_plan()
     coordinates = ((0, 0), (1, 0), (0, 1), (1, 1))[:contributor_count]
     descriptors = tuple(
-        _TileDescriptor(1, 0, index, tile_x, tile_y, index + 1) for index, (tile_x, tile_y) in enumerate(coordinates)
+        _TileDescriptor(1, 0, index, index * (index + 1) // 2, tile_x, tile_y, index + 1)
+        for index, (tile_x, tile_y) in enumerate(coordinates)
     )
 
     grouped = _group_finer_descriptors(
@@ -346,9 +347,9 @@ def test_coarser_tile_grouping_accepts_every_nonempty_quadrant_count(contributor
 
 def test_spatial_routing_omits_empty_destinations_and_orders_tiles(monkeypatch: pytest.MonkeyPatch) -> None:
     descriptors = (
-        _TileDescriptor(1, 0, 0, 0, 0, 1),
-        _TileDescriptor(1, 0, 1, 2, 0, 1),
-        _TileDescriptor(1, 0, 2, 0, 2, 1),
+        _TileDescriptor(1, 0, 0, 0, 0, 0, 1),
+        _TileDescriptor(1, 0, 1, 1, 2, 0, 1),
+        _TileDescriptor(1, 0, 2, 2, 0, 2, 1),
     )
     tiles = (
         _CoarserTileInput(0, 0, (descriptors[0],)),
@@ -438,7 +439,7 @@ def test_spatial_writer_builds_nested_multilevel_zarr_pyramid(
             assert _validate_bucket(staging, level=result.level, bucket_id=bucket.bucket_id) == bucket
         finer_result = result
 
-    assert not list((staging / "levels").rglob("*.parquet"))
+    assert not list((staging / "tile_major").rglob("*.parquet"))
 
 
 def test_terminal_bridge_returns_no_spatial_results(tmp_path: Path) -> None:
@@ -454,7 +455,7 @@ def test_terminal_bridge_returns_no_spatial_results(tmp_path: Path) -> None:
         )
         == ()
     )
-    assert not (staging / "levels/level_2").exists()
+    assert not (staging / "tile_major/level_2").exists()
 
 
 def test_spatial_writer_applies_explicit_reader_bound_to_each_level(
@@ -525,10 +526,10 @@ def test_spatial_failure_removes_active_bucket_and_preserves_bridge(
             config=_SpatialWriterConfig(_settings(), max_open_finer_readers=1),
         )
 
-    assert (staging / "levels/level_1/bucket-000.zarr").is_dir()
-    assert (staging / "levels/level_1/bucket-001.zarr").is_dir()
-    assert (staging / "levels/level_2").is_dir()
-    assert not list((staging / "levels/level_2").iterdir())
+    assert (staging / "tile_major/level_1/bucket-000.zarr").is_dir()
+    assert (staging / "tile_major/level_1/bucket-001.zarr").is_dir()
+    assert (staging / "tile_major/level_2").is_dir()
+    assert not list((staging / "tile_major/level_2").iterdir())
 
 
 def test_spatial_later_level_failure_preserves_completed_prerequisites(
@@ -555,16 +556,16 @@ def test_spatial_later_level_failure_preserves_completed_prerequisites(
             config=_SpatialWriterConfig(_settings()),
         )
 
-    assert list((staging / "levels/level_2").glob("bucket-*.zarr"))
-    assert (staging / "levels/level_3").is_dir()
-    assert not list((staging / "levels/level_3").iterdir())
-    assert (staging / "levels/level_1/bucket-000.zarr").is_dir()
+    assert list((staging / "tile_major/level_2").glob("bucket-*.zarr"))
+    assert (staging / "tile_major/level_3").is_dir()
+    assert not list((staging / "tile_major/level_3").iterdir())
+    assert (staging / "tile_major/level_1/bucket-000.zarr").is_dir()
 
 
 def test_spatial_rejects_preexisting_output_and_invalid_config(tmp_path: Path) -> None:
     staging = tmp_path / "staging"
     bridge_result = _write_bridge_fixture(staging)
-    (staging / "levels/level_2").mkdir()
+    (staging / "tile_major/level_2").mkdir()
 
     with pytest.raises(FileExistsError, match="already exists"):
         _write_spatial_levels(

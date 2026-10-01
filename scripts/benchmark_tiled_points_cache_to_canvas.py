@@ -1,9 +1,13 @@
-"""Benchmark one selected-value request from a completed cache to the canvas.
+"""Benchmark one value-selection request from a completed cache to the canvas.
 
-The default run measures cache/catalog startup, resident bucket-index loading,
+The default run measures compact-metadata startup, lazy complete-tile addressing,
 selected-value-index loading, cold and warm worker snapshots, Zarr selection
 amplification, CPU residency, and steady Qt delivery. Add ``--real-canvas`` to
 also measure VisPy resource creation/residency and synchronous physical draws.
+Cold and warm worker snapshots here measure the replacement path without a
+retained packed entry. The renderer-only repeat uses the same batch and should
+skip VBO staging. Use ``benchmark_tiled_points_retained_viewport.py`` to measure
+the complete retained-view worker/Qt/renderer path during navigation.
 
 For example, on macOS::
 
@@ -27,8 +31,10 @@ import json
 import math
 import os
 import platform
+import resource
 import statistics
 import subprocess
+import threading
 import time
 from collections import defaultdict
 from contextlib import AbstractContextManager
@@ -44,6 +50,7 @@ from vispy.scene import SceneCanvas
 from zarr.core.array import Array
 
 import napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader as bucket_reader_module
+import napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader as value_major_reader_module
 import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
 from napari_harpy.viewer.tiled_points.application import canonical_value_palette
@@ -58,7 +65,7 @@ from napari_harpy.viewer.tiled_points.contracts import (
 )
 from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
 from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.runtime.cache_session import _read_viewport_snapshot
+from napari_harpy.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings, _TiledPointsCacheWorker
 from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
@@ -66,6 +73,51 @@ _MIB = 1 << 20
 _DEFAULT_CPU_TILE_BYTES = 1 << 30
 _DEFAULT_MAX_VERTEX_PAYLOAD_BYTES = 512 << 20
 _DEFAULT_POINT_BUDGET = 100_000
+
+
+def _make_snapshot_worker(reader, selected_value_index, residency, *, max_vertex_payload_bytes):
+    """Borrow already opened state for synchronous worker-policy measurements.
+
+    Startup and selection loading are measured separately. Do not start or
+    close this worker: the caller owns the reader and residency. No QThread is
+    created, and no activation acknowledgement promotes a retained batch, so
+    successive requests measure replacement work with warm decoded tiles.
+    """
+    worker = _TiledPointsCacheWorker(
+        Path("."),
+        _CacheSessionSettings(None, residency.max_resident_bytes, max_vertex_payload_bytes),
+        threading.Event(),
+        lambda _path: reader,
+    )
+    worker._reader = reader
+    worker._selected_value_index = selected_value_index
+    worker._selected_value_ids = (
+        None if selected_value_index is None else tuple(int(value_id) for value_id in selected_value_index.value_ids)
+    )
+    worker._cpu_tile_residency = residency
+    return worker
+
+
+def _read_worker_snapshot(worker, request):
+    """Capture one synchronous preparation, including LOD and budget policy."""
+    snapshots = []
+    failures = []
+
+    def failed(_generation, failure):
+        failures.append(failure)
+
+    worker.viewport_ready.connect(snapshots.append)
+    worker.viewport_failed.connect(failed)
+    try:
+        worker.read_viewport_snapshot(request)
+        if failures:
+            raise RuntimeError(f"Worker preparation failed: {failures[0].message}")
+        if len(snapshots) != 1:
+            raise RuntimeError("Worker preparation did not return exactly one snapshot.")
+        return snapshots[0]
+    finally:
+        worker.viewport_ready.disconnect(snapshots.append)
+        worker.viewport_failed.disconnect(failed)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -76,7 +128,13 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("cache_root", type=Path, help="Completed transcripts_vis_zarr cache root.")
-    parser.add_argument("--value", default="AAMP", help="Canonical value name to display (default: AAMP).")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--value", default="AAMP", help="Canonical value name to display (default: AAMP).")
+    selection.add_argument(
+        "--all-values",
+        action="store_true",
+        help="Benchmark the normalized all-values tile-major route.",
+    )
     parser.add_argument("--point-budget", type=int, default=_DEFAULT_POINT_BUDGET)
     parser.add_argument(
         "--viewport-fraction",
@@ -169,10 +227,12 @@ class _TimingLog:
     def __init__(self) -> None:
         self.calls: dict[str, list[float]] = defaultdict(list)
         self.zarr_calls: list[dict[str, object]] = []
+        self.physical_routes: list[str] = []
 
     def clear(self) -> None:
         self.calls.clear()
         self.zarr_calls.clear()
+        self.physical_routes.clear()
 
     def summary(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -207,6 +267,9 @@ class _TimingLog:
                 "shard_rows": sorted({int(item["shard_rows"]) for item in items}),
             }
             for name, items in by_array.items()
+        }
+        result["physical_routes"] = {
+            route: self.physical_routes.count(route) for route in sorted(set(self.physical_routes))
         }
         return result
 
@@ -282,16 +345,26 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
 
         patches.patch(owner, name, measured)
 
-    timed_method(_PointsCacheReader, "select_level", "level_selection")
+    # Time iterator consumption and policy choice together, not merely creation
+    # of a lazy candidate iterator. Keep ordinary reader callers visible too.
+    timed_method(_TiledPointsCacheWorker, "_select_viewport_level", "level_selection")
+    timed_method(_PointsCacheReader, "select_level", "ordinary_level_selection")
     timed_method(_PointsCacheReader, "plan_viewport", "viewport_plan")
+    timed_plan_viewport = _PointsCacheReader.plan_viewport
+
+    def plan_viewport(*args: object, **kwargs: object) -> object:
+        plan = timed_plan_viewport(*args, **kwargs)
+        timings.physical_routes.append(str(plan.route))
+        return plan
+
+    patches.patch(_PointsCacheReader, "plan_viewport", plan_viewport)
     timed_method(_PointsCacheReader, "read_planned_tiles", "read_planned_tiles")
-    timed_method(bucket_reader_module._BucketReader, "read_display_payloads", "bucket_batch")
-    timed_method(
-        bucket_reader_module._BucketReader,
-        "resolve_selected_tile_intervals",
-        "sparse_interval_resolution",
-    )
+    timed_method(_PointsCacheReader, "_get_bucket_reader_for_complete_display", "complete_tile_bucket_setup")
+    timed_method(_PointsCacheReader, "_read_value_major_requests", "value_major_tile_assembly")
+    timed_method(value_major_reader_module._ValueMajorLevelReader, "read_intervals", "value_major_location_read")
+    timed_method(bucket_reader_module._BucketReader, "read_complete_display_payloads", "bucket_batch")
     timed_method(bucket_reader_module, "_exact_row_selection", "exact_row_selector_construction")
+    timed_method(value_major_reader_module, "_build_exact_row_selection", "value_major_row_selector_construction")
     timed_method(_CpuTileResidency, "get", "cpu_residency_get")
     timed_method(_CpuTileResidency, "retain", "cpu_residency_retain")
     timed_method(cache_session_module, "_require_ordered_render_tiles", "render_tile_validation")
@@ -308,8 +381,10 @@ def _install_reader_timers(timings: _TimingLog, patches: _TemporaryPatches) -> N
         selection = args[0] if args else kwargs.get("selection")
         started = time.perf_counter()
         result = original_zarr_selection(self, *args, **kwargs)
-        name = self.name.rsplit("/", 1)[-1]
-        if name in {"location", "value_id"} and selection is not None:
+        array_path = self.name.removeprefix("/")
+        point_array_name = array_path.rsplit("/", 1)[-1]
+        if point_array_name in {"location", "value_id"} and selection is not None:
+            name = array_path if array_path.startswith("value_major/") else f"tile_major/{point_array_name}"
             row_statistics = _row_selection_statistics(self, selection)
             row_width = int(np.prod(self.shape[1:], dtype=np.int64)) if self.ndim > 1 else 1
             timings.zarr_calls.append(
@@ -433,7 +508,7 @@ def _snapshot_with_generation(
         requested_value_ids=snapshot.requested_value_ids,
         level=snapshot.level,
         level_kind=snapshot.level_kind,
-        within_budget=snapshot.within_budget,
+        within_hard_limits=snapshot.within_hard_limits,
         estimated_point_count=snapshot.estimated_point_count,
         omitted_value_ids=snapshot.omitted_value_ids,
         rendered_tile_count=snapshot.rendered_tile_count,
@@ -524,10 +599,13 @@ def _renderer_report(
         report["warm_draw_median_ms"] = statistics.median(warm_draws) if warm_draws else None
 
         warm_snapshot = _snapshot_with_generation(snapshot, snapshot.request_generation + 1)
+        replacements_before = visual.payload_replacement_count
         started = time.perf_counter()
         report["warm_full_apply_applied"] = visual.apply_snapshot(warm_snapshot)
         report["warm_full_apply_ms"] = _elapsed_ms(started)
-        report["warm_full_vertex_staging_ms"] = visual.last_vertex_staging_ms
+        replacements = visual.payload_replacement_count - replacements_before
+        report["warm_full_vertex_staging_ms"] = visual.last_vertex_staging_ms if replacements else 0.0
+        report["warm_full_vbo_uploads"] = replacements
         report["warm_full_payload_replacement_count"] = visual.payload_replacement_count
         started = time.perf_counter()
         canvas.render()
@@ -646,15 +724,14 @@ def _print_summary(report: dict[str, object]) -> None:
     startup = report["startup"]
     worker = report["worker"]
     snapshot = report["snapshot"]
-    print(f"Value: {report['value']} (value_id={report['value_id']})")
+    print(f"Selection: {report['value']} (value_id={report['value_id']})")
     print(
         f"Snapshot: level={snapshot['level']} ({snapshot['level_kind']}), "
         f"tiles={snapshot['tile_count']:,}, points={snapshot['point_count']:,}"
     )
     print(
         f"Startup: reader={startup['reader_enter_ms']:.1f} ms, "
-        f"bucket-index projection={startup['bucket_index_projection_ms']:.1f} ms, "
-        f"bucket-index load={startup['bucket_index_loading_ms']:.1f} ms, "
+        f"compact indexes={startup['resident_compact_index_mib']:.2f} MiB, "
         f"value-index load={startup['selected_value_index_ms']:.1f} ms"
     )
     print(f"Worker snapshot: cold={worker['cold_snapshot_ms']:.1f} ms, warm={worker['warm_snapshot_ms']:.1f} ms")
@@ -689,7 +766,7 @@ def main() -> None:
         "schema_version": 1,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "cache_root": str(args.cache_root.resolve()),
-        "value": args.value,
+        "value": "all values" if args.all_values else args.value,
         "point_budget": args.point_budget,
         "viewport_fraction": args.viewport_fraction,
         "json_output": str(args.json_output.resolve()),
@@ -704,7 +781,8 @@ def main() -> None:
             "git": _git_state(),
         },
         "notes": (
-            "Cold means the first request in this process after indexes were loaded; it does not flush operating-system "
+            "Cold means the first request after compact metadata and the selected-value index were loaded; "
+            "tile-major buckets open lazily. It does not flush operating-system "
             "filesystem caches. Detailed method hooks add small instrumentation overhead. Canvas.render() is synchronous "
             "and includes framebuffer readback."
         ),
@@ -714,29 +792,30 @@ def main() -> None:
     started = time.perf_counter()
     reader_context = _PointsCacheReader(args.cache_root)
     reader = reader_context.__enter__()
-    startup: dict[str, object] = {"reader_enter_ms": _elapsed_ms(started), "rss_after_reader_enter_mib": _rss_mib()}
+    startup: dict[str, object] = {
+        "reader_enter_ms": _elapsed_ms(started),
+        "resident_compact_index_mib": reader.resident_index_bytes / _MIB,
+        "tile_descriptor_count": reader.tile_descriptor_count,
+        "index_memory_scope": "NumPy arrays only; Python descriptors and containers are excluded.",
+        "resident_value_major_pointer_mib": reader.resident_value_major_pointer_bytes / _MIB,
+        "open_bucket_readers": reader.open_bucket_reader_count,
+        "rss_after_reader_enter_mib": _rss_mib(),
+    }
     try:
-        started = time.perf_counter()
-        projected_lookup_bytes = reader.project_bucket_lookup_index_bytes()
-        startup["bucket_index_projection_ms"] = _elapsed_ms(started)
-        startup["bucket_index_projected_mib"] = projected_lookup_bytes / _MIB
-        startup["rss_after_bucket_index_projection_mib"] = _rss_mib()
-
-        started = time.perf_counter()
-        resident_lookup_bytes = reader.load_bucket_lookup_indexes(max_resident_bytes=None)
-        startup["bucket_index_loading_ms"] = _elapsed_ms(started)
-        startup["bucket_index_resident_mib"] = resident_lookup_bytes / _MIB
-        startup["bucket_index_count"] = reader.loaded_bucket_lookup_index_count
-        startup["rss_after_bucket_index_loading_mib"] = _rss_mib()
-
-        try:
-            value_id = reader.value_names.index(args.value)
-        except ValueError as exc:
-            raise ValueError(f"Value {args.value!r} is not present in the cache vocabulary.") from exc
-        value_ids = np.asarray((value_id,), dtype=np.uint32)
-        started = time.perf_counter()
-        selected_value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=None)
-        startup["selected_value_index_ms"] = _elapsed_ms(started)
+        value_id: int | None
+        if args.all_values:
+            value_id = None
+            selected_value_index = None
+            startup["selected_value_index_ms"] = 0.0
+        else:
+            try:
+                value_id = reader.value_names.index(args.value)
+            except ValueError as exc:
+                raise ValueError(f"Value {args.value!r} is not present in the cache vocabulary.") from exc
+            value_ids = np.asarray((value_id,), dtype=np.uint32)
+            started = time.perf_counter()
+            selected_value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=None)
+            startup["selected_value_index_ms"] = _elapsed_ms(started)
         startup["selected_value_index_kib"] = (
             0.0 if selected_value_index is None else selected_value_index.resident_bytes / 1024
         )
@@ -762,7 +841,7 @@ def main() -> None:
             "canvas_height": viewport.canvas_height,
             "effective_point_budget": viewport.effective_point_budget,
         }
-        requested_value_ids = None if selected_value_index is None else (value_id,)
+        requested_value_ids = None if value_id is None else (value_id,)
         request = _ViewportRequest(
             request_generation=1,
             selection_generation=1,
@@ -770,22 +849,20 @@ def main() -> None:
             viewport=viewport,
         )
         residency = _CpuTileResidency(args.cpu_tile_cache_bytes)
+        worker = _make_snapshot_worker(
+            reader, selected_value_index, residency, max_vertex_payload_bytes=args.max_vertex_payload_bytes
+        )
         timings = _TimingLog()
         with _TemporaryPatches() as patches:
             _install_reader_timers(timings, patches)
             started = time.perf_counter()
-            snapshot = _read_viewport_snapshot(
-                reader,
-                selected_value_index,
-                residency,
-                request,
-                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                raise_if_cancelled=lambda: None,
-            )
+            snapshot = _read_worker_snapshot(worker, request)
             cold_snapshot_ms = _elapsed_ms(started)
             cold_breakdown = timings.summary()
             rss_after_cold_snapshot_mib = _rss_mib()
-            if not bool((snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all()):
+            if value_id is not None and not bool(
+                (snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all()
+            ):
                 raise RuntimeError("Selected snapshot contains a value ID other than the requested canonical ID.")
 
             timings.clear()
@@ -796,14 +873,7 @@ def main() -> None:
                 viewport=viewport,
             )
             started = time.perf_counter()
-            warm_snapshot = _read_viewport_snapshot(
-                reader,
-                selected_value_index,
-                residency,
-                warm_request,
-                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                raise_if_cancelled=lambda: None,
-            )
+            warm_snapshot = _read_worker_snapshot(worker, warm_request)
             warm_snapshot_ms = _elapsed_ms(started)
             warm_breakdown = timings.summary()
 
@@ -815,17 +885,24 @@ def main() -> None:
             "warm_breakdown": warm_breakdown,
             "cpu_resident_mib": residency.resident_bytes / _MIB,
             "cpu_resident_tiles": residency.tile_count,
+            "open_bucket_readers": reader.open_bucket_reader_count,
+            "peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            / (_MIB if platform.system() == "Darwin" else 1024),
         }
         report["snapshot"] = {
             "level": snapshot.level,
             "level_kind": snapshot.level_kind,
-            "within_budget": snapshot.within_budget,
+            "within_hard_limits": snapshot.within_hard_limits,
             "estimated_point_count": snapshot.estimated_point_count,
             "tile_count": snapshot.rendered_tile_count,
             "point_count": snapshot.rendered_point_count,
             "render_batch_point_count": snapshot.render_batch.point_count,
             "render_batch_bytes": snapshot.render_batch.nbytes,
-            "all_value_ids_match_selection": True,
+            "all_value_ids_match_selection": (
+                None
+                if value_id is None
+                else bool((snapshot.render_batch.vertices["a_value_id"] == np.float32(value_id)).all())
+            ),
             "omitted_value_ids": snapshot.omitted_value_ids,
         }
         report["dense_exact_tile"] = _dense_exact_tile_report(reader)
@@ -853,20 +930,16 @@ def main() -> None:
                 args.canvas_width,
                 args.canvas_height,
             )
-            subset_snapshot = _read_viewport_snapshot(
-                reader,
-                selected_value_index,
-                residency,
+            subset_snapshot = _read_worker_snapshot(
+                worker,
                 _ViewportRequest(
                     request_generation=3,
                     selection_generation=1,
                     requested_value_ids=requested_value_ids,
                     viewport=subset_viewport,
                 ),
-                max_vertex_payload_bytes=args.max_vertex_payload_bytes,
-                raise_if_cancelled=lambda: None,
             )
-            if not subset_snapshot.within_budget:
+            if not subset_snapshot.within_hard_limits:
                 raise RuntimeError("The centered renderer subset unexpectedly exceeds the point budget.")
             report["renderer"] = _renderer_report(
                 snapshot,

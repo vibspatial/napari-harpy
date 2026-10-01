@@ -14,7 +14,7 @@ from matplotlib.colors import to_rgba
 from napari.layers import Image, Shapes
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QColor
-from qtpy.QtWidgets import QCheckBox, QComboBox, QCompleter
+from qtpy.QtWidgets import QCheckBox, QComboBox, QCompleter, QLabel
 from shapely.geometry import LineString, Polygon
 from spatialdata import SpatialData
 from spatialdata.models import ShapesModel
@@ -278,7 +278,7 @@ def test_viewer_widget_can_be_instantiated(qtbot) -> None:
     qtbot.addWidget(widget)
 
     assert widget is not None
-    assert widget._logo_path.is_file()
+    assert widget.findChild(QLabel, "viewer_widget_header_logo") is not None
     assert widget.app_state.sdata is None
     assert not widget.empty_state_label.isHidden()
     assert "No SpatialData Loaded" in _label_text(widget.summary_label)

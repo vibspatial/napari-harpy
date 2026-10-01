@@ -16,16 +16,6 @@ from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_N_POINTS,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-    VALUES_N_POINTS,
-)
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
@@ -40,7 +30,17 @@ from napari_harpy.core.multi_scale_cache_points_zarr.source import (
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_LEVEL_INDPTR,
+    MANIFEST_N_POINTS,
+    MANIFEST_TILE_X,
+    MANIFEST_TILE_Y,
+    VALUE_TILES_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
+    VALUES_N_POINTS,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 
 _EXPECTED_XENIUM_POINT_COUNT = 136_578_750
 _RSS_SAMPLE_INTERVAL_SECONDS = 0.25
@@ -128,7 +128,7 @@ def _level_selection_report(selection: _LevelSelection) -> dict[str, object]:
         "level": selection.level,
         "estimated_point_count": selection.estimated_point_count,
         "positive_visible_tile_count": selection.positive_visible_tile_count,
-        "within_budget": selection.within_budget,
+        "fits_point_budget": selection.fits_point_budget,
         "omitted_value_ids": None if omitted_value_ids is None else omitted_value_ids.tolist(),
     }
 
@@ -155,7 +155,9 @@ def _time_tile(
 ) -> tuple[_TileReadResult | None, dict[str, object]]:
     started = perf_counter()
     result = reader.read_tile(level, tile_x, tile_y, value_ids=value_ids)
-    return result, _result_summary(result, perf_counter() - started)
+    summary = _result_summary(result, perf_counter() - started)
+    summary["read_mode"] = "complete_tile_major" if value_ids is None else "complete_tile_major_then_filter"
+    return result, summary
 
 
 def _time_viewport(
@@ -253,14 +255,14 @@ def _assert_selected_matches_complete(complete: _TileReadResult, selected: _Tile
 
 
 def _evaluate_reader(cache_root: Path) -> dict[str, object]:
-    with _CatalogReader(cache_root) as catalog:
-        attributes = catalog.attributes
-        level_indptr = np.asarray(catalog.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
-        n_points = np.asarray(catalog.array(MANIFEST_N_POINTS)[:], dtype=np.uint64)
-        tile_x = np.asarray(catalog.array(MANIFEST_TILE_X)[:], dtype=np.uint32)
-        tile_y = np.asarray(catalog.array(MANIFEST_TILE_Y)[:], dtype=np.uint32)
-        value_indptr = np.asarray(catalog.array(VALUE_TILES_INDPTR)[:], dtype=np.uint64)
-        value_counts = np.asarray(catalog.array(VALUES_N_POINTS)[:], dtype=np.uint64)
+    with _CacheRootReader(cache_root) as cache_root_reader:
+        attributes = cache_root_reader.attributes
+        level_indptr = np.asarray(cache_root_reader.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
+        n_points = np.asarray(cache_root_reader.array(MANIFEST_N_POINTS)[:], dtype=np.uint64)
+        tile_x = np.asarray(cache_root_reader.array(MANIFEST_TILE_X)[:], dtype=np.uint32)
+        tile_y = np.asarray(cache_root_reader.array(MANIFEST_TILE_Y)[:], dtype=np.uint32)
+        value_indptr = np.asarray(cache_root_reader.array(VALUE_TILES_INDPTR)[:], dtype=np.uint64)
+        value_counts = np.asarray(cache_root_reader.array(VALUES_N_POINTS)[:], dtype=np.uint64)
         representative_levels = _representative_level_ids(len(attributes.levels))
         representative_tiles = {
             str(level): _representative_tiles(level, level_indptr, n_points, tile_x, tile_y)
@@ -271,7 +273,7 @@ def _evaluate_reader(cache_root: Path) -> dict[str, object]:
         representative_value_manifest_rows = {
             label: int(
                 np.asarray(
-                    catalog.array(VALUE_TILES_MANIFEST_INDEX)[
+                    cache_root_reader.array(VALUE_TILES_MANIFEST_INDEX)[
                         int(value_indptr[0, value_id]) : int(value_indptr[0, value_id]) + 1
                     ],
                     dtype=np.uint64,
@@ -411,7 +413,7 @@ def _evaluate_reader(cache_root: Path) -> dict[str, object]:
         else:
             lost_value = int(lost_candidates[np.argmax(value_counts[lost_candidates])])
             counts_by_level: list[int] = []
-            with _CatalogReader(cache_root) as local_catalog:
+            with _CacheRootReader(cache_root) as local_catalog:
                 for level in range(len(attributes.levels)):
                     start = int(value_indptr[level, lost_value])
                     stop = int(value_indptr[level, lost_value + 1])
@@ -466,7 +468,7 @@ def _evaluate_reader(cache_root: Path) -> dict[str, object]:
             "final_reader_cache": {
                 "open_readers": reader.open_bucket_reader_count,
             },
-            "point_id_payload_access": "forbidden by _BucketReader.read_display_payload; physical omission test passed",
+            "point_id_payload_access": "forbidden by _BucketReader.read_complete_display_payloads (location and value_id only)",
             "cache_state_limitation": (
                 "cold/warm refer only to the application reader cache; OS, filesystem, and codec caches were not reset"
             ),
@@ -540,6 +542,8 @@ def main() -> None:
             "dask_worker_count": args.dask_worker_count,
             **asdict(config.zarr_settings),
             **asdict(config.catalog_settings),
+            "max_open_value_major_readers": config.max_open_value_major_readers,
+            "value_major": asdict(config.value_major_settings),
         },
         "publication": {
             "output_path": str(args.output_path),

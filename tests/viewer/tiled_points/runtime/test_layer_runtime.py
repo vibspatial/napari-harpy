@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 from napari._vispy.utils.qt_font import FontInfo
+from napari.utils.events import Event
 from qtpy.QtCore import QObject, Signal
 
+import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
     _CacheLevelInfo,
@@ -16,6 +19,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
 )
 from napari_harpy.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
+    TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TiledPointsViewportState,
@@ -29,7 +33,8 @@ from napari_harpy.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionSettings,
     _CacheSessionState,
 )
-from napari_harpy.viewer.tiled_points.runtime.composition import _TiledPointsLayerRuntime
+from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
 from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
@@ -38,7 +43,6 @@ _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 class _ControllableSession(QObject):
     state_changed = Signal(object)
     dataset_available = Signal(object)
-    bucket_index_progress = Signal(int, int)
     ready = Signal()
     value_selection_ready = Signal(object, int)
     viewport_ready = Signal(object)
@@ -54,14 +58,16 @@ class _ControllableSession(QObject):
         self.viewport_requests: list[_ViewportRequest] = []
         self.requested_selection: tuple[int, ...] | None = None
         self.close_count = 0
+        self.render_results: list[TiledPointsRenderResult] = []
+
+    def acknowledge_render_result(self, result: TiledPointsRenderResult) -> None:
+        self.render_results.append(result)
 
     def start(self) -> None:
         self._set_state(_CacheSessionState.STARTING)
         self.dataset_available.emit(self.dataset_info)
         if self.state is _CacheSessionState.CLOSED:
             return
-        self._set_state(_CacheSessionState.LOADING_BUCKET_INDEXES)
-        self.bucket_index_progress.emit(1, 1)
         self._set_state(_CacheSessionState.READY)
         self.ready.emit()
 
@@ -158,7 +164,6 @@ def _layer(info: _CacheDatasetInfo, *, max_vertex_payload_bytes: int = 1_000_000
 
 def _settings() -> _CacheSessionSettings:
     return _CacheSessionSettings(
-        max_bucket_lookup_bytes=None,
         max_selected_value_index_bytes=None,
         max_cpu_tile_bytes=1_000_000,
         max_vertex_payload_bytes=1_000_000,
@@ -204,10 +209,11 @@ def _snapshot(
     request: _ViewportRequest,
     tiles: tuple[TiledPointsRenderTile, ...],
     *,
-    within_budget: bool = True,
+    within_hard_limits: bool = True,
     estimated_point_count: int | None = None,
     omitted_value_ids: tuple[int, ...] = (),
     level: int = 0,
+    budget_message: str | None = None,
 ) -> TiledPointsRenderSnapshot:
     point_count = sum(tile.point_count for tile in tiles)
     render_batch = pack_render_tiles(
@@ -223,11 +229,12 @@ def _snapshot(
         requested_value_ids=request.requested_value_ids,
         level=level,
         level_kind="exact" if level == 0 else "bridge" if level == 1 else "spatial",
-        within_budget=within_budget,
+        within_hard_limits=within_hard_limits,
         estimated_point_count=(point_count if estimated_point_count is None else estimated_point_count),
         omitted_value_ids=omitted_value_ids,
         rendered_tile_count=len(tiles),
         render_batch=render_batch,
+        budget_message=budget_message,
     )
 
 
@@ -266,6 +273,9 @@ def test_runtime_connects_layer_viewports_to_complete_renderer_snapshots(maximum
         assert layer.display_status.rendered_point_count == 1
         assert layer.display_status.rendered_tile_count == 1
         assert layer.display_status.message == "Ready"
+        assert session.render_results == [
+            TiledPointsRenderResult(request.request_generation, request.selection_generation, applied=True)
+        ]
     finally:
         runtime.close()
         visual.close()
@@ -328,8 +338,17 @@ def test_runtime_never_submits_a_stale_snapshot_to_vispy(maximum_texture_size: N
         visual.close()
 
 
+@pytest.mark.parametrize(
+    "budget_message",
+    [
+        "View exceeds hard rendering limits: 101 points required, render limit 100 points",
+        "View exceeds hard rendering limits: 1,212 vertex bytes required, limit 1,200 bytes",
+    ],
+    ids=["point-limit", "vertex-byte-limit"],
+)
 def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_sampled_omission(
     maximum_texture_size: None,
+    budget_message: str,
 ) -> None:
     info = _dataset_info()
     layer = _layer(info)
@@ -353,14 +372,16 @@ def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_s
                 layer,
                 over_budget_request,
                 (),
-                within_budget=False,
+                within_hard_limits=False,
                 estimated_point_count=101,
+                budget_message=budget_message,
             )
         )
         assert visual.active_point_count == tile.point_count
         assert len(rendered_snapshots) == 1
         assert layer.display_status.rendered_point_count == 1
         assert "retaining the previous view" in layer.display_status.message
+        assert layer.display_status.message == f"{budget_message}; retaining the previous view"
 
         layer.events.viewport(value=_viewport(20.0))
         failed_request = session.viewport_requests[-1]
@@ -387,6 +408,39 @@ def test_runtime_retains_active_visual_for_over_budget_and_failure_then_clears_s
         assert layer.display_status.rendered_point_count == 0
         assert layer.display_status.omitted_value_ids == (0,)
         assert layer.display_status.message == "Selected values are not represented at the sampled LOD"
+    finally:
+        runtime.close()
+        visual.close()
+
+
+def test_runtime_activates_density_fallback_and_refreshes_notice_on_batch_reuse(maximum_texture_size: None) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        tile = _tile(layer, request)
+        snapshot = _snapshot(
+            layer,
+            request,
+            (tile,),
+            budget_message="Coarsest level; above preferred screen density",
+        )
+        session.complete_viewport(snapshot)
+        assert visual.active_point_count == tile.point_count
+        assert layer.display_status.message == "Ready; Coarsest level; above preferred screen density"
+        assert visual.payload_replacement_count == 1
+
+        layer.events.viewport(value=_viewport(1.0))
+        next_request = session.viewport_requests[-1]
+        session.complete_viewport(
+            replace(snapshot, request_generation=next_request.request_generation, budget_message=None)
+        )
+        assert layer.display_status.message == "Ready"
+        assert visual.payload_replacement_count == 1
     finally:
         runtime.close()
         visual.close()
@@ -419,6 +473,267 @@ def test_runtime_applies_ordinary_empty_snapshot_and_clears_active_visual(maximu
         visual.close()
 
 
+def test_runtime_reports_visible_sampled_omission_without_discarding_offscreen_batch(
+    maximum_texture_size: None,
+) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    try:
+        runtime.set_selected_value_ids((0,))
+        session.complete_selection()
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        first = _snapshot(layer, request, (_tile(layer, request),), level=1)
+        session.complete_viewport(first)
+        layer.events.viewport(value=_viewport(width=10.0))
+        request = session.viewport_requests[-1]
+        session.complete_viewport(
+            replace(
+                first, request_generation=request.request_generation, estimated_point_count=0, omitted_value_ids=(0,)
+            )
+        )
+        assert visual.active_point_count == 1
+        assert visual.payload_replacement_count == 1
+        assert layer.display_status.rendered_point_count == 1
+        assert layer.display_status.message == "Selected values are not represented at the sampled LOD"
+        assert session.render_results[-1].applied
+    finally:
+        runtime.close()
+        visual.close()
+
+
+def test_activation_owns_state_and_defers_status_until_snapshot_handlers_finish(maximum_texture_size: None) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    observed_statuses = []
+
+    def after_renderer(event: Event) -> None:
+        # The visual has already replied, but the outer snapshot event has not
+        # returned. State must remain owned and candidate status uncommitted.
+        observed_statuses.append(layer.display_status)
+        with pytest.raises(RuntimeError, match="another activation was pending"):
+            runtime._activate_snapshot(event.value)
+
+    layer.events.render_snapshot.connect(after_renderer)
+    layer.events.render_snapshot.ignore_callback_errors = False
+    try:
+        for x_min in (0.0, 1.0):
+            layer.events.viewport(value=_viewport(x_min))
+            previous_status = layer.display_status
+            request = session.viewport_requests[-1]
+            session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+
+            assert observed_statuses[-1] == previous_status
+            assert session.render_results[-1].applied
+            assert layer.display_status.message == "Ready"
+            assert layer.display_status.rendered_point_count == 1
+        assert len(observed_statuses) == 2
+    finally:
+        runtime.close()
+        visual.close()
+
+
+@pytest.mark.parametrize("applied", [True, False], ids=["accepted", "rejected"])
+def test_duplicate_renderer_acknowledgement_cannot_overwrite_first_result(applied: bool) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+
+    def acknowledge_twice(event: Event) -> None:
+        snapshot = event.value
+        result = TiledPointsRenderResult(snapshot.request_generation, snapshot.selection_generation, applied)
+        layer.events.render_snapshot_result(value=result)
+        # The state remains installed until _activate_snapshot() finishes, so
+        # explicitly reject a second reply instead of replacing the first one.
+        with pytest.raises(RuntimeError, match="same snapshot more than once"):
+            layer.events.render_snapshot_result(value=replace(result, applied=not applied))
+
+    layer.events.render_snapshot.connect(acknowledge_twice)
+    layer.events.render_snapshot.ignore_callback_errors = False
+    layer.events.render_snapshot_result.ignore_callback_errors = False
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+        assert session.render_results == [
+            TiledPointsRenderResult(request.request_generation, request.selection_generation, applied)
+        ]
+        assert layer.display_status.rendered_point_count == (1 if applied else 0)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("close_source", ["runtime", "session"])
+def test_close_during_snapshot_event_rejects_recorded_result_and_cleans_state(close_source: str) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+
+    def acknowledge_then_close(event: Event) -> None:
+        snapshot = event.value
+        layer.events.render_snapshot_result(
+            value=TiledPointsRenderResult(snapshot.request_generation, snapshot.selection_generation, applied=True)
+        )
+        layer.events.viewport(value=_viewport(1.0))
+        if close_source == "runtime":
+            runtime.close()
+        else:
+            session.close()
+
+    layer.events.render_snapshot.connect(acknowledge_then_close)
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+
+        assert runtime.closed
+        assert runtime._render_activation_state is None
+        assert not session.render_results[-1].applied
+        assert layer.display_status.rendered_point_count == 0
+        assert len(session.viewport_requests) == 1
+        assert session.close_count == 1
+    finally:
+        runtime.close()
+
+
+def test_close_from_status_listener_rejects_activation_and_cleans_state(maximum_texture_size: None) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+
+    def close_on_ready(event: Event) -> None:
+        if event.value.message == "Ready":
+            runtime.close()
+
+    layer.events.display_status.connect(close_on_ready)
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+
+        assert runtime.closed
+        assert runtime._render_activation_state is None
+        assert not session.render_results[-1].applied
+        assert session.close_count == 1
+    finally:
+        runtime.close()
+        visual.close()
+
+
+def test_status_processing_exception_cleans_activation_and_allows_next_request(maximum_texture_size: None) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+
+    def fail_on_ready(event: Event) -> None:
+        if event.value.message == "Ready":
+            raise RuntimeError("synthetic status failure")
+
+    layer.events.display_status.connect(fail_on_ready)
+    layer.events.display_status.ignore_callback_errors = False
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        # Catch the exception directly, outside Qt's unhandled-slot hook.
+        with pytest.raises(RuntimeError, match="synthetic status failure"):
+            runtime._viewport_scheduler._on_viewport_ready(_snapshot(layer, request, (_tile(layer, request),)))
+        assert runtime._render_activation_state is None
+        assert not session.render_results[-1].applied
+
+        layer.events.display_status.disconnect(fail_on_ready)
+        layer.events.viewport(value=_viewport(1.0))
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+        assert session.render_results[-1].applied
+        assert layer.display_status.message == "Ready"
+    finally:
+        runtime.close()
+        visual.close()
+
+
+def test_missing_renderer_acknowledgement_rejects_candidate_and_allows_next_activation(
+    maximum_texture_size: None,
+) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = None
+    try:
+        # No visual has connected to render_snapshot yet. Emitting the model
+        # event alone must not be treated as successful renderer acceptance.
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+        assert session.render_results[-1] == TiledPointsRenderResult(
+            request.request_generation, request.selection_generation, applied=False
+        )
+        assert "Renderer did not acknowledge" in layer.display_status.message
+        assert layer.display_status.rendered_point_count == 0
+
+        visual = VispyTiledPointsLayer(layer, FontInfo())
+        layer.events.viewport(value=_viewport(1.0))
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+        assert session.render_results[-1].applied
+        assert visual.active_point_count == 1
+        assert layer.display_status.message == "Ready"
+    finally:
+        runtime.close()
+        if visual is not None:
+            visual.close()
+
+
+def test_render_event_exception_clears_pending_activation_and_reports_rejection(maximum_texture_size: None) -> None:
+    info = _dataset_info()
+    layer = _layer(info)
+    session = _ControllableSession(info)
+    runtime = _runtime(layer, session)
+    visual = None
+
+    def fail_activation(event) -> None:
+        raise RuntimeError("synthetic render event failure")
+
+    layer.events.render_snapshot.connect(fail_activation)
+    layer.events.render_snapshot.ignore_callback_errors = False
+    try:
+        layer.events.viewport(value=_viewport())
+        request = session.viewport_requests[-1]
+        snapshot = _snapshot(layer, request, (_tile(layer, request),))
+        # Exercise the completion handler directly to catch the propagated
+        # event exception without Qt's unhandled-slot exception hook.
+        with pytest.raises(RuntimeError, match="synthetic render event failure"):
+            runtime._viewport_scheduler._on_viewport_ready(snapshot)
+        assert session.render_results[-1] == TiledPointsRenderResult(
+            request.request_generation, request.selection_generation, applied=False
+        )
+        assert layer.display_status.rendered_point_count == 0
+
+        layer.events.render_snapshot.disconnect(fail_activation)
+        visual = VispyTiledPointsLayer(layer, FontInfo())
+        layer.events.viewport(value=_viewport(1.0))
+        request = session.viewport_requests[-1]
+        session.complete_viewport(_snapshot(layer, request, (_tile(layer, request),)))
+        assert session.render_results[-1].applied
+        assert visual.active_point_count == 1
+    finally:
+        runtime.close()
+        if visual is not None:
+            visual.close()
+
+
 def test_runtime_reports_renderer_failure_without_committing_candidate_status(maximum_texture_size: None) -> None:
     info = _dataset_info()
     layer = _layer(info, max_vertex_payload_bytes=12)
@@ -444,6 +759,9 @@ def test_runtime_reports_renderer_failure_without_committing_candidate_status(ma
         assert layer.display_status.rendered_point_count == 1
         assert layer.display_status.rendered_tile_count == 1
         assert "max_vertex_payload_bytes=12" in layer.display_status.message
+        assert session.render_results[-1] == TiledPointsRenderResult(
+            second_request.request_generation, second_request.selection_generation, applied=False
+        )
     finally:
         runtime.close()
         visual.close()
@@ -535,7 +853,7 @@ def test_real_cache_flows_from_layer_viewport_to_renderer_and_selected_values(
         assert visual.payload_replacement_count == 2
 
         # The model suppresses an unchanged normalized viewport before it can
-        # reach the coordinator, worker, or renderer.
+        # reach the scheduler, worker, or renderer.
         layer._emit_viewport(_viewport(width=20.0))
         qtbot.wait(50)
         assert len(observed) == 2
@@ -548,6 +866,67 @@ def test_real_cache_flows_from_layer_viewport_to_renderer_and_selected_values(
         assert bool((observed[-1].render_batch.vertices["a_value_id"] == 0).all())
         assert visual.payload_replacement_count == 3
         assert callback_thread_ids and set(callback_thread_ids) == {threading.get_ident()}
+    finally:
+        runtime.close()
+        qtbot.waitUntil(lambda: runtime.state is _CacheSessionState.CLOSED, timeout=5_000)
+        visual.close()
+
+
+@pytest.mark.parametrize("selection", [None, (0,)], ids=["all-values", "subset"])
+def test_real_contained_viewports_retain_worker_batch_and_vbo_with_fresh_status(
+    real_cache_root: Path, maximum_texture_size: None, qtbot, monkeypatch, selection
+) -> None:
+    """Exercise real IO, queued Qt identity, renderer feedback, and empty inner views."""
+    with _PointsCacheReader(real_cache_root) as reader:
+        info = reader.dataset_info
+    layer = _layer(info)
+    runtime = _TiledPointsLayerRuntime(layer, real_cache_root, _settings(), initial_requested_value_ids=selection)
+    visual = VispyTiledPointsLayer(layer, FontInfo())
+    observed = []
+    layer.events.render_snapshot.connect(lambda event: observed.append(event.value))
+    outer = replace(_viewport(width=40.0), x_min=-10.0, y_min=-10.0, y_max=20.0)
+    try:
+        qtbot.waitUntil(lambda: runtime.state is _CacheSessionState.READY, timeout=5_000)
+        layer._emit_viewport(outer)
+        qtbot.waitUntil(lambda: len(observed) == 1, timeout=5_000)
+        first = observed[0]
+        assert first.rendered_point_count == (4 if selection is None else 2)
+        assert visual.payload_replacement_count == 1
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("An active-batch hit entered the tile preparation/upload pipeline")
+
+        with monkeypatch.context() as guarded:
+            guarded.setattr(_PointsCacheReader, "plan_viewport", forbidden)
+            guarded.setattr(_PointsCacheReader, "read_planned_tiles", forbidden)
+            guarded.setattr(_CpuTileResidency, "get", forbidden)
+            guarded.setattr(cache_session_module, "pack_render_tiles", forbidden)
+            guarded.setattr(visual._snapshot_visual, "replace_vertices", forbidden)
+            for generation, viewport in enumerate((_viewport(width=10.0), _viewport(20.0, width=10.0), outer), start=2):
+                layer._emit_viewport(viewport)
+                qtbot.waitUntil(lambda generation=generation: len(observed) == generation, timeout=5_000)
+                current = observed[-1]
+                assert current.render_batch is first.render_batch
+                assert current.request_generation == generation
+                assert current.rendered_tile_count == first.rendered_tile_count
+                assert visual.active_point_count == first.rendered_point_count
+                if generation == 3:
+                    assert current.estimated_point_count == 0
+                    assert layer.display_status.message == "No points in view"
+                else:
+                    assert layer.display_status.message == "Ready"
+
+        # A disjoint view replaces the retained entry. Returning cannot restore
+        # historical packed data, although decoded tile residency can avoid IO.
+        layer._emit_viewport(_viewport(50.0))
+        qtbot.waitUntil(lambda: len(observed) == 5, timeout=5_000)
+        assert observed[-1].rendered_point_count == 0
+        layer._emit_viewport(outer)
+        qtbot.waitUntil(lambda: len(observed) == 6, timeout=5_000)
+        assert observed[-1].render_batch is not first.render_batch
+        np.testing.assert_array_equal(observed[-1].render_batch.vertices, first.render_batch.vertices)
+        assert visual.payload_replacement_count == 2
+        assert visual.visual_count == visual.vbo_count == 1
     finally:
         runtime.close()
         qtbot.waitUntil(lambda: runtime.state is _CacheSessionState.CLOSED, timeout=5_000)

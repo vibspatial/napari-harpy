@@ -1,4 +1,4 @@
-"""Independently validate a complete, unpublished Zarr cache generation.
+"""Independently validate a complete Zarr cache generation.
 
 Construction and independent validation intentionally use different container
 hierarchies::
@@ -22,20 +22,14 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
+from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import BRIDGE_MAX_POINTS_PER_TILE
 from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    MANIFEST_BUCKET_ID,
-    MANIFEST_BUCKET_TILE_INDEX,
-    MANIFEST_LEVEL_INDPTR,
-    MANIFEST_N_POINTS,
-    MANIFEST_TILE_X,
-    MANIFEST_TILE_Y,
+    PUBLICATION_STATE_COMPLETE,
     PUBLICATION_STATE_STAGING,
-    VALUE_TILES_INDPTR,
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
     _CacheAttributes,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import _tile_bucket_ids
@@ -45,12 +39,25 @@ from napari_harpy.core.multi_scale_cache_points_zarr.models import (
     _require_integer_in_range,
     _TileDescriptor,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+    CACHE_ROOT_GROUPS,
+    ZARR_METADATA_FILENAME,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    MANIFEST_BUCKET_ID,
+    MANIFEST_BUCKET_TILE_INDEX,
+    MANIFEST_LEVEL_INDPTR,
+    MANIFEST_N_POINTS,
+    MANIFEST_TILE_X,
+    MANIFEST_TILE_Y,
+    VALUE_TILES_INDPTR,
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
-    _CatalogReader,
+    _CacheRootReader,
     _iter_compact_bucket_range_batches,
 )
-
-_BRIDGE_MAX_POINTS_PER_TILE = 4_096
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,11 @@ class _ManifestBucket:
             sorted(self.descriptors, key=lambda descriptor: (descriptor.tile_y, descriptor.tile_x))
         ):
             raise ValueError("Manifest-bucket descriptors must follow (tile_y, tile_x) order.")
+        row_start = 0
+        for descriptor in self.descriptors:
+            if descriptor.bucket_row_start != row_start:
+                raise ValueError("Manifest-bucket point intervals must be contiguous from zero.")
+            row_start += descriptor.n_points
         if (
             not isinstance(self.manifest_indexes, np.ndarray)
             or self.manifest_indexes.dtype != np.dtype(np.uint64)
@@ -152,7 +164,7 @@ def _validate_staged_cache(staging_root: Path) -> None:
 
     Its logical validation responsibilities are split as follows::
 
-        _CatalogReader.validate_contents()
+        _CacheRootReader.validate_contents()
             Catalog arrays are internally consistent.
 
         _validate_persisted_build()
@@ -161,24 +173,90 @@ def _validate_staged_cache(staging_root: Path) -> None:
         _validate_bucket_ranges_against_catalog()
             Physical bucket metadata and sparse ranges agree with the catalog.
     """
-    _require_staging_root(staging_root)
-    _validate_staging_artifacts(staging_root)
-    with _CatalogReader(staging_root) as reader:
-        if reader.attributes.publication_state != PUBLICATION_STATE_STAGING:
-            raise ValueError("Staged validation requires publication_state='staging'.")
+    _validate_cache_generation(
+        staging_root,
+        expected_publication_state=PUBLICATION_STATE_STAGING,
+    )
+
+
+def _validate_complete_cache(cache_root: Path) -> None:
+    """Validate one completed cache without reading point payload or source rows.
+
+    This strict read-only entry point exists for explicitly invoked developer
+    diagnostics. Production publication continues to call
+    ``_validate_staged_cache()`` before changing the generation state.
+    """
+    _validate_cache_generation(
+        cache_root,
+        expected_publication_state=PUBLICATION_STATE_COMPLETE,
+    )
+
+
+def _validate_cache_generation(
+    cache_root: Path,
+    *,
+    expected_publication_state: Literal["staging", "complete"],
+) -> None:
+    """Run shared structural checks for one explicitly stated generation state."""
+    if expected_publication_state not in {
+        PUBLICATION_STATE_STAGING,
+        PUBLICATION_STATE_COMPLETE,
+    }:
+        raise ValueError("`expected_publication_state` must be 'staging' or 'complete'.")
+    _require_cache_root(cache_root)
+    _validate_cache_artifacts(cache_root)
+    with _CacheRootReader(cache_root) as reader:
+        if reader.attributes.publication_state != expected_publication_state:
+            raise ValueError(f"Cache validation requires publication_state={expected_publication_state!r}.")
         reader.validate_contents()
         inventory = _read_manifest_inventory(reader)
         _validate_persisted_build(reader.attributes, inventory)
-        _validate_bucket_ranges_against_catalog(reader, inventory, staging_root=staging_root)
-    # Catch an unexpected sidecar created while validation had stores open.
-    _validate_staging_artifacts(staging_root)
+        _validate_bucket_ranges_against_catalog(reader, inventory, cache_root=cache_root)
+    # Catch an unexpected artifact created while validation had stores open.
+    _validate_cache_artifacts(cache_root)
 
 
-def _read_manifest_inventory(reader: _CatalogReader) -> _ManifestInventory:
-    """Reconstruct ordered tile descriptors and physical buckets from manifest arrays."""
+def _read_manifest_inventory(reader: _CacheRootReader) -> _ManifestInventory:
+    """Reconstruct ordered tile descriptors and physical buckets from manifest arrays.
+
+    For each level, ``grouped`` has the following structure::
+
+        {
+            bucket_id: [
+                (manifest_row_index, tile_descriptor),
+                ...
+            ]
+        }
+
+    ``bucket_id`` identifies a physical bucket within the current level.
+    ``manifest_row_index`` indexes the cache-wide manifest arrays; it is
+    neither a bucket-local tile index nor a point-row address.
+    ``tile_descriptor`` is the reconstructed ``_TileDescriptor`` containing
+    that tile's identity and complete point-row interval within its bucket.
+
+    For example::
+
+        {
+            4: [(10, descriptor_a), (12, descriptor_b)],
+            7: [(11, descriptor_c)],
+        }
+
+    Here, manifest rows 10 and 12 belong to bucket 4, while row 11 belongs
+    to bucket 7. Each bucket's list follows bucket-local tile order. The
+    mapping is recreated for every level.
+
+    ``rows = grouped[current_bucket_id]`` references that bucket's list;
+    a previously unseen bucket gets an empty list. Appending to ``rows``
+    therefore updates ``grouped``. Its last descriptor supplies the
+    preceding tile's start and count when deriving the next row start.
+
+    After processing the level, each list is split into the aligned
+    ``descriptors`` tuple and ``manifest_indexes`` array of a
+    ``_ManifestBucket``.
+    """
     level_indptr = np.asarray(reader.array(MANIFEST_LEVEL_INDPTR)[:], dtype=np.uint64)
     bucket_id = np.asarray(reader.array(MANIFEST_BUCKET_ID)[:], dtype=np.uint32)
-    bucket_tile_index = np.asarray(reader.array(MANIFEST_BUCKET_TILE_INDEX)[:], dtype=np.uint32)
+    bucket_tile_indexes = np.asarray(reader.array(MANIFEST_BUCKET_TILE_INDEX)[:], dtype=np.uint32)
     tile_x = np.asarray(reader.array(MANIFEST_TILE_X)[:], dtype=np.uint32)
     tile_y = np.asarray(reader.array(MANIFEST_TILE_Y)[:], dtype=np.uint32)
     n_points = np.asarray(reader.array(MANIFEST_N_POINTS)[:], dtype=np.uint64)
@@ -187,23 +265,34 @@ def _read_manifest_inventory(reader: _CatalogReader) -> _ManifestInventory:
     for level, (stored_start, stored_stop) in enumerate(zip(level_indptr[:-1], level_indptr[1:], strict=True)):
         start = int(stored_start)
         stop = int(stored_stop)
-        descriptors = tuple(
-            _TileDescriptor(
+        grouped: dict[int, list[tuple[int, _TileDescriptor]]] = defaultdict(list)
+        for index in range(start, stop):
+            current_bucket_id = int(bucket_id[index])
+            rows = grouped[current_bucket_id]
+            bucket_tile_index = int(bucket_tile_indexes[index])
+            if bucket_tile_index != len(rows):
+                raise ValueError("Manifest tiles must follow contiguous bucket-local tile indexes.")
+            previous = rows[-1][1] if rows else None
+            # Derive from complete manifest counts, independently of the stored
+            # bucket offsets that validation will compare these starts against.
+            row_start = previous.bucket_row_start + previous.n_points if previous is not None else 0
+            descriptor = _TileDescriptor(
                 level=level,
-                bucket_id=int(bucket_id[index]),
-                bucket_tile_index=int(bucket_tile_index[index]),
+                bucket_id=current_bucket_id,
+                bucket_tile_index=bucket_tile_index,
+                bucket_row_start=row_start,
                 tile_x=int(tile_x[index]),
                 tile_y=int(tile_y[index]),
                 n_points=int(n_points[index]),
             )
-            for index in range(start, stop)
-        )
-        grouped: dict[int, list[tuple[int, _TileDescriptor]]] = defaultdict(list)
-        for manifest_index, descriptor in zip(range(start, stop), descriptors, strict=True):
-            grouped[descriptor.bucket_id].append((manifest_index, descriptor))
+            rows.append((index, descriptor))
         level_buckets: list[_ManifestBucket] = []
         for current_bucket_id in sorted(grouped):
-            rows = sorted(grouped[current_bucket_id], key=lambda item: item[1].bucket_tile_index)
+            # Manifest coordinate order already preserves each bucket's tile-index
+            # order. The earlier `bucket_tile_index != len(rows)` check enforces
+            # indexes 0, 1, 2, ... as records are collected; reject inconsistent
+            # ordering there instead of sorting it away here.
+            rows = grouped[current_bucket_id]
             level_buckets.append(
                 _ManifestBucket(
                     level=level,
@@ -340,7 +429,7 @@ def _expected_level_plan(attributes: _CacheAttributes) -> tuple[tuple[object, ..
         return tuple(levels)
 
     tile_size = build.leaf_tile_size
-    scheduled_capacity = _BRIDGE_MAX_POINTS_PER_TILE
+    scheduled_capacity = BRIDGE_MAX_POINTS_PER_TILE
     kind = "bridge"
     while True:
         level = len(levels)
@@ -359,10 +448,10 @@ def _expected_level_plan(attributes: _CacheAttributes) -> tuple[tuple[object, ..
 
 
 def _validate_bucket_ranges_against_catalog(
-    reader: _CatalogReader,
+    reader: _CacheRootReader,
     inventory: _ManifestInventory,
     *,
-    staging_root: Path,
+    cache_root: Path,
 ) -> None:
     """Require physical bucket metadata and sparse ranges to agree with the catalog.
 
@@ -407,7 +496,7 @@ def _validate_bucket_ranges_against_catalog(
         #                              compare with value_tiles
         for bucket in buckets:
             for batch in _iter_compact_bucket_range_batches(
-                staging_root,
+                cache_root,
                 level=level,
                 bucket_id=bucket.bucket_id,
                 expected_descriptors=bucket.descriptors,
@@ -485,49 +574,50 @@ def _validate_bucket_ranges_against_catalog(
         raise ValueError("Exact bucket sparse ranges do not reconcile to canonical value totals.")
 
 
-def _validate_staging_artifacts(staging_root: Path) -> None:
-    """Require a clean, unpublished, Zarr-only generation tree.
+def _validate_cache_artifacts(cache_root: Path) -> None:
+    """Require a clean Zarr-only generation tree.
 
-    The staging root must contain exactly::
+    The cache root must contain exactly::
 
-        staging_root/
+        cache_root/
           zarr.json
-          levels/
+          tile_major/
           values/
           manifest/
           value_tiles/
+          value_major/
 
     Descendants must be Zarr groups or arrays identified by ``zarr.json``, or
-    numeric chunk/shard keys below a ``c/`` directory. Reject sidecars,
-    construction scratch, symbolic links, and unexplained nodes.
+    numeric chunk/shard keys below a ``c/`` directory. Reject construction
+    scratch, symbolic links, and unexplained nodes.
     Logical Zarr contents and array layouts are validated by their dedicated
     readers rather than by this filesystem-level check.
     """
-    allowed_root_entries = {"zarr.json", "levels", "values", "manifest", "value_tiles"}
-    observed_root_entries = {path.name for path in staging_root.iterdir()}
+    allowed_root_entries = CACHE_ROOT_GROUPS | {ZARR_METADATA_FILENAME}
+    observed_root_entries = {path.name for path in cache_root.iterdir()}
     if observed_root_entries != allowed_root_entries:
-        raise ValueError("Staged cache root contains missing or unexpected artifacts.")
+        raise ValueError("Cache root contains missing or unexpected artifacts.")
 
-    for path in staging_root.rglob("*"):
-        relative = path.relative_to(staging_root)
+    for path in cache_root.rglob("*"):
+        relative = path.relative_to(cache_root)
         if path.is_symlink():
-            raise ValueError(f"Staged cache contains an unexpected symbolic link: {relative.as_posix()}.")
+            raise ValueError(f"Cache contains an unexpected symbolic link: {relative.as_posix()}.")
         if path.is_file():
-            if path.name == "zarr.json":
+            if path.name == ZARR_METADATA_FILENAME:
                 continue
             if "c" in relative.parts:
                 chunk_parts = relative.parts[relative.parts.index("c") + 1 :]
                 if chunk_parts and all(part.isdecimal() for part in chunk_parts):
                     continue
-            raise ValueError(f"Staged cache contains an unexpected file: {relative.as_posix()}.")
-        if path.is_dir() and not (path / "zarr.json").is_file():
+            raise ValueError(f"Cache contains an unexpected file: {relative.as_posix()}.")
+        if path.is_dir() and not (path / ZARR_METADATA_FILENAME).is_file():
             if "c" in relative.parts:
                 chunk_parts = relative.parts[relative.parts.index("c") + 1 :]
                 if all(part.isdecimal() for part in chunk_parts):
                     continue
-            raise ValueError(f"Staged cache contains an unexpected directory: {relative.as_posix()}.")
+            raise ValueError(f"Cache contains an unexpected directory: {relative.as_posix()}.")
 
 
-def _require_staging_root(staging_root: Path) -> None:
-    if not isinstance(staging_root, Path) or not staging_root.is_dir():
-        raise ValueError("`staging_root` must be an existing pathlib.Path directory.")
+def _require_cache_root(cache_root: Path) -> None:
+    if not isinstance(cache_root, Path) or not cache_root.is_dir():
+        raise ValueError("`cache_root` must be an existing pathlib.Path directory.")

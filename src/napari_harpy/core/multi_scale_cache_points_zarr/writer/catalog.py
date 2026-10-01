@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from itertools import chain
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
@@ -16,12 +17,15 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _GeometryMetadata,
     _LevelMetadata,
     _SourceMetadata,
+    _ValueMajorMetadata,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
     BUCKET_HASH_METHOD,
     TARGET_POINTS_PER_BUCKET,
     _bucket_count_for_level,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
 from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
     SAMPLED_TILE_MICROGRID_EDGE,
     SAMPLING_METHOD,
@@ -29,6 +33,15 @@ from napari_harpy.core.multi_scale_cache_points_zarr.sampling import (
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import _normalized_arrow_type
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._paths import (
+    MANIFEST_GROUP,
+    TILE_MAJOR_BUCKET_GLOB,
+    TILE_MAJOR_GROUP,
+    VALUE_MAJOR_GROUP,
+    VALUE_TILES_GROUP,
+    VALUES_GROUP,
+    ZARR_METADATA_FILENAME,
+)
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _iter_bucket_range_batches,
     _read_bucket_storage_settings,
@@ -41,6 +54,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
     _LevelWriteResult,
     _ZarrWriteSettings,
 )
+from napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major import _write_value_major_sidecars
 
 
 def _write_staged_cache_catalog(
@@ -51,15 +65,21 @@ def _write_staged_cache_catalog(
     staging_root: Path,
     cache_generation_id: str,
     settings: _CatalogWriteSettings,
+    value_major_settings: _ValueMajorWriteSettings,
+    max_open_value_major_readers: int | None = None,
+    temporary_directory_root: Path,
     target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET,
 ) -> None:
-    """Write and reconcile one complete Zarr-only cache catalog.
+    """Write the catalog and mandatory all-level value-major sidecar.
 
     The level writers have already finalized every point bucket below the
     unpublished staging root. This operation adds the cache root and ancestor
     groups, values, tile manifest, and the derived value-to-tile inverted index.
-    It reads compact bucket indexes only and never decodes point payload arrays
-    or canonical source rows.
+    The catalog phase reads compact bucket indexes only. Its transpose also
+    writes ordered source row addresses to generation-owned temporary storage;
+    the dedicated sidecar writer then decodes only those location rows, never
+    point-level value IDs, point IDs, or canonical source rows, and removes the
+    temporary index before this operation returns.
     """
     if not isinstance(validated, ValidatedPointsSource):
         raise ValueError("`validated` must be ValidatedPointsSource.")
@@ -67,6 +87,17 @@ def _write_staged_cache_catalog(
         raise ValueError("`plan` must be _PointsCacheBuildPlan.")
     if not isinstance(settings, _CatalogWriteSettings):
         raise ValueError("`settings` must be _CatalogWriteSettings.")
+    if not isinstance(value_major_settings, _ValueMajorWriteSettings):
+        raise ValueError("`value_major_settings` must be _ValueMajorWriteSettings.")
+    if max_open_value_major_readers is not None:
+        _require_integer_in_range(
+            max_open_value_major_readers,
+            "max_open_value_major_readers",
+            minimum=1,
+            maximum=_INT64_MAX,
+        )
+    if not isinstance(temporary_directory_root, Path) or not temporary_directory_root.is_dir():
+        raise ValueError("`temporary_directory_root` must be an existing pathlib.Path directory.")
     _require_existing_staging_root(staging_root)
     _require_level_results_match_plan(
         validated,
@@ -111,65 +142,96 @@ def _write_staged_cache_catalog(
         settings=settings,
     )
 
-    with _CatalogWriter(
-        staging_root,
-        level_count=len(level_results),
-        value_count=len(value_names),
-        manifest_row_count=manifest_row_count,
-        value_tile_row_count=value_tile_row_count,
-        zarr_settings=zarr_settings,
-        catalog_settings=settings,
-    ) as writer:
-        writer.write_value_counts(value_counts)
-        writer.write_manifest(
-            level_indptr=level_indptr,
-            bucket_id=bucket_id,
-            bucket_tile_index=bucket_tile_index,
-            tile_x=tile_x,
-            tile_y=tile_y,
-            n_points=manifest_n_points,
+    with TemporaryDirectory(
+        prefix=f"harpy-value-major-{cache_generation_id}-",
+        dir=temporary_directory_root,
+    ) as temporary_directory:
+        # Construction-only companion to the persisted ``value_tiles`` rows.
+        # The catalog sort applies the same permutation to each source bucket's
+        # ``row_start`` as to ``value_tiles/manifest_index`` and
+        # ``value_tiles/n_points``. The sidecar writer consumes these aligned
+        # source addresses before this temporary directory removes them. This
+        # companion requires one uint64 per value/tile range: at 30 million
+        # ranges it occupies about 229 MiB and scales linearly. Disk backing
+        # keeps that construction-only allocation out of the NumPy heap.
+        ordered_row_start = np.memmap(
+            Path(temporary_directory) / "ordered-row-start.uint64",
+            mode="w+",
+            dtype=np.uint64,
+            shape=(value_tile_row_count,),
         )
-        # Keep one lazy stream per level while concatenating its bucket streams;
-        # only the currently consumed bucket store is opened by the reader.
-        batches_by_level = tuple(
-            chain.from_iterable(
-                _iter_bucket_range_batches(
-                    staging_root,
-                    bucket,
-                    bucket_manifest_indexes[(bucket.level, bucket.bucket_id)],
-                    batch_rows=settings.value_tile_chunk_rows,
-                    expected_settings=zarr_settings,
-                )
-                for bucket in result.buckets
-            )
-            for result in level_results
-        )
-        summary = writer.write_value_tiles_by_level(
-            batches_by_level,
-            level_indptr=level_indptr,
-            expected_level_row_counts=tuple(result.range_count for result in level_results),
+        with _CatalogWriter(
+            staging_root,
+            level_count=len(level_results),
             value_count=len(value_names),
-            output_batch_rows=settings.value_tile_chunk_rows,
-        )
-        _reconcile_catalog(
-            validated,
-            level_results,
-            value_counts=value_counts,
-            manifest_n_points=manifest_n_points,
+            manifest_row_count=manifest_row_count,
             value_tile_row_count=value_tile_row_count,
-            summary=summary,
-        )
-        attributes = _build_cache_attributes(
-            validated,
-            plan,
-            level_results,
-            cache_generation_id=cache_generation_id,
             zarr_settings=zarr_settings,
-            value_names=value_names,
-            catalog_metadata=catalog_metadata,
-            target_points_per_bucket=target_points_per_bucket,
+            catalog_settings=settings,
+        ) as writer:
+            writer.write_value_counts(value_counts)
+            writer.write_manifest(
+                level_indptr=level_indptr,
+                bucket_id=bucket_id,
+                bucket_tile_index=bucket_tile_index,
+                tile_x=tile_x,
+                tile_y=tile_y,
+                n_points=manifest_n_points,
+            )
+            # Keep one lazy stream per level while concatenating its bucket streams;
+            # only the currently consumed bucket store is opened by the reader.
+            batches_by_level = tuple(
+                chain.from_iterable(
+                    _iter_bucket_range_batches(
+                        staging_root,
+                        bucket,
+                        bucket_manifest_indexes[(bucket.level, bucket.bucket_id)],
+                        batch_rows=settings.value_tile_chunk_rows,
+                        expected_settings=zarr_settings,
+                    )
+                    for bucket in result.buckets
+                )
+                for result in level_results
+            )
+            summary = writer.write_value_tiles_by_level(
+                batches_by_level,
+                level_indptr=level_indptr,
+                expected_level_row_counts=tuple(result.range_count for result in level_results),
+                value_count=len(value_names),
+                output_batch_rows=settings.value_tile_chunk_rows,
+                ordered_row_start=ordered_row_start,
+            )
+            _reconcile_catalog(
+                validated,
+                level_results,
+                value_counts=value_counts,
+                manifest_n_points=manifest_n_points,
+                value_tile_row_count=value_tile_row_count,
+                summary=summary,
+            )
+            attributes = _build_cache_attributes(
+                validated,
+                plan,
+                level_results,
+                cache_generation_id=cache_generation_id,
+                zarr_settings=zarr_settings,
+                value_names=value_names,
+                catalog_metadata=catalog_metadata,
+                value_major_settings=value_major_settings,
+                target_points_per_bucket=target_points_per_bucket,
+            )
+            writer.finalize(attributes)
+        ordered_row_start.flush()
+        _write_value_major_sidecars(
+            staging_root,
+            attributes,
+            ordered_row_start=ordered_row_start,
+            value_tile_indptr=summary.indptr,
+            level_value_n_points=summary.level_value_n_points,
+            write_settings=value_major_settings,
+            max_open_value_major_readers=max_open_value_major_readers,
         )
-        writer.finalize(attributes)
+        del ordered_row_start
 
 
 def _build_manifest_arrays(
@@ -264,6 +326,12 @@ def _build_manifest_arrays(
                 raise ValueError("Manifest contains a duplicate bucket-local tile address.")
             address_to_manifest_row[address] = cursor
             bucket_id[cursor] = descriptor.bucket_id
+            # The row start is already stored in the bucket's
+            # tile_offset[bucket_tile_index]; do not duplicate it in the manifest.
+            # At reader startup, reconstruct bucket_row_start from preceding tiles'
+            # n_points within each (level, bucket_id), without opening every bucket.
+            # These retained starts are checked against stored offsets on first
+            # complete-tile use, not recomputed for each viewport.
             bucket_tile_index[cursor] = descriptor.bucket_tile_index
             tile_x[cursor] = descriptor.tile_x
             tile_y[cursor] = descriptor.tile_y
@@ -305,6 +373,7 @@ def _build_cache_attributes(
     zarr_settings: _ZarrWriteSettings,
     value_names: tuple[str, ...],
     catalog_metadata: _CatalogMetadata,
+    value_major_settings: _ValueMajorWriteSettings,
     target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET,
 ) -> _CacheAttributes:
     columns = validated.source.columns
@@ -376,6 +445,7 @@ def _build_cache_attributes(
         levels=levels,
         value_names=value_names,
         catalog=catalog_metadata,
+        value_major=_ValueMajorMetadata.from_write_settings(value_major_settings),
     )
 
 
@@ -397,7 +467,7 @@ def _reconcile_catalog(
         raise RuntimeError("Value-tile counts do not reconcile to manifest tile totals.")
     if not np.array_equal(summary.level_n_points, expected_level_counts):
         raise RuntimeError("Value-tile counts do not reconcile to level point totals.")
-    if not np.array_equal(summary.exact_value_n_points, value_counts):
+    if not np.array_equal(summary.level_value_n_points[0], value_counts):
         raise RuntimeError("Exact value-tile counts do not reconcile to validated value totals.")
     if int(summary.level_n_points[0]) != validated.row_count:
         raise RuntimeError("Exact catalog total does not match the validated source row count.")
@@ -451,13 +521,21 @@ def _require_bucket_inventory_matches_results(
     separately.
     """
     expected = {(staging_root / bucket.bucket_path).resolve() for result in level_results for bucket in result.buckets}
-    observed = {path.resolve() for path in (staging_root / "levels").rglob("bucket-*.zarr") if path.is_dir()}
+    observed = {
+        path.resolve() for path in (staging_root / TILE_MAJOR_GROUP).rglob(TILE_MAJOR_BUCKET_GLOB) if path.is_dir()
+    }
     if observed != expected:
         raise ValueError("Staged bucket paths do not match completed level results exactly.")
 
 
 def _require_catalog_targets_absent(staging_root: Path) -> None:
-    for relative_path in ("zarr.json", "values", "manifest", "value_tiles"):
+    for relative_path in (
+        ZARR_METADATA_FILENAME,
+        VALUES_GROUP,
+        MANIFEST_GROUP,
+        VALUE_TILES_GROUP,
+        VALUE_MAJOR_GROUP,
+    ):
         if (staging_root / relative_path).exists():
             raise FileExistsError(f"Catalog target already exists: {relative_path}.")
 

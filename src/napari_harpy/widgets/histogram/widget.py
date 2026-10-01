@@ -8,7 +8,6 @@ from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from qtpy.QtCore import QSignalBlocker, QSize, QStringListModel, Qt
-from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QCompleter,
@@ -30,7 +29,6 @@ from qtpy.QtWidgets import (
 from xarray import DataArray, DataTree
 
 from napari_harpy._app_state import CoordinateSystemChangedEvent, HarpyAppState, get_or_create_app_state
-from napari_harpy._resources import get_logo_path
 from napari_harpy.core.histogram import (
     HistogramResult,
     HistogramSettings,
@@ -88,6 +86,7 @@ from napari_harpy.widgets.shared_styles import (
     build_input_control_stylesheet,
     create_disclosure_chevron_icon,
     create_form_label,
+    create_header_logo,
     format_tooltip,
     set_status_card,
 )
@@ -268,7 +267,6 @@ class HistogramWidget(QWidget):
         self._cards: dict[str, _HistogramCard] = {}
         self._card_channel_errors: dict[str, str] = {}
         self._card_scale_errors: dict[str, str] = {}
-        self._logo_path = get_logo_path()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -291,7 +289,7 @@ class HistogramWidget(QWidget):
         content_layout.setContentsMargins(12, 12, 12, 12)
         content_layout.setSpacing(10)
 
-        header_logo = self._create_header_logo()
+        header_logo = create_header_logo("histogram_header_logo")
 
         action_row = QWidget()
         action_row.setObjectName("histogram_add_action_row")
@@ -378,20 +376,6 @@ class HistogramWidget(QWidget):
         self.cards_layout.removeWidget(histogram_card.container)
         histogram_card.container.deleteLater()
         self._update_empty_state()
-
-    def _create_header_logo(self) -> QLabel:
-        logo_label = QLabel()
-        logo_label.setObjectName("histogram_header_logo")
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        logo_pixmap = QPixmap(str(self._logo_path))
-        if not logo_pixmap.isNull():
-            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
-            return logo_label
-
-        logo_label.setText("napari-harpy")
-        logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
-        return logo_label
 
     def _create_histogram_card(self, card_id: str) -> _HistogramCard:
         container = QFrame()

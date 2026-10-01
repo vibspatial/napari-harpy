@@ -12,6 +12,8 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     _CatalogMetadata,
     _CatalogWriteSettings,
     _parse_cache_attributes,
+    _ValueMajorMetadata,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _build_cache_attributes
 
@@ -38,6 +40,7 @@ def _attributes(fixture: CatalogExactFixture, *, settings: _CatalogWriteSettings
         zarr_settings=fixture.zarr_settings,
         value_names=value_names,
         catalog_metadata=metadata,
+        value_major_settings=_ValueMajorWriteSettings(),
     ).to_dict()
 
 
@@ -50,10 +53,24 @@ def test_cache_attributes_round_trip_exact_frozen_contract(catalog_exact_fixture
     assert payload["schema_version"] == CACHE_SCHEMA_VERSION
     assert parsed.publication_state == PUBLICATION_STATE_STAGING
     assert payload["backend"]["identifier"] == BACKEND_IDENTIFIER  # type: ignore[index]
+    assert payload["backend"]["point_row_order"] == [  # type: ignore[index]
+        "tile_y",
+        "tile_x",
+        "value_id",
+        "point_id",
+    ]
     assert parsed.catalog.value_count == 2
     assert parsed.catalog.manifest_row_count == 2
     assert parsed.catalog.value_tile_row_count == 3
     assert parsed.value_names == ("A", "B")
+    assert payload["catalog"]["value_tile_row_order"] == ["level", "value_id", "manifest_index"]  # type: ignore[index]
+    assert parsed.value_major == _ValueMajorMetadata.from_write_settings(_ValueMajorWriteSettings())
+    assert payload["value_major"] == {
+        "group": "value_major",
+        "point_row_order": ["value_id", "manifest_index", "point_id"],
+        "point_chunk_rows": 4_096,
+        "point_shard_rows": 131_072,
+    }
 
 
 @pytest.mark.parametrize(
@@ -64,7 +81,18 @@ def test_cache_attributes_round_trip_exact_frozen_contract(catalog_exact_fixture
         (lambda value: value.update({"cache_generation_id": "NOT-A-UUID"}), "UUID"),
         (lambda value: value.update({"publication_state": "unknown"}), "publication_state"),
         (lambda value: value["backend"].update({"identifier": "unknown"}), "backend"),
+        (lambda value: value["backend"].update({"point_order": ["point_id"]}), "missing or unexpected"),
         (lambda value: value["catalog"].update({"manifest_row_order": ["tile_x"]}), "ordering"),
+        (lambda value: value["catalog"].update({"value_tile_row_order": ["value_id"]}), "ordering"),
+        (lambda value: value["catalog"].update({"value_tile_key_order": ["level", "value_id"]}), "unexpected"),
+        (lambda value: value["value_major"].update({"point_row_order": ["manifest_index"]}), "value-major"),
+        (lambda value: value["value_major"].update({"row_order": ["manifest_index"]}), "missing or unexpected"),
+        (lambda value: value["value_major"].update({"schema_version": 99}), "missing or unexpected"),
+        (lambda value: value["value_major"].update({"max_open_bucket_readers": 64}), "missing or unexpected"),
+        (lambda value: value["value_major"].update({"codec_id": "zstd-v1"}), "missing or unexpected"),
+        (lambda value: value["value_major"].update({"location_chunk_rows": 4_096}), "missing or unexpected"),
+        (lambda value: value.pop("value_major"), "missing or unexpected"),
+        (lambda value: value["value_major"].update({"levels": []}), "missing or unexpected"),
     ],
 )
 def test_cache_attribute_parser_fails_closed(
@@ -84,3 +112,10 @@ def test_catalog_settings_require_positive_aligned_bounded_layouts() -> None:
         _CatalogWriteSettings(manifest_chunk_rows=3, manifest_shard_rows=4)
     with pytest.raises(ValueError, match="value_tile_chunk_rows"):
         _CatalogWriteSettings(value_tile_chunk_rows=0)
+
+
+def test_value_major_settings_require_bounded_aligned_supported_storage() -> None:
+    with pytest.raises(ValueError, match="multiple"):
+        _ValueMajorWriteSettings(point_chunk_rows=3, point_shard_rows=4)
+    with pytest.raises(ValueError, match="construction_batch_points"):
+        _ValueMajorWriteSettings(construction_batch_points=0)

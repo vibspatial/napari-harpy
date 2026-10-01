@@ -20,12 +20,18 @@ from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_STAGING,
     _CatalogWriteSettings,
     _parse_cache_attributes,
+    _ValueMajorWriteSettings,
 )
 from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
 from napari_harpy.core.multi_scale_cache_points_zarr.models import _INT64_MAX, _require_integer_in_range
 from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
 from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import _require_parquet_source_unchanged
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CatalogReader
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    _ZSTD_CODEC_ID,
+    ZARR_FORMAT_VERSION,
+    ZARR_USE_CONSOLIDATED,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 from napari_harpy.core.multi_scale_cache_points_zarr.writer.bridge import (
     _BridgeWriterConfig,
@@ -52,7 +58,7 @@ def _default_zarr_write_settings() -> _ZarrWriteSettings:
         point_shard_rows=131_072,
         range_chunk_rows=8_192,
         range_shard_rows=131_072,
-        codec_id="zstd-v1",
+        codec_id=_ZSTD_CODEC_ID,
     )
 
 
@@ -76,6 +82,13 @@ class _PointsCacheBuilderConfig:
         One physical chunk, shard, and codec profile shared by every level.
     catalog_settings
         Physical chunk and shard settings for catalog arrays.
+    value_major_settings
+        Physical layout and bounded construction settings for the mandatory
+        all-level value-major location sidecar.
+    max_open_value_major_readers
+        Optional bound for retained tile-major source-bucket readers during
+        value-major construction. ``None`` retains every source reader for the
+        active level and is the default.
     max_open_exact_readers
         Optional Bridge bound for retained Exact bucket-reader metadata.
         ``None`` retains every Exact reader for the duration of Bridge writing.
@@ -90,6 +103,8 @@ class _PointsCacheBuilderConfig:
     target_points_per_bucket: int = TARGET_POINTS_PER_BUCKET
     zarr_settings: _ZarrWriteSettings = field(default_factory=_default_zarr_write_settings)
     catalog_settings: _CatalogWriteSettings = field(default_factory=_CatalogWriteSettings)
+    value_major_settings: _ValueMajorWriteSettings = field(default_factory=_ValueMajorWriteSettings)
+    max_open_value_major_readers: int | None = None
     max_open_exact_readers: int | None = None
     max_open_finer_readers: int | None = None
 
@@ -117,7 +132,13 @@ class _PointsCacheBuilderConfig:
             raise ValueError("`zarr_settings` must be _ZarrWriteSettings.")
         if not isinstance(self.catalog_settings, _CatalogWriteSettings):
             raise ValueError("`catalog_settings` must be _CatalogWriteSettings.")
-        for name in ("max_open_exact_readers", "max_open_finer_readers"):
+        if not isinstance(self.value_major_settings, _ValueMajorWriteSettings):
+            raise ValueError("`value_major_settings` must be _ValueMajorWriteSettings.")
+        for name in (
+            "max_open_value_major_readers",
+            "max_open_exact_readers",
+            "max_open_finer_readers",
+        ):
             value = getattr(self, name)
             if value is not None:
                 _require_integer_in_range(value, name, minimum=1, maximum=_INT64_MAX)
@@ -165,9 +186,9 @@ def _build_points_cache_zarr(
 
     The builder owns one unique sibling staging generation and the publication
     lock, but never owns the caller's temporary root or canonical Parquet
-    source. No public output is changed until all levels, catalog metadata, and
-    independent staged validation have completed and a final metadata-only
-    source guard succeeds.
+    source. No public output is changed until all levels, catalog metadata,
+    mandatory value-major sidecars, and independent staged validation have
+    completed and a final metadata-only source guard succeeds.
     """
     if not output_path.parent.is_dir():
         raise ValueError("`output_path.parent` must be an existing directory.")
@@ -249,6 +270,9 @@ def _build_points_cache_zarr(
                 staging_root=staging_root,
                 cache_generation_id=cache_generation_id,
                 settings=config.catalog_settings,
+                value_major_settings=config.value_major_settings,
+                max_open_value_major_readers=config.max_open_value_major_readers,
+                temporary_directory_root=temporary_directory_root,
                 target_points_per_bucket=config.target_points_per_bucket,
             )
             del exact_result, level_results, plan
@@ -294,7 +318,7 @@ def _get_existing_complete_cache_generation_id(output_path: Path) -> str | None:
 
 def _require_complete_cache_generation_id(cache_root: Path) -> str:
     """Require complete root metadata and return its cache-generation UUID."""
-    with _CatalogReader(cache_root) as reader:
+    with _CacheRootReader(cache_root) as reader:
         attributes = reader.attributes
         if attributes.publication_state != PUBLICATION_STATE_COMPLETE:
             raise ValueError("Cache root publication_state is not 'complete'.")
@@ -304,7 +328,12 @@ def _require_complete_cache_generation_id(cache_root: Path) -> str:
 def _mark_cache_generation_complete(staging_root: Path, *, cache_generation_id: str) -> None:
     """Make publication state the final mutation of a validated generation."""
     with LocalStore(staging_root, read_only=False) as store:
-        root = zarr.open_group(store=store, mode="r+", zarr_format=3, use_consolidated=False)
+        root = zarr.open_group(
+            store=store,
+            mode="r+",
+            zarr_format=ZARR_FORMAT_VERSION,
+            use_consolidated=ZARR_USE_CONSOLIDATED,
+        )
         attributes = _parse_cache_attributes(dict(root.attrs))
         if attributes.cache_generation_id != cache_generation_id:
             raise ValueError("Staged root cache-generation UUID changed before completion.")

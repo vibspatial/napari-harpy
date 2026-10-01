@@ -235,7 +235,7 @@ def _write_exact_level(
         Complete logical Zarr-cache plan whose first level is Exact level zero.
     staging_root
         Existing isolated generation root. This function owns creation of its
-        previously absent ``levels/level_0`` directory.
+        previously absent ``tile_major/level_0`` directory.
     temporary_directory_root
         Existing caller-owned root for one disposable Dask scratch child.
     config

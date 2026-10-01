@@ -6,8 +6,8 @@ from napari_harpy.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionState,
     _TiledPointsCacheSession,
 )
-from napari_harpy.viewer.tiled_points.runtime.composition import _TiledPointsLayerRuntime
-from napari_harpy.viewer.tiled_points.runtime.coordinator import _TiledPointsViewportCoordinator
+from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from napari_harpy.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
 
 __all__ = [
     "_CacheSessionFailure",
@@ -15,5 +15,5 @@ __all__ = [
     "_CacheSessionState",
     "_TiledPointsCacheSession",
     "_TiledPointsLayerRuntime",
-    "_TiledPointsViewportCoordinator",
+    "_TiledPointsViewportScheduler",
 ]

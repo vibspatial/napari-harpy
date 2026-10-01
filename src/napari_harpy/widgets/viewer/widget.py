@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, Literal
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_numeric_dtype, is_object_dtype, is_string_dtype
 from qtpy.QtCore import QSignalBlocker, Qt
-from qtpy.QtGui import QPixmap
 from qtpy.QtWidgets import (
     QFileDialog,
     QFormLayout,
@@ -29,7 +28,6 @@ from napari_harpy._app_state import (
     TableStateChangedEvent,
     get_or_create_app_state,
 )
-from napari_harpy._resources import get_logo_path
 from napari_harpy.core.spatialdata import (
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,
@@ -50,12 +48,12 @@ from napari_harpy.widgets.image_layer_row import (
 from napari_harpy.widgets.shared_styles import (
     ACTION_BUTTON_STYLESHEET,
     WIDGET_MIN_WIDTH,
-    WIDGET_TEXT_COLOR,
     CompactComboBox,
     StatusCardKind,
     apply_scroll_content_surface,
     apply_widget_surface,
     create_form_label,
+    create_header_logo,
     format_feedback_identifier,
     set_status_card,
 )
@@ -144,7 +142,6 @@ class ViewerWidget(QWidget):
         self._expanded_labels_names: set[str] = set()
         self._expanded_image_names: set[str] = set()
         self._expanded_shapes_names: set[str] = set()
-        self._logo_path = get_logo_path()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -164,7 +161,7 @@ class ViewerWidget(QWidget):
         self.content_layout.setContentsMargins(12, 12, 12, 12)
         self.content_layout.setSpacing(10)
 
-        header_logo = self._create_header_logo()
+        header_logo = create_header_logo("viewer_widget_header_logo")
 
         self.open_sdata_button = QPushButton("Load SpatialData")
         self.open_sdata_button.setObjectName("viewer_widget_open_sdata_button")
@@ -1691,20 +1688,6 @@ class ViewerWidget(QWidget):
 
             index = self.coordinate_system_combo.findData(coordinate_system)
             self.coordinate_system_combo.setCurrentIndex(index)
-
-    def _create_header_logo(self) -> QLabel:
-        logo_label = QLabel()
-        logo_label.setObjectName("viewer_widget_header_logo")
-        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        logo_pixmap = QPixmap(str(self._logo_path))
-        if not logo_pixmap.isNull():
-            logo_label.setPixmap(logo_pixmap.scaledToWidth(120, Qt.TransformationMode.SmoothTransformation))
-            return logo_label
-
-        logo_label.setText("napari-harpy")
-        logo_label.setStyleSheet(f"color: {WIDGET_TEXT_COLOR}; font-size: 18px; font-weight: 600;")
-        return logo_label
 
 
 def _clear_layout(layout: QLayout) -> None:

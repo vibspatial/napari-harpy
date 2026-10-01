@@ -79,7 +79,8 @@ def test_all_zero_inner_chunks_are_physical_and_validate_strictly(tmp_path: Path
     ("attribute", "value", "message"),
     [
         ("payload_schema_version", 2, "schema version"),
-        ("point_order", ["point_id"], "point ordering"),
+        ("point_row_order", ["point_id"], "row ordering"),
+        ("point_order", ["tile_y", "tile_x", "value_id", "point_id"], "root attributes"),
         ("coordinate_encoding", "unknown", "coordinate encoding"),
         ("codec_id", "unknown-v1", "Unsupported"),
         ("point_count", 7, "shape"),
@@ -100,7 +101,7 @@ def test_validator_rejects_corrupt_root_attributes(
         _validate_bucket(tmp_path, level=0, bucket_id=0)
 
 
-@pytest.mark.parametrize("corruption", ["offset", "indptr", "range_count", "range_value", "point_order"])
+@pytest.mark.parametrize("corruption", ["offset", "indptr", "range_count", "range_value", "point_rows"])
 def test_validator_rejects_corrupt_pointer_range_and_point_content(tmp_path: Path, corruption: str) -> None:
     plan, _ = _build_bucket(tmp_path)
     store, root = _open_writable(tmp_path, plan)

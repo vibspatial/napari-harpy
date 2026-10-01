@@ -11,15 +11,15 @@ from time import perf_counter
 import numpy as np
 import psutil
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
-    VALUE_TILES_MANIFEST_INDEX,
-    VALUE_TILES_N_POINTS,
-)
 from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
     _SelectedValueIndex,
     _ViewportReadResult,
+)
+from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+    VALUE_TILES_MANIFEST_INDEX,
+    VALUE_TILES_N_POINTS,
 )
 
 _TARGET_ARRAYS = (VALUE_TILES_MANIFEST_INDEX, VALUE_TILES_N_POINTS)
@@ -48,7 +48,7 @@ class _RssSampler:
             self._sample()
 
     def _sample(self) -> None:
-            self.peak_bytes = max(self.peak_bytes, self._process.memory_info().rss)
+        self.peak_bytes = max(self.peak_bytes, self._process.memory_info().rss)
 
 
 @dataclass(frozen=True)
@@ -105,8 +105,8 @@ class _TrackedArray:
 
 class _CatalogSelectionTracker:
     def __init__(self, reader: _PointsCacheReader) -> None:
-        catalog = reader._catalog_or_raise()
-        self._original_array = catalog.array
+        cache_root_reader = reader._cache_root_reader_or_raise()
+        self._original_array = cache_root_reader.array
         self.selections = {name: [] for name in _TARGET_ARRAYS}
 
         def tracked_array(name: str) -> object:
@@ -115,7 +115,7 @@ class _CatalogSelectionTracker:
                 return _TrackedArray(name, array, self.selections)
             return array
 
-        catalog.array = tracked_array  # type: ignore[method-assign]
+        cache_root_reader.array = tracked_array  # type: ignore[method-assign]
 
     def reset(self) -> None:
         for selections in self.selections.values():
@@ -293,7 +293,7 @@ def _time_runtime_planning(
         lod_seconds = perf_counter() - started
         visible_rows = reader._visible_manifest_rows(selection.level, viewport)
         started = perf_counter()
-        positive = reader._selected_value_manifest(selection.level, visible_rows, value_index)
+        positive = reader._positive_visible_manifest_rows(selection.level, visible_rows, value_index)
         discovery_seconds = perf_counter() - started
         reports.append(
             {
@@ -301,7 +301,7 @@ def _time_runtime_planning(
                 "level": selection.level,
                 "estimated_point_count": selection.estimated_point_count,
                 "positive_visible_tile_count": selection.positive_visible_tile_count,
-                "within_budget": selection.within_budget,
+                "fits_point_budget": selection.fits_point_budget,
                 "lod_seconds": lod_seconds,
                 "positive_tile_discovery_seconds": discovery_seconds,
                 "discovered_positive_tiles": len(positive),
@@ -339,13 +339,11 @@ def _measure_selected_viewport(
         started = perf_counter()
         value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=max_resident_bytes)
         index_load_seconds = perf_counter() - started
-        if value_index is None:
-            raise RuntimeError("A proper subset unexpectedly normalized to the all-values path.")
 
         started = perf_counter()
         if fixed_level is None:
             selection = reader.select_level(viewport, point_budget, value_index=value_index)
-            if not selection.within_budget:
+            if not selection.fits_point_budget:
                 raise RuntimeError("The realistic selected viewport did not fit the supplied point budget.")
             level = selection.level
             estimated_points = selection.estimated_point_count
@@ -362,26 +360,6 @@ def _measure_selected_viewport(
         planning_seconds = perf_counter() - started
         visible_rows = reader._visible_manifest_rows(level, viewport)
         visible_tile_count = len(visible_rows)
-        positive_rows = reader._selected_value_manifest(level, visible_rows, value_index)
-        bucket_keys = tuple(
-            sorted(
-                {
-                    (reader._descriptors[manifest_row].level, reader._descriptors[manifest_row].bucket_id)
-                    for manifest_row in positive_rows
-                }
-            )
-        )
-        started = perf_counter()
-        if bucket_keys:
-            projected_lookup_bytes = reader.project_bucket_lookup_index_bytes(bucket_keys=bucket_keys)
-            resident_lookup_bytes = reader.load_bucket_lookup_indexes(
-                bucket_keys=bucket_keys,
-                max_resident_bytes=projected_lookup_bytes,
-            )
-        else:
-            resident_lookup_bytes = 0
-        bucket_lookup_prime_seconds = perf_counter() - started
-
         open_before = reader.open_bucket_reader_count
         started = perf_counter()
         first = reader.read_viewport(level, viewport, value_index=value_index)
@@ -420,8 +398,9 @@ def _measure_selected_viewport(
             "estimated_points": estimated_points,
             "index_load_seconds": index_load_seconds,
             "planning_seconds": planning_seconds,
-            "bucket_lookup_prime_seconds": bucket_lookup_prime_seconds,
-            "resident_bucket_lookup_bytes": resident_lookup_bytes,
+            "resident_compact_index_bytes": reader.resident_index_bytes,
+            "tile_descriptor_count": reader.tile_descriptor_count,
+            "index_memory_scope": "NumPy arrays only; Python descriptors and containers are excluded.",
             "first": first_summary,
             "repeated": repeated_summary,
         }
@@ -474,8 +453,6 @@ def _evaluate_selection(
         started = perf_counter()
         value_index = reader.load_selected_value_index(value_ids, max_resident_bytes=max_resident_bytes)
         index_load_seconds = perf_counter() - started
-    if value_index is None:
-        raise RuntimeError("A proper subset unexpectedly normalized to the all-values path.")
     if tracker.selections[VALUE_TILES_MANIFEST_INDEX] != tracker.selections[VALUE_TILES_N_POINTS]:
         raise RuntimeError("Parallel value-tile arrays were not read through identical exact selectors.")
     settings = reader._attributes_or_raise().catalog.settings

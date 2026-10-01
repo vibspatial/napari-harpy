@@ -304,7 +304,7 @@ def main() -> None:
         )
 
         gc.collect()
-        bridge_directory = staging / "levels/level_1"
+        bridge_directory = staging / "tile_major/level_1"
         with _BridgeStageProfiler() as profiler, _ResourceSampler(bridge_directory) as resources:
             bridge_start = perf_counter()
             bridge_result = bridge_module._write_bridge_level(

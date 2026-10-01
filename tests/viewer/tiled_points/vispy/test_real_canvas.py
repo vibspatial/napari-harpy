@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from uuid import uuid4
 
 import numpy as np
@@ -81,7 +82,7 @@ def _apply_two_point_snapshot(
         requested_value_ids=None,
         level=0,
         level_kind="exact",
-        within_budget=True,
+        within_hard_limits=True,
         estimated_point_count=2,
         omitted_value_ids=(),
         rendered_tile_count=len(tiles),
@@ -93,6 +94,8 @@ def _apply_two_point_snapshot(
         ),
     )
     assert visual.apply_snapshot(snapshot)
+    assert visual.apply_snapshot(replace(snapshot, request_generation=2, estimated_point_count=1))
+    assert visual.payload_replacement_count == 1
     assert visual.visual_count == 1
     assert visual.vbo_count == 1
     assert visual.point_draw_submission_count == 1

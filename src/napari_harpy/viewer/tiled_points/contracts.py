@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import Final
 from uuid import UUID
 
 import numpy as np
 import numpy.typing as npt
 
-DEFAULT_HARD_RENDER_POINT_BUDGET = 100_000
-DEFAULT_TARGET_PIXELS_PER_POINT = 9.0
+from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+    _expected_level_kind,
+    _SerializedLevelKind,
+)
+
+DEFAULT_HARD_RENDER_POINT_BUDGET = 2_000_000
+DEFAULT_TARGET_PIXELS_PER_POINT = 0.25
 TILED_POINTS_VERTEX_DTYPE: Final = np.dtype([("a_position", np.float32, (2,)), ("a_value_id", np.float32)])
 _UINT32_MAX = np.iinfo(np.uint32).max
 
@@ -89,7 +94,7 @@ class TiledPointsLayerStatus:
     """Describe the current cache-backed tiled-points display state."""
 
     level: int | None = None
-    level_kind: Literal["exact", "bridge", "spatial"] | None = None
+    level_kind: _SerializedLevelKind | None = None
     rendered_point_count: int = 0
     rendered_tile_count: int = 0
     message: str = "Idle"
@@ -113,7 +118,7 @@ class TiledPointsLayerStatus:
         if self.level is not None:
             if not isinstance(self.level, int) or isinstance(self.level, bool) or self.level < 0:
                 raise ValueError("`level` must be a nonnegative integer or None.")
-            expected_kind = "exact" if self.level == 0 else "bridge" if self.level == 1 else "spatial"
+            expected_kind = _expected_level_kind(self.level)
             if self.level_kind != expected_kind:
                 raise ValueError("`level_kind` does not match the serialized cache level.")
         if not isinstance(self.message, str) or not self.message:
@@ -141,12 +146,16 @@ class TiledPointsViewportState:
 
     The tiled-points layer produces this immutable state from a napari draw or
     a viewer-budget change and emits it through ``layer.events.viewport``. The
-    GUI-side viewport coordinator consumes it; cache workers do not derive
+    GUI-side viewport scheduler consumes it; cache workers do not derive
     napari geometry themselves.
 
-    The hard and screen-density budgets are retained as viewer-side diagnostic
-    evidence. ``effective_point_budget`` is their derived minimum. Later cache
-    planning consumes only the intrinsic bounds and that effective budget.
+    ``effective_point_budget`` is the initial LOD target: the minimum of the
+    hard point limit and the preferred screen-density budget. The worker also
+    caps this target by vertex-byte capacity. History-dependent LOD hysteresis
+    may tolerate a bounded density overrun; if no preferred or hysteresis choice
+    is available, the coarsest fallback may also exceed that preference. Neither
+    path may exceed a hard limit. Retained-batch reuse checks the entire packed
+    allocation: a small inner view must not conceal an oversized off-screen payload.
     """
 
     displayed_axes: tuple[int, int]
@@ -185,7 +194,7 @@ class TiledPointsViewportState:
 
     @property
     def effective_point_budget(self) -> int:
-        """Return the stricter of the hard and screen-density budgets."""
+        """Return the initial density-based LOD target, capped by the hard point limit."""
         return min(self.hard_render_point_budget, self.screen_density_budget)
 
 
@@ -353,9 +362,11 @@ class TiledPointsRenderBatch:
 class TiledPointsRenderSnapshot:
     """Describe one coherent generation-bound renderer result.
 
-    A snapshot is the complete render state for one viewport, not merely the
-    tiles newly read from Zarr. The worker combines CPU-resident and newly read
-    tiles in the plan's spatial order before constructing it::
+    A snapshot carries current viewport metadata and a complete render batch,
+    not merely the tiles newly read from Zarr. At unchanged LOD and selection,
+    contained viewports can share the batch of an earlier, larger viewport.
+    For a replacement, the worker combines CPU-resident and newly read tiles
+    in the plan's spatial order::
 
         planned viewport tiles
                 |
@@ -392,7 +403,8 @@ class TiledPointsRenderSnapshot:
                          VispyTiledPointsLayer.apply_snapshot()
                                            |
                                            v
-                                  replace the stable VBO payload
+                             retain identical active batch, or
+                             replace the stable VBO payload
                                            |
                                            v
                               atomically activate the visual state
@@ -404,6 +416,13 @@ class TiledPointsRenderSnapshot:
     batch and only describes why the active visual was retained. Decoded logical
     tiles remain worker-local and are released or retained by CPU residency after
     packing rather than crossing the GUI boundary.
+
+    After renderer acceptance, the worker retains this immutable batch with its
+    original intrinsic viewport rectangle. Contained requests still select the
+    current finest eligible LOD, but can skip the entire tile-preparation path
+    above and publish fresh metadata around the same batch. Visible estimates
+    may therefore be smaller than the full retained point/tile payload counts.
+    Rejected candidates never replace the worker's accepted retained entry.
 
     Parameters
     ----------
@@ -419,21 +438,34 @@ class TiledPointsRenderSnapshot:
         Serialized cache level chosen for the viewport.
     level_kind
         Semantic kind of ``level``: Exact, Bridge, or spatial.
-    within_budget
-        Whether the selected level satisfies the effective point budget.
+    within_hard_limits
+        Whether the payload satisfies the hard point and vertex-byte limits.
+        The preferred density may be exceeded within hysteresis tolerance or
+        by the coarsest-level density fallback, never beyond the hard limits.
     estimated_point_count
-        Catalog-derived point count for the complete snapshot.
+        Current visible-view estimate: selected points in complete logical
+        tiles intersecting the latest viewport, not point-level clipping.
+        This may be smaller than the retained render batch's point count.
     omitted_value_ids
         Requested values present in the Exact viewport but absent from the
         selected sampled level. These are sampling omissions, not evidence of
         biological absence.
     rendered_tile_count
         Number of logical tiles packed into the render batch. This is zero when
-        ``within_budget`` is false.
+        ``within_hard_limits`` is false.
     render_batch
-        Worker-prepared renderer payload for the same complete tile set. An
+        Worker-prepared renderer payload, possibly retained from a larger
+        original viewport at the same LOD and selection. Inner requests update
+        visible estimates without repacking or shrinking this payload. An
         over-budget snapshot carries a valid empty batch even when its estimate
         is nonzero.
+    budget_message
+        Request-bound explanation of a hard-limit rejection (including the
+        required amount and actual limit), or an informational density overrun
+        distinguishing hysteresis tolerance from the coarsest-level fallback.
+        ``None`` means the preferred target was met. The worker refreshes this
+        message even when reusing a batch; the GUI must not reinterpret a result
+        using newer budget settings. Required for an over-budget snapshot.
     """
 
     cache_generation_id: str
@@ -441,12 +473,13 @@ class TiledPointsRenderSnapshot:
     selection_generation: int
     requested_value_ids: tuple[int, ...] | None
     level: int
-    level_kind: Literal["exact", "bridge", "spatial"]
-    within_budget: bool
+    level_kind: _SerializedLevelKind
+    within_hard_limits: bool
     estimated_point_count: int
     omitted_value_ids: tuple[int, ...]
     rendered_tile_count: int
     render_batch: TiledPointsRenderBatch
+    budget_message: str | None = None
 
     def __post_init__(self) -> None:
         _require_cache_generation_id(self.cache_generation_id)
@@ -454,11 +487,11 @@ class TiledPointsRenderSnapshot:
         _require_nonnegative_integer(self.selection_generation, "selection_generation")
         _require_value_ids(self.requested_value_ids, "requested_value_ids")
         _require_nonnegative_integer(self.level, "level")
-        expected_kind = "exact" if self.level == 0 else "bridge" if self.level == 1 else "spatial"
+        expected_kind = _expected_level_kind(self.level)
         if self.level_kind != expected_kind:
             raise ValueError("`level_kind` does not match `level`.")
-        if not isinstance(self.within_budget, bool):
-            raise ValueError("`within_budget` must be bool.")
+        if not isinstance(self.within_hard_limits, bool):
+            raise ValueError("`within_hard_limits` must be bool.")
         _require_nonnegative_integer(self.estimated_point_count, "estimated_point_count")
         _require_value_ids(self.omitted_value_ids, "omitted_value_ids", allow_none=False, allow_empty=True)
         if self.requested_value_ids is None:
@@ -469,16 +502,22 @@ class TiledPointsRenderSnapshot:
         if not isinstance(self.render_batch, TiledPointsRenderBatch):
             raise ValueError("`render_batch` must be TiledPointsRenderBatch.")
         _require_nonnegative_integer(self.rendered_tile_count, "rendered_tile_count")
-        if not self.within_budget:
+        if self.budget_message is not None and (
+            not isinstance(self.budget_message, str) or not self.budget_message.strip()
+        ):
+            raise ValueError("`budget_message` must be a nonempty string or None.")
+        if not self.within_hard_limits:
             if self.rendered_tile_count or self.render_batch.point_count:
                 raise ValueError("An over-budget snapshot must not contain point payloads.")
+            if self.budget_message is None:
+                raise ValueError("An over-budget snapshot requires a `budget_message` explaining the hard limit.")
         elif (
-            self.render_batch.point_count != self.estimated_point_count
+            self.render_batch.point_count < self.estimated_point_count
             or (self.rendered_tile_count == 0) != (self.render_batch.point_count == 0)
             or self.rendered_tile_count > self.render_batch.point_count
         ):
             raise ValueError(
-                "Within-budget rendered tile count and render batch must reconcile to the estimated point count."
+                "Within-budget tile count must describe the batch, whose points must cover the visible estimate."
             )
 
     @property
@@ -492,11 +531,11 @@ class TiledPointsRenderSnapshot:
 
         Requested values already absent from the Exact viewport are not sampled
         omissions. A nonempty omission tuple together with a within-budget,
-        zero-point selected snapshot therefore identifies the complete sampled
+        zero visible-point estimate therefore identifies the complete sampled
         omission case that needs an explicit viewer status.
         """
         return (
-            self.within_budget
+            self.within_hard_limits
             and self.requested_value_ids is not None
             and self.estimated_point_count == 0
             and bool(self.omitted_value_ids)
@@ -532,7 +571,7 @@ class TiledPointsRenderResult:
 class _ViewportRequest:
     """Carry one GUI-stamped viewport request to the cache worker.
 
-    The coordinator creates this finalized request only when its pending
+    The scheduler creates this finalized request only when its pending
     viewport can be dispatched and the session has a committed value
     selection. One immutable object then crosses the Qt thread boundary::
 

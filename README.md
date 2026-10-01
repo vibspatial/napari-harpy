@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/docs/_static/logo.png" alt="Harpy logo" width="200">
+  <img src="https://raw.githubusercontent.com/vibspatial/napari-harpy/main/src/napari_harpy/_static/logo.svg" alt="Spatiato logo" width="400">
 </p>
 
 <h1 align="center">napari-harpy: a spatial omics interface for napari.</h1>

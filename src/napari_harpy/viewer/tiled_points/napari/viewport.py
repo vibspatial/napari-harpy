@@ -18,7 +18,7 @@ normalized result. The normal camera-driven path is::
     layer.events.viewport
             |
             v
-    integration listener -> coordinator.submit_viewport()
+    integration listener -> viewport_scheduler.submit_viewport()
 
 Changing a render-budget setting while the camera is stationary instead calls
 ``_viewport_state_with_budget()``. It creates a replacement state with retained
