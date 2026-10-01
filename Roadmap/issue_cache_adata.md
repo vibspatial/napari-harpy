@@ -2,7 +2,7 @@
 
 ## Summary
 
-`napari-harpy` now refreshes `layer.metadata["adata"]` from the authoritative in-memory table
+`spatiato` now refreshes `layer.metadata["adata"]` from the authoritative in-memory table
 `sdata[table_name]`. While investigating the cache refresh path, we found two separate problems in how
 `napari-spatialdata` consumes that cached `AnnData` for labels coloring:
 

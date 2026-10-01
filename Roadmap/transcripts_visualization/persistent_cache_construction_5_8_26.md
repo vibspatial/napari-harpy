@@ -270,7 +270,7 @@ Construction is expected to add modules only as their responsibilities become
 concrete:
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points/
+src/spatiato/core/multi_scale_cache_points/
   builder.py
   build_plan.py
   cache_format.py
@@ -507,7 +507,7 @@ position in `levels`; `OVERVIEW` is not a separate `_LevelKind`.
 ### Expected files
 
 ```text
-src/napari_harpy/core/multi_scale_cache_points/build_plan.py
+src/spatiato/core/multi_scale_cache_points/build_plan.py
 tests/multi_scale_cache_points/test_build_plan.py
 ```
 
@@ -2577,7 +2577,7 @@ metadata, values, the manifest, or the sparse tile/value-count index.
     "schema_version": "harpy-multiscale-points-cache-0.1",
     "cache_generation_id": "00000000-0000-0000-0000-000000000000",
     "created_by": {
-      "package": "napari-harpy",
+      "package": "spatiato",
       "version": "0.0.0"
     },
     "source": {

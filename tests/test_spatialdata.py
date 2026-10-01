@@ -12,9 +12,9 @@ from spatialdata import SpatialData
 from spatialdata.models import TableModel
 from xarray import DataArray
 
-import napari_harpy.core.spatialdata as spatialdata_module
-from napari_harpy.core._color_source import ShapeColumnColorSourceSpec
-from napari_harpy.core.spatialdata import (
+import spatiato.core.spatialdata as spatialdata_module
+from spatiato.core._color_source import ShapeColumnColorSourceSpec
+from spatiato.core.spatialdata import (
     SpatialDataTableMetadata,
     get_annotating_table_names,
     get_coordinate_system_names_from_sdata,

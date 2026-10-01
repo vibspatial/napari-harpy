@@ -5,7 +5,7 @@ from spatialdata import read_zarr
 from spatialdata.models import Image2DModel
 from spatialdata.transformations import get_transformation
 
-from napari_harpy import Interactive
+from spatiato import Interactive
 
 SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_blobs.zarr")
 COORDINATE_SYSTEM = "global"

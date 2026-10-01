@@ -70,8 +70,8 @@ memory -> disk sync path.
 
 ### Suggested files
 
-- `src/napari_harpy/_persistence.py`
-- possibly `src/napari_harpy/_spatialdata.py`
+- `src/spatiato/_persistence.py`
+- possibly `src/spatiato/_spatialdata.py`
 
 ### Acceptance criteria
 
@@ -119,8 +119,8 @@ Read the current table snapshot from zarr and reject unsafe partial reloads befo
 
 ### Suggested files
 
-- `src/napari_harpy/_persistence.py`
-- possibly `src/napari_harpy/_spatialdata.py`
+- `src/spatiato/_persistence.py`
+- possibly `src/spatiato/_spatialdata.py`
 
 ### Acceptance criteria
 
@@ -161,7 +161,7 @@ Replace the selected in-memory table state from the validated disk snapshot in a
 
 ### Suggested files
 
-- `src/napari_harpy/_persistence.py`
+- `src/spatiato/_persistence.py`
 
 ### Acceptance criteria
 
@@ -217,8 +217,8 @@ Prevent confusing loss of unsynced edits when the user requests reload.
 
 ### Suggested files
 
-- `src/napari_harpy/_widget.py`
-- `src/napari_harpy/_persistence.py`
+- `src/spatiato/_widget.py`
+- `src/spatiato/_persistence.py`
 - possibly controller files that mutate the table
 
 ### Acceptance criteria
@@ -268,8 +268,8 @@ Prevent stale background classifier work from writing into a freshly reloaded ta
 
 ### Suggested files
 
-- `src/napari_harpy/_classifier.py`
-- `src/napari_harpy/_widget.py`
+- `src/spatiato/_classifier.py`
+- `src/spatiato/_widget.py`
 
 ### Acceptance criteria
 
@@ -324,7 +324,7 @@ Expose `Reload Table from zarr` in the widget and refresh all table-derived UI s
 
 ### Suggested files
 
-- `src/napari_harpy/_widget.py`
+- `src/spatiato/_widget.py`
 
 ### Acceptance criteria
 

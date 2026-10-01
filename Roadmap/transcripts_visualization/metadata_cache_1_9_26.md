@@ -35,7 +35,7 @@ metadata lookup.
 ## Motivation and current limitation
 
 The current cache construction contract selects only `x`, `y`, and the
-categorical value column ([`PointColumnSelection`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/source/models.py:24)).
+categorical value column ([`PointColumnSelection`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/source/models.py:24)).
 It does not retain quality, control classification, cell assignment, field of
 view, nucleus overlap, vendor transcript identity, or other source columns.
 
@@ -43,12 +43,12 @@ The existing tile-major payload does persist a `point_id`, but the display
 reader intentionally never selects point IDs. In selected-value mode it also
 synthesizes `value_id` rather than gathering the aligned array, because that
 gather would reintroduce sparse many-chunk decoding
-([`read_display_payloads()`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/storage/bucket_reader.py:313)).
+([`read_display_payloads()`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/storage/bucket_reader.py:313)).
 
 The proposed value-major sidecar currently persists only `location` and
 `value_point_indptr`. Its construction-time `ordered_row_start` maps every
 catalog record back to tile-major storage, but that mapping is deliberately not
-published ([`_write_value_major_sidecars()`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/writer/value_major.py:108)).
+published ([`_write_value_major_sidecars()`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/writer/value_major.py:108)).
 Consequently, a coordinate returned by the sidecar is not independently
 self-identifying after it reaches the display pipeline.
 
@@ -66,7 +66,7 @@ not adequate for a general transcript visualization cache in which a user can:
 ### Dense cache identity
 
 Harpy currently synthesizes point IDs consecutively from canonical physical
-source-row order ([Exact annotation](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/writer/exact.py:605)):
+source-row order ([Exact annotation](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/writer/exact.py:605)):
 
 ```text
 point_id = 0, 1, 2, ..., N_exact - 1

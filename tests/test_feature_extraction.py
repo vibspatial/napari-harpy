@@ -8,9 +8,9 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
-from napari_harpy._app_state import TableReloadRequest
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.widgets.feature_extraction.controller import (
+from spatiato._app_state import TableReloadRequest
+from spatiato.core.persistence import TableComponentPath
+from spatiato.widgets.feature_extraction.controller import (
     FEATURE_EXTRACTION_IDLE_STATUS,
     FeatureExtractionBindingState,
     FeatureExtractionController,

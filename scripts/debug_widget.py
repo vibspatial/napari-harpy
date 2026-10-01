@@ -5,14 +5,14 @@ from tempfile import mkdtemp
 
 from spatialdata import read_zarr
 
-from napari_harpy import Interactive
-from napari_harpy.datasets import blobs_multi_region
+from spatiato import Interactive
+from spatiato.datasets import blobs_multi_region
 
 DATASET_NAME = "blobs_multi_region"
 
 
 def _write_debug_dataset_to_temp_zarr() -> Path:
-    temp_dir = Path(mkdtemp(prefix="napari_harpy_debug_"))
+    temp_dir = Path(mkdtemp(prefix="spatiato_debug_"))
     zarr_path = temp_dir / f"{DATASET_NAME}.zarr"
     sdata = blobs_multi_region()
     sdata.write(zarr_path)

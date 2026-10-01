@@ -8,22 +8,22 @@ import pytest
 import zarr
 from zarr.storage import LocalStore
 
-import napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog as catalog_module
-import napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major as value_major_module
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import (
+import spatiato.core.multi_scale_cache_points_zarr.writer.catalog as catalog_module
+import spatiato.core.multi_scale_cache_points_zarr.writer.value_major as value_major_module
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import (
     PUBLICATION_STATE_STAGING,
     _CatalogWriteSettings,
     _ValueMajorWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CacheRootReader,
     _iter_bucket_range_batches,
     _RangeRecordBatch,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_writer import _CatalogWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_writer import _CatalogWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.writer.catalog import _write_staged_cache_catalog
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 CatalogExactFixture = Any

@@ -11,17 +11,17 @@ from sklearn.ensemble import RandomForestClassifier
 from spatialdata import SpatialData, read_zarr
 from spatialdata.transformations import Identity, set_transformation
 
-from napari_harpy import headless
-from napari_harpy.core.feature_matrix_metadata import (
+from spatiato import headless
+from spatiato.core.feature_matrix_metadata import (
     HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND,
     register_feature_matrix_metadata,
 )
-from napari_harpy.core.object_classification.classifier import (
+from spatiato.core.object_classification.classifier import (
     CLASSIFIER_APPLY_CONFIG_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.core.object_classification.classifier_export import (
+from spatiato.core.object_classification.classifier_export import (
     CLASSIFIER_EXPORT_SCHEMA_VERSION,
     ClassifierExportBundle,
     write_classifier_export_bundle,
@@ -106,7 +106,7 @@ def _make_classifier_bundle(
     return ClassifierExportBundle(
         schema_version=CLASSIFIER_EXPORT_SCHEMA_VERSION,
         created_at="2026-05-05T09:05:00+00:00",
-        napari_harpy_version="0.0.0-test",
+        spatiato_version="0.0.0-test",
         sklearn_version=None,
         estimator=classifier,
         source_classifier_config=classifier_config,
@@ -130,7 +130,7 @@ def _make_area_classifier_bundle() -> ClassifierExportBundle:
     return ClassifierExportBundle(
         schema_version=CLASSIFIER_EXPORT_SCHEMA_VERSION,
         created_at="2026-05-05T09:05:00+00:00",
-        napari_harpy_version="0.0.0-test",
+        spatiato_version="0.0.0-test",
         sklearn_version=None,
         estimator=classifier,
         source_classifier_config={
@@ -196,7 +196,7 @@ def test_apply_classifier_from_path_writes_predictions_and_apply_config(
     _set_deterministic_features(sdata_blobs)
     _set_feature_metadata(sdata_blobs)
     bundle = _make_classifier_bundle(sdata_blobs)
-    classifier_path = tmp_path / "classifier.harpy-classifier.joblib"
+    classifier_path = tmp_path / "classifier.spatiato-classifier.joblib"
     write_classifier_export_bundle(classifier_path, bundle)
 
     result = headless.apply_classifier_from_path(sdata_blobs, classifier_path, table_name="table")
@@ -231,7 +231,7 @@ def test_write_classifier_export_bundle_rejects_missing_source_kind(tmp_path: Pa
     invalid_bundle = replace(bundle, source_feature_metadata=source_feature_metadata)
 
     with pytest.raises(ValueError, match="source_kind"):
-        write_classifier_export_bundle(tmp_path / "missing-source-kind.harpy-classifier.joblib", invalid_bundle)
+        write_classifier_export_bundle(tmp_path / "missing-source-kind.spatiato-classifier.joblib", invalid_bundle)
 
 
 def test_apply_classifier_can_write_custom_prediction_columns(sdata_blobs: SpatialData) -> None:
@@ -550,7 +550,7 @@ def test_apply_classifier_from_path_persists_backed_prediction_state(
     _set_deterministic_features(backed_sdata_blobs)
     _set_feature_metadata(backed_sdata_blobs)
     bundle = _make_classifier_bundle(backed_sdata_blobs)
-    classifier_path = tmp_path / "classifier.harpy-classifier.joblib"
+    classifier_path = tmp_path / "classifier.spatiato-classifier.joblib"
     write_classifier_export_bundle(classifier_path, bundle)
 
     result = headless.apply_classifier_from_path(
@@ -590,7 +590,7 @@ def test_apply_classifier_with_feature_extraction_from_path_persists_backed_feat
     backed_sdata_blobs: SpatialData,
 ) -> None:
     bundle = _make_area_classifier_bundle()
-    classifier_path = tmp_path / "classifier.harpy-classifier.joblib"
+    classifier_path = tmp_path / "classifier.spatiato-classifier.joblib"
     write_classifier_export_bundle(classifier_path, bundle)
 
     result = headless.apply_classifier_with_feature_extraction_from_path(
@@ -780,7 +780,7 @@ def test_apply_classifier_clears_invalid_rows_in_prediction_scope(
 
 
 def test_headless_module_avoids_direct_interactive_classifier_imports() -> None:
-    source = (Path(__file__).resolve().parents[1] / "src" / "napari_harpy" / "headless.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "src" / "spatiato" / "headless.py").read_text()
     import_modules: set[str] = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
@@ -788,9 +788,9 @@ def test_headless_module_avoids_direct_interactive_classifier_imports() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             import_modules.add(node.module)
 
-    assert "napari_harpy.widgets.object_classification.controller" not in import_modules
-    assert not any(module.startswith("napari_harpy.widgets") for module in import_modules)
+    assert "spatiato.widgets.object_classification.controller" not in import_modules
+    assert not any(module.startswith("spatiato.widgets") for module in import_modules)
     assert "napari" not in import_modules
     assert "qtpy" not in import_modules
     assert "thread_worker" not in source
-    assert "napari_harpy.widgets.feature_extraction.controller" not in import_modules
+    assert "spatiato.widgets.feature_extraction.controller" not in import_modules

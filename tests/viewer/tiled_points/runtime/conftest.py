@@ -4,17 +4,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
+from spatiato.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import _CatalogWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import _ZarrWriteSettings
 
 
 @pytest.fixture(scope="session")

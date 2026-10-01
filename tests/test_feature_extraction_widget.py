@@ -10,24 +10,24 @@ from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QCheckBox, QComboBox, QLabel, QLineEdit, QScrollArea
 from spatialdata import SpatialData
 
-import napari_harpy.widgets.feature_extraction.widget as feature_extraction_widget_module
-from napari_harpy._app_state import TableStateChangedEvent, get_or_create_app_state
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.core.spatialdata import (
+import spatiato.widgets.feature_extraction.widget as feature_extraction_widget_module
+from spatiato._app_state import TableStateChangedEvent, get_or_create_app_state
+from spatiato.core.persistence import TableComponentPath
+from spatiato.core.spatialdata import (
     SpatialDataFeatureExtractionImageDiscovery,
     SpatialDataFeatureExtractionLabelDiscovery,
     SpatialDataImageOption,
     SpatialDataLabelsOption,
 )
-from napari_harpy.widgets.feature_extraction.controller import (
+from spatiato.widgets.feature_extraction.controller import (
     FeatureExtractionBindingState,
     FeatureExtractionResult,
     FeatureExtractionTriplet,
 )
-from napari_harpy.widgets.feature_extraction.widget import FeatureExtractionWidget
-from napari_harpy.widgets.persistence.controller import PersistenceController
-from napari_harpy.widgets.persistence.controls import TablePersistenceControls
-from napari_harpy.widgets.viewer.widget import ViewerWidget
+from spatiato.widgets.feature_extraction.widget import FeatureExtractionWidget
+from spatiato.widgets.persistence.controller import PersistenceController
+from spatiato.widgets.persistence.controls import TablePersistenceControls
+from spatiato.widgets.viewer.widget import ViewerWidget
 
 
 class DummyEventEmitter:
@@ -164,7 +164,7 @@ def test_feature_extraction_widget_can_be_instantiated(qtbot) -> None:
     assert widget.coordinate_system_combo.count() == 0
     assert widget.calculate_button.isEnabled() is False
     assert "No SpatialData Loaded" in widget.selection_status.text()
-    assert "shared Harpy state" in unescape(widget.selection_status.text())
+    assert "shared Spatiato state" in unescape(widget.selection_status.text())
     assert all(button.text() != "Rescan Viewer" for button in widget.findChildren(type(widget.calculate_button)))
     assert (
         widget.segmentation_combo.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
@@ -1215,7 +1215,7 @@ def test_feature_extraction_widget_surfaces_duplicate_channel_names_as_batch_err
         lambda sdata, image_name: (_ for _ in ()).throw(
             ValueError(
                 "Image element `blobs_image` exposes duplicate channel names (`dup`), "
-                "which napari-harpy does not support. "
+                "which spatiato does not support. "
                 "Update the channel names in the SpatialData object with "
                 "`sdata.set_channel_names(...)`."
             )
@@ -2267,4 +2267,4 @@ def test_feature_extraction_widget_clears_when_shared_sdata_is_cleared(
     assert widget.coordinate_system_combo.isEnabled() is False
     assert widget.calculate_button.isEnabled() is False
     assert "No SpatialData Loaded" in widget.selection_status.text()
-    assert "shared Harpy state" in unescape(widget.selection_status.text())
+    assert "shared Spatiato state" in unescape(widget.selection_status.text())

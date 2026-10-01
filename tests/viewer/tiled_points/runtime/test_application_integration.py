@@ -6,20 +6,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_location import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_location import (
     points_cache_path,
     points_element_path,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
-from napari_harpy.viewer.tiled_points.application import (
+from spatiato.core.multi_scale_cache_points_zarr.reader import _read_cache_dataset_info
+from spatiato.viewer.tiled_points.application import (
     DEFAULT_MAX_CPU_TILE_BYTES,
     DEFAULT_MAX_VERTEX_PAYLOAD_BYTES,
     TiledPointsApplicationSettings,
     TiledPointsCacheDescriptor,
     canonical_value_palette,
 )
-from napari_harpy.viewer.tiled_points.contracts import TILED_POINTS_VERTEX_DTYPE
-from napari_harpy.widgets.viewer.tiled_points_controller import _CacheDescriptorJob, _load_cache_descriptor
+from spatiato.viewer.tiled_points.contracts import TILED_POINTS_VERTEX_DTYPE
+from spatiato.widgets.viewer.tiled_points_controller import _CacheDescriptorJob, _load_cache_descriptor
 
 
 class _BackedSpatialData:

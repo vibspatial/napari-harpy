@@ -10,8 +10,8 @@ from spatialdata import SpatialData
 from spatialdata.models import ShapesModel
 from spatialdata.transformations import Affine, Identity, set_transformation
 
-import napari_harpy.core.spatial_query.query as query_module
-from napari_harpy.core.spatial_query import (
+import spatiato.core.spatial_query.query as query_module
+from spatiato.core.spatial_query import (
     CanonicalCenterQueryRequest,
     CanonicalCentersResult,
     CanonicalRegionBinding,

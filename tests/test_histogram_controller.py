@@ -4,9 +4,9 @@ import numpy as np
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
-import napari_harpy.widgets.histogram.controller as histogram_controller_module
-from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
-from napari_harpy.widgets.histogram.controller import (
+import spatiato.widgets.histogram.controller as histogram_controller_module
+from spatiato.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
+from spatiato.widgets.histogram.controller import (
     HISTOGRAM_IDLE_STATUS,
     HistogramController,
     HistogramJob,

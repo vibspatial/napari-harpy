@@ -9,7 +9,7 @@
 ## Authority and relationship to earlier roadmaps
 
 This document is the implementation roadmap for integrating the adopted
-Zarr-backed transcript cache with napari and then replacing napari-harpy's
+Zarr-backed transcript cache with napari and then replacing spatiato's
 current materialized `Points` workflow.
 
 It supersedes
@@ -55,7 +55,7 @@ immutable render snapshot
 tile-retaining VisPy renderer on the GUI/OpenGL thread
 ```
 
-The final napari-harpy points workflow uses this path instead of scanning the
+The final spatiato points workflow uses this path instead of scanning the
 source dataframe, sampling it into one in-memory coordinate array, and
 constructing a replacement `napari.layers.Points` object for every value
 selection.
@@ -215,7 +215,7 @@ Keep the cache implementation independent of napari, and avoid another large,
 flat viewer module:
 
 ```text
-src/napari_harpy/
+src/spatiato/
   core/
     multi_scale_cache_points_zarr/
       reader.py                         # storage-neutral cache reader
@@ -633,7 +633,7 @@ Implement a dedicated `TiledPointsLayerModel(Layer)` with these semantics:
 and emits only when the state materially changed. It never performs LOD
 planning, disk IO, or renderer mutation.
 
-Gene colour has three distinct owners. The napari-harpy points controller owns
+Gene colour has three distinct owners. The spatiato points controller owns
 the stable colour assignment for the canonical cache vocabulary. The layer
 model owns the resulting immutable presentation state as a dense
 `value_palette`, aligned so row `value_id` contains that value's RGBA colour,
@@ -651,7 +651,7 @@ lookup together; I8 supplies the stable palette from the existing points-panel
 colour policy.
 
 Construct the default complete palette in canonical cache `value_id` order by
-repeating napari-harpy's existing 102-colour points cycle modulo 102:
+repeating spatiato's existing 102-colour points cycle modulo 102:
 
 ```text
 value_id 0   -> cycle colour 0
@@ -679,7 +679,7 @@ slicing, and view-cache semantics that do not describe a logical tiled layer.
 ## Private napari registration and controls
 
 Registration is explicit and occurs before adding the first tiled-points layer.
-Importing `napari_harpy` must not mutate global napari registries.
+Importing `spatiato` must not mutate global napari registries.
 
 The registration operation:
 
@@ -700,7 +700,7 @@ The custom controls use napari's base opacity/blending controls and add only:
 - loading/over-budget/error status;
 - a sampled-LOD warning and omitted selected-value summary.
 
-Value selection and hard render budget remain in napari-harpy's points panel,
+Value selection and hard render budget remain in spatiato's points panel,
 where the source element is chosen. Do not duplicate them in layer controls.
 
 ## VisPy renderer
@@ -761,7 +761,7 @@ choose gene colours or mutate the palette. The controller-to-model-to-renderer
 flow is:
 
 ```text
-napari-harpy points controller
+spatiato points controller
     stable value_id -> RGBA assignment
                 ↓
 TiledPointsLayerModel.value_palette
@@ -860,7 +860,7 @@ exceed the hard render limit.
 ### Value selection change
 
 ```text
-napari-harpy value UI
+spatiato value UI
         ↓
 canonical value IDs and new selection generation
         ↓
@@ -892,7 +892,7 @@ worker thread terminates
 Every close operation is idempotent. A late result cannot recreate a node,
 restart a timer, or mutate a removed layer.
 
-## Napari-harpy product integration
+## Spatiato product integration
 
 ### Cache location and trust
 
@@ -1162,7 +1162,7 @@ I4  worker-owned cache reader and resident lookup indexes
 I5  scheduling, level planning, and CPU tile residency
 I6  tile-retaining VisPy point renderer
 I7  complete cache-to-canvas session
-I8  replacement of the current napari-harpy Points workflow
+I8  replacement of the current spatiato Points workflow
 ```
 
 Consequently, I2 does not call `plan_viewport()`, open a cache reader, select an
@@ -2134,7 +2134,7 @@ their signal connections and terminal teardown
 The composition owner is the only missing bridge between these boundaries. It
 must not absorb cache planning, Zarr reading, rendering, or application-specific
 points-panel policy. I8's `TiledPointsLayerBinding` will own or call this generic
-runtime composition when the napari-harpy points workflow is replaced.
+runtime composition when the spatiato points workflow is replaced.
 
 #### Compose the request and result paths
 
@@ -2310,7 +2310,7 @@ Exit criteria:
 
 ### Gate I: cache-backed napari layer accepted
 
-Hold this gate before replacing napari-harpy's existing points workflow.
+Hold this gate before replacing spatiato's existing points workflow.
 
 Approval requires:
 
@@ -2324,12 +2324,12 @@ Approval requires:
 - one accepted policy for the 127-tile scene-node observation;
 - no unresolved unsupported-version or registry-cleanup behavior.
 
-### Slice I8: replace the napari-harpy points selection workflow — resolved
+### Slice I8: replace the spatiato points selection workflow — resolved
 
 I8 is the application-integration slice. I1 through I7 provide the generic
 cache reader, custom napari layer, VisPy renderer, worker session, viewport
 mailbox, CPU/GPU residency, and cache-to-canvas composition. I8 connects those
-components to napari-harpy's existing points panel. It must not reimplement
+components to spatiato's existing points panel. It must not reimplement
 cache planning, point reads, or rendering inside the widget or viewer adapter.
 
 #### I8 entry condition: close Gate I before the production cutover
@@ -2521,7 +2521,7 @@ identity, palette identity, or tile residency keys.
 #### Register and create one persistent tiled-points layer
 
 Call `register_tiled_points_layer()` explicitly before constructing or
-inserting the first `TiledPointsLayerModel`; importing napari-harpy must remain
+inserting the first `TiledPointsLayerModel`; importing spatiato must remain
 side-effect free. The registration is process-wide and idempotent for the
 supported napari/VisPy contract.
 
@@ -2985,9 +2985,9 @@ Deliverables:
 - remove direct transcript-selection Dask jobs and native-Points replacement
   code no longer used by another feature;
 - remove the superseded transcript-cache helper in
-  `src/napari_harpy/_transcript_tiles.py` once a consumer scan confirms the
+  `src/spatiato/_transcript_tiles.py` once a consumer scan confirms the
   adopted builder/session owns every required use case;
-- reduce or remove `src/napari_harpy/_points_value_index.py` according to its
+- reduce or remove `src/spatiato/_points_value_index.py` according to its
   remaining non-transcript consumers;
 - retain or relocate general point styling only where native Points still use
   it;
@@ -3330,7 +3330,7 @@ quiesce the reader before rebuild publication in the initial workflow.
 4. Implement I4 and I5 with fake rendering and deterministic cache fixtures.
 5. Implement I6 and hold the real-canvas renderer review.
 6. Compose I7 and hold Gate I using a small real cache.
-7. Replace the napari-harpy points workflow in I8.
+7. Replace the spatiato points workflow in I8.
 8. Implement and qualify sparse selected-value responsiveness in I9.
 9. Add product cache construction/rebuild handling in I10.
 10. Remove the superseded direct transcript path in I11.

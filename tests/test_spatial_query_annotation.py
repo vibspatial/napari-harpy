@@ -5,8 +5,8 @@ import pandas as pd
 import pytest
 from spatialdata import SpatialData
 
-from napari_harpy.core.class_palette import default_categorical_colors, default_labeled_class_color
-from napari_harpy.core.spatial_query import (
+from spatiato.core.class_palette import default_categorical_colors, default_labeled_class_color
+from spatiato.core.spatial_query import (
     CanonicalCenterQueryResult,
     CanonicalCentersResult,
     SpatialAnnotationColumnChangedError,

@@ -12,7 +12,7 @@ The roadmaps agree on:
 - no validation report, progress protocol, cancellation, or caller-supplied identity;
 - benchmark measurements remaining outside the validation result.
 
-The initial V0 scope is particularly clear and ready to implement: [`PointColumnSelection`, `ParquetPointsSource`, minimal errors, narrow exports, and tests](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:387). The existing implementation also confirms that the planned V1 operations—checking backed state, using `locate_element`, and verifying a Dask dataframe—are viable with the current SpatialData API ([existing resolver](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_transcript_tiles.py:188)).
+The initial V0 scope is particularly clear and ready to implement: [`PointColumnSelection`, `ParquetPointsSource`, minimal errors, narrow exports, and tests](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/validation_cache_29_7_26.md:387). The existing implementation also confirms that the planned V1 operations—checking backed state, using `locate_element`, and verifying a Dask dataframe—are viable with the current SpatialData API ([existing resolver](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_transcript_tiles.py:188)).
 
 Before V2–V5 are frozen, I found four small issues worth resolving.
 

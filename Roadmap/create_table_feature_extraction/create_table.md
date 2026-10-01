@@ -19,7 +19,7 @@ The intended UI is:
 The widget is currently existing-table-only, while the controller and worker now
 have the explicit create-table target mode from slices 1 and 2.
 
-- [src/napari_harpy/widgets/feature_extraction/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/feature_extraction/widget.py:1661)
+- [src/spatiato/widgets/feature_extraction/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/feature_extraction/widget.py:1661)
   computes eligible table names by intersecting
   `get_annotating_table_names(sdata, labels_name)` across the staged labels
   batch.
@@ -29,8 +29,8 @@ have the explicit create-table target mode from slices 1 and 2.
 - Existing table selections are validated with
   `validate_table_annotation_coverage(...)` and
   `validate_table_region_instance_ids(...)`.
-- [src/napari_harpy/widgets/feature_extraction/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/feature_extraction/controller.py:28)
-  stores `FeatureExtractionRequest.table_name` as the napari-harpy target table
+- [src/spatiato/widgets/feature_extraction/controller.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/feature_extraction/controller.py:28)
+  stores `FeatureExtractionRequest.table_name` as the spatiato target table
   and uses `FeatureExtractionRequest.create_table` to distinguish existing-table
   updates from create-table writes.
 - The controller's `can_calculate` path now accepts either a valid existing table
@@ -110,7 +110,7 @@ Carry the table target explicitly through the controller request/binding state s
 the controller can distinguish an existing table from a table that does not exist
 yet.
 
-Use one napari-harpy target name plus a mode flag. This reads more naturally in
+Use one spatiato target name plus a mode flag. This reads more naturally in
 the widget/controller than carrying Harpy's `table_name`/`output_table_name`
 pair everywhere:
 
@@ -243,7 +243,7 @@ Work items:
   - `table_name=job.request.harpy_table_name`;
   - `output_table_name=job.request.harpy_output_table_name`;
   - `overwrite_output_table=False`;
-- keep `FeatureExtractionResult.table_name` as the napari-harpy target table name,
+- keep `FeatureExtractionResult.table_name` as the spatiato target table name,
   i.e. `job.request.table_name` in both modes;
 - keep `change_kind="created"` for any successful write that creates a new
   feature matrix key. In create-table mode this means "created table plus
@@ -729,7 +729,7 @@ Status: implemented.
 
 Object Classification should become aware that Feature Extraction may create a
 new annotating table. Today
-[src/napari_harpy/widgets/object_classification/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/object_classification/widget.py:538)
+[src/spatiato/widgets/object_classification/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/object_classification/widget.py:538)
 listens to `feature_matrix_written`, but returns early when
 `event.table_name != self.selected_table_name`. That means it can refresh
 feature-matrix keys for the currently selected table, but it cannot discover a
@@ -835,7 +835,7 @@ Status: implemented.
 
 The Viewer widget also needs to become aware that feature extraction may create a
 new annotating table. Today
-[src/napari_harpy/widgets/viewer/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/viewer/widget.py:255)
+[src/spatiato/widgets/viewer/widget.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/viewer/widget.py:255)
 listens to `sdata_changed` and coordinate-system changes, but not to
 `feature_matrix_written`.
 

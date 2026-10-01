@@ -8,9 +8,9 @@ from typing import Any
 import numpy as np
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.reader as reader_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+import spatiato.core.multi_scale_cache_points_zarr.reader as reader_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
     MANIFEST_BUCKET_TILE_INDEX,
     MANIFEST_N_POINTS,
@@ -18,10 +18,10 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     TILE_MAJOR_TILE_X,
     TILE_MAJOR_TILE_Y,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import _read_manifest_inventory
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.writer.staging_validation import _read_manifest_inventory
 
 
 @pytest.fixture

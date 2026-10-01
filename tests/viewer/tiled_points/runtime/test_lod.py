@@ -4,8 +4,8 @@ from itertools import product
 
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _LevelSelection
-from napari_harpy.viewer.tiled_points.runtime.lod import _lod_thresholds, _select_lod
+from spatiato.core.multi_scale_cache_points_zarr.reader import _LevelSelection
+from spatiato.viewer.tiled_points.runtime.lod import _lod_thresholds, _select_lod
 
 
 def _candidates(counts, preferred):

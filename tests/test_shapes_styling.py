@@ -11,10 +11,10 @@ from napari.utils.colormaps import label_colormap
 from shapely.geometry import Point, Polygon
 from spatialdata.models import TableModel
 
-from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
-from napari_harpy.core.spatialdata import SpatialDataTableMetadata
-from napari_harpy.viewer._styling import continuous_colors_for_values
-from napari_harpy.viewer.shapes_styling import (
+from spatiato.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
+from spatiato.core.spatialdata import SpatialDataTableMetadata
+from spatiato.viewer._styling import continuous_colors_for_values
+from spatiato.viewer.shapes_styling import (
     SHAPES_EDGE_ALPHA,
     SHAPES_FACE_ALPHA,
     SHAPES_MISSING_BASE_COLOR,

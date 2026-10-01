@@ -4,8 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _bucket_path, _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _bucket_path, _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _BucketWriteResult,
     _LevelWriteResult,

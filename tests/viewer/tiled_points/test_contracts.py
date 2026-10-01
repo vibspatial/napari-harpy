@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderBatch,
     TiledPointsRenderResult,
@@ -15,7 +15,7 @@ from napari_harpy.viewer.tiled_points.contracts import (
     TileResidencyKey,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 

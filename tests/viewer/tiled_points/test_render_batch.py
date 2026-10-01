@@ -5,13 +5,13 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsRenderBatch,
     TiledPointsRenderTile,
     TileResidencyKey,
 )
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 _MAX_PAYLOAD_BYTES = 1_000_000
@@ -102,7 +102,7 @@ def test_pack_render_tiles_preflights_capacity_before_allocation(monkeypatch: py
         allocation_attempted = True
         raise AssertionError("allocation should not be attempted")
 
-    monkeypatch.setattr("napari_harpy.viewer.tiled_points.render_batch.np.empty", _unexpected_empty)
+    monkeypatch.setattr("spatiato.viewer.tiled_points.render_batch.np.empty", _unexpected_empty)
     with pytest.raises(ValueError, match="max_vertex_payload_bytes=11"):
         _pack((tile,), max_vertex_payload_bytes=11)
 
@@ -122,7 +122,7 @@ def test_pack_render_tiles_checks_cancellation_before_allocation(monkeypatch: py
     def _cancel() -> None:
         raise RuntimeError("cancelled")
 
-    monkeypatch.setattr("napari_harpy.viewer.tiled_points.render_batch.np.empty", _unexpected_empty)
+    monkeypatch.setattr("spatiato.viewer.tiled_points.render_batch.np.empty", _unexpected_empty)
     with pytest.raises(RuntimeError, match="cancelled"):
         _pack((tile,), raise_if_cancelled=_cancel)
 

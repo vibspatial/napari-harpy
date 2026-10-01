@@ -20,33 +20,33 @@ from spatialdata import SpatialData
 from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity
 
-import napari_harpy._app_state as app_state_module
-import napari_harpy.widgets.overlay_color_button as overlay_color_button_module
-import napari_harpy.widgets.viewer.widget as viewer_widget_module
-from napari_harpy._app_state import (
+import spatiato._app_state as app_state_module
+import spatiato.widgets.overlay_color_button as overlay_color_button_module
+import spatiato.widgets.viewer.widget as viewer_widget_module
+from spatiato._app_state import (
     ShapesElementReloadedEvent,
     ShapesElementWrittenEvent,
     TableChangeKind,
     TableStateChangedEvent,
 )
-from napari_harpy._points_value_index import PointsValueSelection, PointsValueTable
-from napari_harpy.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.viewer.adapter import ImageLayerBinding, PointsLayerIdentity
-from napari_harpy.viewer.shapes_styling import SHAPES_FACE_ALPHA
-from napari_harpy.widgets.overlay_color_button import OverlayColorButton
-from napari_harpy.widgets.shared_styles import (
+from spatiato._points_value_index import PointsValueSelection, PointsValueTable
+from spatiato.core._color_source import ShapeColumnColorSourceSpec, TableColorSourceSpec
+from spatiato.core.persistence import TableComponentPath
+from spatiato.viewer.adapter import ImageLayerBinding, PointsLayerIdentity
+from spatiato.viewer.shapes_styling import SHAPES_FACE_ALPHA
+from spatiato.widgets.overlay_color_button import OverlayColorButton
+from spatiato.widgets.shared_styles import (
     STATUS_CARD_PALETTE,
     WIDGET_MIN_WIDTH,
     CompactComboBox,
     _ElidedLabel,
 )
-from napari_harpy.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedToolButton
-from napari_harpy.widgets.viewer.image_widget import _ImageCardWidget
-from napari_harpy.widgets.viewer.points_controller import PointsController, PointsLoadRequest
-from napari_harpy.widgets.viewer.shapes_widget import ShapesLoadRequest
-from napari_harpy.widgets.viewer.tiled_points_controller import TiledPointsController
-from napari_harpy.widgets.viewer.widget import ViewerWidget
+from spatiato.widgets.viewer.disclosure import _CollapsibleSectionWidget, _ElidedToolButton
+from spatiato.widgets.viewer.image_widget import _ImageCardWidget
+from spatiato.widgets.viewer.points_controller import PointsController, PointsLoadRequest
+from spatiato.widgets.viewer.shapes_widget import ShapesLoadRequest
+from spatiato.widgets.viewer.tiled_points_controller import TiledPointsController
+from spatiato.widgets.viewer.widget import ViewerWidget
 
 
 def _table_event(
@@ -1833,7 +1833,7 @@ def test_viewer_widget_surfaces_duplicate_channel_names_and_disables_overlay(qtb
         lambda sdata, image_name: (_ for _ in ()).throw(
             ValueError(
                 "Image element `image` exposes duplicate channel names (`dup`), "
-                "which napari-harpy does not support. "
+                "which spatiato does not support. "
                 "Update the channel names in the SpatialData object with "
                 "`sdata.set_channel_names(...)`."
             )
@@ -1958,7 +1958,7 @@ def test_viewer_widget_refreshes_from_shared_coordinate_system_changes(qtbot, mo
     assert [card.shapes_name for card in widget.shape_cards] == ["shape_local"]
 
 
-def test_viewer_widget_coordinate_system_switch_prunes_old_harpy_layers(qtbot, monkeypatch) -> None:
+def test_viewer_widget_coordinate_system_switch_prunes_old_spatiato_layers(qtbot, monkeypatch) -> None:
     global_layer = Image(np.zeros((2, 2), dtype=np.float32), name="global_layer")
     local_layer = Image(np.zeros((2, 2), dtype=np.float32), name="local_layer")
     external_layer = Image(np.zeros((2, 2), dtype=np.float32), name="external_layer")

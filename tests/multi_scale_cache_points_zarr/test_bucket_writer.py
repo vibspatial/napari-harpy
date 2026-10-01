@@ -8,10 +8,10 @@ import zarr
 from zarr.codecs import BytesCodec, Crc32cCodec, ShardingCodec, ZstdCodec
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _PlannedTile,
     _ZarrWriteSettings,

@@ -49,12 +49,12 @@ from qtpy.QtWidgets import QApplication
 from vispy.scene import SceneCanvas
 from zarr.core.array import Array
 
-import napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader as bucket_reader_module
-import napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader as value_major_reader_module
-import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
-from napari_harpy.viewer.tiled_points.application import canonical_value_palette
-from napari_harpy.viewer.tiled_points.contracts import (
+import spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader as bucket_reader_module
+import spatiato.core.multi_scale_cache_points_zarr.storage.value_major_reader as value_major_reader_module
+import spatiato.viewer.tiled_points.runtime.cache_session as cache_session_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import _PointsCacheReader
+from spatiato.viewer.tiled_points.application import canonical_value_palette
+from spatiato.viewer.tiled_points.contracts import (
     TILED_POINTS_VERTEX_DTYPE,
     TiledPointsDatasetReference,
     TiledPointsRenderSnapshot,
@@ -63,11 +63,11 @@ from napari_harpy.viewer.tiled_points.contracts import (
     TileResidencyKey,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings, _TiledPointsCacheWorker
-from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
-from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.runtime.cache_session import _CacheSessionSettings, _TiledPointsCacheWorker
+from spatiato.viewer.tiled_points.runtime.residency import _CpuTileResidency
+from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 _MIB = 1 << 20
 _DEFAULT_CPU_TILE_BYTES = 1 << 30
@@ -775,8 +775,7 @@ def main() -> None:
             "python": platform.python_version(),
             "qt_qpa_platform": os.environ.get("QT_QPA_PLATFORM"),
             "packages": {
-                name: _package_version(name)
-                for name in ("napari-harpy", "napari", "vispy", "zarr", "numpy", "numcodecs")
+                name: _package_version(name) for name in ("spatiato", "napari", "vispy", "zarr", "numpy", "numcodecs")
             },
             "git": _git_state(),
         },

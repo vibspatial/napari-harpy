@@ -13,7 +13,7 @@ workflow wrapper layered on top afterwards.
 ## Current Baseline
 
 The Object Classification widget currently trains a `RandomForestClassifier`
-inside the worker path in `src/napari_harpy/_classifier.py`.
+inside the worker path in `src/spatiato/_classifier.py`.
 
 Important current properties:
 
@@ -56,7 +56,7 @@ metadata beside the estimator. A target shape:
 class ClassifierExportBundle:
     schema_version: int
     created_at: str
-    napari_harpy_version: str | None
+    spatiato_version: str | None
     sklearn_version: str | None
     estimator: RandomForestClassifier
     source_classifier_config: dict[str, object]
@@ -111,13 +111,13 @@ class ClassifierExportBundle:
         return len(self.feature_columns)
 ```
 
-`ClassifierExportBundle` is the in-memory representation used by napari-harpy.
+`ClassifierExportBundle` is the in-memory representation used by spatiato.
 The on-disk joblib payload should be a plain dict with the same semantic fields,
 for example:
 
 ```python
 {
-    "bundle_type": "napari_harpy_classifier",
+    "bundle_type": "spatiato_classifier",
     "schema_version": 1,
     "metadata": {...},
     "estimator": fitted_random_forest,
@@ -242,7 +242,7 @@ Status: [x] Implemented
 
 ### Implementation Plan
 
-- add a new module, likely `src/napari_harpy/_classifier_export.py`, containing:
+- add a new module, likely `src/spatiato/_classifier_export.py`, containing:
   - `ClassifierExportBundle`;
   - `ClassifierModelSnapshot`;
   - `build_classifier_export_bundle(...)`;
@@ -320,7 +320,7 @@ contains a compatible feature matrix.
 
 ### Proposed API
 
-Create a small public module, for example `src/napari_harpy/headless.py`:
+Create a small public module, for example `src/spatiato/headless.py`:
 
 ```python
 def load_classifier(path: str | Path) -> ClassifierExportBundle:
@@ -411,7 +411,7 @@ training-time config. Target/apply facts should stay as top-level fields in
 1. Add a Qt-free classifier core before adding the public API.
 
    Create one small internal helper module:
-   `src/napari_harpy/_classifier_core.py`.
+   `src/spatiato/_classifier_core.py`.
 
    This module should contain the reusable classifier mechanics and must not
    import widgets, napari, Qt, `thread_worker`, or the `ClassifierController`.
@@ -455,7 +455,7 @@ training-time config. Target/apply facts should stay as top-level fields in
 
 4. Implement the public headless module as a thin wrapper.
 
-   Add `src/napari_harpy/headless.py` with:
+   Add `src/spatiato/headless.py` with:
 
    - `load_classifier(path)`, wrapping `read_classifier_export_bundle(path)`;
    - `apply_classifier(...)`, delegating to `_classifier_core.py`;
@@ -640,7 +640,7 @@ unambiguous; and predictions are applied to the same labels passed as
 Implementation rules:
 
 - add a Qt-free feature extraction core before wiring the public headless API:
-  - create `src/napari_harpy/_feature_extraction_core.py`;
+  - create `src/spatiato/_feature_extraction_core.py`;
   - move/re-export `FeatureExtractionTriplet` and
     `FeatureExtractionChannel` there;
   - move/re-export the Harpy parameter helpers used by
@@ -676,7 +676,7 @@ Implementation rules:
   persist the computed feature matrix and its Harpy metadata:
   - `table.obsm[target.feature_key]`;
   - `table.uns["feature_matrices"][target.feature_key]`;
-  - keep the napari-harpy headless persistence helper focused on prediction
+  - keep the spatiato headless persistence helper focused on prediction
     columns and classifier apply metadata.
 
 ### Tests
@@ -719,7 +719,7 @@ moving modules.
 Target layout:
 
 ```text
-napari_harpy/
+spatiato/
   core/
     annotation.py
     class_palette.py
@@ -847,14 +847,14 @@ apply implementation.
 - follow the `harpy_vitessce` package pattern: each package `__init__.py` that
   exposes public names should declare those names with `lazy_loader.attach(...)`
   and keep typing-only imports under `TYPE_CHECKING`;
-- use `lazy_loader` in `src/napari_harpy/__init__.py` for the complete public
+- use `lazy_loader` in `src/spatiato/__init__.py` for the complete public
   package surface:
   - lazy submodules: `core`, `datasets`, `headless`, `viewer`, `widgets`;
   - lazy attributes from `_interactive`: `Interactive`;
   - lazy attributes from `_app_state`: `HarpyAppState`,
     `get_or_create_app_state`;
 - keep `__version__` eager, because it is cheap and needed by classifier export;
-- use `lazy_loader` in `src/napari_harpy/widgets/__init__.py` so importing the
+- use `lazy_loader` in `src/spatiato/widgets/__init__.py` so importing the
   widget package does not import any Qt widget implementation:
   - lazy attributes from `widgets.viewer.widget`: `ViewerWidget`;
   - lazy attributes from `widgets.feature_extraction.widget`:
@@ -865,22 +865,22 @@ apply implementation.
   and widget-domain `__init__.py` files minimal unless they need an explicit
   public export surface later;
 - avoid importing `_interactive.py`, `_app_state.py`, widgets, napari, or Qt
-  during a plain `import napari_harpy`;
-- verify `from napari_harpy import headless` stays headless-safe once package-level
+  during a plain `import spatiato`;
+- verify `from spatiato import headless` stays headless-safe once package-level
   imports are lazy.
 
 ### Tests
 
-- keep tests small and focused on napari-harpy's lazy export wiring rather than
+- keep tests small and focused on spatiato's lazy export wiring rather than
   retesting `lazy_loader` itself;
 - use subprocess smoke tests so earlier pytest imports cannot pollute
   `sys.modules`;
-- verify `import napari_harpy` does not eagerly import `napari` or `qtpy`;
-- verify `from napari_harpy import headless` does not eagerly import widgets or
+- verify `import spatiato` does not eagerly import `napari` or `qtpy`;
+- verify `from spatiato import headless` does not eagerly import widgets or
   Qt;
 - verify representative lazy attributes still resolve:
-  - `from napari_harpy import Interactive`;
-  - `from napari_harpy.widgets import ViewerWidget`.
+  - `from spatiato import Interactive`;
+  - `from spatiato.widgets import ViewerWidget`.
 
 ### Acceptance Criteria
 

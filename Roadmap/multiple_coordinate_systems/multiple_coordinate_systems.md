@@ -395,7 +395,7 @@ choose their own fallback coordinate system.
 
 Files:
 
-- `src/napari_harpy/_app_state.py`
+- `src/spatiato/_app_state.py`
 - `tests/test_app_state.py`
 
 Work:
@@ -426,7 +426,7 @@ Acceptance:
 
 Files:
 
-- `src/napari_harpy/_viewer_adapter.py`
+- `src/spatiato/_viewer_adapter.py`
 - `tests/test_viewer_adapter.py`
 
 Work:
@@ -450,7 +450,7 @@ Acceptance:
 
 Files:
 
-- `src/napari_harpy/widgets/_viewer_widget.py`
+- `src/spatiato/widgets/_viewer_widget.py`
 - `tests/test_viewer_widget.py`
 
 Work:
@@ -473,7 +473,7 @@ Acceptance:
 
 Files:
 
-- `src/napari_harpy/widgets/_object_classification_widget.py`
+- `src/spatiato/widgets/_object_classification_widget.py`
 - `tests/test_object_classification_widget.py`
 
 Work:
@@ -530,7 +530,7 @@ Status:
 
 Files:
 
-- `src/napari_harpy/widgets/_feature_extraction_widget.py`
+- `src/spatiato/widgets/_feature_extraction_widget.py`
 - `tests/test_feature_extraction_widget.py`
 
 Work:

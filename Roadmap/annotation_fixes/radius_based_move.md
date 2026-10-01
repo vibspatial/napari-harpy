@@ -30,7 +30,7 @@ path.
 - Napari emits the public `layer.events.data(..., action=CHANGED, ...)` event at
   the end of a drag, not continuously for every mouse move.
 - Harpy already wraps the same private direct-edit path in
-  `src/napari_harpy/widgets/shapes_annotation/widget.py` through
+  `src/spatiato/widgets/shapes_annotation/widget.py` through
   `_AnnotationLayerEditGuard`.
 - That guard is attached only to annotation-owned primary `Shapes` layers and is
   already used to keep hole-encoded polygon anchor vertices synchronized during
@@ -69,7 +69,7 @@ raw vertices after each deformation step. Otherwise the tool can create transien
 bridge artifacts, malformed hole encodings, or geometry that fails save-time
 validation.
 
-The existing helpers in `src/napari_harpy/core/shapes_geometry.py` are relevant:
+The existing helpers in `src/spatiato/core/shapes_geometry.py` are relevant:
 
 - `napari_polygon_vertices_to_topology(...)`
 - `move_napari_polygon_vertex(...)`

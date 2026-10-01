@@ -6,7 +6,7 @@ set -euo pipefail
 #   scripts/release_tag.sh                # uses version from pyproject.toml
 #   scripts/release_tag.sh 0.0.1          # explicit version
 
-PROJECT_NAME="napari-harpy"
+PROJECT_NAME="spatiato"
 PYPROJECT_FILE="pyproject.toml"
 REMOTE="origin"
 RELEASE_BRANCH="${RELEASE_BRANCH:-main}"

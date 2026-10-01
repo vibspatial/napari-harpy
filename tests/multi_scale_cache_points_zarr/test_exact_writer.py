@@ -8,24 +8,24 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.writer.exact as exact_module
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import (
+import spatiato.core.multi_scale_cache_points_zarr.writer.exact as exact_module
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import (
     _plan_points_cache,
     _PointsCacheBuildPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.source.models import ValidatedPointsSource
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _LevelWriteResult,
     _ZarrWriteSettings,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _annotate_source_partition,
     _ExactWriterConfig,
     _finalize_exact_bucket,

@@ -12,17 +12,17 @@ from napari._vispy.utils import visual
 from napari._vispy.utils.qt_font import FontInfo
 from napari._vispy.utils.visual import create_vispy_layer
 
-from napari_harpy.viewer.tiled_points import (
+from spatiato.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
 )
-from napari_harpy.viewer.tiled_points.napari import registration
-from napari_harpy.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
-from napari_harpy.viewer.tiled_points.napari.registration import (
+from spatiato.viewer.tiled_points.napari import registration
+from spatiato.viewer.tiled_points.napari.controls import QtTiledPointsLayerControls
+from spatiato.viewer.tiled_points.napari.registration import (
     TiledPointsLayerCompatibilityError,
     register_tiled_points_layer,
 )
-from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 
 def _layer() -> TiledPointsLayerModel:

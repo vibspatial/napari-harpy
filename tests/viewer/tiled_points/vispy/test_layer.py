@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from napari._vispy.utils.qt_font import FontInfo
 
-from napari_harpy.viewer.tiled_points import (
+from spatiato.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
     TiledPointsRenderResult,
@@ -15,8 +15,8 @@ from napari_harpy.viewer.tiled_points import (
     TiledPointsRenderTile,
     TileResidencyKey,
 )
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 
 def _layer(

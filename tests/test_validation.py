@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from spatialdata import SpatialData
 
-from napari_harpy.core.validation import spatialdata_element_name_exists, validate_new_spatialdata_element_name
+from spatiato.core.validation import spatialdata_element_name_exists, validate_new_spatialdata_element_name
 
 
 def test_validate_new_spatialdata_element_name_rejects_case_variant(sdata_blobs: SpatialData) -> None:

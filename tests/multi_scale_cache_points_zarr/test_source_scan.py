@@ -6,10 +6,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.source.validation as validation_module
-from napari_harpy.core.multi_scale_cache_points_zarr.source import ParquetPointsSource, PointColumnSelection
-from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import PointContentValidationError
-from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import (
+import spatiato.core.multi_scale_cache_points_zarr.source.validation as validation_module
+from spatiato.core.multi_scale_cache_points_zarr.source import ParquetPointsSource, PointColumnSelection
+from spatiato.core.multi_scale_cache_points_zarr.source.errors import PointContentValidationError
+from spatiato.core.multi_scale_cache_points_zarr.source.validation import (
     VALUE_NORMALIZATION_METHOD,
     _normalized_value_counts,
     _read_parquet_source_inventory,
@@ -78,7 +78,7 @@ def test_scan_builds_exact_summary_across_files_row_groups_and_batches(tmp_path:
 
     content = _scan_points_content(_read_parquet_source_inventory(source), max_batch_rows=2)
 
-    assert VALUE_NORMALIZATION_METHOD == "harpy-string-trim-unicode-white-space-case-sensitive-v1"
+    assert VALUE_NORMALIZATION_METHOD == "spatiato-string-trim-unicode-white-space-case-sensitive-v1"
     assert content.row_count == 9
     assert content.bounds.x_min == -5.0
     assert content.bounds.x_max == 100_000.0

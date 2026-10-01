@@ -9,14 +9,14 @@ from napari.layers import Shapes
 from qtpy.QtWidgets import QComboBox, QLabel
 from spatialdata import SpatialData
 
-import napari_harpy._app_state as app_state_module
-import napari_harpy.widgets.annotation.widget as annotation_widget_module
-import napari_harpy.widgets.shapes_annotation.widget as shapes_annotation_widget_module
-import napari_harpy.widgets.spatial_query.widget as spatial_query_widget_module
-from napari_harpy._app_state import get_or_create_app_state
-from napari_harpy.widgets.annotation.models import AnnotationContext
-from napari_harpy.widgets.annotation.widget import AnnotationWidget
-from napari_harpy.widgets.shapes_annotation.widget import ShapesAnnotation
+import spatiato._app_state as app_state_module
+import spatiato.widgets.annotation.widget as annotation_widget_module
+import spatiato.widgets.shapes_annotation.widget as shapes_annotation_widget_module
+import spatiato.widgets.spatial_query.widget as spatial_query_widget_module
+from spatiato._app_state import get_or_create_app_state
+from spatiato.widgets.annotation.models import AnnotationContext
+from spatiato.widgets.annotation.widget import AnnotationWidget
+from spatiato.widgets.shapes_annotation.widget import ShapesAnnotation
 
 _SPACE_PAN_TIP_TEXT = (
     "Tip: while drawing in polygon, path, polyline or lasso mode, hold Space and drag to pan without ending the shape."
@@ -190,7 +190,7 @@ def test_annotation_widget_starts_inactive_without_spatialdata(qtbot) -> None:
     header_logo = parent.findChild(QLabel, "annotation_header_logo")
     assert header_logo is not None
     pixmap = header_logo.pixmap()
-    assert (pixmap is not None and not pixmap.isNull()) or header_logo.text() == "napari-harpy"
+    assert (pixmap is not None and not pixmap.isNull()) or header_logo.text() == "spatiato"
     assert parent.coordinate_system_combo.minimumWidth() == widget.name_edit.minimumWidth()
     assert parent.coordinate_system_combo.count() == 0
     assert parent.coordinate_system_combo.isEnabled() is False

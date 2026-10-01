@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.build_plan import _LevelBuildPlan, _LevelKind
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import (
+from spatiato.core.multi_scale_cache_points_zarr.build_plan import _LevelBuildPlan, _LevelKind
+from spatiato.core.multi_scale_cache_points_zarr.hashing import (
     BUCKET_HASH_METHOD,
     _bucket_count_for_level,
     _tile_bucket_ids,
@@ -19,7 +19,7 @@ def test_splitmix64_bucket_mapping_has_independent_fixed_vectors() -> None:
     tile_x = np.array([0, 1, 0, 1, 2**32 - 1], dtype=np.uint32)
     tile_y = np.array([0, 0, 1, 1, 2**32 - 1], dtype=np.uint32)
 
-    assert BUCKET_HASH_METHOD == "harpy-zarr-tile-splitmix64-v1"
+    assert BUCKET_HASH_METHOD == "spatiato-zarr-tile-splitmix64-v1"
     assert _tile_bucket_ids(tile_x, tile_y, bucket_count=69).tolist() == [16, 26, 43, 1, 2]
 
 

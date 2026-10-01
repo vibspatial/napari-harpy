@@ -13,8 +13,8 @@ from spatialdata.datasets import blobs
 from spatialdata.models import PointsModel
 from spatialdata.transformations import Identity
 
-import napari_harpy._transcript_tiles as transcript_tiles
-from napari_harpy._transcript_tiles import (
+import spatiato._transcript_tiles as transcript_tiles
+from spatiato._transcript_tiles import (
     TRANSCRIPT_TILE_CACHE_SCHEMA_VERSION,
     TranscriptTileCache,
     TranscriptTileCacheBuildParameters,
@@ -177,7 +177,7 @@ def test_transcript_tile_cache_records_metadata_and_derived_properties() -> None
     assert cache.manifest_path == cache_path / "manifest.parquet"
     assert cache.genes_path == cache_path / "genes.parquet"
     assert cache.levels_path == cache_path / "levels"
-    assert cache.schema_version == "harpy-transcripts-vis-0.1"
+    assert cache.schema_version == "spatiato-transcripts-vis-0.1"
     assert cache.levels == _example_levels()
     assert cache.n_levels == 3
     assert cache.finest_level == 2
@@ -263,7 +263,7 @@ def test_transcript_tile_cache_rejects_invalid_levels(
 
 def test_transcript_tile_cache_rejects_unsupported_schema_version() -> None:
     with pytest.raises(ValueError, match="Unsupported"):
-        _example_cache(schema_version="harpy-transcripts-vis-unknown")
+        _example_cache(schema_version="spatiato-transcripts-vis-unknown")
 
 
 @pytest.mark.parametrize(

@@ -9,10 +9,10 @@ from qtpy.QtCore import QPoint, Qt
 from qtpy.QtGui import QPalette
 from qtpy.QtWidgets import QLabel
 
-from napari_harpy.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
-from napari_harpy.widgets.histogram import plot_widget as plot_widget_module
-from napari_harpy.widgets.histogram.plot_widget import _HistogramPlotWidget, _ScientificYAxisItem
-from napari_harpy.widgets.histogram.styles import (
+from spatiato.core.histogram import HistogramResult, HistogramSettings, HistogramTarget
+from spatiato.widgets.histogram import plot_widget as plot_widget_module
+from spatiato.widgets.histogram.plot_widget import _HistogramPlotWidget, _ScientificYAxisItem
+from spatiato.widgets.histogram.styles import (
     HISTOGRAM_BAR_FILL_COLOR,
     HISTOGRAM_CONTRAST_LINE_COLOR,
     HISTOGRAM_CONTRAST_REGION_ALPHA,
@@ -421,8 +421,8 @@ def test_histogram_plot_widget_changed_contrast_region_emits_limits(qtbot) -> No
 
 
 def test_pyqtgraph_imports_stay_out_of_core_and_controller() -> None:
-    core_source = (_REPO_ROOT / "src/napari_harpy/core/histogram.py").read_text()
-    controller_source = (_REPO_ROOT / "src/napari_harpy/widgets/histogram/controller.py").read_text()
+    core_source = (_REPO_ROOT / "src/spatiato/core/histogram.py").read_text()
+    controller_source = (_REPO_ROOT / "src/spatiato/widgets/histogram/controller.py").read_text()
 
     assert "pyqtgraph" not in core_source
     assert "pyqtgraph" not in controller_source

@@ -1,0 +1,41 @@
+name: spatiato
+display_name: spatiato
+schema_version: 0.1.0
+categories:
+  - Annotation
+contributions:
+  commands:
+    - id: spatiato.read_spatialdata_store
+      title: Read SpatialData zarr store into Spatiato state
+      python_name: spatiato._reader:get_reader
+    - id: spatiato.viewer
+      title: Open viewer widget
+      python_name: spatiato.widgets.viewer.widget:ViewerWidget
+    - id: spatiato.feature_extraction
+      title: Open feature extraction widget
+      python_name: spatiato.widgets.feature_extraction.widget:FeatureExtractionWidget
+    - id: spatiato.histogram
+      title: Open image histogram widget
+      python_name: spatiato.widgets.histogram.widget:HistogramWidget
+    - id: spatiato.object_classification
+      title: Open object classification widget
+      python_name: spatiato.widgets.object_classification.widget:ObjectClassificationWidget
+    - id: spatiato.shapes_annotation
+      title: Open annotation widget
+      python_name: spatiato.widgets.annotation.widget:AnnotationWidget
+  widgets:
+    - command: spatiato.viewer
+      display_name: Viewer
+    - command: spatiato.feature_extraction
+      display_name: Feature Extraction
+    - command: spatiato.histogram
+      display_name: Image Histogram
+    - command: spatiato.object_classification
+      display_name: Object Classification
+    - command: spatiato.shapes_annotation
+      display_name: Annotation
+  readers:
+    - command: spatiato.read_spatialdata_store
+      filename_patterns:
+        - '*.zarr'
+      accepts_directories: true

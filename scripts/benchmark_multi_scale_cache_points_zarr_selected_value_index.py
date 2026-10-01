@@ -11,13 +11,13 @@ from time import perf_counter
 import numpy as np
 import psutil
 
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _PointsCacheReader,
     _SelectedValueIndex,
     _ViewportReadResult,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_MANIFEST_INDEX,
     VALUE_TILES_N_POINTS,
 )
@@ -523,7 +523,7 @@ def main() -> None:
         point_budget=args.point_budget,
     )
     report = {
-        "schema_version": "harpy-zarr-selected-value-index-evaluation-v3",
+        "schema_version": "spatiato-zarr-selected-value-index-evaluation-v3",
         "cache_root": str(args.cache_root),
         "cache_generation_id": cache_generation_id,
         "level_count": level_count,

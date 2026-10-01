@@ -1,6 +1,6 @@
 """Developer-only exhaustive validation for a completed Zarr points cache.
 
-This script is intentionally outside the installed ``napari_harpy`` package.
+This script is intentionally outside the installed ``spatiato`` package.
 Normal cache publication uses the compact path-only validator in
 ``writer.staging_validation``. Run this tool only for format or algorithm
 changes, release qualification, or investigation of suspected corruption.
@@ -17,39 +17,39 @@ from time import perf_counter
 
 import numpy as np
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _CacheAttributes
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
-from napari_harpy.core.multi_scale_cache_points_zarr.models import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import _CacheAttributes
+from spatiato.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
+from spatiato.core.multi_scale_cache_points_zarr.models import (
     _INT64_MAX,
     _require_integer_in_range,
     _TileDescriptor,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_BUCKET_ID,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_validation import _validate_bucket
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import (
     _CacheRootReader,
     _iter_compact_bucket_range_batches,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.exact import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.reader_cache import _BucketReaderCache
+from spatiato.core.multi_scale_cache_points_zarr.writer.exact import (
     _read_and_annotate_row_group,
     _source_row_group_read_specs,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.staging_validation import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.staging_validation import (
     _ManifestInventory,
     _read_manifest_inventory,
     _validate_complete_cache,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.writer.value_major import (
+from spatiato.core.multi_scale_cache_points_zarr.writer.value_major import (
     _read_fragment_locations,
     _split_range_records_by_points,
 )
@@ -114,7 +114,7 @@ def _validate_cache_exhaustive(
             if result.tile_descriptors != bucket.descriptors:
                 raise ValueError("Exhaustive bucket descriptors disagree with the persisted manifest.")
 
-    with tempfile.TemporaryDirectory(prefix="harpy-zarr-validation-", dir=temporary_directory_root) as scratch:
+    with tempfile.TemporaryDirectory(prefix="spatiato-zarr-validation-", dir=temporary_directory_root) as scratch:
         scratch_root = Path(scratch)
         _validate_value_major_location_equivalence(
             cache_root,

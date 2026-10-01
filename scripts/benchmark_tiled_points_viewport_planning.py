@@ -38,14 +38,14 @@ from benchmark_tiled_points_cache_to_canvas import (
     _TimingLog,
 )
 
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _PointsCacheReader,
     _SelectedValueIndex,
     _ViewportReadPlan,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
-from napari_harpy.viewer.tiled_points.contracts import _ViewportRequest
-from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
+from spatiato.core.multi_scale_cache_points_zarr.storage.value_major_reader import _ValueMajorLevelReader
+from spatiato.viewer.tiled_points.contracts import _ViewportRequest
+from spatiato.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 
 def _plan_owned_arrays(plan: _ViewportReadPlan) -> dict[str, int]:

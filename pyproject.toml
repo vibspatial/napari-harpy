@@ -3,7 +3,7 @@ build-backend = "hatchling.build"
 requires = [ "hatchling" ]
 
 [project]
-name = "napari-harpy"
+name = "spatiato"
 version = "0.1.3"
 description = "A spatial omics interface for napari."
 readme = "README.md"
@@ -80,11 +80,11 @@ dev = [
     "pre-commit",
     "ruff",
     "twine>=4.0.2",
-    "napari-harpy[test,docs,torch]",
+    "spatiato[test,docs,torch]",
 ]
 
 [project.entry-points."napari.manifest"]
-napari-harpy = "napari_harpy:napari.yaml"
+spatiato = "spatiato:napari.yaml"
 
 [project.urls]
 Homepage = "https://github.com/vibspatial/napari-harpy"
@@ -98,7 +98,7 @@ VIBSpatialCatalyst = "https://vib.be/en/technologies/technology-portfolio/spatia
 
 
 [tool.coverage.run]
-source = ["napari_harpy"]
+source = ["spatiato"]
 omit = ["tests/*", "docs/*"]
 
 [tool.ruff]
@@ -147,10 +147,10 @@ ignore = [
 extend-include = ["*.ipynb"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/napari_harpy"]
+packages = ["src/spatiato"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"src/napari_harpy/napari.yaml" = "napari_harpy/napari.yaml"
+"src/spatiato/napari.yaml" = "spatiato/napari.yaml"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -173,10 +173,10 @@ convention = "numpy"
 
 [tool.ruff.per-file-ignores]
 "docs/*" = ["I"]
-"src/napari_harpy/core/*.py" = ["D"]
-"src/napari_harpy/viewer/*.py" = ["D"]
-"src/napari_harpy/widgets/*.py" = ["D"]
-"src/napari_harpy/widgets/**/*.py" = ["D"]
+"src/spatiato/core/*.py" = ["D"]
+"src/spatiato/viewer/*.py" = ["D"]
+"src/spatiato/widgets/*.py" = ["D"]
+"src/spatiato/widgets/**/*.py" = ["D"]
 "tests/*" = ["D"]
 "**/_tests/*" = ["D"]
 "*/__init__.py" = ["F401"]

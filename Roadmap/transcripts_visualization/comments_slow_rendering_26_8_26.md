@@ -44,7 +44,7 @@ Level selection is effectively irrelevant here. Manifest planning is also compar
 
 ### Zarr payload-read breakdown
 
-The 69 buckets are processed sequentially by [\_read_manifest_requests()](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/reader.py:1583).
+The 69 buckets are processed sequentially by [\_read_manifest_requests()](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/reader.py:1583).
 
 | Zarr array | Calls | Time | Returned bytes |
 |---|---:|---:|---:|
@@ -58,7 +58,7 @@ The remaining non-Zarr bucket work was small:
 - Exact row-selector construction: 4.9 ms
 - Bucket grouping, result splitting and ordering: approximately 30 ms
 
-The Zarr calls in [read_display_payloads()](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/storage/bucket_reader.py:254) are therefore the cold worker bottleneck.
+The Zarr calls in [read_display_payloads()](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/storage/bucket_reader.py:254) are therefore the cold worker bottleneck.
 
 ### Why 0.69 MiB takes four seconds
 
@@ -98,7 +98,7 @@ The approximately 0.86-second CPU snapshot remainder came almost entirely from r
 | Insert into CPU residency | **851.6 ms** |
 | Final snapshot tuple | 0.5 ms |
 
-The problem is [\_evict_until_fits()](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/viewer/tiled_points/runtime/residency.py:126). It materializes the complete, growing key collection for every inserted tile, even when no eviction is needed. With thousands of tiles, that becomes effectively quadratic.
+The problem is [\_evict_until_fits()](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/viewer/tiled_points/runtime/residency.py:126). It materializes the complete, growing key collection for every inserted tile, even when no eviction is needed. With thousands of tiles, that becomes effectively quadratic.
 
 This is a concrete implementation defect and can be fixed independently.
 
@@ -123,7 +123,7 @@ Applying the cold 4,453-tile snapshot on the GUI thread took:
 | Remaining key/visibility bookkeeping | approximately 32 ms |
 | Total `apply_snapshot()` | **5.29 s** |
 
-The 1.84-second GPU-residency cost is another quadratic bookkeeping issue. Every call to [GPU `retain()`](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/viewer/tiled_points/vispy/residency.py:117) calls a consistency check that rescans all resources retained so far.
+The 1.84-second GPU-residency cost is another quadratic bookkeeping issue. Every call to [GPU `retain()`](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/viewer/tiled_points/vispy/residency.py:117) calls a consistency check that rescans all resources retained so far.
 
 Fixing that would reduce cold preparation materially, but the 3.20-second visual-resource creation cost would remain.
 
@@ -640,7 +640,7 @@ This section translates the preceding findings into ordered, reviewable implemen
 
 The current working tree has the following starting architecture:
 
-- `ViewerWidget` uses the original in-memory points backend by default. The tiled-cache backend is selected for the lifetime of a new widget only when `experimental_tiled_points=True` is passed directly or `NAPARI_HARPY_EXPERIMENTAL_TILED_POINTS=1` is set before the Viewer widget is constructed.
+- `ViewerWidget` uses the original in-memory points backend by default. The tiled-cache backend is selected for the lifetime of a new widget only when `experimental_tiled_points=True` is passed directly or `SPATIATO_EXPERIMENTAL_TILED_POINTS=1` is set before the Viewer widget is constructed.
 - The cache-backed path is wired end to end through `TiledPointsController`, the adapter, the napari layer, the viewport scheduler, the worker-owned cache session, and the VisPy renderer.
 - Logical storage tiles and decoded CPU tile residency are useful and remain part of the design.
 - The renderer still owns one VisPy visual and VBO per logical tile.

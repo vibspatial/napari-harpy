@@ -11,13 +11,13 @@ from napari._vispy.utils.qt_font import FontInfo
 from napari.utils.events import Event
 from qtpy.QtCore import QObject, Signal
 
-import napari_harpy.viewer.tiled_points.runtime.cache_session as cache_session_module
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+import spatiato.viewer.tiled_points.runtime.cache_session as cache_session_module
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _CacheDatasetInfo,
     _CacheLevelInfo,
     _PointsCacheReader,
 )
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TiledPointsDatasetReference,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
@@ -26,16 +26,16 @@ from napari_harpy.viewer.tiled_points.contracts import (
     TileResidencyKey,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.napari.layer import TiledPointsLayerModel
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.runtime.cache_session import (
+from spatiato.viewer.tiled_points.napari.layer import TiledPointsLayerModel
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionSettings,
     _CacheSessionState,
 )
-from napari_harpy.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
-from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
-from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+from spatiato.viewer.tiled_points.runtime.layer_runtime import _TiledPointsLayerRuntime
+from spatiato.viewer.tiled_points.runtime.residency import _CpuTileResidency
+from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 

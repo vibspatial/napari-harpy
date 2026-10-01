@@ -11,7 +11,7 @@ from shapely.geometry import Point
 from spatialdata import read_zarr
 from spatialdata.transformations import Identity
 
-from napari_harpy import Interactive
+from spatiato import Interactive
 
 DEFAULT_SDATA_PATH = Path("/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_3_6_26.zarr")
 SOURCE_TABLE_NAME = "table_transcriptomics_preprocessed"
@@ -26,7 +26,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create or open the Xenium course SpatialData zarr with point-radius "
-            "centroid shapes, then launch the napari-harpy Viewer widget."
+            "centroid shapes, then launch the spatiato Viewer widget."
         )
     )
     parser.add_argument(
@@ -85,7 +85,7 @@ def _create_xenium_point_radius_shapes_zarr(sdata_path: Path) -> None:
 
 
 def main() -> None:
-    """Create or open the debug dataset and launch the napari-harpy Viewer."""
+    """Create or open the debug dataset and launch the spatiato Viewer."""
     args = _parse_args()
     sdata_path = args.sdata_path.expanduser()
 

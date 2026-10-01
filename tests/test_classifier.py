@@ -8,18 +8,18 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from spatialdata import SpatialData
 
-import napari_harpy.core.object_classification.classifier as classifier_core
-import napari_harpy.widgets.object_classification.controller as classifier_module
-from napari_harpy.core.class_palette import default_class_colors
-from napari_harpy.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND, FeatureMatrixMetadataState
-from napari_harpy.core.object_classification.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
-from napari_harpy.core.object_classification.classifier import (
+import spatiato.core.object_classification.classifier as classifier_core
+import spatiato.widgets.object_classification.controller as classifier_module
+from spatiato.core.class_palette import default_class_colors
+from spatiato.core.feature_matrix_metadata import HARPY_ADD_FEATURE_MATRIX_SOURCE_KIND, FeatureMatrixMetadataState
+from spatiato.core.object_classification.annotation import USER_CLASS_COLORS_KEY, USER_CLASS_COLUMN
+from spatiato.core.object_classification.classifier import (
     ObjectClassificationStateError,
     validate_object_classification_table_state,
 )
-from napari_harpy.core.object_classification.classifier_export import read_classifier_export_bundle
-from napari_harpy.core.persistence import TableComponentPath
-from napari_harpy.widgets.object_classification.controller import (
+from spatiato.core.object_classification.classifier_export import read_classifier_export_bundle
+from spatiato.core.persistence import TableComponentPath
+from spatiato.widgets.object_classification.controller import (
     CLASSIFIER_CONFIG_KEY,
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
@@ -306,7 +306,7 @@ def test_classifier_controller_exports_trained_classifier_bundle(
     table = sdata_blobs["table"]
     qtbot.waitUntil(lambda: controller.can_export_classifier, timeout=5000)
 
-    export_path = tmp_path / "trained.harpy-classifier.joblib"
+    export_path = tmp_path / "trained.spatiato-classifier.joblib"
     bundle = controller.export_classifier(export_path)
     loaded = read_classifier_export_bundle(export_path)
 
@@ -340,7 +340,7 @@ def test_classifier_controller_refuses_export_when_model_is_dirty(
 
     assert controller.can_export_classifier is False
     with pytest.raises(ValueError, match="stale"):
-        controller.export_classifier(tmp_path / "dirty.harpy-classifier.joblib")
+        controller.export_classifier(tmp_path / "dirty.spatiato-classifier.joblib")
 
 
 @pytest.mark.parametrize("schedule_replacement", [False, True])
@@ -443,7 +443,7 @@ def test_classifier_controller_refuses_export_while_training(tmp_path, sdata_blo
     assert workers[1].started is True
     assert controller.can_export_classifier is False
     with pytest.raises(ValueError, match="currently running"):
-        controller.export_classifier(tmp_path / "running.harpy-classifier.joblib")
+        controller.export_classifier(tmp_path / "running.spatiato-classifier.joblib")
 
 
 def test_classifier_controller_clears_export_snapshot_after_reload(
@@ -464,7 +464,7 @@ def test_classifier_controller_clears_export_snapshot_after_reload(
 
     assert controller.can_export_classifier is False
     with pytest.raises(ValueError, match="reloaded from disk"):
-        controller.export_classifier(tmp_path / "reloaded.harpy-classifier.joblib")
+        controller.export_classifier(tmp_path / "reloaded.spatiato-classifier.joblib")
 
 
 def test_classifier_controller_refuses_export_after_feature_metadata_drift(
@@ -488,7 +488,7 @@ def test_classifier_controller_refuses_export_after_feature_metadata_drift(
 
     assert controller.can_export_classifier is False
     with pytest.raises(ValueError, match="metadata no longer matches"):
-        controller.export_classifier(tmp_path / "drift.harpy-classifier.joblib")
+        controller.export_classifier(tmp_path / "drift.spatiato-classifier.joblib")
 
 
 def test_classifier_controller_blocks_training_without_feature_metadata(sdata_blobs: SpatialData) -> None:

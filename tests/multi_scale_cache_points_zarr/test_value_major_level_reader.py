@@ -9,9 +9,9 @@ import pytest
 import zarr
 from zarr.storage import LocalStore
 
-from napari_harpy.core.multi_scale_cache_points_zarr.cache_format import _ValueMajorMetadata
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import _array_creation_options
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.cache_format import _ValueMajorMetadata
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import _array_creation_options
+from spatiato.core.multi_scale_cache_points_zarr.storage.value_major_reader import (
     _ValueMajorLevelReader,
 )
 

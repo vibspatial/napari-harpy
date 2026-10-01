@@ -20,7 +20,7 @@ I would not yet describe every part of Slices 1–6 as completely frozen. A shor
 
 The roadmap requires unsaved annotation protection when changing coordinate systems or targets [in Slice 3](/Users/arne.defauw/VIB/napari_harpy/Roadmap/pixel_classification/pixel_classification_17_7_26.md:1377).
 
-Currently, `HarpyAppState` permits only one coordinate-system change participant [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/_app_state.py:371), and the Annotation widget already occupies that role [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/annotation/widget.py:195).
+Currently, `HarpyAppState` permits only one coordinate-system change participant [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/_app_state.py:371), and the Annotation widget already occupies that role [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/annotation/widget.py:195).
 
 Pixel Classification therefore cannot independently register its dirty guard. Before Slice 3, I recommend extending this into a shared multi-participant preflight: every active editor gets the opportunity to accept or cancel a coordinate-system change.
 
@@ -39,7 +39,7 @@ My recommendation:
 - accept the result only if the captured revisions remain current;
 - otherwise discard it as obsolete.
 
-This follows the existing object-classification pattern of passing a prepared immutable job to the worker [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/object_classification/controller.py:221).
+This follows the existing object-classification pattern of passing a prepared immutable job to the worker [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/object_classification/controller.py:221).
 
 ### 3. Create `classifier_id` during Slice 4
 
@@ -87,10 +87,10 @@ Those features do not exist until Slices 4–6 [here](/Users/arne.defauw/VIB/nap
 
 The planned implementation fits the current architecture well:
 
-- actual multiscale keys are already enumerated in the Histogram widget [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/widgets/histogram/widget.py:709);
-- exact scale resolution already has a Qt-free precedent [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/histogram.py:130);
-- the viewer adapter already converts SpatialData transformations into napari affines [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/viewer/adapter.py:2472);
-- SpatialData naming validation is reusable [here](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/validation.py:20);
+- actual multiscale keys are already enumerated in the Histogram widget [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/widgets/histogram/widget.py:709);
+- exact scale resolution already has a Qt-free precedent [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/histogram.py:130);
+- the viewer adapter already converts SpatialData transformations into napari affines [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/viewer/adapter.py:2472);
+- SpatialData naming validation is reusable [here](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/validation.py:20);
 - worker, controller, persistence and classifier-export patterns already exist.
 
 The selected-level-to-image transform is new and should remain the focus of Slice 1 rather than being buried inside the widget.

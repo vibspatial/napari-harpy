@@ -77,9 +77,9 @@ Explorer separately stores a sparse, per-gene 10-µm density grid. Its default m
 
 For the current Harpy Xenium dataset, 512 native units correspond to about 108.8 µm because the SpatialData transform is 0.2125 µm/unit: [zarr.json](/Users/arne.defauw/VIB/DATA/test_data/sdata_xenium_full_data_core.zarr/zarr.json:1771). Harpy’s finest tiles are therefore considerably smaller than Explorer’s 250-µm tiles.
 
-Harpy’s physical payload is leaner—tile-local coordinates, value ID and stable point ID only: [support.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points/writer/support.py:27). Tile-local coordinates should also retain better `float32` precision over large specimens than Explorer’s global coordinates.
+Harpy’s physical payload is leaner—tile-local coordinates, value ID and stable point ID only: [support.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points/writer/support.py:27). Tile-local coordinates should also retain better `float32` precision over large specimens than Explorer’s global coordinates.
 
-The implemented Harpy Bridge caps each 512-unit tile at 4,096 representatives and uses the value-neutral sampler: [bridge.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points/writer/bridge.py:276). That sampler explicitly excludes `value_id`: [sampling.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points/sampling.py:81). The measured Bridge retained 21.7 million of the 136.6 million transcripts; the remaining pyramid and runtime viewer are not implemented yet: [roadmap](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/multi_tile_cache_29_7_26.md:2586).
+The implemented Harpy Bridge caps each 512-unit tile at 4,096 representatives and uses the value-neutral sampler: [bridge.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points/writer/bridge.py:276). That sampler explicitly excludes `value_id`: [sampling.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points/sampling.py:81). The measured Bridge retained 21.7 million of the 136.6 million transcripts; the remaining pyramid and runtime viewer are not implemented yet: [roadmap](/Users/arne.defauw/VIB/napari_harpy/Roadmap/transcripts_visualization/multi_tile_cache_29_7_26.md:2586).
 
 ## What I would take from Xenium
 
@@ -294,7 +294,7 @@ point_id[2:5]
 
 Reading `value_id` is unnecessary for a single-gene selection because the range already identifies the gene.
 
-Harpy could continue storing tile-relative coordinates, as it does now when calculating `x_rel` and `y_rel` ([exact.py](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points/writer/exact.py:306)). The tile origin is added when loading.
+Harpy could continue storing tile-relative coordinates, as it does now when calculating `x_rel` and `y_rel` ([exact.py](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points/writer/exact.py:306)). The tile origin is added when loading.
 
 ## Avoiding thousands of per-tile groups
 

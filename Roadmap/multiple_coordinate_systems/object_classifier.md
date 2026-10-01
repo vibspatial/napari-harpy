@@ -27,7 +27,7 @@ metadata, reload logic, and tests.
 
 What landed:
 
-- `src/napari_harpy/_classifier.py` resolves explicit training and prediction
+- `src/spatiato/_classifier.py` resolves explicit training and prediction
   scopes with `ResolvedClassifierScope` / `ResolvedClassifierScopes`;
 - training defaults to all eligible labeled regions in the selected table, while
   prediction defaults to the selected segmentation only;
@@ -40,10 +40,10 @@ What landed:
   active-region field;
 - reload-state checks now compare feature key, table name, prediction-scope
   mode, and prediction-region coverage;
-- `src/napari_harpy/widgets/_object_classification_widget.py` exposes training
+- `src/spatiato/widgets/_object_classification_widget.py` exposes training
   and prediction scope controls and marks classifier outputs stale when either
   scope changes;
-- `src/napari_harpy/widgets/_object_classification_status_card.py` owns the
+- `src/spatiato/widgets/_object_classification_status_card.py` owns the
   selection, classifier-preparation, and classifier-feedback status-card specs;
 - multi-region controller, widget, and persistence coverage verifies the final
   scope behavior.
@@ -219,8 +219,8 @@ class ResolvedClassifierScopes:
 
 Files:
 
-- `src/napari_harpy/_classifier.py`
-- optionally `src/napari_harpy/widgets/_object_classification_widget.py` if
+- `src/spatiato/_classifier.py`
+- optionally `src/spatiato/widgets/_object_classification_widget.py` if
   `Train Classifier` is temporarily disabled in this slice
 - `tests/test_classifier.py`
 - `tests/test_object_classification_widget.py`
@@ -262,7 +262,7 @@ Scope:
 
 Files:
 
-- `src/napari_harpy/datasets.py`
+- `src/spatiato/datasets.py`
 - `tests/test_classifier.py`
 - `tests/conftest.py`
 - optionally `tests/test_object_classification_widget.py` once widget-level multi-region assertions
@@ -348,7 +348,7 @@ Classifier: model is up to date. Updated predictions for 13 objects.
 
 Files:
 
-- `src/napari_harpy/_classifier.py`
+- `src/spatiato/_classifier.py`
 - `tests/test_classifier.py`
 
 Expected outcome:
@@ -378,7 +378,7 @@ Goal:
 Scope:
 
 - add a `Training scope` control to
-  `src/napari_harpy/widgets/_object_classification_widget.py`;
+  `src/spatiato/widgets/_object_classification_widget.py`;
 - default it to `all`;
 - support the two modes only:
   - `Selected segmentation only`
@@ -397,8 +397,8 @@ Scope:
 
 Files:
 
-- `src/napari_harpy/widgets/_object_classification_widget.py`
-- `src/napari_harpy/_classifier.py`
+- `src/spatiato/widgets/_object_classification_widget.py`
+- `src/spatiato/_classifier.py`
 - `tests/test_object_classification_widget.py`
 
 Expected outcome:
@@ -496,7 +496,7 @@ Scope:
 
 Files:
 
-- `src/napari_harpy/_classifier.py`
+- `src/spatiato/_classifier.py`
 - `tests/test_classifier.py`
 - `tests/test_persistence.py`
 - `tests/test_object_classification_widget.py`
@@ -662,8 +662,8 @@ def describe_current_preparation(self) -> ClassifierPreparationSummary | None:
 
 Files:
 
-- `src/napari_harpy/widgets/_object_classification_widget.py`
-- `src/napari_harpy/_classifier.py`
+- `src/spatiato/widgets/_object_classification_widget.py`
+- `src/spatiato/_classifier.py`
 - `tests/test_object_classification_widget.py`
 - `tests/test_classifier.py`
 
@@ -730,7 +730,7 @@ Goal:
 
 Scope:
 
-- add `src/napari_harpy/widgets/_object_classification_status_card.py` with a
+- add `src/spatiato/widgets/_object_classification_status_card.py` with a
   small spec dataclass mirroring the feature extraction helper shape:
 
 ```python
@@ -837,9 +837,9 @@ Feature matrix: features_1, 12 features.
 
 Files:
 
-- `src/napari_harpy/widgets/_object_classification_widget.py`
-- `src/napari_harpy/widgets/_object_classification_status_card.py`
-- `src/napari_harpy/_classifier.py`
+- `src/spatiato/widgets/_object_classification_widget.py`
+- `src/spatiato/widgets/_object_classification_status_card.py`
+- `src/spatiato/_classifier.py`
 - `tests/test_object_classification_widget.py`
 
 Expected outcome:
@@ -880,10 +880,10 @@ Why this order:
 
 ## Notes
 
-- `src/napari_harpy/_annotation.py` should need little or no behavior change
+- `src/spatiato/_annotation.py` should need little or no behavior change
   for this roadmap item; its current `(region_key, instance_key)` write rule is
   already the right one.
-- `src/napari_harpy/_classifier_viewer_styling.py` should mostly continue to
+- `src/spatiato/_classifier_viewer_styling.py` should mostly continue to
   work unchanged, because it already reads `pred_class` rows for the currently
   selected segmentation only.
 - if implementation reveals ambiguous behavior for rows inside the requested

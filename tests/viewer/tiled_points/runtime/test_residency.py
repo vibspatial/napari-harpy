@@ -5,8 +5,8 @@ from collections import OrderedDict
 import numpy as np
 from loguru import logger
 
-from napari_harpy.viewer.tiled_points.contracts import TiledPointsRenderTile, TileResidencyKey
-from napari_harpy.viewer.tiled_points.runtime.residency import _CpuTileResidency
+from spatiato.viewer.tiled_points.contracts import TiledPointsRenderTile, TileResidencyKey
+from spatiato.viewer.tiled_points.runtime.residency import _CpuTileResidency
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 

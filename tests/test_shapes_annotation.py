@@ -11,7 +11,7 @@ from spatialdata import SpatialData, read_zarr, transform
 from spatialdata.models import ShapesModel, TableModel
 from spatialdata.transformations import Identity, Translation, get_transformation
 
-from napari_harpy.core.shapes_annotation import (
+from spatiato.core.shapes_annotation import (
     CreateShapesElementRequest,
     EditShapesElementRequest,
     ExistingShapesLayerConversion,
@@ -21,7 +21,7 @@ from napari_harpy.core.shapes_annotation import (
     napari_shapes_layer_to_geodataframe,
     validate_existing_shapes_source_geodataframe,
 )
-from napari_harpy.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
+from spatiato.core.shapes_geometry import shapely_polygon_to_napari_polygon_vertices
 
 
 def _polygon_data(offset: float = 0.0) -> np.ndarray:

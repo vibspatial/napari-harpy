@@ -157,7 +157,7 @@ In other words:
 - SpatialData writes table data into a form that is compatible with lazy AnnData reading
 - but SpatialData itself does not currently expose lazy table loading through its normal API
 
-## Practical Takeaways for `napari-harpy`
+## Practical Takeaways for `spatiato`
 
 ### Feature storage
 

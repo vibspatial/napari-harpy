@@ -132,7 +132,7 @@ mapping. All imports and mutations of those registries must remain isolated.
 Napari-facing code belongs under a dedicated viewer package:
 
 ```text
-src/napari_harpy/viewer/multi_scale_points/
+src/spatiato/viewer/multi_scale_points/
     __init__.py
     _layer.py
     _models.py
@@ -151,7 +151,7 @@ Only add later modules when their responsibility is implemented:
 ```
 
 The core cache package at
-`napari_harpy.core.multi_scale_cache_points` must not import Qt, napari, or
+`spatiato.core.multi_scale_cache_points` must not import Qt, napari, or
 VisPy. Renderer-independent runtime models may live in the core package once
 the cache reader/scheduler owns them. The initial synthetic models stay at the
 viewer boundary until that ownership is concrete.

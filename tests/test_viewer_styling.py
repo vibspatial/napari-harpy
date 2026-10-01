@@ -10,26 +10,26 @@ from matplotlib.colors import to_rgba
 from napari.utils.colormaps import DirectLabelColormap
 from spatialdata import SpatialData
 
-import napari_harpy.widgets.object_classification.viewer_styling as viewer_styling_module
-from napari_harpy.core.class_palette import (
+import spatiato.widgets.object_classification.viewer_styling as viewer_styling_module
+from spatiato.core.class_palette import (
     DEFAULT_NEUTRAL_COLOR,
     default_categorical_colors,
     default_class_colors,
     default_labeled_class_color,
 )
-from napari_harpy.core.object_classification.annotation import (
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
     UserClassStateChange,
 )
-from napari_harpy.viewer.labels_colormap import CompactLabelColormap
-from napari_harpy.widgets.object_classification.annotation_controller import UserClassAnnotationChange
-from napari_harpy.widgets.object_classification.controller import (
+from spatiato.viewer.labels_colormap import CompactLabelColormap
+from spatiato.widgets.object_classification.annotation_controller import UserClassAnnotationChange
+from spatiato.widgets.object_classification.controller import (
     PRED_CLASS_COLORS_KEY,
     PRED_CLASS_COLUMN,
     PRED_CONFIDENCE_COLUMN,
 )
-from napari_harpy.widgets.object_classification.viewer_styling import (
+from spatiato.widgets.object_classification.viewer_styling import (
     COLOR_BY_PRED_CLASS,
     COLOR_BY_PRED_CONFIDENCE,
     ViewerStylingController,

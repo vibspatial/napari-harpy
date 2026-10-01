@@ -13,9 +13,9 @@ import pytest
 from spatialdata import SpatialData, read_zarr
 from spatialdata.datasets import blobs
 
-from napari_harpy.datasets import blobs_multi_region, blobs_points_repartitioned
+from spatiato.datasets import blobs_multi_region, blobs_points_repartitioned
 
-TEST_HOME = Path(tempfile.mkdtemp(prefix="napari-harpy-test-home-"))
+TEST_HOME = Path(tempfile.mkdtemp(prefix="spatiato-test-home-"))
 TEST_CACHE = TEST_HOME / ".cache"
 TEST_CONFIG = TEST_HOME / ".config"
 TEST_NAPARI_CONFIG = TEST_CONFIG / "napari" / "settings.yaml"
@@ -101,11 +101,11 @@ def backed_sdata_blobs_points_repartitioned(tmp_path) -> SpatialData:
 
 @pytest.fixture
 def restore_triangulation_backend() -> Iterator[None]:
-    """Restore Harpy's configured backend and napari's backend state."""
+    """Restore Spatiato's configured backend and napari's backend state."""
     from napari.settings import get_settings
     from napari.utils.triangulation_backend import get_backend, set_backend
 
-    import napari_harpy._shapes_triangulation as shapes_triangulation_module
+    import spatiato._shapes_triangulation as shapes_triangulation_module
 
     settings = get_settings()
     previous_configured_backend = shapes_triangulation_module._CONFIGURED_SHAPES_TRIANGULATION_BACKEND
@@ -123,7 +123,7 @@ def restore_triangulation_backend() -> Iterator[None]:
 
 @pytest.fixture
 def numba_triangulation_backend(restore_triangulation_backend: None) -> None:
-    """Run a test with Harpy's configured backend set to Numba."""
-    from napari_harpy._shapes_triangulation import configure_shapes_triangulation_backend
+    """Run a test with Spatiato's configured backend set to Numba."""
+    from spatiato._shapes_triangulation import configure_shapes_triangulation_backend
 
     configure_shapes_triangulation_backend("numba")

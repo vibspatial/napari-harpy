@@ -10,8 +10,8 @@ from spatialdata import SpatialData, read_zarr
 from spatialdata.models import ShapesModel
 from spatialdata.transformations import Identity, get_transformation
 
-import napari_harpy.core.spatialdata_io.shapes as shapes_io_module
-from napari_harpy.core.spatialdata_io import (
+import spatiato.core.spatialdata_io.shapes as shapes_io_module
+from spatiato.core.spatialdata_io import (
     load_shapes_element_from_store,
     shapes_element_exists_in_store,
     write_shapes_element,
@@ -132,7 +132,7 @@ def test_write_shapes_element_creates_first_backed_shapes_collection(tmp_path: P
     assert committed is sdata.shapes["regions"]
     assert reread.shapes["regions"].geometry.iloc[0].bounds == (10.0, 0.0, 12.0, 2.0)
     assert (path / "shapes" / "zarr.json").is_file()
-    assert not (path / ".harpy_recovery").exists()
+    assert not (path / ".spatiato_recovery").exists()
 
 
 def test_write_shapes_element_backed_create_and_overwrite_leave_no_staging_element(
@@ -168,7 +168,7 @@ def test_write_shapes_element_backed_create_and_overwrite_leave_no_staging_eleme
     def record_consolidation(current_sdata: SpatialData) -> None:
         nonlocal consolidation_count, consolidation_with_recovery_count
         consolidation_count += 1
-        recovery_root = Path(current_sdata.path) / ".harpy_recovery"
+        recovery_root = Path(current_sdata.path) / ".spatiato_recovery"
         has_recovery_payload = recovery_root.exists() and bool(list(recovery_root.iterdir()))
         real_consolidate(current_sdata)
         if has_recovery_payload:
@@ -203,8 +203,8 @@ def test_write_shapes_element_backed_create_and_overwrite_leave_no_staging_eleme
     assert reread.shapes["regions"].geometry.iloc[0].bounds == (20.0, 0.0, 22.0, 2.0)
     assert reread.shapes["unrelated"].geometry.iloc[0].bounds == (100.0, 0.0, 102.0, 2.0)
     shapes_path = Path(sdata.path) / "shapes"
-    assert not list(shapes_path.glob("*__napari_harpy_stage_*"))
-    assert not (Path(sdata.path) / ".harpy_recovery").exists()
+    assert not list(shapes_path.glob("*__spatiato_stage_*"))
+    assert not (Path(sdata.path) / ".spatiato_recovery").exists()
     assert len(staging_writes) == 2
     assert consolidation_count == 2
     assert consolidation_with_recovery_count == 1
@@ -250,7 +250,7 @@ def test_write_shapes_element_precommit_failure_restores_previous_disk_and_live_
         source_path = Path(source)
         if failure_stage == "persisted_to_recovery_rename" and source_path.name == "regions":
             raise OSError("injected persisted-to-recovery rename failure")
-        if failure_stage == "staging_to_requested_rename" and "__napari_harpy_stage_" in source_path.name:
+        if failure_stage == "staging_to_requested_rename" and "__spatiato_stage_" in source_path.name:
             raise OSError("injected staging-to-requested rename failure")
         real_replace(source, destination)
 
@@ -275,8 +275,8 @@ def test_write_shapes_element_precommit_failure_restores_previous_disk_and_live_
     assert sdata.shapes["regions"] is previous_live
     assert reread.shapes["regions"].geometry.iloc[0].bounds == (0.0, 0.0, 2.0, 2.0)
     shapes_path = Path(sdata.path) / "shapes"
-    assert not list(shapes_path.glob("*__napari_harpy_stage_*"))
-    assert not (Path(sdata.path) / ".harpy_recovery").exists()
+    assert not list(shapes_path.glob("*__spatiato_stage_*"))
+    assert not (Path(sdata.path) / ".spatiato_recovery").exists()
 
 
 def test_write_shapes_element_consolidation_failure_restores_previous_state(
@@ -309,7 +309,7 @@ def test_write_shapes_element_consolidation_failure_restores_previous_state(
     assert sdata.shapes["regions"] is previous_live
     assert reread.shapes["regions"].geometry.iloc[0].bounds == (0.0, 0.0, 2.0, 2.0)
     assert consolidation_count == 2
-    assert not (Path(sdata.path) / ".harpy_recovery").exists()
+    assert not (Path(sdata.path) / ".spatiato_recovery").exists()
 
 
 def test_write_shapes_element_second_consolidation_failure_reports_recovery_error(
@@ -339,7 +339,7 @@ def test_write_shapes_element_second_consolidation_failure_reports_recovery_erro
     assert consolidation_count == 2
     assert sdata.shapes["regions"] is previous_live
     assert read_zarr(sdata.path).shapes["regions"].geometry.iloc[0].bounds == (0.0, 0.0, 2.0, 2.0)
-    assert not (Path(sdata.path) / ".harpy_recovery").exists()
+    assert not (Path(sdata.path) / ".spatiato_recovery").exists()
 
 
 def test_write_shapes_element_recovery_cleanup_failure_preserves_valid_committed_store(
@@ -352,7 +352,7 @@ def test_write_shapes_element_recovery_cleanup_failure_preserves_valid_committed
     real_consolidate = SpatialData.write_consolidated_metadata
 
     def fail_recovery_cleanup(path: Path) -> None:
-        if path.parent.name == ".harpy_recovery":
+        if path.parent.name == ".spatiato_recovery":
             raise OSError("injected recovery cleanup failure")
         real_remove(path)
 
@@ -376,7 +376,7 @@ def test_write_shapes_element_recovery_cleanup_failure_preserves_valid_committed
     assert sdata.shapes["regions"].geometry.iloc[0].bounds == (20.0, 0.0, 22.0, 2.0)
     assert reread.shapes["regions"].geometry.iloc[0].bounds == (20.0, 0.0, 22.0, 2.0)
     assert set(reread.shapes) == {"regions", "unrelated"}
-    recovery_payloads = list((Path(sdata.path) / ".harpy_recovery").iterdir())
+    recovery_payloads = list((Path(sdata.path) / ".spatiato_recovery").iterdir())
     assert len(recovery_payloads) == 1
     assert recovery_payloads[0].name.startswith("shapes__regions__")
     assert consolidation_count == 1
@@ -444,7 +444,7 @@ def test_write_shapes_element_rejects_invalid_recovery_root_before_requested_ren
 ) -> None:
     sdata = _backed_shapes_sdata(tmp_path)
     previous_live = sdata.shapes["regions"]
-    recovery_root = Path(sdata.path) / ".harpy_recovery"
+    recovery_root = Path(sdata.path) / ".spatiato_recovery"
     if recovery_root_kind == "file":
         recovery_root.write_text("reserved path conflict")
     else:
@@ -473,4 +473,4 @@ def test_write_shapes_element_rejects_invalid_recovery_root_before_requested_ren
     assert not requested_was_moved
     assert sdata.shapes["regions"] is previous_live
     assert read_zarr(sdata.path).shapes["regions"].geometry.iloc[0].bounds == (0.0, 0.0, 2.0, 2.0)
-    assert not list((Path(sdata.path) / "shapes").glob("*__napari_harpy_stage_*"))
+    assert not list((Path(sdata.path) / "shapes").glob("*__spatiato_stage_*"))

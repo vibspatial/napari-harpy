@@ -327,7 +327,7 @@ Recommended tests:
 Add a focused module, for example:
 
 ```text
-src/napari_harpy/core/shapes_annotation.py
+src/spatiato/core/shapes_annotation.py
 ```
 
 Suggested models:
@@ -393,7 +393,7 @@ Rules for `create_shapes_element_from_napari_shapes_layer(...)`:
 Suggested package:
 
 ```text
-src/napari_harpy/widgets/shapes_annotation/
+src/spatiato/widgets/shapes_annotation/
 ```
 
 Suggested files:
@@ -421,7 +421,7 @@ Widget behavior:
 
 Plugin registration:
 
-- add a `napari-harpy.shapes_annotation` command to `napari.yaml` as part of
+- add a `spatiato.shapes_annotation` command to `napari.yaml` as part of
   Slice 3;
 - expose the widget as `Annotation` as part of Slice 3;
 - add an `Interactive(..., widgets="shapes_annotation")` selection id in the
@@ -475,13 +475,13 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/core/shapes_annotation.py`;
+- `src/spatiato/core/shapes_annotation.py`;
 - `tests/test_shapes_annotation.py`.
 
 Verified with:
 
 - `.venv/bin/pytest tests/test_shapes_annotation.py`;
-- `.venv/bin/ruff check src/napari_harpy/core/shapes_annotation.py tests/test_shapes_annotation.py`.
+- `.venv/bin/ruff check src/spatiato/core/shapes_annotation.py tests/test_shapes_annotation.py`.
 
 Purpose:
 
@@ -491,7 +491,7 @@ Purpose:
 
 Code:
 
-- add `src/napari_harpy/core/shapes_annotation.py`;
+- add `src/spatiato/core/shapes_annotation.py`;
 - add `CreateShapesElementRequest`;
 - add `AnnotateShapesElementResult`;
 - add `napari_shapes_layer_to_geodataframe(...)`;
@@ -554,13 +554,13 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/core/shapes_annotation.py`;
+- `src/spatiato/core/shapes_annotation.py`;
 - `tests/test_shapes_annotation.py`.
 
 Verified with:
 
 - `.venv/bin/pytest tests/test_shapes_annotation.py`;
-- `.venv/bin/ruff check src/napari_harpy/core/shapes_annotation.py tests/test_shapes_annotation.py`.
+- `.venv/bin/ruff check src/spatiato/core/shapes_annotation.py tests/test_shapes_annotation.py`.
 
 Purpose:
 
@@ -573,10 +573,10 @@ Purpose:
 Code:
 
 - add `create_shapes_element_from_napari_shapes_layer(...)` in
-  `src/napari_harpy/core/shapes_annotation.py`;
+  `src/spatiato/core/shapes_annotation.py`;
 - reuse `napari_shapes_layer_to_geodataframe(...)`;
 - import `get_coordinate_system_names_from_sdata` from
-  `napari_harpy.core.spatialdata`;
+  `spatiato.core.spatialdata`;
 - import `harpy as hp`;
 - import `Identity` from `spatialdata.transformations`;
 - extend `tests/test_shapes_annotation.py`.
@@ -688,17 +688,17 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/widgets/shapes_annotation/__init__.py`;
-- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
-- `src/napari_harpy/napari.yaml`;
-- `src/napari_harpy/widgets/__init__.py`;
+- `src/spatiato/widgets/shapes_annotation/__init__.py`;
+- `src/spatiato/widgets/shapes_annotation/widget.py`;
+- `src/spatiato/napari.yaml`;
+- `src/spatiato/widgets/__init__.py`;
 - `tests/test_package.py`;
 - `tests/test_shapes_annotation_widget.py`.
 
 Verified with:
 
 - `.venv/bin/pytest tests/test_package.py tests/test_shapes_annotation_widget.py tests/test_shapes_annotation.py`;
-- `.venv/bin/ruff check src/napari_harpy/widgets/shapes_annotation/widget.py src/napari_harpy/widgets/shapes_annotation/__init__.py src/napari_harpy/widgets/__init__.py tests/test_shapes_annotation_widget.py tests/test_package.py`.
+- `.venv/bin/ruff check src/spatiato/widgets/shapes_annotation/widget.py src/spatiato/widgets/shapes_annotation/__init__.py src/spatiato/widgets/__init__.py tests/test_shapes_annotation_widget.py tests/test_package.py`.
 
 Purpose:
 
@@ -708,17 +708,17 @@ Purpose:
 
 Code:
 
-- add `src/napari_harpy/widgets/shapes_annotation/__init__.py`;
-- add `src/napari_harpy/widgets/shapes_annotation/widget.py`;
+- add `src/spatiato/widgets/shapes_annotation/__init__.py`;
+- add `src/spatiato/widgets/shapes_annotation/widget.py`;
 - expose a `ShapesAnnotation` widget class;
-- show the standard napari-harpy header logo used by the other widgets;
-- add a `napari-harpy.shapes_annotation` command to
-  `src/napari_harpy/napari.yaml`;
+- show the standard spatiato header logo used by the other widgets;
+- add a `spatiato.shapes_annotation` command to
+  `src/spatiato/napari.yaml`;
 - expose the command as a napari widget contribution with display name
   `Annotation`;
 - construct the widget with the napari viewer and bind shared state with
   `get_or_create_app_state(viewer)`;
-- update lazy widget exports in `src/napari_harpy/widgets/__init__.py`;
+- update lazy widget exports in `src/spatiato/widgets/__init__.py`;
 - add widget tests, likely in `tests/test_shapes_annotation_widget.py`.
 
 Behavior:
@@ -993,15 +993,15 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
-- `src/napari_harpy/viewer/adapter.py`;
+- `src/spatiato/widgets/shapes_annotation/widget.py`;
+- `src/spatiato/viewer/adapter.py`;
 - `tests/test_shapes_annotation_widget.py`.
 
 Verified with:
 
 - `.venv/bin/pytest tests/test_shapes_annotation.py tests/test_shapes_annotation_widget.py`;
 - `.venv/bin/pytest tests/test_viewer_adapter.py -k "empty_primary_shapes_layer or shapes"`;
-- `.venv/bin/ruff check src/napari_harpy/widgets/shapes_annotation/widget.py src/napari_harpy/viewer/adapter.py tests/test_shapes_annotation_widget.py`.
+- `.venv/bin/ruff check src/spatiato/widgets/shapes_annotation/widget.py src/spatiato/viewer/adapter.py tests/test_shapes_annotation_widget.py`.
 
 Purpose:
 
@@ -1184,13 +1184,13 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/_interactive.py`;
+- `src/spatiato/_interactive.py`;
 - `tests/test_app_state.py`.
 
 Verified with:
 
 - `.venv/bin/pytest tests/test_app_state.py tests/test_package.py`;
-- `.venv/bin/ruff check src/napari_harpy/_interactive.py tests/test_app_state.py`.
+- `.venv/bin/ruff check src/spatiato/_interactive.py tests/test_app_state.py`.
 
 Purpose:
 
@@ -1204,7 +1204,7 @@ Purpose:
 
 Code:
 
-- update `src/napari_harpy/_interactive.py`;
+- update `src/spatiato/_interactive.py`;
 - add `"shapes_annotation"` to `HarpyWidgetId`;
 - add the display mapping:
 
@@ -1272,7 +1272,7 @@ Tests:
 - `Interactive(...)` without a `widgets` argument docks Viewer, Feature
   Extraction, Object Classification, and Annotation;
 - `Interactive(..., widgets="shapes_annotation")` docks
-  `("napari-harpy", "Annotation", True)`;
+  `("spatiato", "Annotation", True)`;
 - mixed widget selection with `"shapes_annotation"` preserves order and
   deduplicates repeated ids;
 - `Interactive(..., widgets="all")` docks Viewer, Feature Extraction, Object
@@ -1285,9 +1285,9 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/_app_state.py`;
-- `src/napari_harpy/widgets/shapes_annotation/widget.py`;
-- `src/napari_harpy/widgets/viewer/widget.py`;
+- `src/spatiato/_app_state.py`;
+- `src/spatiato/widgets/shapes_annotation/widget.py`;
+- `src/spatiato/widgets/viewer/widget.py`;
 - `tests/test_app_state.py`;
 - `tests/test_shapes_annotation_widget.py`;
 - `tests/test_viewer_widget.py`.
@@ -1295,7 +1295,7 @@ Implemented in:
 Verified with:
 
 - `.venv/bin/pytest tests/test_app_state.py tests/test_shapes_annotation_widget.py tests/test_viewer_widget.py -q`;
-- `.venv/bin/ruff check src/napari_harpy/_app_state.py src/napari_harpy/widgets/shapes_annotation/widget.py src/napari_harpy/widgets/viewer/widget.py tests/test_app_state.py tests/test_shapes_annotation_widget.py tests/test_viewer_widget.py`.
+- `.venv/bin/ruff check src/spatiato/_app_state.py src/spatiato/widgets/shapes_annotation/widget.py src/spatiato/widgets/viewer/widget.py tests/test_app_state.py tests/test_shapes_annotation_widget.py tests/test_viewer_widget.py`.
 
 Purpose:
 
@@ -1406,9 +1406,9 @@ Status: implemented
 
 Implemented in:
 
-- `src/napari_harpy/_app_state.py`;
-- `src/napari_harpy/widgets/object_classification/widget.py`;
-- `src/napari_harpy/widgets/viewer/widget.py`;
+- `src/spatiato/_app_state.py`;
+- `src/spatiato/widgets/object_classification/widget.py`;
+- `src/spatiato/widgets/viewer/widget.py`;
 - `tests/test_app_state.py`;
 - `tests/test_object_classification_widget.py`;
 - `tests/test_viewer_widget.py`.
@@ -1416,7 +1416,7 @@ Implemented in:
 Verified with:
 
 - `.venv/bin/pytest tests/test_app_state.py tests/test_object_classification_widget.py tests/test_viewer_widget.py -q`;
-- `.venv/bin/ruff check src/napari_harpy/_app_state.py src/napari_harpy/widgets/object_classification/widget.py src/napari_harpy/widgets/viewer/widget.py tests/test_app_state.py tests/test_object_classification_widget.py tests/test_viewer_widget.py`.
+- `.venv/bin/ruff check src/spatiato/_app_state.py src/spatiato/widgets/object_classification/widget.py src/spatiato/widgets/viewer/widget.py tests/test_app_state.py tests/test_object_classification_widget.py tests/test_viewer_widget.py`.
 
 Purpose:
 

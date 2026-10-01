@@ -31,7 +31,7 @@ Exact retains all source points. In the inspected cache, Bridge shares Exact's 5
 Bridge points in tile T = min(Exact points in T, 4,096)
 ```
 
-The [Bridge writer](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/writer/bridge.py:249) plans this count and supplies the per-tile capacity to the sampler. The 4,096-point construction quota is separate from the viewport's runtime render budget.
+The [Bridge writer](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/writer/bridge.py:249) plans this count and supplies the per-tile capacity to the sampler. The 4,096-point construction quota is separate from the viewport's runtime render budget.
 
 For an Exact tile containing N points and a construction capacity K, the retained fraction is:
 
@@ -41,17 +41,17 @@ r(T) = min(1, K / N)
 
 That fraction varies between tiles. Dense tiles lose a larger proportion of their points, while sparse tiles retain more, potentially all of them.
 
-The sampler never invents or duplicates points to fill a quota: when N <= K, it [retains every candidate](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/sampling.py:118). The problem is unequal retention fractions, not upsampling.
+The sampler never invents or duplicates points to fill a quota: when N <= K, it [retains every candidate](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/sampling.py:118). The problem is unequal retention fractions, not upsampling.
 
 ### Why the 16 × 16 microgrid does not prevent it
 
-Within a tile, the sampler distributes its quota proportionally to the number of candidates in each microgrid cell, with integer largest-remainder allocation. See [the allocation implementation](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/sampling.py:197).
+Within a tile, the sampler distributes its quota proportionally to the number of candidates in each microgrid cell, with integer largest-remainder allocation. See [the allocation implementation](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/sampling.py:197).
 
 This approximately preserves relative density **within one tile**. It does not coordinate the sampling fraction **between tiles**. Empty cells receive no representatives; the fixed tile quota is allocated among the cells containing candidates. Partial occupancy therefore concentrates the retained points into a smaller area.
 
 ### Coarser levels can inherit and add distortion
 
-The [Spatial writer](/Users/arne.defauw/VIB/napari_harpy/src/napari_harpy/core/multi_scale_cache_points_zarr/writer/spatial.py:566) assembles candidates from the immediate finer level and samples them under another per-tile capacity. These candidates have already been sampled; unequal retention introduced earlier is not automatically corrected. Applying another independent tile quota can introduce further density differences.
+The [Spatial writer](/Users/arne.defauw/VIB/napari_harpy/src/spatiato/core/multi_scale_cache_points_zarr/writer/spatial.py:566) assembles candidates from the immediate finer level and samples them under another per-tile capacity. These candidates have already been sampled; unequal retention introduced earlier is not automatically corrected. Applying another independent tile quota can introduce further density differences.
 
 Fixing Bridge alone while retaining the same policy at subsequent Spatial levels would therefore be incomplete.
 

@@ -5,17 +5,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-import napari_harpy.core.multi_scale_cache_points_zarr.source.validation as validation_module
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+import spatiato.core.multi_scale_cache_points_zarr.source.validation as validation_module
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     PointsSourceValidationError,
     ValidatedPointsSource,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source.errors import PointContentValidationError
-from napari_harpy.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
-from napari_harpy.core.multi_scale_cache_points_zarr.source.validation import (
+from spatiato.core.multi_scale_cache_points_zarr.source.errors import PointContentValidationError
+from spatiato.core.multi_scale_cache_points_zarr.source.signature import POINT_ID_POLICY, SOURCE_SIGNATURE_METHOD
+from spatiato.core.multi_scale_cache_points_zarr.source.validation import (
     VALUE_NORMALIZATION_METHOD,
     _require_parquet_source_unchanged,
 )

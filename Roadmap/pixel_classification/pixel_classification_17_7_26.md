@@ -175,7 +175,7 @@ A newly trained or retrained classifier receives a new `classifier_id`; saved
 bundles are treated as immutable model revisions. A current-session classifier
 may be used for an in-memory prediction immediately, but before that result can
 be persisted as a `prediction_only` workflow the user must explicitly save the
-bundle once to a chosen local path. Napari-harpy must not silently choose a
+bundle once to a chosen local path. Spatiato must not silently choose a
 classifier-file location.
 
 The destination workflow manifest stores the bundle's `classifier_id`, bundle
@@ -402,7 +402,7 @@ mouse world position -> inverse source-image transform -> divide by (8, 8)
                      -> annotation-array position (y, x)
 ```
 
-Napari-harpy must calculate and supply this transform. Napari does not infer an
+Spatiato must calculate and supply this transform. Napari does not infer an
 8x factor from the name `scale3`. If the transform is absent or incorrect, the
 annotation will be rendered and edited in the wrong location.
 
@@ -936,19 +936,19 @@ transaction. For `annotation`, use this order:
 
 Use `harpy.im.add_labels(...)` as the Labels-element write boundary, including
 its explicit overwrite support. Do not duplicate Harpy's element creation and
-cleanup machinery in napari-harpy. Before relying on overwrite for this
+cleanup machinery in spatiato. Before relying on overwrite for this
 workflow, verify and, if necessary, extend Harpy's single-element replacement
 so a failed replacement cleans up temporary state safely and preserves or
 restores the previous canonical element when possible.
 
-Napari-harpy does not promise atomic rollback across annotation, prediction,
+Spatiato does not promise atomic rollback across annotation, prediction,
 and sidecar writes. If any stage fails, stop the remaining stages, keep the
 in-memory workflow and layers unchanged and dirty, and show the failing stage,
 element or manifest path, and underlying error in the status card. The message
 must state that an earlier disk stage may already have succeeded and that
 retrying `Write Labels State` is the normal recovery action. Do not silently
 delete or restore already written user-facing Labels elements from a later
-napari-harpy stage.
+spatiato stage.
 
 Prediction-only writes use the classifier-reference validation, prediction,
 then manifest-last order defined in the classifier-storage and Slice 7
@@ -1032,7 +1032,7 @@ The versioned sidecar workflow manifest should include:
 - for every prediction, classifier identity, training annotation provenance,
   training class counts, target resolution descriptor, and application time;
 - creation and update times;
-- napari-harpy, SpatialData, scikit-learn, NumPy, and Dask versions relevant
+- spatiato, SpatialData, scikit-learn, NumPy, and Dask versions relevant
   to reproduction.
 
 A representative persisted prediction-only manifest is:
@@ -1195,7 +1195,7 @@ same `(y, x)` shape, use relative spacing `[1.0, 1.0]`, and store the identity
 selected-grid-to-scale0 affine.
 
 Do not add physical-pixel-spacing or physical-unit fields. They are not assumed
-to be available, and napari-harpy must not infer physical units from a
+to be available, and spatiato must not infer physical units from a
 coordinate-system name or an otherwise unitless transform.
 
 ### Prediction identity
@@ -1288,7 +1288,7 @@ abstractions from `ilastik-napari`.
 Proposed package direction:
 
 ```text
-src/napari_harpy/core/pixel_classification/
+src/spatiato/core/pixel_classification/
   __init__.py
   source.py          # image/scale/channel resolution and grid transforms
   workflow.py        # workflow identity, manifests, eligibility, and validation
@@ -1299,13 +1299,13 @@ src/napari_harpy/core/pixel_classification/
   prediction.py      # tile planning and prediction
   output.py          # SpatialData Labels creation and workflow provenance
 
-src/napari_harpy/widgets/pixel_classification/
+src/spatiato/widgets/pixel_classification/
   __init__.py
   controller.py      # jobs, state snapshots, and stale/dirty transitions
   status_card.py
   widget.py
 
-src/napari_harpy/headless.py  # later thin public wrappers over the core
+src/spatiato/headless.py  # later thin public wrappers over the core
 ```
 
 The core package remains importable without Qt or napari. It may depend on
@@ -1713,7 +1713,7 @@ Acceptance criteria:
   stage in the status card;
 - failure after an earlier successful disk stage explicitly warns that disk may
   be partially updated and leaves retry as the recovery action;
-- napari-harpy performs no cross-element rollback or automatic repair;
+- spatiato performs no cross-element rollback or automatic repair;
 - Harpy single-element overwrite cleanup is validated independently, including
   failure after staging and during canonical replacement;
 - no upsampling occurs during write;

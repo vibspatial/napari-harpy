@@ -12,12 +12,12 @@ from time import perf_counter
 import numpy as np
 import psutil
 
-from napari_harpy.core.multi_scale_cache_points_zarr.builder import (
+from spatiato.core.multi_scale_cache_points_zarr.builder import (
     _build_points_cache_zarr,
     _PointsCacheBuilderConfig,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
+from spatiato.core.multi_scale_cache_points_zarr.hashing import TARGET_POINTS_PER_BUCKET
+from spatiato.core.multi_scale_cache_points_zarr.reader import (
     _IntrinsicViewport,
     _LevelSelection,
     _PointsCacheReader,
@@ -25,12 +25,12 @@ from napari_harpy.core.multi_scale_cache_points_zarr.reader import (
     _TileReadResult,
     _ViewportReadResult,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.source import (
+from spatiato.core.multi_scale_cache_points_zarr.source import (
     ParquetPointsSource,
     PointColumnSelection,
     validate_parquet_points_source,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
+from spatiato.core.multi_scale_cache_points_zarr.storage._schema import (
     MANIFEST_LEVEL_INDPTR,
     MANIFEST_N_POINTS,
     MANIFEST_TILE_X,
@@ -40,7 +40,7 @@ from napari_harpy.core.multi_scale_cache_points_zarr.storage._schema import (
     VALUE_TILES_N_POINTS,
     VALUES_N_POINTS,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.catalog_reader import _CacheRootReader
 
 _EXPECTED_XENIUM_POINT_COUNT = 136_578_750
 _RSS_SAMPLE_INTERVAL_SECONDS = 0.25
@@ -521,7 +521,7 @@ def main() -> None:
     evaluation = _evaluate_reader(args.output_path)
     stored_bytes, file_count = _directory_summary(args.output_path)
     report = {
-        "schema_version": "harpy-zarr-acceptance-evaluation-v1",
+        "schema_version": "spatiato-zarr-acceptance-evaluation-v1",
         "environment": {
             "python": platform.python_version(),
             "platform": platform.platform(),

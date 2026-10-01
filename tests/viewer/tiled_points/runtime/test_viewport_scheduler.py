@@ -3,18 +3,18 @@ from __future__ import annotations
 import pytest
 from qtpy.QtCore import QObject, Signal
 
-from napari_harpy.viewer.tiled_points.contracts import (
+from spatiato.viewer.tiled_points.contracts import (
     TiledPointsRenderBatch,
     TiledPointsRenderResult,
     TiledPointsRenderSnapshot,
     TiledPointsViewportState,
     _ViewportRequest,
 )
-from napari_harpy.viewer.tiled_points.runtime.cache_session import (
+from spatiato.viewer.tiled_points.runtime.cache_session import (
     _CacheSessionFailure,
     _CacheSessionState,
 )
-from napari_harpy.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
+from spatiato.viewer.tiled_points.runtime.viewport_scheduler import _TiledPointsViewportScheduler
 
 _GENERATION_ID = "12345678-1234-5678-9234-567812345678"
 

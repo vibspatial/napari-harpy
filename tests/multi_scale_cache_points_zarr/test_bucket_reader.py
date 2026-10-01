@@ -6,14 +6,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.models import _TileDescriptor
-from napari_harpy.core.multi_scale_cache_points_zarr.payload import _PointPayload
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
+from spatiato.core.multi_scale_cache_points_zarr.models import _TileDescriptor
+from spatiato.core.multi_scale_cache_points_zarr.payload import _PointPayload
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import (
     _BucketReader,
     _exact_row_selection,
 )
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.models import (
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_writer import _BucketWriter
+from spatiato.core.multi_scale_cache_points_zarr.storage.models import (
     _BucketPlan,
     _BucketWriteResult,
     _PlannedTile,

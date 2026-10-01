@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import numpy as np
 from napari.layers import Image
 
-from napari_harpy.viewer.adapter import ImageLayerBinding
-from napari_harpy.widgets.image_layer_row import (
+from spatiato.viewer.adapter import ImageLayerBinding
+from spatiato.widgets.image_layer_row import (
     _colormap_presentation_from_layer,
     _ImageLayerRow,
 )

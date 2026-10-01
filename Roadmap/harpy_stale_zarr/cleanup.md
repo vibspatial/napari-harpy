@@ -12,10 +12,10 @@ writes to backed `SpatialData` stores. The cleanup must work even when a write
 created a physical Zarr group that is too incomplete for SpatialData to
 recognize as an element.
 
-The napari-harpy caller bug that exposed this failure is separate: adding a row
+The spatiato caller bug that exposed this failure is separate: adding a row
 to a Shapes element with an integer index currently combines the stored integer
 identity with a generated string identity such as `__annotation_0`. That mixed
-index fails Parquet serialization and must be fixed in napari-harpy. Fixing the
+index fails Parquet serialization and must be fixed in spatiato. Fixing the
 caller prevents this particular write error, but it does not make Harpy's
 general failed-write cleanup safe.
 
@@ -274,7 +274,7 @@ the cleanup failure is present only in the warning/log context.
 ## Out of Scope
 
 - Choosing compatible identities for newly added rows in integer-indexed
-  Shapes elements; that belongs in napari-harpy.
+  Shapes elements; that belongs in spatiato.
 - Making the complete overwrite operation crash-atomic across process death or
   machine failure.
 - Silently swallowing serialization or replacement errors.

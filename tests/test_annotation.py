@@ -6,8 +6,8 @@ import anndata as ad
 import pandas as pd
 import pytest
 
-from napari_harpy.core.class_palette import default_categorical_colors
-from napari_harpy.core.object_classification.annotation import (
+from spatiato.core.class_palette import default_categorical_colors
+from spatiato.core.object_classification.annotation import (
     USER_CLASS_COLORS_KEY,
     USER_CLASS_COLUMN,
     UserClassStateChange,

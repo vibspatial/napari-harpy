@@ -11,8 +11,8 @@ from types import ModuleType
 import numpy as np
 import pytest
 
-from napari_harpy.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
-from napari_harpy.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
+from spatiato.core.multi_scale_cache_points_zarr.reader import _IntrinsicViewport, _PointsCacheReader
+from spatiato.core.multi_scale_cache_points_zarr.storage.bucket_reader import _BucketReader
 
 
 def _load_benchmark_module(name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:

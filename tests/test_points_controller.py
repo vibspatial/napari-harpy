@@ -8,15 +8,15 @@ import dask.dataframe as dd
 import numpy as np
 import pandas as pd
 
-from napari_harpy._points_value_index import (
+from spatiato._points_value_index import (
     DEFAULT_RANDOM_STATE,
     PointsValueSelection,
     PointsValueTable,
     _ValidatedPointsElement,
 )
-from napari_harpy.core.class_palette import default_labeled_class_color
-from napari_harpy.viewer.adapter import PointsLayerIdentity
-from napari_harpy.widgets.viewer.points_controller import (
+from spatiato.core.class_palette import default_labeled_class_color
+from spatiato.viewer.adapter import PointsLayerIdentity
+from spatiato.widgets.viewer.points_controller import (
     PointsController,
     PointsControllerState,
     PointsLoadRequest,

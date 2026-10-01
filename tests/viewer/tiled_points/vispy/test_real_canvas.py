@@ -12,19 +12,19 @@ from napari._vispy.utils.qt_font import FontInfo
 from vispy.scene import SceneCanvas, visuals
 from vispy.visuals.transforms import MatrixTransform
 
-from napari_harpy.viewer.tiled_points import (
+from spatiato.viewer.tiled_points import (
     TiledPointsDatasetReference,
     TiledPointsLayerModel,
     TiledPointsRenderSnapshot,
     TiledPointsRenderTile,
     TileResidencyKey,
 )
-from napari_harpy.viewer.tiled_points.render_batch import pack_render_tiles
-from napari_harpy.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
+from spatiato.viewer.tiled_points.render_batch import pack_render_tiles
+from spatiato.viewer.tiled_points.vispy.layer import VispyTiledPointsLayer
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("NAPARI_HARPY_RUN_REAL_GL_TESTS") != "1",
-    reason="Set NAPARI_HARPY_RUN_REAL_GL_TESTS=1 to run real-OpenGL qualification.",
+    os.environ.get("SPATIATO_RUN_REAL_GL_TESTS") != "1",
+    reason="Set SPATIATO_RUN_REAL_GL_TESTS=1 to run real-OpenGL qualification.",
 )
 
 

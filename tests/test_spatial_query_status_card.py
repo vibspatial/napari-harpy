@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from napari_harpy.core.spatial_query import CanonicalCacheState, SpatialAnnotationSummary
-from napari_harpy.widgets.spatial_query.status_card import (
+from spatiato.core.spatial_query import CanonicalCacheState, SpatialAnnotationSummary
+from spatiato.widgets.spatial_query.status_card import (
     build_spatial_annotation_failure_status_card_spec,
     build_spatial_annotation_outcome_status_card_spec,
     build_spatial_query_controller_status_card_spec,

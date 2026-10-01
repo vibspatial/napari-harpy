@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a second napari widget to `napari-harpy`:
+Add a second napari widget to `spatiato`:
 
 - `Feature Extraction`
 - `Object Classification`
@@ -109,9 +109,9 @@ Important behavior:
 
 Conclusion:
 
-- napari-harpy should call `hp.tb.add_feature_matrix(...)`, not reimplement feature extraction, row alignment, or backed persistence locally.
+- spatiato should call `hp.tb.add_feature_matrix(...)`, not reimplement feature extraction, row alignment, or backed persistence locally.
 - the napari side should own viewer-driven selection, validation, worker orchestration, stale-job/UI-state handling, and cross-widget refresh behavior.
-- napari-harpy should follow Harpy's default metadata namespace: `uns["feature_matrices"]`.
+- spatiato should follow Harpy's default metadata namespace: `uns["feature_matrices"]`.
 
 ### 4. Harpy still has strict array-shape expectations internally, but the widget no longer needs to manage them directly
 
@@ -129,10 +129,10 @@ So for 2D data Harpy needs to promote:
 
 This is the same pattern Harpy already uses internally.
 
-The important implication for napari-harpy is:
+The important implication for spatiato is:
 
 - the widget/controller should pass canonical `sdata` element names and the chosen coordinate system into `hp.tb.add_feature_matrix(...)`
-- napari-harpy does not need its own array-shape normalization path for MVP
+- spatiato does not need its own array-shape normalization path for MVP
 - `chunks` remains only an optional performance knob; Harpy already warns that rechunking on disk ahead of time is usually preferable
 
 ### 5. Morphology features are not fully out-of-core
@@ -193,8 +193,8 @@ For the roadmap below, assume that feature names and provenance are read from `u
 
 Add:
 
-- `src/napari_harpy/widgets/_feature_extraction_widget.py`
-- `src/napari_harpy/_feature_extraction.py`
+- `src/spatiato/widgets/_feature_extraction_widget.py`
+- `src/spatiato/_feature_extraction.py`
 
 The widget owns UI state.
 The controller owns validation, background jobs, the Harpy call boundary, and widget-facing status/refresh behavior.
@@ -263,7 +263,7 @@ Those names should be stored in the metadata schema, not inferred from DataFrame
 
 Implementation note:
 
-- napari-harpy should reach this storage format by calling `hp.tb.add_feature_matrix(...)`
+- spatiato should reach this storage format by calling `hp.tb.add_feature_matrix(...)`
 - metadata should be read from Harpy's default `feature_matrices` namespace
 
 ### 4. Merge by `(region_key, instance_key)`, not by row order
@@ -423,7 +423,7 @@ If the output `.obsm` key already exists:
 
 ### Phase 1: Extend SpatialData discovery helpers
 
-Align labels and image discovery helpers in `src/napari_harpy/_spatialdata.py`
+Align labels and image discovery helpers in `src/spatiato/_spatialdata.py`
 around viewer-linked `SpatialData` datasets rather than only currently loaded
 layers.
 
@@ -446,7 +446,7 @@ Rules:
 
 ### Phase 2: Build the feature-extraction controller
 
-Create `src/napari_harpy/_feature_extraction.py`.
+Create `src/spatiato/_feature_extraction.py`.
 
 Responsibilities:
 
@@ -498,7 +498,7 @@ Use `hp.tb.add_feature_matrix(...)` as the authoritative compute-and-write path.
 - [x] writing companion metadata into `uns["feature_matrices"][feature_key]`
 - [x] backed write-through persistence with targeted `anndata.io.write_elem(...)`
 
-#### napari-harpy responsibilities around the call
+#### spatiato responsibilities around the call
 
 - [x] surface clear validation before dispatching the Harpy call
 - [x] serialize runs so we do not have concurrent `add_feature_matrix(...)` mutations against the same `sdata`
@@ -507,7 +507,7 @@ Use `hp.tb.add_feature_matrix(...)` as the authoritative compute-and-write path.
 
 ### Phase 4: Create the widget
 
-Create `src/napari_harpy/widgets/_feature_extraction_widget.py`. 
+Create `src/spatiato/widgets/_feature_extraction_widget.py`. 
 
 The widget should look and behave like the current object classification widget:
 
@@ -534,7 +534,7 @@ Widget responsibilities that remain after Phase 3:
 - [x] refresh widget choices after a successful feature-extraction run
 - [x] keep `channels`, `chunks`, and `run_on_gpu` hidden in MVP unless we explicitly decide to expose advanced controls
 
-Also update `src/napari_harpy/napari.yaml` in the same phase so the new widget is exposed:
+Also update `src/spatiato/napari.yaml` in the same phase so the new widget is exposed:
 
 - [x] `Feature Extraction`
 - [x] `Object Classification`
@@ -547,7 +547,7 @@ Minimum viable integration:
 - [ ] emit a small shared table-changed signal so the object-classification widget can refresh from the same in-memory table state
 - [ ] optionally refresh loaded labels layer metadata as a best-effort compatibility step:
   - [ ] `refresh_layer_table_metadata(...)`
-- [ ] rely on Harpy's write-through behavior on backed datasets rather than duplicating feature persistence in napari-harpy
+- [ ] rely on Harpy's write-through behavior on backed datasets rather than duplicating feature persistence in spatiato
 - [ ] tell the user that the feature key is now available for object classification
 
 Important nuance:
@@ -593,7 +593,7 @@ Open integration detail:
 Good follow-up options:
 
 - [ ] keep reload available as a fallback for recovering persisted state
-- [ ] avoid introducing a second napari-harpy-specific feature-persistence path unless we later need centralization beyond Harpy's write-through behavior
+- [ ] avoid introducing a second spatiato-specific feature-persistence path unless we later need centralization beyond Harpy's write-through behavior
 - [ ] use a shared table-state signal so both widgets can react to table updates in the same session
 
 ### Phase 7: Support the "No Table Linked" branch
@@ -622,7 +622,7 @@ Validation rules for this branch:
 Why this is a good follow-up phase:
 
 - [ ] it is the most natural expansion of the MVP without changing the core compute path
-- [ ] Harpy already owns the underlying table-creation machinery, so napari-harpy mainly needs extra UI, validation, and refresh handling
+- [ ] Harpy already owns the underlying table-creation machinery, so spatiato mainly needs extra UI, validation, and refresh handling
 - [ ] it keeps the initial implementation focused on the feature-to-classifier workflow while still giving us a clear next step for datasets that start from labels alone
 
 ## Testing Plan
@@ -674,7 +674,7 @@ The cleanest implementation path is:
 
 1. add a dedicated `FeatureExtractionWidget`
 2. extend the existing viewer-binding helpers with image discovery
-3. call `hp.tb.add_feature_matrix(...)` from the controller rather than reimplementing feature extraction in napari-harpy
+3. call `hp.tb.add_feature_matrix(...)` from the controller rather than reimplementing feature extraction in spatiato
 4. treat the updated `sdata.tables[table_name]` entry as authoritative and read companion metadata from `uns["feature_matrices"]`
 5. require that the selected labels layer is already linked to an annotation table for MVP
 6. reuse the current object-classification widget as the consumer of the new feature matrix
