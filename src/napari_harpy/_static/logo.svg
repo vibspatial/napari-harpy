@@ -60,6 +60,7 @@
       <circle id="navy-61" cx="248.085" cy="679.252" r="17.607" />
       <circle id="navy-62" cx="170.785" cy="701.263" r="13.843" />
       <circle id="navy-63" cx="143.706" cy="732.321" r="11.377" />
+      <circle id="navy-64" cx="537.970" cy="398.920" r="25.709" />
     </g>
     <g id="teal" fill="#009A98">
       <circle id="teal-1" cx="174.000" cy="56.680" r="12.454" />
@@ -85,9 +86,6 @@
       <circle id="teal-13" cx="127.326" cy="671.530" r="12.261" />
       <circle id="teal-14" cx="217.973" cy="717.486" r="16.658" />
       <circle id="teal-15" cx="194.724" cy="757.200" r="11.442" />
-    </g>
-    <g id="coral" fill="#FB765F">
-      <circle id="coral-1" cx="537.970" cy="398.920" r="25.709" />
     </g>
   </g>
   <g id="wordmark" fill="#10244B">
